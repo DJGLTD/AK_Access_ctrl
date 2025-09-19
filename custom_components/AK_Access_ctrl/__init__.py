@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from homeassistant.const import Platform
@@ -38,12 +38,12 @@ from .const import (
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
-from .http import register_ui  # provides /api/akuvox_ac/ui/*
+from .http import register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
 # Face images base URL (public HA, capital FaceData as per device requirement)
-FACE_BASE_URL = "http://149.40.108.146:8123/local/akuvox_ac/FaceData"
+FACE_BASE_URL = "http://149.40.108.146:8123/api/AK_AC/FaceData"
 
 
 # ---------------------- Helpers ---------------------- #
@@ -904,14 +904,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # ---------- Services ----------
     async def _ensure_local_face_for_user(user_id: str) -> str:
         """
-        Ensure local path exists (we only manage the path; actual upload/capture handled elsewhere).
-        Path: /config/www/akuvox_ac/FaceData/<USER>.jpg -> /local/akuvox_ac/FaceData/<USER>.jpg
+        Ensure component FaceData path exists (actual upload/capture handled elsewhere).
+        Returns the canonical API URL (e.g. /api/AK_AC/FaceData/<USER>.jpg).
         """
-        www_root = os.path.join(hass.config.path(), "www", "akuvox_ac", "FaceData")
-        os.makedirs(www_root, exist_ok=True)
+        face_root = Path(__file__).parent / "www" / "FaceData"
+        face_root.mkdir(parents=True, exist_ok=True)
         filename = f"{user_id}.jpg"
-        rel = os.path.join("akuvox_ac", "FaceData", filename)
-        return "/local/" + rel.replace("\\", "/")
+        return f"/api/AK_AC/FaceData/{filename}"
 
     async def svc_add_user(call):
         d = call.data
@@ -1008,20 +1007,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except Exception:
                 pass
 
-        # remove face file (check both common casings)
-        for sub in ("FaceData", "facedata"):
-            try:
-                path = os.path.join(hass.config.path(), "www", "akuvox_ac", sub, f"{key}.jpg")
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
+        # remove face file from component assets
+        try:
+            face_path = Path(__file__).parent / "www" / "FaceData" / f"{key}.jpg"
+            if face_path.exists():
+                face_path.unlink()
+        except Exception:
+            pass
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
     async def svc_upload_face(call):
         """
-        Legacy helper kept: simply records the canonical /local path.
+        Legacy helper kept: simply records the canonical /api/AK_AC face URL.
         Actual file writing/placing happens outside this service.
         """
         d = call.data
