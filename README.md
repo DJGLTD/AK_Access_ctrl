@@ -16,7 +16,7 @@ README.md
 ### Option A: HACS (recommended)
 1. In HACS → Integrations → ⋮ → **Custom repositories** → add this repo URL.
 2. Category: **Integration**.
-3. Install **Akuvox Access Control**, then restart Home Assistant.
+3. Install **Ak Access Control**, then restart Home Assistant.
 
 ### Option B: Manual
 1. Copy the `custom_components/akuvox_ac/` folder into your Home Assistant `config/custom_components/` directory.
