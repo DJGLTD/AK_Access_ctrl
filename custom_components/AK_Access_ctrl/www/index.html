@@ -121,6 +121,8 @@ function tokenQS() {
   return t ? `?token=${encodeURIComponent(t)}` : '';
 }
 
+const UI_ROOT = '/akuvox-ac';
+
 /* ========= RENDERERS + WIRING ========= */
 const stateUrl  = '/api/akuvox_ac/ui/state';
 const actionUrl = '/api/akuvox_ac/ui/action';
@@ -164,7 +166,7 @@ function renderDevices(devs){
 
     const syncBtn   = (online && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
     const rebootBtn = (online && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
-    const editHref  = id ? `/api/AK_AC/device_edit.html${tqs}${tqs ? '&' : '?'}id=${encodeURIComponent(id)}` : '';
+    const editHref  = id ? `${UI_ROOT}/device-edit${tqs}${tqs ? '&' : '?'}id=${encodeURIComponent(id)}` : '';
     const editBtn   = id ? `<a class="btn btn-sm btn-secondary" target="_top" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
 
     return `<tr>
@@ -306,7 +308,7 @@ function renderUsers(devs, registryUsers){
     else if (u.access === 'Denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
     else accessBadge = '<span class="badge badge-pending">Pending</span>';
 
-    const editHref = `/api/AK_AC/users.html${tqs}${tqs ? `&` : `?`}id=${encodeURIComponent(u.id)}`;
+    const editHref = `${UI_ROOT}/users${tqs}${tqs ? `&` : `?`}id=${encodeURIComponent(u.id)}`;
     const actions = /^HA\d{3}$/.test(u.id)
       ? `<a class="btn btn-sm btn-primary" target="_top" href="${editHref}">Edit</a>
          <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
@@ -416,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const a = document.getElementById('btnAddUser');
   if (!a) return;
   const tqs = tokenQS();
-  const base = '/api/AK_AC/users.html';
+  const base = `${UI_ROOT}/users`;
   const href = `${base}${tqs}`;
   a.href = href;
   a.target = '_top';
@@ -526,7 +528,7 @@ setInterval(refresh, 5000);
       <div class="card flex-fill">
         <div class="card-header d-flex justify-content-between align-items-center">
           <span>User Management</span>
-          <a class="btn btn-success" id="btnAddUser" href="/api/AK_AC/users.html" target="_top">
+          <a class="btn btn-success" id="btnAddUser" href="/akuvox-ac/users" target="_top">
             <i class="bi bi-person-plus"></i> Add User
           </a>
         </div>

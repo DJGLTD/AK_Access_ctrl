@@ -38,13 +38,9 @@ from .const import (
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
-from .http import register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
+from .http import face_base_url, register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
-
-# Face images base URL (public HA, capital FaceData as per device requirement)
-FACE_BASE_URL = "http://149.40.108.146:8123/api/AK_AC/FaceData"
-
 
 # ---------------------- Helpers ---------------------- #
 def _now_hh_mm() -> str:
@@ -138,6 +134,7 @@ class AkuvoxSchedulesStore(Store):
 
 
 class AkuvoxUsersStore(Store):
+    """Persistent store for HA-managed users and their schedule/key-holder metadata."""
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, USERS_STORAGE_KEY)
         self.data: Dict[str, Any] = {"users": {}}
@@ -661,6 +658,7 @@ class SyncManager:
         add_batch: List[Dict[str, Any]] = []
         replace_list: List[Tuple[str, Dict[str, Any]]] = []  # (ha_key, desired_payload)
         delete_only_keys: List[str] = []
+        face_root_base = face_base_url(self.hass)
 
         for ha_key in registry_keys:
             prof = registry.get(ha_key) or {}
@@ -681,10 +679,10 @@ class SyncManager:
                 schedule_id = sched_map.get(effective_schedule.lower(), "1001")
 
             relay_suffix = "12" if key_holder else "1"
-            schedule_relay = f"{schedule_id}-{relay_suffix};"  # e.g. "1001-12;" or "1001-1;"
+            schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,12;" or "1001,1;"
 
             # ----- Build device payload -----
-            face_url_canonical = f"{FACE_BASE_URL}/{ha_key}.jpg"
+            face_url_canonical = f"{face_root_base}/{ha_key}.jpg"
 
             desired_base: Dict[str, Any] = {
                 "UserID": ha_key,
@@ -941,7 +939,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         ha_id = await _allocate_lowest_ha_id(users_store, in_use_ha_ids)
 
         # Canonical FaceUrl that the device will fetch
-        face_url = f"{FACE_BASE_URL}/{ha_id}.jpg"
+        face_url = f"{face_base_url(hass)}/{ha_id}.jpg"
 
         await users_store.upsert_profile(
             ha_id,
@@ -965,7 +963,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         key = str(d["id"])
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
-        new_face_url = d.get("face_url") if "face_url" in d else f"{FACE_BASE_URL}/{key}.jpg"
+        new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{key}.jpg"
 
         await users_store.upsert_profile(
             key,
