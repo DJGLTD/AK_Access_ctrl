@@ -424,9 +424,17 @@ class SyncManager:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._auto_unsub = None
-        self._integrity_unsub = async_track_time_interval(hass, timedelta(minutes=15), self._integrity_check_cb)
+        self._integrity_unsub = async_track_time_interval(
+            hass,
+            self._integrity_check_cb,
+            timedelta(minutes=15),
+        )
         self._reboot_unsub = None
-        self._interval_unsub = async_track_time_interval(hass, timedelta(minutes=30), self._interval_sync_cb)
+        self._interval_unsub = async_track_time_interval(
+            hass,
+            self._interval_sync_cb,
+            timedelta(minutes=30),
+        )
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
