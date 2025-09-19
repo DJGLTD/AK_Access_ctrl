@@ -24,7 +24,7 @@
     .chip{display:inline-flex;align-items:center;gap:.3rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:.1rem .5rem;font-size:.75rem}
     .small-mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.85rem}
     .section-33{height:32.5vh; display:flex; gap:1rem}
-    .section-50{height:32.5vh; display:flex; flex-direction:column; min-height:0}
+    .section-50{min-height:32.5vh; display:flex; flex-direction:column; gap:1rem}
     .card-body{ overflow:auto; }
     .kpi{display:flex;justify-content:space-between;align-items:center;gap:2rem;flex-wrap:nowrap}
     .kpi-group{display:flex;gap:.75rem;flex-wrap:nowrap}
@@ -254,6 +254,83 @@ function renderEvents(devs){
   $('#eventList').innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
 }
 
+function renderWebhooks(devs){
+  const body = document.getElementById('tblWebhooks');
+  if (!body) return;
+  const rows = [];
+  const origin = window.location.origin || '';
+
+  (devs || []).forEach(d => {
+    const device = safeDeviceName(d);
+    (d.webhooks || []).forEach(hook => {
+      const rel = hook.relative_url || '';
+      const full = origin ? origin.replace(/\/$/, '') + rel : rel;
+      const eventName = hook.ha_event || '';
+      rows.push({
+        device,
+        name: hook.name || hook.key || 'Webhook',
+        description: hook.description || '',
+        rel,
+        full,
+        event: eventName,
+        last: hook.last_triggered || '',
+        count: hook.count ?? 0,
+      });
+    });
+  });
+
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="5" class="text-muted">No webhook endpoints have been generated yet.</td></tr>';
+    return;
+  }
+
+  const html = rows.map(row => {
+    const when = formatWhen(row.last);
+    const desc = row.description ? `<div class="text-muted small">${row.description}</div>` : '';
+    return `<tr>
+      <td>${row.device}</td>
+      <td><div>${row.name}</div>${desc}</td>
+      <td>
+        <div class="d-flex flex-column gap-1 align-items-start">
+          <code class="small-mono">${row.rel || '—'}</code>
+          <button class="btn btn-sm btn-outline-light" data-copy="${encodeURIComponent(row.full)}" data-kind="url">Copy full URL</button>
+        </div>
+      </td>
+      <td>
+        <div class="d-flex flex-column gap-1 align-items-start">
+          <code class="small-mono">${row.event || '—'}</code>
+          <button class="btn btn-sm btn-outline-light" data-copy="${encodeURIComponent(row.event)}" data-kind="event">Copy event name</button>
+        </div>
+      </td>
+      <td>
+        <div>${when || '—'}</div>
+        <div class="text-muted small">Count: ${row.count ?? 0}</div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  body.innerHTML = html;
+
+  body.querySelectorAll('button[data-copy]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const raw = decodeURIComponent(btn.dataset.copy || '');
+      if (!raw) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(raw);
+        } else {
+          throw new Error('Clipboard API unavailable');
+        }
+        const prev = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = prev; }, 1500);
+      } catch (err) {
+        prompt('Copy this value', raw);
+      }
+    });
+  });
+}
+
 /* ===== Users ===== */
 function idMatchesFilter(id){
   return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
@@ -349,6 +426,8 @@ async function refresh(){
         '<li class="event-item"><span class="event-title dim">No auth token found.</span></li>';
       document.querySelector('#tblUsers').innerHTML =
         '<tr><td colspan="5" class="text-warning">No auth token found.</td></tr>';
+      document.querySelector('#tblWebhooks').innerHTML =
+        '<tr><td colspan="5" class="text-warning">No auth token found.</td></tr>';
       return;
     }
 
@@ -357,11 +436,14 @@ async function refresh(){
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     renderDevices(devs);
     renderEvents(devs);
+    renderWebhooks(devs);
     renderUsers(devs, state.registry_users || []);
   } catch(e){
     console.error('state load failed', e);
     document.querySelector('#tblDevices').innerHTML =
       `<tr><td colspan="9" class="text-danger">Failed to load: ${String(e)}</td></tr>`;
+    document.querySelector('#tblWebhooks').innerHTML =
+      `<tr><td colspan="5" class="text-danger">Failed to load: ${String(e)}</td></tr>`;
   }
 }
 
@@ -556,6 +638,22 @@ setInterval(refresh, 5000);
               <tr><th>Name</th><th>Groups</th><th>Access</th><th>Last Access</th><th>Actions</th></tr>
             </thead>
             <tbody id="tblUsers"><tr><td colspan="5" class="text-muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">Webhook Endpoints</div>
+        <div class="card-body">
+          <p class="text-muted small">
+            Configure your Akuvox Action URL to call <code>http(s)://&lt;HA-IP&gt;:8123&lt;path&gt;</code> using the paths below.
+            Each webhook also fires a Home Assistant event so you can build automations without polling.
+          </p>
+          <table class="table table-sm table-dark mb-0 table-center">
+            <thead>
+              <tr><th>Device</th><th>Event</th><th>Webhook URL</th><th>HA Event</th><th>Last Triggered</th></tr>
+            </thead>
+            <tbody id="tblWebhooks"><tr><td colspan="5" class="text-muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>

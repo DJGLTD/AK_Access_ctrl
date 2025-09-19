@@ -19,6 +19,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         AkuvoxUsersCountSensor(coord, entry),
         AkuvoxEventsCountSensor(coord, entry),
     ]
+
+    for key, meta in (data.get("webhooks_meta") or {}).items():
+        entities.append(AkuvoxWebhookEventSensor(coord, entry, key, meta))
+
     async_add_entities(entities, update_before_add=True)
 
 class _Base(AkuvoxOnlineSensor := object):
@@ -113,3 +117,46 @@ class AkuvoxEventsCountSensor(_Base, SensorEntity):
     @property
     def native_value(self):
         return len(self._coord.events or [])
+
+
+class AkuvoxWebhookEventSensor(_Base, SensorEntity):
+    def __init__(self, coord, entry: ConfigEntry, key: str, meta: Dict[str, Any]):
+        super().__init__(coord, entry)
+        self._key = key
+        self._meta = dict(meta or {})
+
+    @property
+    def name(self) -> str:
+        label = self._meta.get("name") or self._key.replace("_", " ").title()
+        return f"{self._coord.device_name} {label} Webhook"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_webhook_{self._key}"
+
+    def _state(self) -> Dict[str, Any]:
+        try:
+            return self._coord.webhook_states.get(self._key, {})
+        except Exception:
+            return {}
+
+    @property
+    def native_value(self):
+        return self._state().get("last_triggered")
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs: Dict[str, Any] = {
+            "event_key": self._key,
+            "ha_event": self._meta.get("ha_event"),
+            "webhook_id": self._meta.get("webhook_id"),
+            "relative_url": self._meta.get("relative_url"),
+            "count": self._state().get("count", 0),
+        }
+        payload = self._state().get("last_payload")
+        if payload:
+            attrs["last_payload"] = payload
+        description = self._meta.get("description")
+        if description:
+            attrs["description"] = description
+        return attrs

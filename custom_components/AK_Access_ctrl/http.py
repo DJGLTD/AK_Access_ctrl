@@ -302,6 +302,29 @@ class AkuvoxUIView(HomeAssistantView):
                 "users": list(getattr(coord, "users", []) or []),
                 "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
             }
+
+            web_meta = data.get("webhooks_meta") or {}
+            if web_meta:
+                web_states = data.get("webhook_states") or {}
+                hooks: List[Dict[str, Any]] = []
+                for key, meta in web_meta.items():
+                    state = web_states.get(key) or {}
+                    item: Dict[str, Any] = {
+                        "key": key,
+                        "name": meta.get("name", key),
+                        "description": meta.get("description", ""),
+                        "webhook_id": meta.get("webhook_id"),
+                        "relative_url": meta.get("relative_url"),
+                        "ha_event": meta.get("ha_event"),
+                        "last_triggered": state.get("last_triggered"),
+                        "count": state.get("count"),
+                    }
+                    payload = state.get("last_payload")
+                    if payload:
+                        item["last_payload"] = payload
+                    hooks.append(item)
+                dev["webhooks"] = hooks
+
             devices.append(dev)
 
         kpis["devices"] = len(devices)

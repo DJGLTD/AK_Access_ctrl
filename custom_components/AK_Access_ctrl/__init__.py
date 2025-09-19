@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
+from aiohttp import web
+from homeassistant.components import webhook
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
@@ -35,6 +37,8 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
     ENTRY_VERSION,
+    EVENT_WEBHOOK_PREFIX,
+    WEBHOOK_EVENT_SPECS,
 )
 
 from .api import AkuvoxAPI
@@ -1000,6 +1004,117 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     interval = int(cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
     coord.update_interval = timedelta(seconds=max(10, interval))
 
+    webhook_store = storage.data.setdefault("webhooks", {})
+    webhook_meta: Dict[str, Any] = {}
+    webhook_states: Dict[str, Any] = {}
+    id_to_key: Dict[str, str] = {}
+    need_save = False
+
+    for spec in WEBHOOK_EVENT_SPECS:
+        key = spec["key"]
+        bucket = webhook_store.setdefault(key, {})
+        webhook_id = bucket.get("id")
+        if not webhook_id:
+            webhook_id = f"{DOMAIN}_{entry.entry_id}_{key}"
+            bucket["id"] = webhook_id
+            need_save = True
+
+        id_to_key[webhook_id] = key
+        last_payload = bucket.get("last_payload") if isinstance(bucket.get("last_payload"), dict) else bucket.get("last_payload")
+        webhook_meta[key] = {
+            "key": key,
+            "name": spec.get("name", key.replace("_", " ").title()),
+            "description": spec.get("description", ""),
+            "webhook_id": webhook_id,
+            "ha_event": f"{EVENT_WEBHOOK_PREFIX}{key}",
+            "relative_url": f"/api/webhook/{webhook_id}",
+        }
+        webhook_states[key] = {
+            "last_triggered": bucket.get("last_triggered"),
+            "last_payload": last_payload,
+            "count": int(bucket.get("count") or 0),
+        }
+
+    if need_save:
+        await storage.async_save()
+
+    coord.webhook_meta = webhook_meta
+    coord.webhook_states = webhook_states
+
+    async def _handle_webhook(hass: HomeAssistant, webhook_id: str, request: web.Request):
+        key = id_to_key.get(webhook_id)
+        if not key:
+            return web.Response(status=404)
+
+        stamp = dt_util.utcnow().replace(microsecond=0).isoformat() + "Z"
+        payload: Dict[str, Any] = {"method": request.method, "query": dict(request.query.items())}
+        if request.remote:
+            payload["remote"] = request.remote
+
+        try:
+            if request.can_read_body:
+                content_type = (request.content_type or "").lower()
+                if "json" in content_type:
+                    body = await request.json()
+                    payload["body"] = body
+                elif "application/x-www-form-urlencoded" in content_type:
+                    form = await request.post()
+                    payload["body"] = {k: form[k] for k in form.keys()}
+                else:
+                    text = (await request.text()).strip()
+                    if text:
+                        payload["body"] = text[:2048]
+        except Exception:
+            pass
+
+        state = webhook_states.setdefault(key, {})
+        state["last_triggered"] = stamp
+        state["last_payload"] = payload
+        state["count"] = int(state.get("count") or 0) + 1
+
+        store_bucket = webhook_store.setdefault(key, {})
+        store_bucket["last_triggered"] = stamp
+        store_bucket["last_payload"] = payload
+        store_bucket["count"] = state["count"]
+        try:
+            await storage.async_save()
+        except Exception:
+            pass
+
+        coord.webhook_states = webhook_states
+        try:
+            coord.async_update_listeners()
+        except Exception:
+            try:
+                await coord.async_set_updated_data(coord.data)
+            except Exception:
+                pass
+
+        meta = webhook_meta.get(key, {})
+        event_name = meta.get("ha_event") or f"{EVENT_WEBHOOK_PREFIX}{key}"
+        event_payload = {
+            "device_id": entry.entry_id,
+            "device_name": coord.display_name,
+            "webhook_key": key,
+            "webhook_id": meta.get("webhook_id"),
+            "relative_url": meta.get("relative_url"),
+            "event": event_name,
+            "timestamp": stamp,
+            "payload": payload,
+        }
+        hass.bus.async_fire(str(event_name), event_payload)
+        return web.json_response({"ok": True})
+
+    for key, meta in webhook_meta.items():
+        webhook.async_register(
+            hass,
+            DOMAIN,
+            f"Akuvox {device_name} {meta['name']}",
+            meta["webhook_id"],
+            _handle_webhook,
+        )
+        entry.async_on_unload(lambda wid=meta["webhook_id"]: webhook.async_unregister(hass, wid))
+
     initial_groups = list(cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
     exit_device = bool(cfg.get("exit_device", False))
 
@@ -1007,11 +1122,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         "api": api,
         "coordinator": coord,
         "session": session,
+        "storage": storage,
         "options": {
             "participate_in_sync": bool(cfg.get(CONF_PARTICIPATE, True)),
             "sync_groups": initial_groups,
             "exit_device": exit_device,
         },
+        "webhooks_meta": webhook_meta,
+        "webhook_states": webhook_states,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -1266,7 +1384,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         root = hass.data.get(DOMAIN, {})
-        root.pop(entry.entry_id, None)
+        bucket = root.pop(entry.entry_id, None)
+
+        if bucket:
+            metas = bucket.get("webhooks_meta") or {}
+            for meta in metas.values():
+                wid = meta.get("webhook_id")
+                if not wid:
+                    continue
+                try:
+                    webhook.async_unregister(hass, wid)
+                except Exception:
+                    pass
 
         only_special = all(
             k

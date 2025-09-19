@@ -38,3 +38,29 @@ DEFAULT_POLL_INTERVAL = 30  # seconds
 # Events
 EVENT_NON_KEY_ACCESS_GRANTED = "akuvox_ac_non_key_access_granted"
 
+# Webhook events exposed for Akuvox action URLs / automation bridging
+EVENT_WEBHOOK_PREFIX = "akuvox_ac_webhook_"
+
+WEBHOOK_EVENT_SPECS = (
+    {
+        "key": "granted",
+        "name": "User granted access",
+        "description": "Triggered when an Akuvox action URL reports that a user was granted access.",
+    },
+    {
+        "key": "denied_no_access",
+        "name": "User denied access (no access set)",
+        "description": "Triggered when the device reports an access denial because no access permissions were configured.",
+    },
+    {
+        "key": "denied_outside_time",
+        "name": "User denied access (outside schedule)",
+        "description": "Triggered when the device reports an access denial due to the user being outside their permitted time window.",
+    },
+    {
+        "key": "device_offline",
+        "name": "Device offline",
+        "description": "Use for delayed offline alerts from the device itself (5 minute grace period still applies in Home Assistant).",
+    },
+)
+

@@ -63,6 +63,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         }
         self.users: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []  # newest first
+        self.webhook_meta: Dict[str, Any] = {}
+        self.webhook_states: Dict[str, Any] = {}
         self._was_online: Optional[bool] = None
         self._offline_job = None
 

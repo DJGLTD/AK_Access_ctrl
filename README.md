@@ -32,6 +32,7 @@ Follow the on‑screen steps. See the in‑integration options and services for 
 - Web assets (in `custom_components/AK_Access_ctrl/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
 - Hidden Akuvox dashboards are available at `/akuvox-ac/index`, `/akuvox-ac/users`, `/akuvox-ac/device-edit`, `/akuvox-ac/schedules`, and `/akuvox-ac/face-rec`; they respect the same authentication (HA session or `?token=` query parameter).
 - When a non–key-holder user is granted access the integration fires the `akuvox_ac_non_key_access_granted` event, including the device, user, method, and timestamp so you can trigger automations.
+- Webhook endpoints for access granted/denied/device-offline events are pre-generated per device (see the main dashboard). Use them from the Akuvox Action URL feature; each call updates a matching sensor and fires an `akuvox_ac_webhook_<event>` Home Assistant event with the received payload.
 - The included `manifest.json` declares the domain as `akuvox_ac`.
 - If you previously used a different folder layout (e.g., "Config Files" / "WWW Files"), that has been normalized to the Home Assistant conventions here.
 
