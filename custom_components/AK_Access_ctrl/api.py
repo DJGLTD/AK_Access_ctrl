@@ -253,23 +253,59 @@ class AkuvoxAPI:
     def _normalize_schedule_relay(self, val: Any) -> Optional[str]:
         """
         Normalize ScheduleRelay:
-          - If list/tuple -> join with ';'
-          - Ensure string, strip spaces
-          - Ensure single trailing ';' (device is tolerant either way, but we help consistency)
+          - Accept strings like "1001,1;" or "1001-12" and lists of entries
+          - Ensure comma separator between schedule ID and relay flags ("1" | "12")
+          - Ensure a single trailing ';' delimiter between entries
         """
+
         if val is None:
             return None
-        if isinstance(val, (list, tuple)):
-            s = ";".join(str(x).strip("; ") for x in val if str(x).strip())
-        else:
-            s = str(val).strip()
-            # remove accidental commas and duplicate semicolons
-            s = s.replace(",", ";").replace(";;", ";")
-        if not s:
+
+        def _flatten(raw: Any) -> List[str]:
+            if isinstance(raw, (list, tuple)):
+                out: List[str] = []
+                for item in raw:
+                    out.extend(_flatten(item))
+                return out
+            text = str(raw or "")
+            if not text:
+                return []
+            return [seg for seg in text.replace("\n", "").split(";") if seg]
+
+        tokens = _flatten(val)
+        normalized: List[str] = []
+
+        for token in tokens:
+            seg = token.strip().strip(";")
+            if not seg:
+                continue
+
+            if "," in seg:
+                sched_part, relay_part = seg.split(",", 1)
+            elif "-" in seg:
+                sched_part, relay_part = seg.split("-", 1)
+            else:
+                sched_part, relay_part = seg, ""
+
+            sched = "".join(ch for ch in sched_part.strip() if ch.isalnum())
+            relays = "".join(ch for ch in relay_part.strip() if ch.isdigit())
+
+            if not sched:
+                continue
+
+            if not relays:
+                relays = "1"
+
+            # Limit relays to the supported flags ("1" for relay A, "2" for B)
+            relays_unique = "".join(dict.fromkeys(ch for ch in relays if ch in ("1", "2")))
+            relays = relays_unique or "1"
+
+            normalized.append(f"{sched},{relays}")
+
+        if not normalized:
             return ""
-        if not s.endswith(";"):
-            s = s + ";"
-        return s
+
+        return ";".join(normalized) + ";"
 
     def _normalize_user_items_for_add_or_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

@@ -160,6 +160,7 @@ async function apiPost(url, body) {
 /* ===== URLs & state ===== */
 const stateUrl  = '/api/akuvox_ac/ui/state';
 const actionUrl = '/api/akuvox_ac/ui/action';
+const UI_ROOT   = '/akuvox-ac';
 const qs = new URLSearchParams(location.search);
 /* accept both ?entry_id= and ?id= */
 const ENTRY_ID = qs.get('entry_id') || qs.get('id') || '';
@@ -185,7 +186,7 @@ function tokenQS(){
   return t ? `?token=${encodeURIComponent(t)}` : '';
 }
 function goBack(){
-  const url = `/api/AK_AC/index.html${tokenQS()}`;
+  const url = `${UI_ROOT}/index${tokenQS()}`;
   try { window.top.location.href = url; } catch { location.href = url; }
 }
 
