@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Access Schedules</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous"/>
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .form-text{ color:var(--muted); }
+    .day-block + .day-block{ margin-top:1.5rem; }
+    .day-header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:.5rem; }
+    .day-label{ text-transform:uppercase; letter-spacing:.05em; font-size:.85rem; color:var(--muted); }
+    .day-header:first-of-type{ margin-top:.5rem; }
+  </style>
+</head>
+<body>
+<script>
+(function(){ const qs=new URLSearchParams(location.search); const t=qs.get('token'); if(t) sessionStorage.setItem('akuvox_ll_token',t); })();
+const AUTH = ()=>{ const t=sessionStorage.getItem('akuvox_ll_token'); return t?{'Authorization':'Bearer '+t}:{}};
+async function getState(){ const r=await fetch('/api/akuvox_ac/ui/state',{headers:AUTH()}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+async function action(act,payload){ const r=await fetch('/api/akuvox_ac/ui/action',{method:'POST',headers:{'Content-Type':'application/json',...AUTH()},body:JSON.stringify({action:act,payload})}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+function tokenQS(){ const t=sessionStorage.getItem('akuvox_ll_token'); return t?`?token=${encodeURIComponent(t)}`:''; }
+const UI_ROOT = '/akuvox-ac';
+const BUILTINS = ['24/7 Access','No Access'];
+const DAYS = [
+  { key:'mon', label:'Monday' },
+  { key:'tue', label:'Tuesday' },
+  { key:'wed', label:'Wednesday' },
+  { key:'thu', label:'Thursday' },
+  { key:'fri', label:'Friday' },
+  { key:'sat', label:'Saturday' },
+  { key:'sun', label:'Sunday' }
+];
+const DAY_KEYS = DAYS.map(d => d.key);
+let SCHEDS={};
+let CURRENT='';
+let CURRENT_IS_BUILTIN=false;
+
+function setBackLink(){
+  const back=document.querySelector('[data-role="back"]');
+  if(back) back.href=`${UI_ROOT}/index${tokenQS()}`;
+}
+
+function setMessage(text='', level='muted'){
+  const el=document.getElementById('message');
+  if(!el) return;
+  el.textContent=text;
+  el.className=`mt-3 text-${level}`;
+}
+
+function row(day, idx, start='', end=''){
+  const readonlyAttr = CURRENT_IS_BUILTIN ? 'readonly' : '';
+  const removeDisabled = CURRENT_IS_BUILTIN ? 'disabled' : '';
+  return `<div class="row g-2 align-items-center mb-2" data-day-row="${day}" data-idx="${idx}">
+    <div class="col-5 col-sm-4 col-md-3"><input class="form-control form-control-sm" placeholder="HH:MM" ${readonlyAttr} value="${start}"/></div>
+    <div class="col-5 col-sm-4 col-md-3"><input class="form-control form-control-sm" placeholder="HH:MM" ${readonlyAttr} value="${end}"/></div>
+    <div class="col-2 col-sm-3 col-md-2"><button class="btn btn-sm btn-outline-danger" type="button" onclick="removeRow('${day}',${idx})" ${removeDisabled}>Remove</button></div>
+  </div>`;
+}
+
+function ensureRowIndices(day){
+  const bucket=document.querySelector(`[data-day-bucket="${day}"]`);
+  if(!bucket) return;
+  Array.from(bucket.querySelectorAll(`[data-day-row="${day}"]`)).forEach((el,idx)=>el.setAttribute('data-idx',idx));
+}
+
+function addRow(day){
+  if(CURRENT_IS_BUILTIN) return;
+  const bucket=document.querySelector(`[data-day-bucket="${day}"]`);
+  if(!bucket) return;
+  const idx=bucket.querySelectorAll(`[data-day-row="${day}"]`).length;
+  bucket.insertAdjacentHTML('beforeend', row(day, idx,'',''));
+  ensureRowIndices(day);
+}
+
+function removeRow(day, idx){
+  if(CURRENT_IS_BUILTIN) return;
+  const bucket=document.querySelector(`[data-day-bucket="${day}"]`);
+  if(!bucket) return;
+  const rows=Array.from(bucket.querySelectorAll(`[data-day-row="${day}"]`));
+  if(rows[idx]) rows[idx].remove();
+  if(!bucket.querySelector(`[data-day-row="${day}"]`)){
+    bucket.insertAdjacentHTML('beforeend', row(day,0,'',''));
+  }
+  ensureRowIndices(day);
+}
+
+function render(name){
+  const container=document.getElementById('editor');
+  container.innerHTML='';
+  const spec = name && SCHEDS[name] ? SCHEDS[name] : null;
+  DAYS.forEach(({key,label})=>{
+    container.insertAdjacentHTML('beforeend',`
+      <div class="day-block" data-day-wrap="${key}">
+        <div class="day-header">
+          <div class="day-label">${label}</div>
+          <button class="btn btn-sm btn-outline-light" type="button" onclick="addRow('${key}')" ${CURRENT_IS_BUILTIN?'disabled':''}>Add period</button>
+        </div>
+        <div data-day-bucket="${key}"></div>
+      </div>
+    `);
+    const bucket=container.querySelector(`[data-day-bucket="${key}"]`);
+    const spans = spec && Array.isArray(spec[key]) ? spec[key] : [];
+    if(!spans.length){
+      bucket.insertAdjacentHTML('beforeend', row(key,0,'',''));
+    }else{
+      spans.forEach((sp,i)=>{
+        const start = Array.isArray(sp) ? (sp[0] || '') : '';
+        const end = Array.isArray(sp) ? (sp[1] || '') : '';
+        bucket.insertAdjacentHTML('beforeend', row(key,i,start,end));
+      });
+    }
+  });
+}
+
+function renderOptions(){
+  const sel=document.getElementById('schedSel');
+  const options=['<option value="" selected disabled>Select a schedule…</option>'];
+  BUILTINS.forEach(n=>options.push(`<option value="${n}">${n}</option>`));
+  const custom = Object.keys(SCHEDS).filter(n=>!BUILTINS.includes(n)).sort((a,b)=>a.localeCompare(b));
+  custom.forEach(n=>options.push(`<option value="${n}">${n}</option>`));
+  options.push('<option value="__new__">Create new…</option>');
+  sel.innerHTML=options.join('');
+}
+
+function updateEditorVisibility(show){
+  const panel=document.getElementById('editorPanel');
+  panel.style.display = show ? 'block':'none';
+}
+
+function handleSelection(){
+  const sel=document.getElementById('schedSel');
+  const val=sel.value;
+  const nameInput=document.getElementById('schedName');
+  const saveBtn=document.getElementById('btnSave');
+  const deleteBtn=document.getElementById('btnDelete');
+  const notice=document.getElementById('readonlyNotice');
+  if(!val){ updateEditorVisibility(false); return; }
+  if(val==='__new__'){
+    CURRENT='';
+    CURRENT_IS_BUILTIN=false;
+    nameInput.value='';
+    nameInput.readOnly=false;
+    if(notice) notice.style.display='none';
+    updateEditorVisibility(true);
+    render(null);
+    saveBtn.disabled=false;
+    deleteBtn.disabled=true;
+    nameInput.focus();
+  }else{
+    CURRENT=val;
+    CURRENT_IS_BUILTIN=BUILTINS.includes(val);
+    nameInput.value=val;
+    nameInput.readOnly=CURRENT_IS_BUILTIN;
+    if(notice) notice.style.display=CURRENT_IS_BUILTIN?'block':'none';
+    updateEditorVisibility(true);
+    render(val);
+    saveBtn.disabled=CURRENT_IS_BUILTIN;
+    deleteBtn.disabled=CURRENT_IS_BUILTIN;
+  }
+}
+
+async function save(){
+  const name=document.getElementById('schedName').value.trim();
+  if(!name){ alert('Enter a schedule name'); return; }
+  if(BUILTINS.includes(name)){
+    alert('Built-in schedules are read-only. Choose “Create new…” to make your own.');
+    return;
+  }
+  const out={};
+  DAY_KEYS.forEach(day=>{
+    out[day]=[];
+    document.querySelectorAll(`[data-day-row="${day}"]`).forEach(div=>{
+      const ins=div.querySelectorAll('input');
+      const s=(ins[0]?.value||'').trim();
+      const e=(ins[1]?.value||'').trim();
+      if(s&&e) out[day].push([s,e]);
+    });
+  });
+  try{
+    await action('upsert_schedule',{ name, spec: out });
+    location.reload();
+  }catch(err){
+    alert('Save failed: '+(err && err.message ? err.message : err));
+  }
+}
+
+async function del(){
+  const name=document.getElementById('schedName').value.trim();
+  if(!name) return;
+  if(BUILTINS.includes(name)){ alert('Built-in schedules cannot be deleted.'); return; }
+  if(!confirm(`Delete schedule ${name}?`)) return;
+  try{
+    await action('delete_schedule',{ name });
+    location.reload();
+  }catch(err){
+    alert('Delete failed: '+(err && err.message ? err.message : err));
+  }
+}
+
+async function load(){
+  setMessage('Select a schedule to review or choose “Create new…”.','muted');
+  try{
+    const st=await getState();
+    SCHEDS=st.schedules||{};
+    renderOptions();
+    updateEditorVisibility(false);
+    setBackLink();
+    setMessage('','muted');
+  }catch(err){
+    setMessage('Failed to load schedules: '+(err && err.message ? err.message : err),'danger');
+  }
+}
+</script>
+<div class="container py-3">
+  <h2 class="mb-3">Access Schedules</h2>
+  <div class="card p-3">
+    <div class="mb-3">
+      <label class="form-label">Existing schedules</label>
+      <select id="schedSel" class="form-select form-select-sm" onchange="handleSelection()"></select>
+      <div class="form-text">Built-in schedules are read-only templates. Choose “Create new…” to make a custom timetable.</div>
+    </div>
+    <div id="editorPanel" style="display:none;">
+      <div class="mb-3">
+        <label class="form-label">Schedule name</label>
+        <input id="schedName" class="form-control" placeholder="Enter a descriptive name"/>
+        <div class="form-text" id="readonlyNotice" style="display:none;">Built-in schedules cannot be edited. Duplicate them by creating a new schedule.</div>
+      </div>
+      <div id="editor"></div>
+      <div class="mt-3 d-flex gap-2">
+        <button class="btn btn-success" type="button" id="btnSave" onclick="save()">Save</button>
+        <button class="btn btn-danger" type="button" id="btnDelete" onclick="del()" disabled>Delete</button>
+        <a class="btn btn-secondary" data-role="back" href="/akuvox-ac/index">Back</a>
+      </div>
+    </div>
+  </div>
+  <div id="message" class="mt-3 text-muted"></div>
+</div>
+<script>load()</script>
+</body>
+</html>

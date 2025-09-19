@@ -41,7 +41,33 @@ async function apiPost(url, body){
   return r.json();
 }
 function tokenQS(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t ? `?token=${encodeURIComponent(t)}` : ''; }
+const UI_ROOT = '/akuvox-ac';
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+function todayISO(){
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0,10);
+}
+
+function normalizeAccessWindow(user){
+  if (!user) return;
+  if (!user.access_start && user.permission_start) user.access_start = user.permission_start;
+  if (!user.access_end && user.permission_end) user.access_end = user.permission_end;
+  user.access_start = user.access_start || todayISO();
+  if (!user.access_end) user.access_end = '';
+}
+
+function updateEndState(){
+  const endToggle = document.getElementById('has_end');
+  const endInput = document.getElementById('access_end');
+  if (!endToggle || !endInput) return;
+  const enabled = !!endToggle.checked;
+  endInput.disabled = !enabled;
+  if (!enabled){
+    endInput.value = '';
+  }
+}
 
 /* -------------------- app state -------------------- */
 let SCHEDULES = {};     // { name: weekSpec, ... }
@@ -89,6 +115,7 @@ async function load(){
     const state = await apiGet('/api/akuvox_ac/ui/state');
     SCHEDULES = state.schedules || {};
     REGISTRY = state.registry_users || [];
+    REGISTRY.forEach(normalizeAccessWindow);
 
     // Load phones (notify services from HA mobile app)
     try {
@@ -102,8 +129,9 @@ async function load(){
     if (id){
       // Edit existing
       CURRENT = REGISTRY.find(u => u.id === id) || {
-        id, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:''
+        id, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'', access_start: todayISO(), access_end:''
       };
+      normalizeAccessWindow(CURRENT);
       document.getElementById('title').textContent = 'Edit User';
       document.getElementById('idRow').style.display = 'block';
       document.getElementById('user_id').value = CURRENT.id;
@@ -113,7 +141,8 @@ async function load(){
       try {
         const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
         const newId = res && res.ok && res.id ? res.id : '';
-        CURRENT = { id:newId, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+        CURRENT = { id:newId, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'', access_start: todayISO(), access_end:'' };
+        normalizeAccessWindow(CURRENT);
         if (CURRENT.id){
           document.getElementById('idRow').style.display = 'block';
           document.getElementById('user_id').value = CURRENT.id;
@@ -121,7 +150,8 @@ async function load(){
           document.getElementById('idRow').style.display = 'none';
         }
       } catch {
-        CURRENT = { id:'', name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+        CURRENT = { id:'', name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'', access_start: todayISO(), access_end:'' };
+        normalizeAccessWindow(CURRENT);
         document.getElementById('idRow').style.display = 'none';
       }
     }
@@ -149,9 +179,25 @@ function fillForm(){
 
   document.getElementById('key_holder').checked = !!CURRENT.key_holder;
 
+  const startInput = document.getElementById('access_start');
+  const endInput = document.getElementById('access_end');
+  const endToggle = document.getElementById('has_end');
+  startInput.value = CURRENT.access_start || todayISO();
+  if (CURRENT.access_end){
+    endToggle.checked = true;
+    endInput.disabled = false;
+    endInput.value = CURRENT.access_end;
+  } else {
+    endToggle.checked = false;
+    endInput.disabled = true;
+    endInput.value = '';
+  }
+  endToggle.onchange = updateEndState;
+  updateEndState();
+
   const localHelp = document.getElementById('localHelp');
   if (CURRENT.id){
-    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/local/akuvox_ac/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
+    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/api/AK_AC/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
   } else {
     localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
   }
@@ -198,6 +244,20 @@ async function save(){
     const selectedScheduleId = document.getElementById('schedule').value || '1001';
     const selectedScheduleName = nameForId(selectedScheduleId);
 
+    let startDate = (document.getElementById('access_start').value || '').trim();
+    if (!startDate) startDate = todayISO();
+    const endToggle = document.getElementById('has_end');
+    const endInput = document.getElementById('access_end');
+    let endDate = '';
+    if (endToggle && endToggle.checked){
+      endDate = (endInput.value || '').trim();
+      if (!endDate){
+        alert('Select an expiry date');
+        setBusy(false);
+        return;
+      }
+    }
+
     const payload = {
       name: document.getElementById('name').value.trim(),
       groups: CURRENT.groups || ['Default'],
@@ -206,6 +266,8 @@ async function save(){
       schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
       schedule_name: selectedScheduleName,      // for UI/state clarity
       key_holder: document.getElementById('key_holder').checked,
+      access_start: startDate,
+      access_end: endToggle && endToggle.checked ? endDate : '',
     };
 
     // Save/update the profile against the reserved ID
@@ -250,7 +312,7 @@ async function save(){
     }
 
     // Back to list
-    const back = '/local/akuvox_ac/index.html' + tokenQS();
+    const back = `${UI_ROOT}/index` + tokenQS();
     try{ window.top.location.href = back; }catch{ location.href = back; }
   } catch (e){
     alert('Save failed: ' + (e && e.message ? e.message : e));
@@ -325,6 +387,21 @@ function showPanel(which){
       <select id="schedule" class="form-select"></select>
     </div>
 
+    <div class="row g-3 mb-3">
+      <div class="col-sm-6">
+        <label class="form-label">Permission Start</label>
+        <input id="access_start" type="date" class="form-control" />
+      </div>
+      <div class="col-sm-6">
+        <label class="form-label">Permission Expiry</label>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="has_end">
+          <label class="form-check-label" for="has_end">Set expiry date</label>
+        </div>
+        <input id="access_end" type="date" class="form-control mt-2" disabled />
+      </div>
+    </div>
+
     <div class="form-check mb-3">
       <input class="form-check-input" type="checkbox" id="key_holder">
       <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
@@ -332,7 +409,7 @@ function showPanel(which){
 
     <div class="d-flex gap-2 mb-3">
       <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
-      <a class="btn btn-secondary" href="/local/akuvox_ac/index.html"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+      <a class="btn btn-secondary" href="/akuvox-ac/index"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
     <hr class="my-3"/>

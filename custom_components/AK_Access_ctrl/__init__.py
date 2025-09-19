@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from homeassistant.const import Platform
@@ -15,6 +15,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -38,13 +39,9 @@ from .const import (
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
-from .http import register_ui  # provides /api/akuvox_ac/ui/*
+from .http import face_base_url, register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
-
-# Face images base URL (public HA, capital FaceData as per device requirement)
-FACE_BASE_URL = "http://149.40.108.146:8123/local/akuvox_ac/FaceData"
-
 
 # ---------------------- Helpers ---------------------- #
 def _now_hh_mm() -> str:
@@ -64,6 +61,32 @@ def _ha_id_from_int(n: int) -> str:
 
 def _is_ha_id(s: str) -> bool:
     return isinstance(s, str) and len(s) == 5 and s.startswith("HA") and s[2:].isdigit()
+
+
+def _coerce_date(value: Any) -> Optional[date]:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except Exception:
+        pass
+    try:
+        parsed = dt_util.parse_datetime(text)
+        if parsed:
+            return parsed.date()
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------- Persistent stores ---------------------- #
@@ -138,6 +161,7 @@ class AkuvoxSchedulesStore(Store):
 
 
 class AkuvoxUsersStore(Store):
+    """Persistent store for HA-managed users and their schedule/key-holder metadata."""
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, USERS_STORAGE_KEY)
         self.data: Dict[str, Any] = {"users": {}}
@@ -176,6 +200,8 @@ class AkuvoxUsersStore(Store):
         key_holder: Optional[bool] = None,
         access_level: Optional[str] = None,
         schedule_id: Optional[str] = None,  # allow explicit schedule ID (1001/1002/1003/…)
+        access_start: Optional[str] = None,
+        access_end: Optional[str] = None,
     ):
         u = self.data["users"].setdefault(key, {})
         if name is not None:
@@ -198,6 +224,16 @@ class AkuvoxUsersStore(Store):
             u["access_level"] = access_level
         if schedule_id is not None:
             u["schedule_id"] = str(schedule_id)
+        if access_start is not None:
+            if access_start:
+                u["access_start"] = access_start
+            else:
+                u.pop("access_start", None)
+        if access_end is not None:
+            if access_end:
+                u["access_end"] = access_end
+            else:
+                u.pop("access_end", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -234,6 +270,47 @@ class AkuvoxSettingsStore(Store):
     async def set_auto_reboot(self, time_hhmm: Optional[str], days: List[str]):
         self.data["auto_reboot"] = {"time": time_hhmm, "days": list(days or [])}
         await self.async_save()
+
+
+class AkuvoxNotificationsStore(Store):
+    def __init__(self, hass: HomeAssistant):
+        super().__init__(hass, 1, f"{DOMAIN}_notifications.json")
+        self.data: Dict[str, Any] = {"devices": {}}
+
+    async def async_load(self):
+        existing = await super().async_load()
+        if existing and isinstance(existing.get("devices"), dict):
+            self.data = existing
+
+    async def async_save(self):
+        await super().async_save(self.data)
+
+    def all(self) -> Dict[str, Any]:
+        devices = self.data.get("devices") or {}
+        return {k: dict(v or {}) for k, v in devices.items()}
+
+    def get_for_device(self, entry_id: str) -> Dict[str, List[str]]:
+        devices = self.data.setdefault("devices", {})
+        return dict(devices.get(entry_id) or {})
+
+    async def set_for_device(self, entry_id: str, payload: Dict[str, List[str]]):
+        devices = self.data.setdefault("devices", {})
+        clean: Dict[str, List[str]] = {}
+        for key, value in (payload or {}).items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, list):
+                clean[key] = [str(v) for v in value if v]
+            elif isinstance(value, str) and value:
+                clean[key] = [value]
+        devices[entry_id] = clean
+        await self.async_save()
+
+    def targets_for(self, entry_id: str, event_key: str) -> List[str]:
+        devices = self.data.get("devices") or {}
+        by_device = devices.get(entry_id) or {}
+        targets = by_device.get(event_key) or []
+        return [t for t in targets if isinstance(t, str) and t]
 
 
 async def _allocate_lowest_ha_id(users_store: AkuvoxUsersStore, in_use_ids: List[str]) -> str:
@@ -320,6 +397,7 @@ class SyncQueue:
                     "sync_queue",
                     "_ui_registered",
                     "settings_store",
+                    "notifications_store",
                 ):
                     continue
                 coord = data.get("coordinator")
@@ -366,6 +444,7 @@ class SyncQueue:
                         "sync_queue",
                         "_ui_registered",
                         "settings_store",
+                        "notifications_store",
                     ):
                         continue
                     coord = data.get("coordinator")
@@ -424,9 +503,17 @@ class SyncManager:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._auto_unsub = None
-        self._integrity_unsub = async_track_time_interval(hass, timedelta(minutes=15), self._integrity_check_cb)
+        self._integrity_unsub = async_track_time_interval(
+            hass,
+            self._integrity_check_cb,
+            timedelta(minutes=15),
+        )
         self._reboot_unsub = None
-        self._interval_unsub = async_track_time_interval(hass, timedelta(minutes=30), self._interval_sync_cb)
+        self._interval_unsub = async_track_time_interval(
+            hass,
+            self._interval_sync_cb,
+            timedelta(minutes=30),
+        )
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
@@ -451,6 +538,7 @@ class SyncManager:
                 "sync_queue",
                 "_ui_registered",
                 "settings_store",
+                "notifications_store",
             ):
                 continue
             coord = v.get("coordinator")
@@ -653,6 +741,9 @@ class SyncManager:
         add_batch: List[Dict[str, Any]] = []
         replace_list: List[Tuple[str, Dict[str, Any]]] = []  # (ha_key, desired_payload)
         delete_only_keys: List[str] = []
+        face_root_base = face_base_url(self.hass)
+        today = dt_util.utcnow().date()
+        status_updates: Dict[str, str] = {}
 
         for ha_key in registry_keys:
             prof = registry.get(ha_key) or {}
@@ -673,10 +764,34 @@ class SyncManager:
                 schedule_id = sched_map.get(effective_schedule.lower(), "1001")
 
             relay_suffix = "12" if key_holder else "1"
-            schedule_relay = f"{schedule_id}-{relay_suffix};"  # e.g. "1001-12;" or "1001-1;"
+            schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,12;" or "1001,1;"
+
+            start_raw = prof.get("access_start") or prof.get("permission_start")
+            end_raw = prof.get("access_end") or prof.get("permission_end")
+            start_date = _coerce_date(start_raw)
+            end_date = _coerce_date(end_raw)
+
+            window_active = True
+            window_status: Optional[str] = None
+            if start_date and today < start_date:
+                window_active = False
+                window_status = "scheduled"
+            if end_date and today > end_date:
+                window_active = False
+                window_status = "expired"
+
+            if should_have_access and window_status:
+                status_updates[ha_key] = window_status
+            elif should_have_access and str(prof.get("status") or "").lower() == "pending":
+                status_updates.setdefault(ha_key, "active")
+
+            if should_have_access and not window_active:
+                schedule_id = "1002"
+                schedule_relay = "1002,12;"
+                effective_schedule = "No Access"
 
             # ----- Build device payload -----
-            face_url_canonical = f"{FACE_BASE_URL}/{ha_key}.jpg"
+            face_url_canonical = f"{face_root_base}/{ha_key}.jpg"
 
             desired_base: Dict[str, Any] = {
                 "UserID": ha_key,
@@ -745,9 +860,15 @@ class SyncManager:
             except Exception:
                 pass
 
-        # Mark pending -> active
+        # Update registry statuses based on access window and pending state
         try:
+            for k, new_status in status_updates.items():
+                current = (registry.get(k) or {}).get("status")
+                if new_status and current != new_status:
+                    await users_store.upsert_profile(k, status=new_status)
             for k in registry_keys:
+                if k in status_updates:
+                    continue
                 if (registry.get(k) or {}).get("status") == "pending":
                     await users_store.upsert_profile(k, status="active")
         except Exception:
@@ -829,11 +950,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await schedules.async_load()
         settings = AkuvoxSettingsStore(hass)
         await settings.async_load()
+        notifications = AkuvoxNotificationsStore(hass)
+        await notifications.async_load()
 
         root["groups_store"] = gs
         root["users_store"] = us
         root["schedules_store"] = schedules
         root["settings_store"] = settings
+        root["notifications_store"] = notifications
         root["sync_manager"] = SyncManager(hass)
         root["sync_queue"] = SyncQueue(hass)
 
@@ -896,14 +1020,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # ---------- Services ----------
     async def _ensure_local_face_for_user(user_id: str) -> str:
         """
-        Ensure local path exists (we only manage the path; actual upload/capture handled elsewhere).
-        Path: /config/www/akuvox_ac/FaceData/<USER>.jpg -> /local/akuvox_ac/FaceData/<USER>.jpg
+        Ensure component FaceData path exists (actual upload/capture handled elsewhere).
+        Returns the canonical API URL (e.g. /api/AK_AC/FaceData/<USER>.jpg).
         """
-        www_root = os.path.join(hass.config.path(), "www", "akuvox_ac", "FaceData")
-        os.makedirs(www_root, exist_ok=True)
+        face_root = Path(__file__).parent / "www" / "FaceData"
+        face_root.mkdir(parents=True, exist_ok=True)
         filename = f"{user_id}.jpg"
-        rel = os.path.join("akuvox_ac", "FaceData", filename)
-        return "/local/" + rel.replace("\\", "/")
+        return f"/api/AK_AC/FaceData/{filename}"
 
     async def svc_add_user(call):
         d = call.data
@@ -920,6 +1043,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "sync_manager",
                 "sync_queue",
                 "_ui_registered",
+                "notifications_store",
             ):
                 continue
             c: AkuvoxCoordinator = v.get("coordinator")
@@ -934,7 +1058,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         ha_id = await _allocate_lowest_ha_id(users_store, in_use_ha_ids)
 
         # Canonical FaceUrl that the device will fetch
-        face_url = f"{FACE_BASE_URL}/{ha_id}.jpg"
+        face_url = f"{face_base_url(hass)}/{ha_id}.jpg"
+
+        access_start = str(d.get("access_start") or "").strip()
+        if not access_start:
+            access_start = dt_util.utcnow().date().isoformat()
+        access_end_raw = d.get("access_end")
+        access_end = None if access_end_raw is None else str(access_end_raw).strip()
 
         await users_store.upsert_profile(
             ha_id,
@@ -949,6 +1079,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             status="pending",
             # allow passing schedule_id explicitly, else resolver will map by name
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
+            access_start=access_start,
+            access_end=access_end,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -958,7 +1090,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         key = str(d["id"])
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
-        new_face_url = d.get("face_url") if "face_url" in d else f"{FACE_BASE_URL}/{key}.jpg"
+        new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{key}.jpg"
+
+        access_start_param: Optional[str]
+        if "access_start" in d:
+            raw_start = d.get("access_start")
+            access_start_param = str(raw_start).strip() if raw_start is not None else ""
+        else:
+            access_start_param = None
+
+        access_end_param: Optional[str]
+        if "access_end" in d:
+            raw_end = d.get("access_end")
+            access_end_param = str(raw_end).strip() if raw_end is not None else ""
+        else:
+            access_end_param = None
 
         await users_store.upsert_profile(
             key,
@@ -972,6 +1118,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             face_url=new_face_url,
             status="pending",
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
+            access_start=access_start_param,
+            access_end=access_end_param,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -1000,20 +1148,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except Exception:
                 pass
 
-        # remove face file (check both common casings)
-        for sub in ("FaceData", "facedata"):
-            try:
-                path = os.path.join(hass.config.path(), "www", "akuvox_ac", sub, f"{key}.jpg")
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
+        # remove face file from component assets
+        try:
+            face_path = Path(__file__).parent / "www" / "FaceData" / f"{key}.jpg"
+            if face_path.exists():
+                face_path.unlink()
+        except Exception:
+            pass
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
     async def svc_upload_face(call):
         """
-        Legacy helper kept: simply records the canonical /local path.
+        Legacy helper kept: simply records the canonical /api/AK_AC face URL.
         Actual file writing/placing happens outside this service.
         """
         d = call.data
@@ -1131,6 +1278,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "sync_manager",
                 "sync_queue",
                 "_ui_registered",
+                "notifications_store",
             )
             for k in root.keys()
         )

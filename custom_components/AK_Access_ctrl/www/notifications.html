@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Notifications</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .badge-key{ background:#0dcaf0; color:#111; }
+    .form-select[multiple]{ min-height:120px; }
+  </style>
+</head>
+<body>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function findHaToken(){ const ll = sessionStorage.getItem('akuvox_ll_token'); return ll || null; }
+const BEARER = findHaToken();
+const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
+const SAME_ORIGIN = { credentials: 'same-origin' };
+
+async function apiGet(url){
+  const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetch(url, { method:'POST', ...SAME_ORIGIN, headers:{'Content-Type':'application/json', ...AUTH_HEADERS}, body: JSON.stringify(body||{}) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function tokenQS(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t ? `?token=${encodeURIComponent(t)}` : ''; }
+const UI_ROOT = '/akuvox-ac';
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+const EVENTS = [
+  { key:'denied_no_access', label:'User Denied Access - No access set', hint:'Notify when a user without any access is denied at the device.' },
+  { key:'denied_outside_time', label:'User Denied Access - Outside schedule', hint:'Notify when a user is denied because they are outside their allowed schedule.' },
+  { key:'granted', label:'User Granted Access', hint:'Alert when access is granted. Choose one or more recipients.' },
+  { key:'device_offline', label:'Device offline (5 minute delay)', hint:'Send a notification when this device remains offline for 5 minutes.' }
+];
+
+let DEVICES = [];
+let PHONES = [];
+let CONFIG = {};
+let CURRENT_DEVICE = '';
+
+function deviceLabel(dev){
+  if (!dev) return '';
+  return dev.name || dev.display_name || dev.friendly_name || dev.device_name || dev.entry_id || 'Akuvox Device';
+}
+
+function renderDeviceOptions(){
+  const sel = document.getElementById('deviceSelect');
+  const options = ['<option value="" selected disabled>Select a device…</option>'];
+  DEVICES.forEach(d => {
+    const id = d.entry_id || d.id;
+    if (!id) return;
+    options.push(`<option value="${id}">${deviceLabel(d)}</option>`);
+  });
+  sel.innerHTML = options.join('');
+  sel.disabled = !DEVICES.length;
+}
+
+function renderEventControls(){
+  const panel = document.getElementById('configPanel');
+  const holder = document.getElementById('eventControls');
+  holder.innerHTML = '';
+  if (!CURRENT_DEVICE){
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  const currentCfg = CONFIG[CURRENT_DEVICE] || {};
+  EVENTS.forEach(evt => {
+    const selected = currentCfg[evt.key] || [];
+    const selId = `sel_${evt.key}`;
+    const opts = PHONES.length
+      ? PHONES.map(p => `<option value="${p.service}">${p.name || p.service}</option>`).join('')
+      : '<option value="" disabled>(no notify services found)</option>';
+    holder.insertAdjacentHTML('beforeend', `
+      <div class="mb-3">
+        <label class="form-label">${evt.label}</label>
+        <select id="${selId}" class="form-select" multiple ${PHONES.length ? '' : 'disabled'}>${opts}</select>
+        <div class="form-text muted">${evt.hint}</div>
+      </div>
+    `);
+    const selectEl = document.getElementById(selId);
+    if (selectEl){
+      const map = new Set((selected || []).map(String));
+      Array.from(selectEl.options).forEach(opt => { opt.selected = map.has(opt.value); });
+    }
+  });
+}
+
+async function loadPhones(){
+  try {
+    const resp = await apiGet('/api/akuvox_ac/ui/phones');
+    PHONES = resp.phones || [];
+  } catch {
+    PHONES = [];
+  }
+}
+
+async function load(){
+  setBusy(true);
+  try {
+    const state = await apiGet('/api/akuvox_ac/ui/state');
+    DEVICES = state.devices || [];
+    CONFIG = state.notifications || {};
+    await loadPhones();
+    renderDeviceOptions();
+  } catch (e){
+    document.getElementById('message').textContent = 'Failed to load configuration: ' + (e && e.message ? e.message : e);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function handleDeviceChange(){
+  CURRENT_DEVICE = document.getElementById('deviceSelect').value || '';
+  renderEventControls();
+}
+
+async function save(){
+  if (!CURRENT_DEVICE){
+    alert('Select a device first.');
+    return;
+  }
+  const config = {};
+  EVENTS.forEach(evt => {
+    const selectEl = document.getElementById(`sel_${evt.key}`);
+    if (!selectEl || selectEl.disabled) {
+      config[evt.key] = [];
+    } else {
+      const values = Array.from(selectEl.selectedOptions).map(opt => opt.value).filter(Boolean);
+      if (values.length) config[evt.key] = values;
+    }
+  });
+  setBusy(true);
+  try {
+    await apiPost('/api/akuvox_ac/ui/action', {
+      action: 'set_notifications',
+      entry_id: CURRENT_DEVICE,
+      payload: { config }
+    });
+    CONFIG[CURRENT_DEVICE] = config;
+    document.getElementById('message').innerHTML = '<span class="badge bg-success">Saved</span> Notifications updated.';
+  } catch (e){
+    document.getElementById('message').innerHTML = '<span class="badge bg-danger">Error</span> ' + (e && e.message ? e.message : e);
+  } finally {
+    setBusy(false);
+  }
+}
+</script>
+
+<div class="container py-3">
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <h2 class="m-0">Notification Rules</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card p-3 mb-3">
+    <div class="mb-3">
+      <label class="form-label">Device</label>
+      <select id="deviceSelect" class="form-select" onchange="handleDeviceChange()"></select>
+      <div class="form-text muted">Choose an Akuvox device to configure notification recipients.</div>
+    </div>
+
+    <div id="configPanel" style="display:none;">
+      <div id="eventControls"></div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-success" onclick="save()"><i class="bi bi-save me-1"></i>Save</button>
+        <a class="btn btn-secondary" data-role="back" href="/akuvox-ac/index"><i class="bi bi-arrow-left"></i> Back</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="message" class="muted"></div>
+</div>
+
+<script>
+  const backLink = document.querySelector('[data-role="back"]');
+  if (backLink) {
+    const href = `/akuvox-ac/index${tokenQS()}`;
+    backLink.href = href;
+  }
+  load();
+</script>
+</body>
+</html>

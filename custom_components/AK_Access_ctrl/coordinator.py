@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .api import AkuvoxAPI
@@ -53,6 +55,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self.users: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []  # newest first
         self._was_online: Optional[bool] = None
+        self._offline_job = None
 
     # Stable accessor other code can use
     @property
@@ -71,6 +74,230 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self.events.insert(0, evt)
         # keep a generous history to make UI feel “unlimited”
         self.events[:] = self.events[:1000]
+
+    def _notification_targets(self, event_key: str) -> List[str]:
+        try:
+            root = self.hass.data.get(DOMAIN, {}) or {}
+            store = root.get("notifications_store")
+            if store:
+                return store.targets_for(self.entry_id, event_key)
+        except Exception:
+            pass
+        return []
+
+    async def _dispatch_notification(
+        self,
+        event_key: str,
+        title: str,
+        message: str,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        targets = self._notification_targets(event_key)
+        if not targets:
+            return
+        payload: Dict[str, Any] = {"title": title, "message": message}
+        if data:
+            payload["data"] = data
+        for target in targets:
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    target,
+                    payload,
+                    blocking=False,
+                )
+            except Exception:
+                _LOGGER.debug("Failed to send %s notification via %s", event_key, target)
+
+    def _cancel_offline_notification(self) -> None:
+        if self._offline_job:
+            try:
+                self._offline_job()
+            except Exception:
+                pass
+            self._offline_job = None
+
+    def _schedule_offline_notification(self) -> None:
+        if self._offline_job:
+            return
+
+        def _cb(_now) -> None:
+            self._offline_job = None
+            if not self.health.get("online"):
+                self.hass.async_create_task(self._notify_device_offline())
+
+        # 5 minute grace period
+        self._offline_job = async_call_later(self.hass, 5 * 60, _cb)
+
+    async def _notify_device_offline(self) -> None:
+        await self._dispatch_notification(
+            "device_offline",
+            f"{self.display_name}: Device offline",
+            f"{self.display_name} has been offline for at least 5 minutes.",
+            {"device_id": self.entry_id},
+        )
+
+    def _door_event_timestamp(self, item: Dict[str, Any]) -> Optional[datetime]:
+        for key in ("Time", "time", "CreateTime", "Timestamp", "DateTime"):
+            val = item.get(key)
+            if not val:
+                continue
+            text = str(val).strip()
+            if not text:
+                continue
+            try:
+                parsed = dt_util.parse_datetime(text)
+                if parsed:
+                    return parsed
+            except Exception:
+                pass
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(text[:19], fmt)
+                except Exception:
+                    continue
+        return None
+
+    def _door_event_key(self, item: Dict[str, Any]) -> str:
+        stamp = self._door_event_timestamp(item)
+        pieces = [
+            str(item.get("EventID") or item.get("ID") or item.get("Index") or ""),
+            stamp.isoformat() if stamp else "",
+            str(item.get("UserID") or item.get("UserName") or item.get("Name") or ""),
+            str(item.get("Result") or item.get("Event") or item.get("Type") or ""),
+        ]
+        base = "|".join(p for p in pieces if p)
+        if base:
+            return base
+        try:
+            return str(sorted(item.items()))
+        except Exception:
+            return str(item)
+
+    def _classify_door_event(self, item: Dict[str, Any]) -> Optional[str]:
+        parts: List[str] = []
+        for key in ("Result", "Event", "Type", "Reason", "Description", "Status"):
+            val = item.get(key)
+            if val:
+                parts.append(str(val))
+        combined = " ".join(parts).lower()
+        if not combined:
+            return None
+        if "denied" in combined or "refuse" in combined or "invalid" in combined:
+            if "time" in combined or "schedule" in combined or "zone" in combined:
+                return "denied_outside_time"
+            if "no access" in combined or "no auth" in combined or "authority" in combined or "auth" in combined:
+                return "denied_no_access"
+            return "denied_no_access"
+        if "grant" in combined or "pass" in combined or "allow" in combined or "success" in combined or "opened" in combined:
+            return "granted"
+        return None
+
+    def _event_user(self, item: Dict[str, Any]) -> str:
+        for key in ("UserName", "User", "Name", "Person"):
+            val = item.get(key)
+            if val:
+                return str(val)
+        uid = item.get("UserID") or item.get("CardNo") or item.get("Account")
+        return str(uid) if uid else "Unknown user"
+
+    def _format_event_time(self, stamp: Optional[datetime]) -> str:
+        if not stamp:
+            return ""
+        try:
+            local_dt = dt_util.as_local(stamp)
+            return local_dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return stamp.isoformat()
+
+    def _event_sort_key(self, item: Dict[str, Any]) -> str:
+        stamp = self._door_event_timestamp(item)
+        return stamp.isoformat() if stamp else ""
+
+    async def _store_seen_event_keys(self, keys: List[str]) -> None:
+        if not keys:
+            return
+        try:
+            seen = self.storage.data.setdefault("doorlog_seen", [])
+            if not isinstance(seen, list):
+                seen = []
+                self.storage.data["doorlog_seen"] = seen
+            seen.extend(keys)
+            del seen[:-100]
+            await self.storage.async_save()
+        except Exception:
+            pass
+
+    def _get_seen_event_keys(self) -> List[str]:
+        try:
+            seen = self.storage.data.setdefault("doorlog_seen", [])
+            if isinstance(seen, list):
+                return list(seen)
+        except Exception:
+            pass
+        return []
+
+    async def _handle_door_event(self, item: Dict[str, Any]) -> None:
+        category = self._classify_door_event(item)
+        if not category:
+            return
+        user = self._event_user(item)
+        door = str(
+            item.get("DoorName")
+            or item.get("Door")
+            or item.get("Device")
+            or self.display_name
+        )
+        method = item.get("Method") or item.get("PassMode") or item.get("Mode") or ""
+        method_text = f" using {method}" if method else ""
+        when = self._format_event_time(self._door_event_timestamp(item))
+        suffix = f" — {when}" if when else ""
+        if category == "granted":
+            title = f"{self.display_name}: Access granted"
+            message = f"{user} granted access at {door}{method_text}{suffix}"
+        elif category == "denied_outside_time":
+            title = f"{self.display_name}: Access denied"
+            message = f"{user} denied at {door} (outside schedule){suffix}"
+        else:
+            title = f"{self.display_name}: Access denied"
+            message = f"{user} denied at {door} (no access){suffix}"
+        await self._dispatch_notification(
+            category,
+            title,
+            message,
+            {"device_id": self.entry_id, "event": item},
+        )
+
+    async def _process_door_events(self) -> None:
+        if not any(
+            self._notification_targets(key)
+            for key in ("denied_no_access", "denied_outside_time", "granted")
+        ):
+            return
+        try:
+            items = await self.api.events_last()
+        except Exception:
+            return
+        if not isinstance(items, list):
+            return
+        seen = set(self._get_seen_event_keys())
+        new_items: List[Dict[str, Any]] = []
+        new_keys: List[str] = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            key = self._door_event_key(raw)
+            if not key or key in seen:
+                continue
+            new_items.append(raw)
+            new_keys.append(key)
+            seen.add(key)
+        if not new_items:
+            return
+        new_items.sort(key=self._event_sort_key)
+        await self._store_seen_event_keys(new_keys)
+        for item in new_items:
+            await self._handle_door_event(item)
 
     async def _kick_sync_now(self):
         """Ask the SyncQueue to sync this device immediately."""
@@ -103,6 +330,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
             # Online/offline transition events (+ on-online sync)
             if is_up:
+                self._cancel_offline_notification()
                 if prev is False:
                     self._append_event("Device came online")
                     await self._kick_sync_now()
@@ -112,6 +340,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             else:
                 if prev is True or prev is None:
                     self._append_event("Device went offline")
+                self._schedule_offline_notification()
                 self.health["last_error"] = None
                 self.health["last_ping"] = last_ping
                 return
@@ -124,6 +353,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             except Exception:
                 # don't fail the whole refresh just because the user list failed
                 pass
+
+            await self._process_door_events()
 
         except Exception as e:
             last_error = _safe_str(e)

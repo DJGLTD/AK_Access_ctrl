@@ -26,6 +26,16 @@ add_user:
       example: "/config/www/faces/steve.jpg"
       selector:
         text:
+    access_start:
+      required: false
+      example: "2024-01-01"
+      selector:
+        date:
+    access_end:
+      required: false
+      example: "2024-12-31"
+      selector:
+        date:
 
 edit_user:
   name: Edit user
@@ -60,6 +70,16 @@ edit_user:
       required: false
       selector:
         text:
+    access_start:
+      required: false
+      example: "2024-01-01"
+      selector:
+        date:
+    access_end:
+      required: false
+      example: "2024-12-31"
+      selector:
+        date:
 
 delete_user:
   name: Delete user
