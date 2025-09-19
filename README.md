@@ -1,6 +1,6 @@
-# Akuvox Access Control (Home Assistant Custom Component)
+# Ak Access Control (Home Assistant Custom Component)
 
-This repository packages the **Akuvox Access Control** custom integration for Home Assistant, plus optional web assets, in a GitHub‑ready layout.
+This repository packages the **Ak Access Control** custom integration for Home Assistant, plus optional web assets, in a GitHub‑ready layout.
 
 ## Structure
 ```text
