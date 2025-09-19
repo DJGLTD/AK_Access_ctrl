@@ -34,3 +34,7 @@ CONF_DEVICE_GROUPS = "device_groups"
 DEFAULT_USE_HTTPS     = False
 DEFAULT_VERIFY_SSL    = False
 DEFAULT_POLL_INTERVAL = 30  # seconds
+
+# Events
+EVENT_NON_KEY_ACCESS_GRANTED = "akuvox_ac_non_key_access_granted"
+

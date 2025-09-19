@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED
 from .api import AkuvoxAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,6 +25,15 @@ def _safe_str(x) -> str:
 def _now_iso(hass: HomeAssistant) -> str:
     from homeassistant.util import dt as dt_util
     return dt_util.utcnow().isoformat() + "Z"
+
+
+def _looks_like_ha_id(val: Any) -> bool:
+    try:
+        text = str(val)
+    except Exception:
+        return False
+    text = text.strip()
+    return len(text) == 5 and text.startswith("HA") and text[2:].isdigit()
 
 
 class AkuvoxCoordinator(DataUpdateCoordinator):
@@ -84,6 +93,44 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         except Exception:
             pass
         return []
+
+    def _resolve_registry_profile(self, item: Dict[str, Any]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+        try:
+            root = self.hass.data.get(DOMAIN, {}) or {}
+            store = root.get("users_store")
+            if not store:
+                return None, None
+
+            candidates: List[str] = []
+            for key in ("UserID", "UserName", "Name", "Account", "CardNo"):
+                val = item.get(key)
+                if not val:
+                    continue
+                text = str(val).strip()
+                if text:
+                    candidates.append(text)
+
+            for cand in candidates:
+                if _looks_like_ha_id(cand):
+                    profile = store.get(cand)
+                    if profile:
+                        return cand, profile
+
+            user_name = self._event_user(item)
+            if user_name:
+                lookup = user_name.strip().lower()
+                if lookup:
+                    all_users = store.all()
+                    for ha_id, profile in (all_users or {}).items():
+                        try:
+                            prof_name = str((profile or {}).get("name") or "").strip().lower()
+                        except Exception:
+                            prof_name = ""
+                        if prof_name and prof_name == lookup:
+                            return ha_id, profile
+        except Exception:
+            pass
+        return None, None
 
     async def _dispatch_notification(
         self,
@@ -250,7 +297,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         )
         method = item.get("Method") or item.get("PassMode") or item.get("Mode") or ""
         method_text = f" using {method}" if method else ""
-        when = self._format_event_time(self._door_event_timestamp(item))
+        stamp = self._door_event_timestamp(item)
+        when = self._format_event_time(stamp)
         suffix = f" — {when}" if when else ""
         if category == "granted":
             title = f"{self.display_name}: Access granted"
@@ -267,6 +315,29 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             message,
             {"device_id": self.entry_id, "event": item},
         )
+
+        if category == "granted":
+            ha_key, profile = self._resolve_registry_profile(item)
+            if profile is not None and not bool(profile.get("key_holder")):
+                event_data: Dict[str, Any] = {
+                    "device_id": self.entry_id,
+                    "device_name": self.display_name,
+                    "user_id": ha_key,
+                    "user_name": user,
+                    "timestamp": stamp.isoformat() if stamp else None,
+                    "method": str(method) if method else None,
+                    "raw_event": item,
+                    "key_holder": bool(profile.get("key_holder")),
+                }
+                if isinstance(profile, dict):
+                    if profile.get("schedule_name"):
+                        event_data["schedule_name"] = profile.get("schedule_name")
+                    if profile.get("groups"):
+                        try:
+                            event_data["groups"] = list(profile.get("groups") or [])
+                        except Exception:
+                            pass
+                self.hass.bus.async_fire(EVENT_NON_KEY_ACCESS_GRANTED, event_data)
 
     async def _process_door_events(self) -> None:
         if not any(
