@@ -9,7 +9,7 @@ class AkuvoxUsersStore(Store):
          "relays": "3",            # "0".."3"
          "pin": "1234",
          "card_code": "987654",
-         "face_url": "/local/faces/jane.jpg",  # URL under /local (optional)
+         "face_url": "/api/AK_AC/FaceData/jane.jpg",  # URL served by the integration (optional)
          "phone": "+44....",       # not synced to keypads
          "status": "active|disabled|pending|deleted"  # UI hint (optional)
       },

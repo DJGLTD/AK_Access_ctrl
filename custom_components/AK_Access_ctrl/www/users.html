@@ -151,7 +151,7 @@ function fillForm(){
 
   const localHelp = document.getElementById('localHelp');
   if (CURRENT.id){
-    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/local/akuvox_ac/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
+    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/api/AK_AC/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
   } else {
     localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
   }
@@ -250,7 +250,7 @@ async function save(){
     }
 
     // Back to list
-    const back = '/local/akuvox_ac/index.html' + tokenQS();
+    const back = '/api/AK_AC/index.html' + tokenQS();
     try{ window.top.location.href = back; }catch{ location.href = back; }
   } catch (e){
     alert('Save failed: ' + (e && e.message ? e.message : e));
@@ -332,7 +332,7 @@ function showPanel(which){
 
     <div class="d-flex gap-2 mb-3">
       <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
-      <a class="btn btn-secondary" href="/local/akuvox_ac/index.html"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+      <a class="btn btn-secondary" href="/api/AK_AC/index.html"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
     <hr class="my-3"/>

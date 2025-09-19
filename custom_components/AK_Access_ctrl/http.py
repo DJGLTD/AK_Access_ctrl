@@ -1,18 +1,66 @@
 from __future__ import annotations
 
-import os
 import datetime as dt
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from aiohttp import web
-from homeassistant.core import HomeAssistant
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.components.persistent_notification import async_create as notify
+from homeassistant.core import HomeAssistant
+
+try:
+    from homeassistant.components.http.const import KEY_HASS_USER
+except ImportError:  # pragma: no cover - fallback for older HA cores
+    KEY_HASS_USER = "hass_user"  # type: ignore[assignment]
 
 from .const import DOMAIN
 
 # Public URL the intercom fetches face images from (adjust host/port if needed)
-FACE_BASE_URL = "http://149.40.108.146:8123/local/akuvox_ac/FaceData"
+FACE_BASE_URL = "http://149.40.108.146:8123/api/AK_AC/FaceData"
+
+COMPONENT_ROOT = Path(__file__).parent
+STATIC_ROOT = COMPONENT_ROOT / "www"
+LOGIN_REDIRECT = "/"
+
+
+async def _require_auth(request: web.Request) -> None:
+    if request.get(KEY_HASS_USER) is not None:
+        return
+
+    hass: HomeAssistant = request.app["hass"]
+    token = ""
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.query.get("token", "").strip()
+
+    validator = getattr(hass.auth, "async_validate_access_token", None)
+    if token and validator:
+        try:
+            refresh_token = await validator(token)
+            if refresh_token and getattr(refresh_token, "user", None):
+                request[KEY_HASS_USER] = refresh_token.user  # type: ignore[index]
+                return
+        except Exception:
+            pass
+
+    raise web.HTTPFound(LOGIN_REDIRECT)
+
+
+def _static_asset(path: str) -> Path:
+    clean = path.strip()
+    if not clean or clean.endswith("/"):
+        clean = (clean.rstrip("/") + "/index.html") if clean else "index.html"
+    candidate = (STATIC_ROOT / clean.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(STATIC_ROOT.resolve())
+    except ValueError:
+        raise web.HTTPForbidden()
+    if not candidate.is_file():
+        raise web.HTTPNotFound()
+    return candidate
 
 
 def _only_hhmm(v: Optional[str]) -> str:
@@ -123,6 +171,17 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
 
 
 # ========================= STATE =========================
+class AkuvoxStaticAssets(HomeAssistantView):
+    url = "/api/AK_AC/{path:.*}"
+    name = "api:akuvox_ac:static"
+    requires_auth = False
+
+    async def get(self, request: web.Request, path: str = ""):
+        await _require_auth(request)
+        asset = _static_asset(path)
+        return web.FileResponse(asset)
+
+
 class AkuvoxUIView(HomeAssistantView):
     url = "/api/akuvox_ac/ui/state"
     name = "api:akuvox_ac:ui_state"
@@ -507,7 +566,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
       - id: HA001 (required)
       - file: image/jpeg (required)
 
-    Saves to /config/www/akuvox_ac/FaceData/<ID>.jpg
+    Saves to custom_components/AK_Access_ctrl/www/FaceData/<ID>.jpg
     Updates users_store face_url (public URL) and marks status=pending.
     Triggers immediate sync.
     """
@@ -552,15 +611,14 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
 
         # Save under FaceData (capital D)
-        dest_dir = os.path.join(hass.config.path(), "www", "akuvox_ac", "FaceData")
+        dest_dir = STATIC_ROOT / "FaceData"
         try:
-            os.makedirs(dest_dir, exist_ok=True)
+            dest_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        dest_path = os.path.join(dest_dir, f"{id_val}.jpg")
+        dest_path = dest_dir / f"{id_val}.jpg"
         try:
-            with open(dest_path, "wb") as f:
-                f.write(file_bytes)
+            dest_path.write_bytes(file_bytes)
         except Exception as e:
             return web.json_response({"ok": False, "error": f"write failed: {e}"}, status=500)
 
@@ -620,8 +678,8 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         if not phone_service:
             return web.json_response({"ok": False, "error": "phone_service required"}, status=400)
 
-        # Construct enrol URL (served from /local)
-        enrol_url = f"/local/akuvox_ac/face_rec.html?user={user_id}"
+        # Construct enrol URL (served from /api/AK_AC)
+        enrol_url = f"/api/AK_AC/face_rec.html?user={user_id}"
 
         # Push via HA mobile app notify service
         try:
@@ -672,6 +730,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 
 # ========================= REGISTER =========================
 def register_ui(hass: HomeAssistant) -> None:
+    hass.http.register_view(AkuvoxStaticAssets())
     hass.http.register_view(AkuvoxUIView())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
