@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox • Edit Device</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous"/>
+  <style>
+    :root{
+      --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc;
+      --ok:#2ecc71; --warn:#ffc107; --bad:#ff4d4f; --dim:#9aa4b2;
+    }
+    html,body{height:100%}
+    body{ background:var(--bg); color:var(--text); margin:0; font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .wrap{ max-width:820px; margin:2rem auto; padding:0 1rem; }
+    .card{ background:var(--card); border:1px solid var(--border); }
+    .card-header{ border-bottom:1px solid var(--border); color:var(--text); font-weight:600 }
+    .form-text, .text-muted{ color:var(--muted)!important }
+    .hidden{ display:none!important; }
+    .chip{display:inline-flex;align-items:center;gap:.35rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:.15rem .5rem;font-size:.9rem}
+
+    /* Force white for summary values */
+    #devName, #devType, #devIP { color: var(--text) !important; }
+  </style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0" id="pageTitle">Edit Device</h2>
+    <a class="btn btn-outline-light btn-sm" id="btnBack"><i class="bi bi-arrow-left"></i> Back</a>
+  </div>
+
+  <!-- Device summary -->
+  <div class="card mb-3">
+    <div class="card-header">Device</div>
+    <div class="card-body">
+      <div class="row g-3 align-items-center">
+        <div class="col-md-6">
+          <div class="form-text">Name</div>
+          <div class="fs-5" id="devName">—</div>
+        </div>
+        <div class="col-md-3">
+          <div class="form-text">Type</div>
+          <div id="devType">—</div>
+        </div>
+        <div class="col-md-3">
+          <div class="form-text">IP</div>
+          <div class="chip" id="devIP">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Groups editor -->
+  <div class="card" id="groupsCard">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span>Device Groups</span>
+      <span class="form-text">Checked groups determine which users sync here.</span>
+    </div>
+    <div class="card-body">
+      <!-- Inline info + create when only Default exists -->
+      <div id="groupsInfo" class="alert alert-secondary hidden" role="alert">
+        Only the <b>Default</b> group exists. This device will use <b>Default</b> automatically.
+        <div class="mt-2 d-flex" style="max-width:420px">
+          <input id="newGroupInput2" class="form-control me-2" placeholder="New group name" />
+          <button id="btnAddGroup2" class="btn btn-primary btn-sm">
+            <i class="bi bi-plus-lg"></i> Create Group
+          </button>
+        </div>
+      </div>
+
+      <!-- Checklist shown when more than one group exists -->
+      <div id="groupChecklist" class="mb-3 hidden"></div>
+
+      <!-- Main create + save/cancel row (HIDDEN when only Default exists) -->
+      <div id="createSaveRow" class="d-flex gap-2 align-items-center">
+        <div class="input-group" style="max-width:420px">
+          <input id="newGroupInput" class="form-control" placeholder="Create new group (e.g. Staff, Residents)" />
+          <button id="btnAddGroup" class="btn btn-outline-primary">
+            <i class="bi bi-plus-lg"></i> Create
+          </button>
+        </div>
+        <div class="ms-auto">
+          <button id="btnSave" class="btn btn-success">
+            <i class="bi bi-check2"></i> Save
+          </button>
+          <button id="btnCancel" class="btn btn-secondary">
+            <i class="bi bi-x-lg"></i> Cancel
+          </button>
+        </div>
+      </div>
+
+      <div id="errorBox" class="alert alert-danger mt-3 d-none"></div>
+      <div id="okBox" class="alert alert-success mt-3 d-none">Saved ✓</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===== Token capture (kiosk/direct) ===== */
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+
+/* ===== Auth + fetch helpers ===== */
+function findHaToken() {
+  const ll = sessionStorage.getItem('akuvox_ll_token');
+  if (ll) return ll;
+  const scan = (stor) => {
+    try {
+      const raw = stor.getItem('hassTokens');
+      if (raw) {
+        const o = JSON.parse(raw);
+        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
+      }
+      for (const k of Object.keys(stor)) {
+        if (!/auth|token|hass/i.test(k)) continue;
+        try {
+          const o = JSON.parse(stor.getItem(k));
+          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+    } catch {}
+    return null;
+  };
+  let t = scan(sessionStorage) || scan(localStorage);
+  if (t) return t;
+  try {
+    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
+      t = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
+      if (t) return t;
+    }
+  } catch {}
+  return null;
+}
+const BEARER = findHaToken();
+const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
+const SAME_ORIGIN = { credentials: 'same-origin' };
+async function apiGet(url) {
+  const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    ...SAME_ORIGIN,
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(body || {})
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+/* ===== URLs & state ===== */
+const stateUrl  = '/api/akuvox_ac/ui/state';
+const actionUrl = '/api/akuvox_ac/ui/action';
+const qs = new URLSearchParams(location.search);
+/* accept both ?entry_id= and ?id= */
+const ENTRY_ID = qs.get('entry_id') || qs.get('id') || '';
+
+/* ===== UI helpers ===== */
+function showError(msg){
+  const box = document.getElementById('errorBox');
+  const ok = document.getElementById('okBox');
+  ok.classList.add('d-none');
+  box.textContent = msg;
+  box.classList.remove('d-none');
+}
+function showOK(msg='Saved ✓'){
+  const box = document.getElementById('errorBox');
+  const ok = document.getElementById('okBox');
+  box.classList.add('d-none');
+  ok.textContent = msg;
+  ok.classList.remove('d-none');
+  setTimeout(()=> ok.classList.add('d-none'), 1800);
+}
+function tokenQS(){
+  const t = sessionStorage.getItem('akuvox_ll_token');
+  return t ? `?token=${encodeURIComponent(t)}` : '';
+}
+function goBack(){
+  const url = `/local/akuvox_ac/index.html${tokenQS()}`;
+  try { window.top.location.href = url; } catch { location.href = url; }
+}
+
+/* Render checklist of all groups with current selections */
+function renderGroupChecklist(allGroups, selected){
+  const host = document.getElementById('groupChecklist');
+  host.innerHTML = '';
+  const sel = new Set((selected || []).filter(Boolean));
+  (allGroups || []).forEach(name => {
+    const id = 'g_' + name.replace(/[^a-z0-9]+/ig,'_');
+    const row = document.createElement('div');
+    row.className = 'form-check';
+    row.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="${id}" ${sel.has(name)?'checked':''}>
+      <label class="form-check-label" for="${id}">${name}</label>
+    `;
+    host.appendChild(row);
+  });
+  host.classList.remove('hidden');
+}
+
+/* Get list of checked groups from UI */
+function getSelectedGroups(){
+  const host = document.getElementById('groupChecklist');
+  const cbs = host.querySelectorAll('.form-check-input');
+  const out = [];
+  cbs.forEach(cb => { if (cb.checked) out.push(cb.nextElementSibling.textContent); });
+  if (!out.length) out.push('Default'); // always at least Default
+  return out;
+}
+
+/* API-ish helpers built atop /state and /action */
+async function getState(){ return apiGet(stateUrl); }
+async function getDevice(){
+  const st = await getState();
+  const dev = (st.devices || []).find(d => (d.entry_id || d.id) === ENTRY_ID);
+  if (!dev) throw new Error('Device not found');
+  // Current groups: prefer sync_groups → groups → Default
+  const curGroups = dev.sync_groups || dev.groups || ['Default'];
+  // All groups if present at root; fallback
+  const allGroups = st.groups || st.all_groups || ['Default'];
+  return { dev, curGroups, allGroups };
+}
+async function saveDeviceGroups(groups){
+  return apiPost(actionUrl, { action:'device_set_groups', entry_id: ENTRY_ID, payload:{ groups } });
+}
+async function createGroup(name){
+  return apiPost(actionUrl, { action:'create_group', payload:{ name } });
+}
+
+/* ===== Init & wiring ===== */
+async function init(){
+  if (!BEARER) { showError('No auth token found. Open inside Home Assistant or append ?token='); return; }
+  if (!ENTRY_ID) { showError('Missing device id in URL (?entry_id=ENTRY_ID)'); return; }
+
+  document.getElementById('btnBack').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
+  document.getElementById('btnCancel').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
+
+  try{
+    const { dev, curGroups, allGroups } = await getDevice();
+
+    // Header summary
+    document.getElementById('pageTitle').textContent = `Edit Device`;
+    document.getElementById('devName').textContent = dev.name || '—';
+    document.getElementById('devType').textContent = dev.type || '—';
+    document.getElementById('devIP').textContent   = dev.ip || '—';
+
+    const onlyDefault = Array.isArray(allGroups) && allGroups.length <= 1;
+
+    // Toggle sections so you DON'T see two create-group UIs at once
+    const info = document.getElementById('groupsInfo');
+    const checklist = document.getElementById('groupChecklist');
+    const createRow = document.getElementById('createSaveRow');
+
+    if (onlyDefault) {
+      // Show inline alert+create, HIDE the main create/save row
+      info.classList.remove('hidden');
+      checklist.classList.add('hidden');
+      createRow.classList.add('hidden');
+    } else {
+      info.classList.add('hidden');
+      renderGroupChecklist(allGroups, curGroups);
+      createRow.classList.remove('hidden');
+    }
+
+    // Main "Create group" controls (visible when >1 group exists)
+    document.getElementById('btnAddGroup').addEventListener('click', async () => {
+      const inp = document.getElementById('newGroupInput');
+      const name = (inp.value || '').trim();
+      if (!name) return;
+      try{
+        await createGroup(name);
+        inp.value = '';
+        const { curGroups: cur, allGroups: all } = await getDevice();
+        document.getElementById('groupsInfo').classList.add('hidden');
+        renderGroupChecklist(all, cur);
+        document.getElementById('createSaveRow').classList.remove('hidden');
+      }catch(e){
+        showError('Failed to create group: ' + (e.message || e));
+      }
+    });
+
+    // Inline alert "Create group" controls (visible when only Default exists)
+    document.getElementById('btnAddGroup2').addEventListener('click', async () => {
+      const inp = document.getElementById('newGroupInput2');
+      const name = (inp.value || '').trim();
+      if (!name) return;
+      try{
+        await createGroup(name);
+        inp.value = '';
+        const { curGroups: cur, allGroups: all } = await getDevice();
+        document.getElementById('groupsInfo').classList.add('hidden');
+        renderGroupChecklist(all, cur);
+        document.getElementById('createSaveRow').classList.remove('hidden');
+      }catch(e){
+        showError('Failed to create group: ' + (e.message || e));
+      }
+    });
+
+    // Save
+    document.getElementById('btnSave').addEventListener('click', async () => {
+      try{
+        const groups = getSelectedGroups();
+        await saveDeviceGroups(groups);
+        showOK('Saved ✓');
+      }catch(e){
+        showError('Save failed: ' + (e.message || e));
+      }
+    });
+
+  }catch(e){
+    showError(String(e));
+  }
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>

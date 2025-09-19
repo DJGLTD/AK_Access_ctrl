@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Access Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous"/>
+  <style>
+    :root{
+      --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc;
+      --ok:#2ecc71; --warn:#ffc107; --bad:#ff4d4f; --dim:#9aa4b2;
+    }
+    html,body{height:100%}
+    body{ background:var(--bg); color:var(--text); margin:0; font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .workspace{ width:90vw; margin:0 auto; display:flex; flex-direction:column; height:100vh; gap:1rem; }
+    .card{ background:var(--card); border:1px solid var(--border); }
+    .card-header{ border-bottom:1px solid var(--border); font-weight:600; color:var(--text); }
+    thead{ background:#0f1a2c; color:var(--muted) }
+    .badge-in-sync{background:#198754}
+    .badge-pending{background:#ffc107;color:#111}
+    .badge-offline{background:#dc3545}
+    .badge-online{background:#0dcaf0;color:#111}
+    .chip{display:inline-flex;align-items:center;gap:.3rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:.1rem .5rem;font-size:.75rem}
+    .small-mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.85rem}
+    .section-33{height:32.5vh; display:flex; gap:1rem}
+    .section-50{height:32.5vh; display:flex; flex-direction:column; min-height:0}
+    .card-body{ overflow:auto; }
+    .kpi{display:flex;justify-content:space-between;align-items:center;gap:2rem;flex-wrap:nowrap}
+    .kpi-group{display:flex;gap:.75rem;flex-wrap:nowrap}
+    .box,.box2{background:#0e1a2c;border:1px solid #1c2e4f;border-radius:.5rem;padding:.5rem 1rem;min-width:110px;display:flex;flex-direction:column;justify-content:center}
+    .box2{align-items:center}
+    .btn{font-size:.85rem}
+    .footer-note{opacity:.65;font-size:.8rem;text-align:center}
+    .table-center th, .table-center td { text-align:center; vertical-align:middle; }
+    .table-center .chip { justify-content:center; }
+    .event-list{list-style:none; padding:0; margin:0;}
+    .event-item{padding:.5rem .75rem; border-bottom:1px dashed #20324f}
+    .event-title{font-weight:600}
+    .event-title.ok{color:var(--ok)}
+    .event-title.bad{color:var(--bad)}
+    .event-title.dim{color:var(--dim)}
+    .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
+  </style>
+</head>
+<body>
+<script>
+/* ========= AUTH + API HELPERS ========= */
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+
+function findHaToken() {
+  const ll = sessionStorage.getItem('akuvox_ll_token');
+  if (ll) return ll;
+
+  const scan = (stor) => {
+    try {
+      const raw = stor.getItem('hassTokens');
+      if (raw) {
+        const o = JSON.parse(raw);
+        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
+      }
+      for (const k of Object.keys(stor)) {
+        if (!/auth|token|hass/i.test(k)) continue;
+        try {
+          const o = JSON.parse(stor.getItem(k));
+          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+    } catch {}
+    return null;
+  };
+
+  let t = scan(sessionStorage) || scan(localStorage);
+  if (t) return t;
+  try {
+    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
+      t = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
+      if (t) return t;
+    }
+  } catch {}
+  return null;
+}
+
+const BEARER = findHaToken();
+const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
+const SAME_ORIGIN = { credentials: 'same-origin' };
+
+async function apiGet(url) {
+  const res = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function apiPost(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    ...SAME_ORIGIN,
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(body || {})
+  });
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function callService(domain, service, data = {}) {
+  const url = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    ...SAME_ORIGIN,
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  return res.json();
+}
+function tokenQS() {
+  const t = sessionStorage.getItem('akuvox_ll_token');
+  return t ? `?token=${encodeURIComponent(t)}` : '';
+}
+
+/* ========= RENDERERS + WIRING ========= */
+const stateUrl  = '/api/akuvox_ac/ui/state';
+const actionUrl = '/api/akuvox_ac/ui/action';
+const $ = (sel) => document.querySelector(sel);
+
+function badge(text, kind){
+  const k = kind === 'online' ? 'badge-online'
+          : kind === 'offline' ? 'badge-offline'
+          : kind === 'in_sync' ? 'badge-in-sync'
+          : 'badge-pending';
+  return `<span class="badge ${k}">${text}</span>`;
+}
+
+function renderKPIs(k){
+  if (k.next_sync_eta) startNextSyncCountdown(k.next_sync_eta, k.auto_sync_time);
+  $('#kpiDevices').textContent = k.devices ?? '0';
+  $('#kpiUsers').textContent   = k.users ?? '0';
+  $('#kpiPending').textContent = k.pending ?? '0';
+  $('#kpiNext').textContent    = (k.next_sync || '—');
+  const auto = k.auto_sync_time;
+  if (auto) {
+    const el = document.getElementById('autoSyncInput');
+    if (el && !el.value) el.value = auto;
+  }
+}
+
+function safeDeviceName(d){
+  // prefer the most intentional field from backend
+  return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
+}
+
+function renderDevices(devs){
+  const tqs = tokenQS();
+  const rows = (devs || []).map(d => {
+    const online = !!d.online;
+    const status = online ? badge('Online','online') : badge('Offline','offline');
+    const sync   = online ? (d.sync_status === 'in_sync' ? badge('In Sync','in_sync') : badge('Pending','pending')) : '—';
+    const last   = d.last_sync || '—';
+    const id     = d.entry_id || d.id || '';
+    const name   = safeDeviceName(d);
+
+    const syncBtn   = (online && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
+    const rebootBtn = (online && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
+    const editHref  = id ? `/local/akuvox_ac/device_edit.html${tqs}${tqs ? '&' : '?'}id=${encodeURIComponent(id)}` : '';
+    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" target="_top" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
+
+    return `<tr>
+      <td>${name}</td>
+      <td>${d.type || '-'}</td>
+      <td class="small-mono">${d.ip || '-'}</td>
+      <td>${status}</td>
+      <td>${sync}</td>
+      <td>${last}</td>
+      <td>${syncBtn}</td>
+      <td>${rebootBtn}</td>
+      <td>${editBtn}</td>
+    </tr>`;
+  }).join('');
+
+  $('#tblDevices').innerHTML = rows || '<tr><td colspan="9" class="text-muted">No devices</td></tr>';
+
+  // per-device actions with UI endpoint first, HA service fallback
+  $('#tblDevices').querySelectorAll('button[data-act]').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = b.dataset.id;
+      const act = b.dataset.act;
+      try {
+        const action = act === 'sync_now' ? 'sync_now' : 'reboot_device';
+        await apiPost(actionUrl, { action, entry_id: id });
+      } catch (e) {
+        // fall back to services
+        try {
+          if (act === 'sync_now') {
+            await callService('akuvox_ac','sync_now', { entry_id: id });
+          } else {
+            await callService('akuvox_ac','reboot_device', { entry_id: id });
+          }
+        } catch (err) {
+          alert(`Action failed: ${String(err?.message || err)}`);
+        }
+      }
+      refresh();
+    });
+  });
+}
+
+/* ===== Events ===== */
+function classifyEvent(txt){
+  const s = String(txt || '').toLowerCase();
+  if (s.includes('came online') || s.includes('sync succeeded') || s.includes('user created')) return 'ok';
+  if (s.includes('went offline')) return 'bad';
+  if (s.includes('reboot') || s.includes('integrity check passed')) return 'dim';
+  return 'dim';
+}
+function formatWhen(ts){
+  if (!ts) return '—';
+  let d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) {
+    try { const clean = String(ts).split('.')[0] + 'Z'; d = new Date(clean); }
+    catch { return String(ts); }
+  }
+  if (isNaN(d.getTime())) return String(ts);
+  const pad = (n)=> String(n).padStart(2,'0');
+  const DD = pad(d.getDate()), MM = pad(d.getMonth()+1), YYYY = d.getFullYear();
+  const HH = pad(d.getHours()), mm = pad(d.getMinutes()), SS = pad(d.getSeconds());
+  return `${HH}:${mm}:${SS} ${DD}-${MM}-${YYYY}`;
+}
+function renderEvents(devs){
+  const events = [];
+  (devs || []).forEach(d => (d.events || []).forEach(e => {
+    let ts = e.timestamp || e.Time || '';
+    let dObj = new Date(ts);
+    if (isNaN(dObj.getTime()) && ts) {
+      try { ts = String(ts).split('.')[0] + 'Z'; dObj = new Date(ts); } catch {}
+    }
+    events.push({ ...e, _device: safeDeviceName(d), _t: dObj.getTime() || 0 });
+  }));
+  events.sort((a,b)=> (b._t||0) - (a._t||0));
+  const html = events.map(e => {
+    const when = formatWhen(e.timestamp || e.Time || '');
+    const msg  = e.Event || e.Result || e.action || 'event';
+    const cls  = classifyEvent(msg);
+    const dev  = e._device || '';
+    return `<li class="event-item">
+      <span class="event-title ${cls}">${msg} - ${dev}</span>
+      <div class="event-time">${when}</div>
+    </li>`;
+  }).join('');
+  $('#eventList').innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
+}
+
+/* ===== Users ===== */
+function idMatchesFilter(id){
+  return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
+}
+function renderUsers(devs, registryUsers){
+  const tqs = tokenQS();
+  const by = new Map();
+
+  (registryUsers || []).forEach(r => {
+    const key = String(r.id || r.UserID || r.ID || '');
+    if (!key) return;
+    by.set(key, {
+      id: key, name: r.name || key, groups: r.groups || [],
+      access: 'Pending', isCloud: false, last: '—', presentOnDevice: false
+    });
+  });
+
+  (devs || []).forEach(d => (d._users || d.users || []).forEach(u => {
+    const key = String(u.ID || u.UserID || u.Name || '');
+    if (!key) return;
+    const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
+    const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
+    const last = u.LastAccess || u.last_access || '—';
+
+    if (!by.has(key)) {
+      by.set(key, { id:key, name:u.Name||key, groups:u.Groups||u.groups||[], access: accessAllowed?'Allowed':'Denied', isCloud, last, presentOnDevice:true });
+    } else {
+      const cur = by.get(key);
+      cur.isCloud = cur.isCloud || isCloud;
+      cur.presentOnDevice = true;
+      cur.groups = cur.groups && cur.groups.length ? cur.groups : (u.Groups || u.groups || []);
+      cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      cur.last = last || cur.last;
+      by.set(key, cur);
+    }
+  }));
+
+  const list = [...by.values()]
+    .filter(u => u.isCloud || idMatchesFilter(u.id))
+    .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
+
+  const rows = list.map(u => {
+    if (u.isCloud) {
+      return `<tr>
+        <td>${u.name}</td>
+        <td colspan="4" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
+      </tr>`;
+    }
+    const chips = (u.groups || []).map(g => `<span class="chip">${g}</span>`).join(' ');
+    let accessBadge = '';
+    if (u.access === 'Allowed') accessBadge = '<span class="badge badge-in-sync">Allowed</span>';
+    else if (u.access === 'Denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
+    else accessBadge = '<span class="badge badge-pending">Pending</span>';
+
+    const editHref = `/local/akuvox_ac/users.html${tqs}${tqs ? `&` : `?`}id=${encodeURIComponent(u.id)}`;
+    const actions = /^HA\d{3}$/.test(u.id)
+      ? `<a class="btn btn-sm btn-primary" target="_top" href="${editHref}">Edit</a>
+         <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
+      : '';
+
+    return `<tr>
+      <td>${u.name}</td>
+      <td>${chips || '—'}</td>
+      <td>${accessBadge}</td>
+      <td>${u.last || '—'}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+
+  $('#tblUsers').innerHTML = rows || '<tr><td colspan="5" class="text-muted">No users</td></tr>';
+
+  $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.user;
+      if (!confirm(`Delete ${id}?`)) return;
+      try {
+        await callService('akuvox_ac','delete_user', { id });
+        refresh();
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
+    });
+  });
+}
+
+/* ===== Fetch + render ===== */
+async function refresh(){
+  try{
+    if (!BEARER) {
+      document.querySelector('#tblDevices').innerHTML =
+        '<tr><td colspan="9" class="text-warning">No auth token found. Open this page inside Home Assistant or append <code>?token=&lt;LONG_LIVED_TOKEN&gt;</code> to the URL.</td></tr>';
+      document.querySelector('#eventList').innerHTML =
+        '<li class="event-item"><span class="event-title dim">No auth token found.</span></li>';
+      document.querySelector('#tblUsers').innerHTML =
+        '<tr><td colspan="5" class="text-warning">No auth token found.</td></tr>';
+      return;
+    }
+
+    const state = await apiGet(stateUrl);
+    renderKPIs(state.kpis || {devices:0, users:0, pending:0});
+    const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
+    renderDevices(devs);
+    renderEvents(devs);
+    renderUsers(devs, state.registry_users || []);
+  } catch(e){
+    console.error('state load failed', e);
+    document.querySelector('#tblDevices').innerHTML =
+      `<tr><td colspan="9" class="text-danger">Failed to load: ${String(e)}</td></tr>`;
+  }
+}
+
+async function syncAllNow(){
+  let ok = false;
+  try { await apiPost(actionUrl, { action: 'sync_now' }); ok = true; } catch {}
+  try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {}
+  if (!ok) alert('Sync Now failed to trigger');
+  refresh();
+}
+
+async function forceFullSync(){
+  let ok = false;
+  try { await apiPost(actionUrl, { action: 'sync_all' }); ok = true; } catch {}
+  if (!ok) { try { await apiPost(actionUrl, { action: 'force_full_sync' }); ok = true; } catch {} }
+  try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {}
+  if (!ok) alert('Force Full Sync failed to trigger');
+  refresh();
+}
+
+async function rebootAll(){
+  let ok = false;
+  try { await apiPost(actionUrl, { action: 'reboot_all' }); ok = true; } catch {}
+  try { await callService('akuvox_ac','reboot_device', {}); ok = true; } catch {}
+  if (!ok) alert('Reboot All failed to trigger');
+  refresh();
+}
+
+// ✅ Wait until the DOM exists before wiring buttons/inputs
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
+  document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
+  document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
+
+  const autoEl = document.getElementById('autoSyncInput');
+  autoEl?.addEventListener('change', async () => {
+    const v = (autoEl.value || '').trim();
+    if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
+    try{
+      await apiPost(actionUrl, { action:'set_daily_sync', payload:{ time:v } });
+    }catch(e){
+      try { await callService('akuvox_ac','set_daily_sync', { time: v }); } catch {}
+    }
+    document.getElementById('kpiNext').textContent = v;
+  });
+
+  // initial + poll
+  refresh();
+  setInterval(refresh, 5000);
+});
+
+/* Add User link */
+(() => {
+  const a = document.getElementById('btnAddUser');
+  if (!a) return;
+  const tqs = tokenQS();
+  const base = '/local/akuvox_ac/users.html';
+  const href = `${base}${tqs}`;
+  a.href = href;
+  a.target = '_top';
+  a.addEventListener('click', (e) => {
+    try { window.top.location.href = href; e.preventDefault(); } catch {}
+  });
+})();
+
+/* Auto Sync setter (save on change) */
+const autoEl = document.getElementById('autoSyncInput');
+autoEl?.addEventListener('change', async () => {
+  const v = (autoEl.value || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
+  try{
+    await apiPost(actionUrl, { action:'set_daily_sync', payload:{ time:v } });
+  }catch(e){
+    // optional HA service fallback if you add it; ignored if not present
+    try { await callService('akuvox_ac','set_daily_sync', { time: v }); } catch {}
+  }
+  document.getElementById('kpiNext').textContent = v;
+});
+
+/* ===== Countdown + watchdog ===== */
+let nextSyncTimer = null;
+let nextSyncWatchdog = null;
+function startNextSyncCountdown(iso, fallbackTime){
+  if (nextSyncTimer) { clearInterval(nextSyncTimer); nextSyncTimer = null; }
+  if (nextSyncWatchdog) { clearInterval(nextSyncWatchdog); nextSyncWatchdog = null; }
+  if (!iso) return;
+
+  const eta = new Date(iso).getTime();
+  function tick(){
+    const now = Date.now();
+    let diff = Math.max(0, Math.floor((eta - now)/1000));
+    const mm = String(Math.floor(diff/60)).padStart(2,'0');
+    const ss = String(diff%60).padStart(2,'0');
+    document.getElementById('kpiNext').textContent = `${mm}:${ss}`;
+    if (diff <= 0){ clearInterval(nextSyncTimer); nextSyncTimer=null; }
+  }
+  tick();
+  nextSyncTimer = setInterval(tick, 1000);
+
+  // watchdog: every minute check device sync; if all in_sync, cancel countdown
+  nextSyncWatchdog = setInterval(async () => {
+    try{
+      const state = await apiGet(stateUrl);
+      const devices = state.devices || [];
+      const allOk = devices.length > 0 && devices.every(d => d.sync_status === 'in_sync');
+      if (allOk){
+        clearInterval(nextSyncTimer); nextSyncTimer=null;
+        clearInterval(nextSyncWatchdog); nextSyncWatchdog=null;
+        document.getElementById('kpiNext').textContent = state.kpis?.auto_sync_time || fallbackTime || '—';
+      }
+    }catch{}
+  }, 60000);
+}
+
+/* initial + poll */
+refresh();
+setInterval(refresh, 5000);
+</script>
+
+  <div class="workspace">
+    <h1 class="mt-3">Akuvox Access Control</h1>
+
+    <div class="kpi">
+      <div class="kpi-group">
+        <div class="box2"><button id="btnRebootAll" class="btn btn-danger"><i class="bi bi-power"></i> Reboot All</button></div>
+        <div class="box2"><button id="btnForceFull" class="btn btn-warning"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button></div>
+      </div>
+      <div class="kpi-group justify-content-end">
+        <div class="box text-end"><div>Users</div><div id="kpiUsers">—</div></div>
+        <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
+        <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
+        <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
+        <div class="box2"><button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now </button></div>
+        <div class="box text-end"><div>Auto Sync</div><input id="autoSyncInput" class="form-control form-control-sm" placeholder="HH:MM" style="width:6rem;display:inline-block">
+        </div></div>
+    </div>
+
+    <div class="section-33">
+      <div class="card flex-fill">
+        <div class="card-header">Event History</div>
+        <div class="card-body">
+          <ul id="eventList" class="event-list">
+            <li class="event-item"><span class="event-title dim">Loading…</span></li>
+          </ul>
+        </div>
+      </div>
+      <div class="card flex-fill">
+        <div class="card-header">Device Health</div>
+        <div class="card-body">
+          <table class="table table-sm table-dark mb-0 table-center">
+            <thead>
+              <tr>
+                <th>Name</th><th>Type</th><th>IP</th><th>Status</th><th>Sync</th><th>Last Sync</th>
+                <th>Sync</th><th>Reboot</th><th>Edit</th>
+              </tr>
+            </thead>
+            <tbody id="tblDevices"><tr><td colspan="9" class="text-muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-50">
+      <div class="card flex-fill">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>User Management</span>
+          <a class="btn btn-success" id="btnAddUser" href="/local/akuvox_ac/users.html" target="_top">
+            <i class="bi bi-person-plus"></i> Add User
+          </a>
+        </div>
+        <div class="card-body">
+          <table class="table table-sm table-dark mb-0 table-center">
+            <thead>
+              <tr><th>Name</th><th>Groups</th><th>Access</th><th>Last Access</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="tblUsers"><tr><td colspan="5" class="text-muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer-note my-2"></div>
+  </div>
+</body>
+</html>

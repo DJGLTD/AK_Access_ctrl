@@ -1,0 +1,12 @@
+{
+  "domain": "akuvox_ac",
+  "name": "Akuvox Access Control",
+  "version": "0.2.1",
+  "documentation": "https://example.invalid/akuvox_ac",
+  "issue_tracker": "https://example.invalid/akuvox_ac/issues",
+  "codeowners": ["@you"],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "loggers": ["custom_components.akuvox_ac"],
+  "requirements": []
+}

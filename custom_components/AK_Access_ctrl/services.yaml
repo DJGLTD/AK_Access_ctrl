@@ -1,0 +1,129 @@
+add_user:
+  name: Add user
+  fields:
+    name:
+      required: true
+      example: "Steve"
+      selector:
+        text:
+    groups:
+      required: false
+      example: ["Front Gate", "Back Gate"]
+      selector:
+        object:
+    relays:
+      required: false
+      example: "3"
+      selector:
+        select:
+          options:
+            - "0"
+            - "1"
+            - "2"
+            - "3"
+    face_image_path:
+      required: false
+      example: "/config/www/faces/steve.jpg"
+      selector:
+        text:
+
+edit_user:
+  name: Edit user
+  fields:
+    id:
+      required: true
+      example: "HA-003"
+      selector:
+        text:
+    name:
+      required: false
+      selector:
+        text:
+    pin:
+      required: false
+      selector:
+        text:
+    card_code:
+      required: false
+      selector:
+        text:
+    groups:
+      required: false
+      selector:
+        object:
+    relays:
+      required: false
+      selector:
+        select:
+          options: ["0","1","2","3"]
+    face_image_path:
+      required: false
+      selector:
+        text:
+
+delete_user:
+  name: Delete user
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+
+upload_face:
+  name: Upload face image for user
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+    face_image_path:
+      required: true
+      selector:
+        text:
+
+refresh_events:
+  name: Refresh device events
+
+reboot_device:
+  name: Reboot device
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+sync_now:
+  name: Sync now
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+create_group:
+  name: Create sync group
+  fields:
+    name:
+      required: true
+      selector:
+        text:
+
+delete_groups:
+  name: Delete sync groups
+  fields:
+    names:
+      required: true
+      selector:
+        object:
+
+set_user_groups:
+  name: Set groups for user
+  fields:
+    key:
+      required: true
+      selector:
+        text:
+    groups:
+      required: true
+      selector:
+        object:

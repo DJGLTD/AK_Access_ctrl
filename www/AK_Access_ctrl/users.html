@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox User Editor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .btn-toggle{ width: 220px; }
+    .uploader-hint { font-size: .9rem; color: var(--muted); }
+    .form-text code { color: #c7dfff; }
+  </style>
+</head>
+<body>
+<script>
+/* -------------------- auth + helpers -------------------- */
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function findHaToken(){ const ll = sessionStorage.getItem('akuvox_ll_token'); return ll || null; }
+const BEARER = findHaToken();
+const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
+const SAME_ORIGIN = { credentials: 'same-origin' };
+
+async function apiGet(url){
+  const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetch(url, { method:'POST', ...SAME_ORIGIN, headers:{'Content-Type':'application/json', ...AUTH_HEADERS}, body: JSON.stringify(body||{}) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function tokenQS(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t ? `?token=${encodeURIComponent(t)}` : ''; }
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+/* -------------------- app state -------------------- */
+let SCHEDULES = {};     // { name: weekSpec, ... }
+let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
+let REGISTRY = [];      // UI list of known users from /ui/state
+let CURRENT = null;     // working user object
+
+// ---------- schedule id mapping helpers ----------
+let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access"}, ...]
+
+function buildScheduleMap(){
+  // Built-ins first
+  const out = [
+    { id: '1001', name: '24/7 Access', label: '24/7 Access' },
+    { id: '1002', name: 'No Access',   label: 'No Access' }
+  ];
+  // Custom schedules (deterministic IDs: 1003+)
+  const customNames = Object.keys(SCHEDULES || {})
+    .filter(n => n !== '24/7 Access' && n !== 'No Access')
+    .sort((a,b) => a.localeCompare(b));
+  const base = 1003;
+  customNames.forEach((name, i) => {
+    const id = String(base + i);
+    out.push({ id, name, label: name });
+  });
+  SCHED_MAP = out;
+}
+function optionLabel(item){ return `${item.id} - ${item.label}`; }
+function nameForId(id){
+  const x = SCHED_MAP.find(s => s.id === String(id));
+  return x ? x.name : '24/7 Access';
+}
+function idForName(name){
+  const lower = String(name || '').toLowerCase();
+  if (lower === '24/7 access' || lower === '24/7') return '1001';
+  if (lower === 'no access' || lower === 'never')  return '1002';
+  const x = SCHED_MAP.find(s => s.name.toLowerCase() === lower);
+  return x ? x.id : '1001';
+}
+
+/* -------------------- load -------------------- */
+async function load(){
+  setBusy(true);
+  try{
+    const state = await apiGet('/api/akuvox_ac/ui/state');
+    SCHEDULES = state.schedules || {};
+    REGISTRY = state.registry_users || [];
+
+    // Load phones (notify services from HA mobile app)
+    try {
+      const resp = await apiGet('/api/akuvox_ac/ui/phones');
+      PHONES = resp.phones || [];
+    } catch {
+      PHONES = [];
+    }
+
+    const id = new URLSearchParams(location.search).get('id');
+    if (id){
+      // Edit existing
+      CURRENT = REGISTRY.find(u => u.id === id) || {
+        id, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:''
+      };
+      document.getElementById('title').textContent = 'Edit User';
+      document.getElementById('idRow').style.display = 'block';
+      document.getElementById('user_id').value = CURRENT.id;
+    }else{
+      // Add new — reserve an ID up-front so we can upload the face on Save
+      document.getElementById('title').textContent = 'Add User';
+      try {
+        const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
+        const newId = res && res.ok && res.id ? res.id : '';
+        CURRENT = { id:newId, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+        if (CURRENT.id){
+          document.getElementById('idRow').style.display = 'block';
+          document.getElementById('user_id').value = CURRENT.id;
+        } else {
+          document.getElementById('idRow').style.display = 'none';
+        }
+      } catch {
+        CURRENT = { id:'', name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+        document.getElementById('idRow').style.display = 'none';
+      }
+    }
+    fillForm();
+    fillPhones();
+  } finally {
+    setBusy(false);
+  }
+}
+
+function scheduleOptionsHtml(){
+  buildScheduleMap();
+  return SCHED_MAP.map(it => `<option value="${it.id}">${optionLabel(it)}</option>`).join('');
+}
+
+function fillForm(){
+  document.getElementById('name').value = CURRENT.name || '';
+  document.getElementById('pin').value = CURRENT.pin || '';
+  document.getElementById('phone').value = CURRENT.phone || '';
+
+  // Build schedule select with ids
+  document.getElementById('schedule').innerHTML = scheduleOptionsHtml();
+  const selectedId = (CURRENT.schedule_id && String(CURRENT.schedule_id)) || idForName(CURRENT.schedule_name || '24/7 Access');
+  document.getElementById('schedule').value = selectedId;
+
+  document.getElementById('key_holder').checked = !!CURRENT.key_holder;
+
+  const localHelp = document.getElementById('localHelp');
+  if (CURRENT.id){
+    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/local/akuvox_ac/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
+  } else {
+    localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
+  }
+}
+
+// Populate the Remote Enrolment dropdown with HA phone notify services
+function fillPhones(){
+  const sel = document.getElementById('device');  // keeping id=device for layout compatibility
+  sel.innerHTML = '';
+  if (!PHONES.length){
+    sel.innerHTML = `<option value="" disabled selected>(no phones found)</option>`;
+    sel.disabled = true;
+  }else{
+    sel.disabled = false;
+    PHONES.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.service;            // e.g. "mobile_app_johns_iphone"
+      opt.textContent = p.name || p.service;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+/* -------------------- save: user core + optional face upload + optional remote enrol -------------------- */
+async function save(){
+  setBusy(true);
+  try{
+    // Ensure we have or reserve an ID
+    if (!CURRENT.id){
+      try{
+        const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
+        if (res && res.ok && res.id) {
+          CURRENT.id = res.id;
+          document.getElementById('idRow').style.display = 'block';
+          document.getElementById('user_id').value = CURRENT.id;
+        }
+      }catch{}
+      if (!CURRENT.id){
+        alert('Could not reserve a user ID. Please try again.');
+        return;
+      }
+    }
+
+    const selectedScheduleId = document.getElementById('schedule').value || '1001';
+    const selectedScheduleName = nameForId(selectedScheduleId);
+
+    const payload = {
+      name: document.getElementById('name').value.trim(),
+      groups: CURRENT.groups || ['Default'],
+      pin: document.getElementById('pin').value.trim() || undefined,
+      phone: document.getElementById('phone').value.trim() || undefined,
+      schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
+      schedule_name: selectedScheduleName,      // for UI/state clarity
+      key_holder: document.getElementById('key_holder').checked,
+    };
+
+    // Save/update the profile against the reserved ID
+    await fetch('/api/services/akuvox_ac/edit_user', {
+      method:'POST',
+      headers:{'Content-Type':'application/json', ...AUTH_HEADERS},
+      body: JSON.stringify({ id: CURRENT.id, ...payload })
+    });
+
+    // If a photo is selected, upload it now
+    const fileInput = document.getElementById('facefile');
+    if (fileInput.files && fileInput.files[0]){
+      const fd = new FormData();
+      fd.append('id', CURRENT.id);
+      fd.append('file', fileInput.files[0]);
+      const r = await fetch('/api/akuvox_ac/ui/upload_face', {
+        method: 'POST',
+        headers: { ...AUTH_HEADERS }, // let browser set multipart boundary
+        body: fd,
+        ...SAME_ORIGIN
+      });
+      if (!r.ok){
+        const t = await r.text();
+        throw new Error(t || 'Face upload failed');
+      }
+      try { await r.json(); } catch {}
+    }
+
+    // If Remote panel is visible and a phone is selected, auto-send enrolment request now
+    const remoteVisible = document.getElementById('pRemote').style.display !== 'none';
+    const phoneSel = document.getElementById('device');
+    const phoneService = phoneSel && phoneSel.value ? phoneSel.value : '';
+    if (remoteVisible && phoneService){
+      try{
+        await apiPost('/api/akuvox_ac/ui/remote_enrol', { id: CURRENT.id, phone_service: phoneService });
+        const resSpan = document.getElementById('remoteResult'); 
+        if (resSpan) resSpan.textContent = 'Enrolment request sent.';
+      }catch(e){
+        const resSpan = document.getElementById('remoteResult'); 
+        if (resSpan) resSpan.textContent = 'Failed to send enrolment request.';
+      }
+    }
+
+    // Back to list
+    const back = '/local/akuvox_ac/index.html' + tokenQS();
+    try{ window.top.location.href = back; }catch{ location.href = back; }
+  } catch (e){
+    alert('Save failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+/* -------------------- toggle panels -------------------- */
+function showPanel(which){
+  document.getElementById('pLocal').style.display = which === 'local' ? 'block':'none';
+  document.getElementById('pRemote').style.display = which === 'remote' ? 'block':'none';
+}
+</script>
+
+<div class="container py-3">
+  <div class="d-flex align-items-center gap-2">
+    <h2 id="title" class="m-0">User</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card p-3 mt-3">
+    <div id="idRow" class="mb-3" style="display:none;">
+      <label class="form-label">User ID</label>
+      <input id="user_id" class="form-control" readonly />
+      <div class="form-text muted">ID is reserved locally so your selected photo can upload when you press <b>Save</b>.</div>
+    </div>
+
+    <div class="mb-3"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
+
+    <div class="mb-3">
+      <label class="form-label">PIN</label>
+      <div class="input-group">
+        <input id="pin" class="form-control"/>
+        <button class="btn btn-outline-secondary" onclick="document.getElementById('pin').value = String(Math.floor(1000+Math.random()*9000))">Random</button>
+      </div>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Face Recognition</label>
+      <div class="d-flex gap-2 mb-2">
+        <button class="btn btn-outline-light btn-toggle" onclick="showPanel('local')"><i class="bi bi-upload me-1"></i>Local enrolment</button>
+        <button class="btn btn-outline-light btn-toggle" onclick="showPanel('remote')"><i class="bi bi-wifi me-1"></i>Remote enrolment</button>
+      </div>
+    </div>
+
+    <!-- Local enrolment panel -->
+    <div id="pLocal" class="mt-2" style="display:none;">
+      <div class="mb-2" id="localHelp"></div>
+      <div class="mb-2">
+        <input id="facefile" class="form-control" type="file" accept=".jpg,image/jpeg" />
+        <div class="uploader-hint mt-1">Choose a clear, front-facing JPG photo. It will be uploaded when you press <b>Save</b>.</div>
+      </div>
+    </div>
+
+    <!-- Remote enrolment panel -->
+    <div id="pRemote" class="mt-2" style="display:none;">
+      <div class="mb-2 muted">Choose a phone (Home Assistant app) to receive an enrolment prompt:</div>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm-6">
+          <label class="form-label">Phone</label>
+          <select id="device" class="form-select"></select>
+        </div>
+      </div>
+      <div class="mt-2 muted" id="remoteResult"></div>
+    </div>
+
+    <div class="mb-3"><label class="form-label">Phone</label><input id="phone" class="form-control"/></div>
+
+    <div class="mb-3">
+      <label class="form-label">Access Schedule</label>
+      <select id="schedule" class="form-select"></select>
+    </div>
+
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" id="key_holder">
+      <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
+    </div>
+
+    <div class="d-flex gap-2 mb-3">
+      <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
+      <a class="btn btn-secondary" href="/local/akuvox_ac/index.html"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+    </div>
+
+    <hr class="my-3"/>
+  </div>
+</div>
+<script>load()</script>
+</body>
+</html>
