@@ -96,6 +96,17 @@
       <div id="okBox" class="alert alert-success mt-3 d-none">Saved ✓</div>
     </div>
   </div>
+
+  <div class="card mt-3" id="webhookCard">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span>Webhook Events</span>
+      <span class="form-text">Selected events are auto-configured as HTTP action URLs on the device.</span>
+    </div>
+    <div class="card-body">
+      <div id="webhookChecklist" class="mb-2"></div>
+      <div class="form-text">Use the Save button above to apply both group and webhook changes.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -218,6 +229,51 @@ function getSelectedGroups(){
   return out;
 }
 
+function renderWebhookChecklist(specs, selected){
+  const card = document.getElementById('webhookCard');
+  const host = document.getElementById('webhookChecklist');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!Array.isArray(specs) || !specs.length){
+    card.classList.add('hidden');
+    host.innerHTML = '<div class="form-text">No webhook events are available on this device.</div>';
+    return;
+  }
+  card.classList.remove('hidden');
+  const sel = new Set((selected || []).filter(Boolean));
+  specs.forEach(spec => {
+    if (!spec) return;
+    const key = spec.key || spec.id || spec.value;
+    if (!key) return;
+    const name = spec.name || key;
+    const desc = spec.description || '';
+    const id = 'wh_' + key.replace(/[^a-z0-9]+/ig,'_');
+    const row = document.createElement('div');
+    row.className = 'form-check mb-2';
+    row.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="${id}" value="${key}" ${sel.size ? (sel.has(key)?'checked':'') : 'checked'}>
+      <label class="form-check-label" for="${id}">
+        ${name}${desc ? `<div class="text-muted small">${desc}</div>` : ''}
+      </label>
+    `;
+    host.appendChild(row);
+  });
+}
+
+function getSelectedEvents(){
+  const host = document.getElementById('webhookChecklist');
+  if (!host) return [];
+  const out = [];
+  host.querySelectorAll('.form-check-input').forEach(cb => {
+    if (cb.checked && cb.value) out.push(cb.value);
+  });
+  return out;
+}
+
+async function saveWebhookEvents(events){
+  return apiPost(actionUrl, { action:'set_webhook_events', entry_id: ENTRY_ID, payload:{ events } });
+}
+
 /* API-ish helpers built atop /state and /action */
 async function getState(){ return apiGet(stateUrl); }
 async function getDevice(){
@@ -228,7 +284,9 @@ async function getDevice(){
   const curGroups = dev.sync_groups || dev.groups || ['Default'];
   // All groups if present at root; fallback
   const allGroups = st.groups || st.all_groups || ['Default'];
-  return { dev, curGroups, allGroups };
+  const webhookSpecs = st.webhook_specs || [];
+  const selectedEvents = dev.webhook_events || [];
+  return { dev, curGroups, allGroups, webhookSpecs, selectedEvents };
 }
 async function saveDeviceGroups(groups){
   return apiPost(actionUrl, { action:'device_set_groups', entry_id: ENTRY_ID, payload:{ groups } });
@@ -246,7 +304,7 @@ async function init(){
   document.getElementById('btnCancel').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
 
   try{
-    const { dev, curGroups, allGroups } = await getDevice();
+    const { dev, curGroups, allGroups, webhookSpecs, selectedEvents } = await getDevice();
 
     // Header summary
     document.getElementById('pageTitle').textContent = `Edit Device`;
@@ -271,6 +329,8 @@ async function init(){
       renderGroupChecklist(allGroups, curGroups);
       createRow.classList.remove('hidden');
     }
+
+    renderWebhookChecklist(webhookSpecs, selectedEvents);
 
     // Main "Create group" controls (visible when >1 group exists)
     document.getElementById('btnAddGroup').addEventListener('click', async () => {
@@ -310,7 +370,9 @@ async function init(){
     document.getElementById('btnSave').addEventListener('click', async () => {
       try{
         const groups = getSelectedGroups();
+        const events = getSelectedEvents();
         await saveDeviceGroups(groups);
+        await saveWebhookEvents(events);
         showOK('Saved ✓');
       }catch(e){
         showError('Save failed: ' + (e.message || e));

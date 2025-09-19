@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +16,9 @@ try:
 except ImportError:  # pragma: no cover - fallback for older HA cores
     KEY_HASS_USER = "hass_user"  # type: ignore[assignment]
 
-from .const import DOMAIN
+from .const import DOMAIN, WEBHOOK_EVENT_SPECS, CONF_DEVICE_GROUPS
+
+_LOGGER = logging.getLogger(__name__)
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -303,6 +306,11 @@ class AkuvoxUIView(HomeAssistantView):
                 "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
             }
 
+            try:
+                dev["webhook_events"] = list((data.get("options") or {}).get("webhook_events") or [])
+            except Exception:
+                dev["webhook_events"] = []
+
             web_meta = data.get("webhooks_meta") or {}
             if web_meta:
                 web_states = data.get("webhook_states") or {}
@@ -315,6 +323,7 @@ class AkuvoxUIView(HomeAssistantView):
                         "description": meta.get("description", ""),
                         "webhook_id": meta.get("webhook_id"),
                         "relative_url": meta.get("relative_url"),
+                        "full_url": meta.get("full_url"),
                         "ha_event": meta.get("ha_event"),
                         "last_triggered": state.get("last_triggered"),
                         "count": state.get("count"),
@@ -404,6 +413,14 @@ class AkuvoxUIView(HomeAssistantView):
                 "registry_users": registry_users,
                 "schedules": schedules,
                 "notifications": notifications,
+                "webhook_specs": [
+                    {
+                        "key": spec.get("key"),
+                        "name": spec.get("name"),
+                        "description": spec.get("description"),
+                    }
+                    for spec in WEBHOOK_EVENT_SPECS
+                ],
             }
         )
 
@@ -482,6 +499,35 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return err(e)
 
         # Device options
+        if action == "device_set_groups":
+            if not entry_id:
+                return err("entry_id required")
+            groups_raw = payload.get("groups") if isinstance(payload, dict) else payload
+            if isinstance(groups_raw, str):
+                groups_raw = [groups_raw]
+            if not isinstance(groups_raw, list):
+                return err("groups must be a list")
+            groups_clean = [str(g) for g in groups_raw if str(g)]
+            if not groups_clean:
+                groups_clean = ["Default"]
+            try:
+                entry = hass.config_entries.async_get_entry(entry_id)
+                if not entry:
+                    return err("Device not found", code=404)
+                new_options = dict(entry.options)
+                new_options[CONF_DEVICE_GROUPS] = groups_clean
+                hass.config_entries.async_update_entry(entry, options=new_options)
+                bucket = root.get(entry_id)
+                if bucket is not None:
+                    bucket.setdefault("options", {})["sync_groups"] = groups_clean
+                try:
+                    root["sync_queue"].mark_change(entry_id, delay_minutes=0)
+                except Exception:
+                    pass
+                return web.json_response({"ok": True, "groups": groups_clean})
+            except Exception as e:
+                return err(e)
+
         if action == "set_exit_device":
             if not entry_id:
                 return err("entry_id required")
@@ -490,6 +536,58 @@ class AkuvoxUIAction(AkuvoxUIView):
                 root[entry_id]["options"]["exit_device"] = enabled
                 await root["sync_queue"].sync_now(entry_id)
                 return web.json_response({"ok": True})
+            except Exception as e:
+                return err(e)
+
+        if action == "set_webhook_events":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                entry = hass.config_entries.async_get_entry(entry_id)
+                if not entry:
+                    return err("Device not found", code=404)
+                events_raw = payload.get("events") if isinstance(payload, dict) else payload
+                if isinstance(events_raw, str):
+                    events_raw = [events_raw]
+                selected: List[str] = []
+                if isinstance(events_raw, list):
+                    for item in events_raw:
+                        sval = str(item)
+                        if sval:
+                            selected.append(sval)
+                allowed = {spec.get("key") for spec in WEBHOOK_EVENT_SPECS}
+                selected = [ev for ev in selected if ev in allowed]
+                if not selected:
+                    selected = [spec.get("key") for spec in WEBHOOK_EVENT_SPECS]
+
+                new_options = dict(entry.options)
+                new_options["webhook_events"] = selected
+                hass.config_entries.async_update_entry(entry, options=new_options)
+
+                bucket = root.get(entry_id) or {}
+                bucket.setdefault("options", {})["webhook_events"] = selected
+
+                desired: Dict[str, str] = {}
+                meta = bucket.get("webhooks_meta") or {}
+                for key in selected:
+                    info = meta.get(key) or {}
+                    url = info.get("full_url")
+                    if not url and info.get("webhook_id"):
+                        try:
+                            url = webhook.async_generate_url(hass, info.get("webhook_id"))
+                        except Exception:
+                            url = None
+                    if url:
+                        desired[key] = url
+
+                api = bucket.get("api")
+                if api and desired:
+                    try:
+                        await api.apply_http_actions(desired, disable_unselected=True)
+                    except Exception as err:
+                        _LOGGER.debug("Failed to push HTTP action update for %s: %s", entry_id, err)
+
+                return web.json_response({"ok": True, "events": selected})
             except Exception as e:
                 return err(e)
 

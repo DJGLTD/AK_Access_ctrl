@@ -264,7 +264,10 @@ function renderWebhooks(devs){
     const device = safeDeviceName(d);
     (d.webhooks || []).forEach(hook => {
       const rel = hook.relative_url || '';
-      const full = origin ? origin.replace(/\/$/, '') + rel : rel;
+      let full = hook.full_url || '';
+      if (!full){
+        full = origin ? origin.replace(/\/$/, '') + rel : rel;
+      }
       const eventName = hook.ha_event || '';
       rows.push({
         device,

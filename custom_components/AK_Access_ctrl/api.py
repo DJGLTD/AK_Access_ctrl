@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 from aiohttp import ClientSession, BasicAuth
@@ -196,6 +197,73 @@ class AkuvoxAPI:
     async def _post_api(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST to /api/ then /action as fallback."""
         return await self._request_attempts("POST", ("/api/", "/action"), payload)
+
+    async def config_get(
+        self,
+        *,
+        filters: Optional[Iterable[str]] = None,
+        items: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Fetch configuration key/value pairs via the config API."""
+
+        payload: Dict[str, Any] = {"target": "config", "action": "get"}
+        data_payload: Dict[str, Any] = {}
+
+        if filters:
+            filt_list = [str(f) for f in filters if f]
+            if filt_list:
+                data_payload["filter"] = filt_list
+        if items and not data_payload:
+            item_list = [str(i) for i in items if i]
+            if item_list:
+                data_payload["item"] = item_list
+        if data_payload:
+            payload["data"] = data_payload
+
+        response: Dict[str, Any] = {}
+        try:
+            response = await self._post_api(payload)
+        except Exception:
+            try:
+                response = await self._get_api("/api/config/get")
+            except Exception:
+                response = {}
+
+        data_section = response.get("data") if isinstance(response, dict) else {}
+        if not isinstance(data_section, dict):
+            return {}
+
+        out: Dict[str, Any] = {}
+        for key, value in data_section.items():
+            if isinstance(key, str):
+                out[key] = value
+        return out
+
+    async def config_set(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply configuration changes via the config API."""
+
+        if not isinstance(updates, dict):
+            return {}
+
+        clean: Dict[str, Any] = {}
+        for key, value in updates.items():
+            if not isinstance(key, str) or not key:
+                continue
+            if value is None:
+                clean[key] = ""
+            elif isinstance(value, (list, dict)):
+                clean[key] = value
+            else:
+                try:
+                    clean[key] = str(value)
+                except Exception:
+                    clean[key] = value
+
+        if not clean:
+            return {}
+
+        payload = {"target": "config", "action": "set", "data": clean}
+        return await self._post_api(payload)
 
     async def _get_api(self, primary: str, *fallbacks: str) -> Dict[str, Any]:
         """GET with fallback paths."""
@@ -693,6 +761,175 @@ class AkuvoxAPI:
     async def schedule_del(self, name: str) -> Dict[str, Any]:
         item = {"Name": name}
         return await self._post_api({"target": "schedule", "action": "del", "data": {"item": [item]}})
+
+    async def http_action_catalog(self) -> List[Dict[str, Any]]:
+        """Discover HTTP action slots and their metadata from the configuration store."""
+
+        candidates = [
+            ["Config.DoorSetting.ACTION"],
+            ["Config.DoorSetting.Action"],
+            ["Config.EventSetting"],
+            ["Config.ActionSetting"],
+            ["Config.DoorSetting"],
+        ]
+
+        config_blob: Dict[str, Any] = {}
+        for flt in candidates:
+            try:
+                config_blob = await self.config_get(filters=flt)
+            except Exception:
+                config_blob = {}
+            if config_blob:
+                break
+        if not config_blob:
+            return []
+
+        slot_regex = re.compile(r"([A-Za-z]+)([A-Za-z0-9]+)$")
+        slots: Dict[str, Dict[str, Any]] = {}
+
+        def _to_text(val: Any) -> str:
+            if isinstance(val, str):
+                return val
+            if val is None:
+                return ""
+            try:
+                return str(val)
+            except Exception:
+                return ""
+
+        for full_key, value in config_blob.items():
+            if not isinstance(full_key, str):
+                continue
+            last_segment = full_key.rsplit(".", 1)[-1]
+            lowered = last_segment.lower()
+            if not any(tag in lowered for tag in ("action", "http", "url", "enable", "event", "name", "desc")):
+                continue
+            match = slot_regex.match(last_segment)
+            if not match:
+                continue
+            field_name, slot_id = match.groups()
+            slot = slots.setdefault(slot_id, {"id": slot_id, "fields": {}, "keys": {}})
+            slot["fields"][field_name.lower()] = value
+            slot["keys"][field_name.lower()] = full_key
+
+        def _classify(slot: Dict[str, Any]) -> Optional[str]:
+            texts: List[str] = []
+            for key in ("name", "event", "description", "desc", "rule", "title", "info"):
+                if key in slot["fields"]:
+                    txt = _to_text(slot["fields"].get(key))
+                    if txt:
+                        texts.append(txt)
+            if not texts:
+                for val in slot["fields"].values():
+                    txt = _to_text(val)
+                    if txt:
+                        texts.append(txt)
+            combined = " ".join(texts).lower()
+            if not combined:
+                return None
+            if "offline" in combined or "off-line" in combined or "disconnected" in combined:
+                return "device_offline"
+            if "grant" in combined or "pass" in combined or "success" in combined or "allowed" in combined:
+                return "granted"
+            if "time" in combined or "schedule" in combined or "timezone" in combined:
+                if "deny" in combined or "refuse" in combined or "invalid" in combined:
+                    return "denied_outside_time"
+            if "deny" in combined or "refuse" in combined or "invalid" in combined or "no access" in combined or "noauth" in combined:
+                return "denied_no_access"
+            return None
+
+        result: List[Dict[str, Any]] = []
+        for slot in slots.values():
+            if not any(k in slot["fields"] for k in ("actionurl", "httpurl")):
+                continue
+            slot["event_key"] = _classify(slot)
+            label_parts: List[str] = []
+            for key in ("name", "event", "description", "desc", "rule", "title", "info"):
+                txt = _to_text(slot["fields"].get(key))
+                if txt:
+                    label_parts.append(txt)
+            slot["label"] = ", ".join(label_parts)
+            slot["url"] = _to_text(slot["fields"].get("actionurl") or slot["fields"].get("httpurl"))
+            slot["enabled"] = _to_text(slot["fields"].get("httpenable") or slot["fields"].get("enable"))
+            result.append(slot)
+
+        result.sort(key=lambda item: str(item.get("id")))
+        return result
+
+    async def apply_http_actions(
+        self,
+        mapping: Dict[str, str],
+        *,
+        disable_unselected: bool = True,
+    ) -> bool:
+        """Apply webhook URLs to the discovered HTTP action slots."""
+
+        mapping = {k: v for k, v in (mapping or {}).items() if k and v}
+        if not mapping and not disable_unselected:
+            return True
+
+        try:
+            slots = await self.http_action_catalog()
+        except Exception:
+            return False
+
+        if not slots:
+            return False
+
+        updates: Dict[str, Any] = {}
+
+        def _text(val: Any) -> str:
+            if isinstance(val, str):
+                return val
+            if val is None:
+                return ""
+            try:
+                return str(val)
+            except Exception:
+                return ""
+
+        for slot in slots:
+            event_key = slot.get("event_key")
+            keys = slot.get("keys") or {}
+            fields = slot.get("fields") or {}
+            url_key = keys.get("actionurl") or keys.get("httpurl")
+            enable_key = keys.get("httpenable") or keys.get("enable")
+            method_key = keys.get("httpmethod")
+            format_key = keys.get("httpformat")
+            header_key = keys.get("httpheader")
+            user_key = keys.get("httpuser") or keys.get("username")
+            pwd_key = keys.get("httppassword") or keys.get("password")
+
+            if event_key in mapping:
+                url_value = mapping[event_key]
+                if url_key:
+                    updates[url_key] = str(url_value)
+                if enable_key:
+                    updates[enable_key] = "1"
+                if method_key:
+                    updates[method_key] = "0"
+                if format_key and format_key not in updates:
+                    updates.setdefault(format_key, _text(fields.get("httpformat")))
+                if header_key and header_key not in updates:
+                    updates.setdefault(header_key, _text(fields.get("httpheader")))
+                if user_key and user_key not in updates:
+                    updates.setdefault(user_key, _text(fields.get("httpuser") or fields.get("username")))
+                if pwd_key and pwd_key not in updates:
+                    updates.setdefault(pwd_key, _text(fields.get("httppassword") or fields.get("password")))
+            elif disable_unselected:
+                if enable_key and _text(fields.get("httpenable") or fields.get("enable")) not in ("", "0", "None"):
+                    updates[enable_key] = "0"
+                if url_key and _text(fields.get("actionurl") or fields.get("httpurl")):
+                    updates[url_key] = ""
+
+        if not updates:
+            return True
+
+        try:
+            await self.config_set(updates)
+            return True
+        except Exception:
+            return False
 
     async def system_reboot(self) -> Dict[str, Any]:
         try:

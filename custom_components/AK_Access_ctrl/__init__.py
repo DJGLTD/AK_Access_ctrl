@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -44,6 +45,9 @@ from .const import (
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
 from .http import face_base_url, register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
+
+
+_LOGGER = logging.getLogger(__name__)
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
@@ -1021,6 +1025,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         id_to_key[webhook_id] = key
         last_payload = bucket.get("last_payload") if isinstance(bucket.get("last_payload"), dict) else bucket.get("last_payload")
+        full_url = bucket.get("full_url")
+        try:
+            generated = webhook.async_generate_url(hass, webhook_id)
+        except Exception:
+            generated = None
+        if generated and generated != full_url:
+            bucket["full_url"] = generated
+            need_save = True
+            full_url = generated
+        elif generated:
+            full_url = generated
         webhook_meta[key] = {
             "key": key,
             "name": spec.get("name", key.replace("_", " ").title()),
@@ -1028,6 +1043,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "webhook_id": webhook_id,
             "ha_event": f"{EVENT_WEBHOOK_PREFIX}{key}",
             "relative_url": f"/api/webhook/{webhook_id}",
+            "full_url": full_url,
         }
         webhook_states[key] = {
             "last_triggered": bucket.get("last_triggered"),
@@ -1117,6 +1133,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     initial_groups = list(cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
     exit_device = bool(cfg.get("exit_device", False))
+    selected_events = []
+    option_events = entry.options.get("webhook_events") if isinstance(entry.options, dict) else None
+    if isinstance(option_events, (list, tuple)):
+        selected_events = [str(ev) for ev in option_events if str(ev)]
+    if not selected_events:
+        selected_events = [spec["key"] for spec in WEBHOOK_EVENT_SPECS]
+        try:
+            new_opts = dict(entry.options)
+            new_opts["webhook_events"] = selected_events
+            hass.config_entries.async_update_entry(entry, options=new_opts)
+        except Exception:
+            pass
 
     root[entry.entry_id] = {
         "api": api,
@@ -1127,10 +1155,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "participate_in_sync": bool(cfg.get(CONF_PARTICIPATE, True)),
             "sync_groups": initial_groups,
             "exit_device": exit_device,
+            "webhook_events": selected_events,
         },
         "webhooks_meta": webhook_meta,
         "webhook_states": webhook_states,
     }
+
+    async def _configure_http_actions() -> None:
+        desired: Dict[str, str] = {}
+        for key in selected_events:
+            meta = webhook_meta.get(key) or {}
+            url = meta.get("full_url")
+            if not url:
+                try:
+                    url = webhook.async_generate_url(hass, meta.get("webhook_id")) if meta.get("webhook_id") else None
+                except Exception:
+                    url = None
+            if url:
+                desired[key] = url
+        if not desired:
+            return
+        try:
+            ok = await api.apply_http_actions(desired, disable_unselected=True)
+            if not ok:
+                _LOGGER.debug("Akuvox HTTP action auto-config skipped for %s (%s)", device_name, entry.entry_id)
+        except Exception as err:
+            _LOGGER.debug("Failed to configure Akuvox HTTP actions for %s (%s): %s", device_name, entry.entry_id, err)
+
+    hass.async_create_task(_configure_http_actions())
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coord.async_config_entry_first_refresh()
