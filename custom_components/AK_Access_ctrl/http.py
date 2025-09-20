@@ -91,6 +91,18 @@ def _ha_id_from_int(n: int) -> str:
     return f"HA{n:03d}"
 
 
+def _normalize_groups(groups: Any) -> List[str]:
+    """Return a JSON-serialisable list of group names."""
+
+    if isinstance(groups, list):
+        return [str(g) for g in groups]
+    if isinstance(groups, (set, tuple)):
+        return [str(g) for g in groups]
+    if groups in (None, ""):
+        return []
+    return [str(groups)]
+
+
 def _best_name(coord, entry_bucket: Dict[str, Any]) -> str:
     # Try a few places for a friendly, stable device name
     for key in ("device_name", "friendly_name", "name"):
@@ -302,11 +314,12 @@ class AkuvoxUIView(HomeAssistantView):
                 for key, prof in (us.all() or {}).items():
                     if not _is_ha_id(key):
                         continue
+                    groups = _normalize_groups(prof.get("groups"))
                     registry_users.append(
                         {
                             "id": key,
                             "name": (prof.get("name") or key),
-                            "groups": prof.get("groups") or [],
+                            "groups": groups,
                             "pin": prof.get("pin") or "",
                             "face_url": prof.get("face_url") or "",
                             "phone": prof.get("phone") or "",
