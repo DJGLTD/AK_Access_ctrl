@@ -258,8 +258,14 @@ class AkuvoxUIView(HomeAssistantView):
                 "sync_manager",
                 "sync_queue",
                 "_ui_registered",
+                "_panel_registered",
             ):
                 continue
+
+            if not isinstance(data, dict):
+                # Guard against sentinel values (e.g. booleans) stored in hass.data.
+                continue
+
             coord = data.get("coordinator")
             if not coord:
                 continue
