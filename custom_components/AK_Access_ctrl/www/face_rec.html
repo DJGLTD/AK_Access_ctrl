@@ -22,8 +22,44 @@
   const qsToken = qs.get('token');
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
-function findHaToken(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t || null; }
-const AUTH_HEADERS = (findHaToken()) ? { 'Authorization': 'Bearer ' + findHaToken() } : {};
+function findHaToken(){
+  const stored = sessionStorage.getItem('akuvox_ll_token');
+  if (stored) return stored;
+
+  const scan = (stor) => {
+    try {
+      const raw = stor.getItem('hassTokens');
+      if (raw) {
+        const o = JSON.parse(raw);
+        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
+      }
+      for (const key of Object.keys(stor)) {
+        if (!/auth|token|hass/i.test(key)) continue;
+        try {
+          const o = JSON.parse(stor.getItem(key));
+          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+    } catch {}
+    return null;
+  };
+
+  let token = scan(sessionStorage) || scan(localStorage);
+  if (token) return token;
+
+  try {
+    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
+      token = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
+      if (token) return token;
+    }
+  } catch {}
+
+  return null;
+}
+
+const TOKEN = findHaToken();
+const AUTH_HEADERS = TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
 
 function qsGet(k){ return new URLSearchParams(location.search).get(k) || ''; }

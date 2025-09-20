@@ -25,7 +25,42 @@
   const qsToken = qs.get('token');
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
-function findHaToken(){ const ll = sessionStorage.getItem('akuvox_ll_token'); return ll || null; }
+function findHaToken() {
+  const ll = sessionStorage.getItem('akuvox_ll_token');
+  if (ll) return ll;
+
+  const scan = (stor) => {
+    try {
+      const raw = stor.getItem('hassTokens');
+      if (raw) {
+        const o = JSON.parse(raw);
+        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
+      }
+      for (const k of Object.keys(stor)) {
+        if (!/auth|token|hass/i.test(k)) continue;
+        try {
+          const o = JSON.parse(stor.getItem(k));
+          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+    } catch {}
+    return null;
+  };
+
+  let t = scan(sessionStorage) || scan(localStorage);
+  if (t) return t;
+
+  try {
+    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
+      t = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
+      if (t) return t;
+    }
+  } catch {}
+
+  return null;
+}
+
 const BEARER = findHaToken();
 const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
@@ -40,9 +75,48 @@ async function apiPost(url, body){
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-function tokenQS(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t ? `?token=${encodeURIComponent(t)}` : ''; }
 const UI_ROOT = '/akuvox-ac';
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
 
 /* -------------------- app state -------------------- */
 let SCHEDULES = {};     // { name: weekSpec, ... }
@@ -50,6 +124,98 @@ let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
 let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
+
+let reservationTimer = null;
+let reservationMisses = 0;
+let reservationHeartbeatBusy = false;
+
+function setReservationMessage(html, tone = 'muted') {
+  const el = document.getElementById('localHelp');
+  if (!el) return;
+  if (!html) {
+    el.innerHTML = '';
+    return;
+  }
+  const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'muted';
+  el.innerHTML = `<span class="${cls}">${html}</span>`;
+}
+
+function stopReservationHeartbeat() {
+  if (reservationTimer) {
+    clearInterval(reservationTimer);
+    reservationTimer = null;
+  }
+  reservationHeartbeatBusy = false;
+  reservationMisses = 0;
+}
+
+async function heartbeatTick() {
+  if (!RESERVED_ID || reservationHeartbeatBusy) return;
+  reservationHeartbeatBusy = true;
+  try {
+    const res = await fetch('/api/akuvox_ac/ui/reservation_ping', {
+      method: 'POST',
+      ...SAME_ORIGIN,
+      headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+      body: JSON.stringify({ id: RESERVED_ID })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'ping failed');
+    if (data.active === false) {
+      setReservationMessage('Reserved ID expired. Requesting a new ID…', 'warning');
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      const newId = await reserveNewId({ showWarning: true });
+      if (newId && CURRENT) CURRENT.id = newId;
+      return;
+    }
+    reservationMisses = 0;
+  } catch (err) {
+    reservationMisses += 1;
+    if (reservationMisses >= 6) {
+      setReservationMessage('Connection lost. Releasing reserved ID and trying again…', 'warning');
+      try { await releaseReservation({ keepalive: true }); } catch (e) {}
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      const newId = await reserveNewId({ showWarning: true });
+      if (newId && CURRENT) CURRENT.id = newId;
+    }
+  } finally {
+    reservationHeartbeatBusy = false;
+  }
+}
+
+function startReservationHeartbeat() {
+  stopReservationHeartbeat();
+  if (!RESERVED_ID) return;
+  reservationTimer = setInterval(heartbeatTick, 10000);
+}
+
+async function reserveNewId(options = {}) {
+  const idRow = document.getElementById('idRow');
+  const input = document.getElementById('user_id');
+  if (input) input.value = '';
+  if (idRow) idRow.style.display = 'none';
+  stopReservationHeartbeat();
+  try {
+    const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
+    const newId = res && res.ok && res.id ? res.id : '';
+    if (!newId) throw new Error('reserve failed');
+    RESERVED_ID = newId;
+    if (input) input.value = newId;
+    if (idRow) idRow.style.display = 'block';
+    setReservationMessage('');
+    startReservationHeartbeat();
+    return newId;
+  } catch (err) {
+    RESERVED_ID = null;
+    if (options.showWarning !== false) {
+      setReservationMessage('ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.', 'warning');
+    }
+    return '';
+  }
+}
 
 // ---------- schedule id mapping helpers ----------
 let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access"}, ...]
@@ -102,6 +268,7 @@ async function releaseReservation(options = {}){
   if (!RESERVED_ID) return;
   const id = RESERVED_ID;
   RESERVED_ID = null;
+  stopReservationHeartbeat();
   const payload = JSON.stringify({ id });
   if (options.keepalive && navigator.sendBeacon) {
     try {
@@ -123,6 +290,7 @@ async function releaseReservation(options = {}){
 
 window.addEventListener('beforeunload', () => {
   if (RESERVED_ID) {
+    stopReservationHeartbeat();
     releaseReservation({ keepalive: true });
   }
 });
@@ -169,6 +337,8 @@ async function load(){
         CURRENT = blankProfile(id);
       }
       RESERVED_ID = null;
+      stopReservationHeartbeat();
+      setReservationMessage('');
       document.getElementById('title').textContent = 'Edit User';
       document.getElementById('idRow').style.display = 'block';
       document.getElementById('user_id').value = CURRENT.id;
@@ -177,22 +347,11 @@ async function load(){
       document.getElementById('title').textContent = 'Add User';
       RESERVED_ID = null;
       CURRENT = blankProfile('');
-      try {
-        const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
-        const newId = res && res.ok && res.id ? res.id : '';
-        CURRENT = blankProfile(newId);
+      const newId = await reserveNewId();
+      if (newId) {
         CURRENT.id = newId;
         CURRENT.schedule_id = '1001';
-        if (CURRENT.id){
-          RESERVED_ID = CURRENT.id;
-          document.getElementById('idRow').style.display = 'block';
-          document.getElementById('user_id').value = CURRENT.id;
-        } else {
-          document.getElementById('idRow').style.display = 'none';
-        }
-      } catch (err) {
-        console.warn('Failed to reserve HA id', err);
-        CURRENT = blankProfile('');
+      } else {
         document.getElementById('idRow').style.display = 'none';
       }
     }
@@ -231,10 +390,12 @@ function fillForm(){
   document.getElementById('key_holder').checked = !!CURRENT.key_holder;
 
   const localHelp = document.getElementById('localHelp');
-  if (CURRENT.id){
-    localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/api/AK_AC/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
-  } else {
-    localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
+  if (localHelp && !localHelp.innerHTML){
+    if (CURRENT.id){
+      localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/api/AK_AC/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
+    } else {
+      localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
+    }
   }
 }
 
@@ -345,9 +506,9 @@ async function save(){
     }
 
     // Back to list
+    stopReservationHeartbeat();
     RESERVED_ID = null;
-    const back = `${UI_ROOT}/index` + tokenQS();
-    try{ window.top.location.href = back; }catch{ location.href = back; }
+    openInApp('index', {}, { replaceState: true });
   } catch (e){
     alert('Save failed: ' + (e && e.message ? e.message : e));
   } finally {
@@ -358,9 +519,9 @@ async function save(){
 /* -------------------- toggle panels -------------------- */
 async function cancelEdit(evt){
   if (evt) evt.preventDefault();
+  stopReservationHeartbeat();
   await releaseReservation();
-  const back = `${UI_ROOT}/index` + tokenQS();
-  try{ window.top.location.href = back; }catch{ location.href = back; }
+  openInApp('index', {}, { replaceState: true });
 }
 
 function showPanel(which){

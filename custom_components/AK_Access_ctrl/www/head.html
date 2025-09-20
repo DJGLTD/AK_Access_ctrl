@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Access Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous"/>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous"/>
+  <style>
+    :root {
+      --bg:#0b1320; --panel:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc;
+      --accent:#0dcaf0; --accent-dark:#0a92ad;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .head-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header.app-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.5rem;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      gap: 1rem;
+      z-index: 2;
+    }
+    header.app-header h1 {
+      font-size: 1.5rem;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header.app-header .version-badge {
+      font-size: 0.85rem;
+      background: rgba(13,202,240,.15);
+      color: var(--accent);
+      border: 1px solid rgba(13,202,240,.35);
+      border-radius: 999px;
+      padding: 0.2rem 0.75rem;
+    }
+    nav.nav-buttons {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    nav.nav-buttons .nav-btn {
+      border-radius: 999px;
+      padding: 0.35rem 1rem;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 0.9rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+      transition: all .2s ease;
+    }
+    nav.nav-buttons .nav-btn:hover,
+    nav.nav-buttons .nav-btn:focus {
+      background: rgba(13,202,240,.12);
+      border-color: rgba(13,202,240,.5);
+      outline: none;
+    }
+    nav.nav-buttons .nav-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #031420;
+      box-shadow: 0 0 0 0.15rem rgba(13,202,240,.25);
+    }
+    .frame-wrap {
+      flex: 1;
+      min-height: 0;
+      padding: 0.75rem 1.5rem 1.5rem;
+    }
+    .frame-wrap iframe {
+      width: 100%;
+      height: 100%;
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      background: var(--panel);
+    }
+    footer.app-footer {
+      padding: 0.5rem 1.5rem 1rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: right;
+    }
+    @media (max-width: 720px) {
+      header.app-header h1 { font-size: 1.25rem; }
+      nav.nav-buttons { width: 100%; justify-content: flex-start; }
+      .frame-wrap { padding: 0.5rem 0.5rem 1rem; }
+      footer.app-footer { padding: 0.5rem 0.75rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="head-wrap">
+  <header class="app-header">
+    <h1>
+      <span class="fw-semibold">Akuvox Access Control</span>
+      <span id="appVersion" class="version-badge">Loading…</span>
+    </h1>
+    <nav class="nav-buttons">
+      <button class="nav-btn" data-view="index"><i class="bi bi-speedometer"></i>Dashboard</button>
+      <button class="nav-btn" data-view="users"><i class="bi bi-people"></i>Users</button>
+      <button class="nav-btn" data-view="schedules"><i class="bi bi-calendar3"></i>Schedules</button>
+    </nav>
+  </header>
+  <div class="frame-wrap">
+    <iframe id="viewFrame" title="Akuvox Access Control" src="about:blank" allow="clipboard-write"></iframe>
+  </div>
+  <footer class="app-footer" id="appFooter">&nbsp;</footer>
+</div>
+
+<script>
+(function captureToken(){
+  const params = new URLSearchParams(location.search);
+  const token = params.get('token');
+  if (token) {
+    sessionStorage.setItem('akuvox_ll_token', token);
+    params.delete('token');
+    const rest = params.toString();
+    const cleanUrl = rest ? `${location.pathname}?${rest}` : location.pathname;
+    history.replaceState(history.state || {}, '', cleanUrl);
+  }
+})();
+
+const UI_ROOT = '/akuvox-ac';
+const DEFAULT_VIEW = 'index';
+
+function getToken(){
+  const stored = sessionStorage.getItem('akuvox_ll_token');
+  if (stored) return stored;
+
+  const scan = (stor) => {
+    try {
+      const raw = stor.getItem('hassTokens');
+      if (raw) {
+        const o = JSON.parse(raw);
+        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
+      }
+      for (const key of Object.keys(stor)) {
+        if (!/auth|token|hass/i.test(key)) continue;
+        try {
+          const o = JSON.parse(stor.getItem(key));
+          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
+          if (t) return t;
+        } catch {}
+      }
+    } catch {}
+    return null;
+  };
+
+  let token = scan(sessionStorage) || scan(localStorage);
+  if (token) return token;
+
+  try {
+    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
+      token = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
+      if (token) return token;
+    }
+  } catch {}
+
+  return null;
+}
+
+function buildUrl(view, params = {}){
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k,v]) => {
+    if (v !== undefined && v !== null && v !== '') search.set(k, v);
+  });
+  const token = getToken();
+  if (token) search.set('token', token);
+  const query = search.toString();
+  const slug = view.replace(/_/g,'-');
+  return `${UI_ROOT}/${slug}${query ? `?${query}` : ''}`;
+}
+
+function normalizeView(view){
+  let v = String(view || '').trim();
+  if (!v) return DEFAULT_VIEW;
+  v = v.replace(/\.html$/i, '').replace(/_/g, '-');
+  if (v === 'dashboard') return 'index';
+  if (v === 'face-rec') return 'face-rec';
+  if (v === 'device-edit') return 'device-edit';
+  if (v === 'users') return 'users';
+  if (v === 'schedules') return 'schedules';
+  return v || DEFAULT_VIEW;
+}
+
+function paramsFromSearch(search){
+  const out = {};
+  const sp = new URLSearchParams(search || location.search);
+  sp.forEach((value, key) => {
+    if (key === 'view') return;
+    out[key] = value;
+  });
+  return out;
+}
+
+function setActiveNav(view){
+  document.querySelectorAll('nav.nav-buttons .nav-btn').forEach(btn => {
+    const target = normalizeView(btn.dataset.view);
+    if (target === view) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+}
+
+function updateHistory(view, params, { replaceState = false } = {}){
+  const state = { view, params };
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k,v]) => {
+    if (v !== undefined && v !== null && v !== '') search.set(k, v);
+  });
+  if (view !== DEFAULT_VIEW) search.set('view', view);
+  else search.delete('view');
+  const query = search.toString();
+  const url = query ? `${location.pathname}?${query}` : location.pathname;
+  if (replaceState) history.replaceState(state, '', url);
+  else history.pushState(state, '', url);
+}
+
+function loadView(view, params = {}, options = {}){
+  const normalized = normalizeView(view);
+  const href = buildUrl(normalized, params);
+  const frame = document.getElementById('viewFrame');
+  if (frame.dataset.currentHref !== href) {
+    frame.src = href;
+    frame.dataset.currentHref = href;
+  }
+  setActiveNav(normalized);
+  if (options.updateHistory !== false) {
+    updateHistory(normalized, params, { replaceState: !!options.replaceState });
+  }
+}
+
+async function fetchVersion(){
+  const badge = document.getElementById('appVersion');
+  const footer = document.getElementById('appFooter');
+  const token = getToken();
+  const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+  try {
+    const res = await fetch('/api/akuvox_ac/ui/state', {
+      credentials: 'same-origin',
+      headers
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const label = data?.kpis?.version || '—';
+    badge.textContent = label;
+    const raw = data?.kpis?.version_raw || '';
+    footer.textContent = raw ? `Integration version ${label} (${raw})` : `Integration version ${label}`;
+  } catch (err) {
+    badge.textContent = 'Version unavailable';
+    footer.textContent = 'Unable to load version information';
+  }
+}
+
+document.querySelectorAll('nav.nav-buttons .nav-btn').forEach(btn => {
+  btn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    const view = normalizeView(btn.dataset.view);
+    loadView(view, {}, { replaceState: false });
+  });
+});
+
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data || {};
+  if (data.type !== 'akuvox-nav') return;
+  const view = normalizeView(data.view || data.slug || data.target || DEFAULT_VIEW);
+  const params = data.params || {};
+  const opts = {
+    updateHistory: data.updateHistory !== false,
+    replaceState: !!data.replaceState
+  };
+  loadView(view, params, opts);
+});
+
+window.addEventListener('popstate', (event) => {
+  const state = event.state || {};
+  const view = normalizeView(state.view || new URLSearchParams(location.search).get('view') || DEFAULT_VIEW);
+  const params = state.params || paramsFromSearch(location.search);
+  loadView(view, params, { updateHistory: false });
+});
+
+(function init(){
+  const searchParams = new URLSearchParams(location.search);
+  const initialView = normalizeView(searchParams.get('view') || DEFAULT_VIEW);
+  const params = paramsFromSearch(location.search);
+  loadView(initialView, params, { replaceState: true });
+  fetchVersion();
+})();
+</script>
+</body>
+</html>
