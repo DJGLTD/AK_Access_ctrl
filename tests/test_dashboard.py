@@ -71,7 +71,6 @@ def test_http_views_require_auth_flags():
             view.requires_auth is True
         ), f"{cls.__name__} should remain protected because it mutates Akuvox data"
 
-
 @dataclass
 class _DummyEvent:
     Event: str
