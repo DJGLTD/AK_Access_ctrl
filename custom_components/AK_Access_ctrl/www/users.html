@@ -49,9 +49,24 @@ let SCHEDULES = {};     // { name: weekSpec, ... }
 let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
 let CURRENT = null;     // working user object
+let RESERVED_ID = null; // HA### id reserved for new-user workflow
 
 // ---------- schedule id mapping helpers ----------
 let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access"}, ...]
+
+function blankProfile(id = ''){
+  return {
+    id,
+    name: '',
+    groups: ['Default'],
+    pin: '',
+    phone: '',
+    schedule_name: '24/7 Access',
+    schedule_id: '1001',
+    key_holder: false,
+    access_level: ''
+  };
+}
 
 function buildScheduleMap(){
   // Built-ins first
@@ -83,11 +98,47 @@ function idForName(name){
   return x ? x.id : '1001';
 }
 
+async function releaseReservation(options = {}){
+  if (!RESERVED_ID) return;
+  const id = RESERVED_ID;
+  RESERVED_ID = null;
+  const payload = JSON.stringify({ id });
+  if (options.keepalive && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([payload], { type: 'application/json' });
+      const ok = navigator.sendBeacon('/api/akuvox_ac/ui/release_id', blob);
+      if (ok) return;
+    } catch (err) {}
+  }
+  try {
+    await fetch('/api/akuvox_ac/ui/release_id', {
+      method: 'POST',
+      ...SAME_ORIGIN,
+      headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+      body: payload,
+      keepalive: !!options.keepalive
+    });
+  } catch (err) {}
+}
+
+window.addEventListener('beforeunload', () => {
+  if (RESERVED_ID) {
+    releaseReservation({ keepalive: true });
+  }
+});
+
 /* -------------------- load -------------------- */
 async function load(){
   setBusy(true);
   try{
-    const state = await apiGet('/api/akuvox_ac/ui/state');
+    let state;
+    try {
+      state = await apiGet('/api/akuvox_ac/ui/state');
+    } catch (err) {
+      console.warn('Failed to load Akuvox state', err);
+      alert('Failed to load Akuvox data. Default values will be used until the connection succeeds.');
+      state = { schedules: {}, registry_users: [] };
+    }
     SCHEDULES = state.schedules || {};
     REGISTRY = state.registry_users || [];
 
@@ -95,34 +146,53 @@ async function load(){
     try {
       const resp = await apiGet('/api/akuvox_ac/ui/phones');
       PHONES = resp.phones || [];
-    } catch {
+    } catch (err) {
+      console.warn('Failed to load phone list', err);
       PHONES = [];
     }
 
-    const id = new URLSearchParams(location.search).get('id');
+    const params = new URLSearchParams(location.search);
+    const id = params.get('id');
     if (id){
       // Edit existing
-      CURRENT = REGISTRY.find(u => u.id === id) || {
-        id, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:''
-      };
+      const existing = REGISTRY.find(u => u.id === id);
+      if (existing){
+        CURRENT = {
+          ...blankProfile(existing.id),
+          ...existing,
+          groups: Array.isArray(existing.groups) ? [...existing.groups] : ['Default'],
+        };
+        if (!CURRENT.schedule_id && CURRENT.schedule_name){
+          CURRENT.schedule_id = idForName(CURRENT.schedule_name);
+        }
+      } else {
+        CURRENT = blankProfile(id);
+      }
+      RESERVED_ID = null;
       document.getElementById('title').textContent = 'Edit User';
       document.getElementById('idRow').style.display = 'block';
       document.getElementById('user_id').value = CURRENT.id;
     }else{
       // Add new — reserve an ID up-front so we can upload the face on Save
       document.getElementById('title').textContent = 'Add User';
+      RESERVED_ID = null;
+      CURRENT = blankProfile('');
       try {
         const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
         const newId = res && res.ok && res.id ? res.id : '';
-        CURRENT = { id:newId, name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+        CURRENT = blankProfile(newId);
+        CURRENT.id = newId;
+        CURRENT.schedule_id = '1001';
         if (CURRENT.id){
+          RESERVED_ID = CURRENT.id;
           document.getElementById('idRow').style.display = 'block';
           document.getElementById('user_id').value = CURRENT.id;
         } else {
           document.getElementById('idRow').style.display = 'none';
         }
-      } catch {
-        CURRENT = { id:'', name:'', groups:['Default'], pin:'', phone:'', schedule_name:'24/7 Access', key_holder:false, access_level:'' };
+      } catch (err) {
+        console.warn('Failed to reserve HA id', err);
+        CURRENT = blankProfile('');
         document.getElementById('idRow').style.display = 'none';
       }
     }
@@ -145,8 +215,18 @@ function fillForm(){
 
   // Build schedule select with ids
   document.getElementById('schedule').innerHTML = scheduleOptionsHtml();
-  const selectedId = (CURRENT.schedule_id && String(CURRENT.schedule_id)) || idForName(CURRENT.schedule_name || '24/7 Access');
-  document.getElementById('schedule').value = selectedId;
+  const selEl = document.getElementById('schedule');
+  const ids = new Set(Array.from(selEl.options).map(opt => opt.value));
+  let selectedId = CURRENT.schedule_id ? String(CURRENT.schedule_id) : '';
+  if (!selectedId || !ids.has(selectedId)) {
+    selectedId = idForName(CURRENT.schedule_name || '24/7 Access');
+  }
+  if (!ids.has(selectedId)) {
+    selectedId = '1001';
+  }
+  selEl.value = selectedId;
+  CURRENT.schedule_id = selectedId;
+  CURRENT.schedule_name = nameForId(selectedId);
 
   document.getElementById('key_holder').checked = !!CURRENT.key_holder;
 
@@ -167,17 +247,30 @@ function fillPhones(){
     sel.disabled = true;
   }else{
     sel.disabled = false;
-    PHONES.forEach(p => {
+    const sorted = [...PHONES].sort((a,b) => (a.name || a.service || '').localeCompare(b.name || b.service || ''));
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select phone…';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    sel.appendChild(placeholder);
+    sorted.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.service;            // e.g. "mobile_app_johns_iphone"
       opt.textContent = p.name || p.service;
       sel.appendChild(opt);
     });
   }
+  const resSpan = document.getElementById('remoteResult');
+  if (resSpan) resSpan.textContent = '';
 }
 
 /* -------------------- save: user core + optional face upload + optional remote enrol -------------------- */
 async function save(){
+  if (!CURRENT){
+    alert('Form not ready yet. Please reload the page.');
+    return;
+  }
   setBusy(true);
   try{
     // Ensure we have or reserve an ID
@@ -186,6 +279,7 @@ async function save(){
         const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
         if (res && res.ok && res.id) {
           CURRENT.id = res.id;
+          RESERVED_ID = CURRENT.id;
           document.getElementById('idRow').style.display = 'block';
           document.getElementById('user_id').value = CURRENT.id;
         }
@@ -251,6 +345,7 @@ async function save(){
     }
 
     // Back to list
+    RESERVED_ID = null;
     const back = `${UI_ROOT}/index` + tokenQS();
     try{ window.top.location.href = back; }catch{ location.href = back; }
   } catch (e){
@@ -261,6 +356,13 @@ async function save(){
 }
 
 /* -------------------- toggle panels -------------------- */
+async function cancelEdit(evt){
+  if (evt) evt.preventDefault();
+  await releaseReservation();
+  const back = `${UI_ROOT}/index` + tokenQS();
+  try{ window.top.location.href = back; }catch{ location.href = back; }
+}
+
 function showPanel(which){
   document.getElementById('pLocal').style.display = which === 'local' ? 'block':'none';
   document.getElementById('pRemote').style.display = which === 'remote' ? 'block':'none';
@@ -333,7 +435,7 @@ function showPanel(which){
 
     <div class="d-flex gap-2 mb-3">
       <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
-      <a class="btn btn-secondary" href="/akuvox-ac/index"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+      <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
     <hr class="my-3"/>

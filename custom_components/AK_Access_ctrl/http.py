@@ -10,11 +10,16 @@ from homeassistant.components.persistent_notification import async_create as not
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.network import get_url
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_DEVICE_GROUPS
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
+
+
+def _persistent_face_dir(hass: HomeAssistant) -> Path:
+    root = Path(hass.config.path("www"))
+    return (root / "AK_Access_ctrl" / "FaceData").resolve()
 
 DASHBOARD_ROUTES: Dict[str, str] = {
     "device-edit": "device_edit.html",
@@ -139,8 +144,10 @@ def _profile_is_empty_reserved(p: Dict[str, Any]) -> bool:
     if str(p.get("status", "")).lower() not in ("pending", "reserved"):
         return False
     # no user content
-    has_content = any(bool(p.get(k)) for k in ("name", "pin", "phone", "face_url"))
-    return not has_content
+    has_core = any(bool(p.get(k)) for k in ("name", "pin", "phone"))
+    if has_core:
+        return False
+    return True
 
 
 def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120) -> int:
@@ -198,7 +205,32 @@ class AkuvoxStaticAssets(HomeAssistantView):
     requires_auth = False
 
     async def get(self, request: web.Request, path: str = ""):
+        hass: HomeAssistant = request.app["hass"]
+        clean = (path or "").lstrip("/")
+        if clean.lower().startswith("facedata"):
+            rel = clean[8:].lstrip("/")
+            if rel:
+                base = _persistent_face_dir(hass)
+                candidate = (base / rel).resolve()
+                try:
+                    candidate.relative_to(base)
+                except ValueError:
+                    raise web.HTTPForbidden()
+                if candidate.is_file():
+                    return web.FileResponse(candidate)
         asset = _static_asset(path)
+        if clean.lower().startswith("facedata"):
+            rel = clean[8:].lstrip("/")
+            if rel:
+                try:
+                    dest_dir = _persistent_face_dir(hass)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest = (dest_dir / rel).resolve()
+                    dest.relative_to(dest_dir)
+                    if not dest.exists() and asset.is_file():
+                        dest.write_bytes(asset.read_bytes())
+                except Exception:
+                    pass
         return web.FileResponse(asset)
 
 
@@ -294,7 +326,12 @@ class AkuvoxUIView(HomeAssistantView):
         try:
             us = root.get("users_store")
             if us:
-                kpis["users"] = sum(1 for k in (us.all() or {}).keys() if _is_ha_id(k))
+                profiles = us.all() or {}
+                kpis["users"] = sum(
+                    1
+                    for key, prof in profiles.items()
+                    if _is_ha_id(key) and not _profile_is_empty_reserved(prof)
+                )
         except Exception:
             pass
 
@@ -321,6 +358,8 @@ class AkuvoxUIView(HomeAssistantView):
                 for key, prof in (us.all() or {}).items():
                     if not _is_ha_id(key):
                         continue
+                    if _profile_is_empty_reserved(prof):
+                        continue
                     groups = _normalize_groups(prof.get("groups"))
                     registry_users.append(
                         {
@@ -332,6 +371,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
                             "schedule_name": prof.get("schedule_name") or "24/7 Access",
+                            "schedule_id": prof.get("schedule_id") or "",
                             "key_holder": bool(prof.get("key_holder", False)),
                             "access_level": prof.get("access_level") or "",
                         }
@@ -348,8 +388,24 @@ class AkuvoxUIView(HomeAssistantView):
         except Exception:
             pass
 
+        # Groups registry for device editor
+        all_groups: List[str] = []
+        try:
+            gs = root.get("groups_store")
+            if gs:
+                all_groups = gs.groups()
+        except Exception:
+            pass
+
         return web.json_response(
-            {"kpis": kpis, "devices": devices, "registry_users": registry_users, "schedules": schedules}
+            {
+                "kpis": kpis,
+                "devices": devices,
+                "registry_users": registry_users,
+                "schedules": schedules,
+                "groups": all_groups,
+                "all_groups": all_groups,
+            }
         )
 
 
@@ -433,6 +489,69 @@ class AkuvoxUIAction(AkuvoxUIView):
                 root[entry_id]["options"]["exit_device"] = enabled
                 await root["sync_queue"].sync_now(entry_id)
                 return web.json_response({"ok": True})
+            except Exception as e:
+                return err(e)
+
+        # Groups
+        if action == "create_group":
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                return err("group name required")
+            store = root.get("groups_store")
+            if not store:
+                return err("groups store not ready", code=500)
+            try:
+                await store.add_group(name)
+                return web.json_response({"ok": True, "groups": store.groups()})
+            except Exception as e:
+                return err(e)
+
+        if action == "device_set_groups":
+            if not entry_id:
+                return err("entry_id required")
+            raw_groups = payload.get("groups")
+            if isinstance(raw_groups, list):
+                groups = [str(g).strip() for g in raw_groups if str(g).strip()]
+            elif raw_groups:
+                groups = [str(raw_groups).strip()]
+            else:
+                groups = []
+            if not groups:
+                groups = ["Default"]
+
+            try:
+                store = root.get("groups_store")
+                if store:
+                    valid = set(store.groups())
+                    ordered: List[str] = []
+                    for g in groups:
+                        if g in valid and g not in ordered:
+                            ordered.append(g)
+                    groups = ordered or ["Default"]
+
+                entry = hass.config_entries.async_get_entry(entry_id)
+                if not entry:
+                    return err("device entry not found", code=404)
+
+                new_options = dict(entry.options)
+                new_options[CONF_DEVICE_GROUPS] = groups
+                hass.config_entries.async_update_entry(entry, options=new_options)
+
+                try:
+                    bucket = root.get(entry_id)
+                    if isinstance(bucket, dict):
+                        bucket.setdefault("options", {})["sync_groups"] = groups
+                except Exception:
+                    pass
+
+                queue = root.get("sync_queue")
+                if queue:
+                    try:
+                        await queue.sync_now(entry_id)
+                    except Exception:
+                        queue.mark_change(entry_id)
+
+                return web.json_response({"ok": True, "groups": groups})
             except Exception as e:
                 return err(e)
 
@@ -657,17 +776,27 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         if not file_bytes:
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
 
-        # Save under FaceData (capital D)
-        dest_dir = STATIC_ROOT / "FaceData"
+        # Save under persistent FaceData folder inside /config/www/AK_Access_ctrl
+        dest_dir = _persistent_face_dir(hass)
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        dest_path = dest_dir / f"{id_val}.jpg"
+        dest_path = (dest_dir / f"{id_val}.jpg").resolve()
+        try:
+            dest_path.relative_to(dest_dir)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "invalid filename"}, status=400)
         try:
             dest_path.write_bytes(file_bytes)
         except Exception as e:
             return web.json_response({"ok": False, "error": f"write failed: {e}"}, status=500)
+        try:
+            legacy = (STATIC_ROOT / "FaceData" / f"{id_val}.jpg")
+            if legacy.exists():
+                legacy.unlink()
+        except Exception:
+            pass
 
         # Store public URL so intercom can fetch it
         face_url_public = f"{face_base_url(hass, request)}/{id_val}.jpg"

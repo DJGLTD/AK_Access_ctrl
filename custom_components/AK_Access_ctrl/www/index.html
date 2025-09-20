@@ -42,6 +42,7 @@
     .event-title.bad{color:var(--bad)}
     .event-title.dim{color:var(--dim)}
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
+    .autosync-flash{background:rgba(46,204,113,.18);color:var(--ok);font-weight:600;border-color:var(--ok)!important}
   </style>
 </head>
 <body>
@@ -139,13 +140,50 @@ function badge(text, kind){
 }
 
 let autoSyncSavedTimer = null;
-function showAutoSyncSaved(msg = 'Saved ✓'){
-  const el = document.getElementById('autoSyncStatus');
-  if (!el) return;
-  el.textContent = msg;
-  el.classList.remove('d-none');
+function resetAutoSyncIndicator(){
+  const input = document.getElementById('autoSyncInput');
+  if (!input) return;
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+    autoSyncSavedTimer = null;
+  }
+  const prev = input.dataset.prevValue;
+  const wasReadonly = input.dataset.prevReadonly;
+  if (prev !== undefined) {
+    input.value = prev;
+  }
+  if (wasReadonly === '0') {
+    input.removeAttribute('readonly');
+  }
+  delete input.dataset.prevValue;
+  delete input.dataset.prevReadonly;
+  input.classList.remove('autosync-flash');
+}
+function showAutoSyncSaved(msg = 'Saved ✓', restoreValue = null){
+  const input = document.getElementById('autoSyncInput');
+  if (!input) return;
+  const status = document.getElementById('autoSyncStatus');
+  if (status) {
+    status.textContent = msg;
+  }
+  const restore = restoreValue !== null ? restoreValue : input.value;
+  input.dataset.prevValue = restore;
+  input.dataset.prevReadonly = input.hasAttribute('readonly') ? '1' : '0';
+  input.value = msg;
+  input.classList.add('autosync-flash');
+  input.setAttribute('readonly', 'readonly');
   if (autoSyncSavedTimer) clearTimeout(autoSyncSavedTimer);
-  autoSyncSavedTimer = setTimeout(() => el.classList.add('d-none'), 2000);
+  autoSyncSavedTimer = setTimeout(() => {
+    const prev = input.dataset.prevValue ?? '';
+    input.value = prev;
+    if (input.dataset.prevReadonly === '0') {
+      input.removeAttribute('readonly');
+    }
+    delete input.dataset.prevValue;
+    delete input.dataset.prevReadonly;
+    input.classList.remove('autosync-flash');
+    autoSyncSavedTimer = null;
+  }, 1500);
 }
 
 function renderKPIs(k){
@@ -450,6 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
 
   const autoEl = document.getElementById('autoSyncInput');
+  autoEl?.addEventListener('focus', resetAutoSyncIndicator);
   autoEl?.addEventListener('change', async () => {
     const v = (autoEl.value || '').trim();
     if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
@@ -465,7 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (ok) {
       document.getElementById('kpiNext').textContent = v;
-      showAutoSyncSaved();
+      showAutoSyncSaved(undefined, v);
     } else {
       alert('Failed to update auto sync time');
     }
@@ -554,7 +593,7 @@ setInterval(refresh, 5000);
         <div class="box text-end">
           <div>Auto Sync</div>
           <input id="autoSyncInput" class="form-control form-control-sm" placeholder="HH:MM" style="width:6rem;display:inline-block">
-          <div id="autoSyncStatus" class="text-success small mt-1 d-none">Saved ✓</div>
+          <div id="autoSyncStatus" class="visually-hidden">Saved ✓</div>
         </div>
       </div>
     </div>
