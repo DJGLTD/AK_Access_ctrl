@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED
 from .api import AkuvoxAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,6 +35,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self.api = api
         self.entry_id = entry_id
         self.storage = storage
+        if "last_access" not in getattr(self.storage, "data", {}):
+            self.storage.data["last_access"] = {}
+        if "door_events" not in self.storage.data:
+            self.storage.data["door_events"] = {}
+        notifications = self.storage.data.get("notifications")
+        if not isinstance(notifications, dict):
+            self.storage.data["notifications"] = {}
 
         # Friendly display name (persist and surface in multiple places for UI)
         self.device_name: str = device_name or "Akuvox Device"
@@ -125,8 +132,208 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 # don't fail the whole refresh just because the user list failed
                 pass
 
+            await self._process_door_events()
+
         except Exception as e:
             last_error = _safe_str(e)
         finally:
             self.health["last_error"] = last_error
             self.health["last_ping"] = last_ping
+
+    async def _process_door_events(self):
+        """Fetch recent door events and handle non-key access notifications."""
+
+        notifications = self.storage.data.get("notifications") or {}
+        notify_targets: List[str] = list(notifications.get("targets") or [])
+
+        try:
+            events = await self.api.events_last()
+        except Exception as err:
+            _LOGGER.debug("Failed to fetch door events: %s", _safe_str(err))
+            return
+
+        if not isinstance(events, list) or not events:
+            return
+
+        state = self.storage.data.setdefault("door_events", {})
+        last_seen = _safe_str(state.get("last_event_key")) or None
+
+        events_to_process: List[Tuple[str, Dict[str, Any]]] = []
+        for event in reversed(events):
+            key = self._event_unique_key(event)
+            if key is None:
+                continue
+            if last_seen and key == last_seen:
+                # Drop everything collected so far (they are older events).
+                events_to_process = []
+                continue
+            events_to_process.append((key, event))
+
+        if not events_to_process:
+            return
+
+        # Avoid processing an unbounded backlog.
+        max_events = 25
+        if len(events_to_process) > max_events:
+            events_to_process = events_to_process[-max_events:]
+
+        storage_dirty = False
+        last_processed_key = last_seen
+        for key, event in events_to_process:
+            if await self._handle_door_event(event, notify_targets):
+                storage_dirty = True
+            last_processed_key = key
+
+        if last_processed_key and last_processed_key != last_seen:
+            state["last_event_key"] = last_processed_key
+            storage_dirty = True
+
+        if storage_dirty:
+            try:
+                await self.storage.async_save()
+            except Exception as err:
+                _LOGGER.debug("Unable to persist door event state: %s", _safe_str(err))
+
+    def _event_unique_key(self, event: Dict[str, Any]) -> Optional[str]:
+        """Generate a stable identifier for a door event."""
+
+        for key in ("Index", "ID", "LogID", "LogId", "EventID", "EventId", "SN", "Sn"):
+            val = event.get(key)
+            if val not in (None, ""):
+                return _safe_str(val)
+
+        timestamp = self._extract_event_timestamp(event, fallback=False)
+        description = None
+        for key in ("Event", "EventType", "Type", "Description"):
+            value = event.get(key)
+            if value not in (None, ""):
+                description = _safe_str(value)
+                break
+        user_id = self._extract_event_user_id(event)
+        parts = [p for p in (timestamp, description, user_id) if p]
+        if parts:
+            return "|".join(parts)
+
+        if event:
+            try:
+                return "|".join(f"{k}:{_safe_str(event.get(k))}" for k in sorted(event.keys()))
+            except Exception:
+                pass
+
+        return None
+
+    def _extract_event_timestamp(self, event: Dict[str, Any], *, fallback: bool = True) -> Optional[str]:
+        for key in (
+            "Time",
+            "time",
+            "DateTime",
+            "datetime",
+            "Timestamp",
+            "timestamp",
+            "CreateTime",
+            "RecordTime",
+            "LogTime",
+            "EventTime",
+        ):
+            val = event.get(key)
+            if val not in (None, ""):
+                return _safe_str(val)
+        if fallback:
+            return _now_iso(self.hass)
+        return None
+
+    def _extract_event_user_id(self, event: Dict[str, Any]) -> Optional[str]:
+        for key in (
+            "UserID",
+            "UserId",
+            "User",
+            "UserName",
+            "Name",
+            "ID",
+            "CardNo",
+            "CardNumber",
+        ):
+            val = event.get(key)
+            if val not in (None, ""):
+                return _safe_str(val)
+        return None
+
+    def _is_non_key_access(self, event: Dict[str, Any]) -> bool:
+        text_parts: List[str] = []
+        for key in (
+            "Event",
+            "EventType",
+            "Type",
+            "OpenMethod",
+            "AccessMethod",
+            "OpenDoorType",
+            "Mode",
+            "Way",
+        ):
+            val = event.get(key)
+            if isinstance(val, str) and val:
+                text_parts.append(val.lower())
+
+        if not text_parts:
+            return False
+
+        summary = " ".join(text_parts)
+        has_grant = any(word in summary for word in ("grant", "granted", "open", "unlock", "success", "allowed"))
+        if not has_grant:
+            return False
+
+        uses_key = any(word in summary for word in ("card", "rfid", "key", "tag", "fob"))
+        return not uses_key
+
+    async def _handle_door_event(self, event: Dict[str, Any], notify_targets: List[str]) -> bool:
+        """Handle a single door event, firing HA events as needed."""
+
+        storage_changed = False
+        last_access = self.storage.data.setdefault("last_access", {})
+
+        user_id = self._extract_event_user_id(event)
+        timestamp = self._extract_event_timestamp(event)
+        if user_id and timestamp:
+            if last_access.get(user_id) != timestamp:
+                last_access[user_id] = timestamp
+                storage_changed = True
+
+        if self._is_non_key_access(event):
+            payload = {
+                "entry_id": self.entry_id,
+                "device_name": self.device_name,
+                "event": event,
+                "user_id": user_id,
+                "timestamp": timestamp,
+            }
+            try:
+                self.hass.bus.async_fire(EVENT_NON_KEY_ACCESS_GRANTED, payload)
+            except Exception as err:
+                _LOGGER.debug("Failed to emit non-key access event: %s", _safe_str(err))
+            if notify_targets:
+                await self._dispatch_notification(event, notify_targets)
+
+        return storage_changed
+
+    async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
+        """Send notifications for a door event (best effort)."""
+
+        if not notify_targets:
+            return
+
+        service = getattr(self.hass, "services", None)
+        if service is None or not hasattr(service, "async_call"):
+            return
+
+        message = _safe_str(event.get("Event") or event.get("EventType") or "Akuvox access granted")
+        data = {
+            "message": message,
+            "title": self.device_name,
+            "data": {"event": event, "device_name": self.device_name},
+        }
+
+        for target in notify_targets:
+            try:
+                await service.async_call("notify", target, data, blocking=False)
+            except Exception as err:
+                _LOGGER.debug("Failed to dispatch notification to %s: %s", target, _safe_str(err))
