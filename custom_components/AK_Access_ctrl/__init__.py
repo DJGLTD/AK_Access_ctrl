@@ -131,13 +131,14 @@ def _is_ha_id(s: str) -> bool:
     return isinstance(s, str) and len(s) == 5 and s.startswith("HA") and s[2:].isdigit()
 
 
-def _mark_coordinator_rebooting(coord: AkuvoxCoordinator, *, triggered_by: str, duration: float = 120.0) -> None:
+def _mark_coordinator_rebooting(coord: AkuvoxCoordinator, *, triggered_by: str, duration: float = 300.0) -> None:
     """Flag coordinator as rebooting for UI purposes and log the event."""
 
     try:
         coord.health["status"] = "rebooting"
         coord.health["online"] = False
         coord.health["rebooting_until"] = time.time() + duration
+        coord.health["last_error"] = None
     except Exception:
         pass
 
@@ -479,8 +480,12 @@ class SyncQueue:
                         coord._append_event("Sync succeeded")  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                except Exception:
-                    pass
+                except Exception as err:
+                    coord.health["sync_status"] = "pending"
+                    try:
+                        coord._append_event(f"Sync failed: {err}")  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                 try:
                     await coord.async_request_refresh()
                 except Exception:
@@ -1151,7 +1156,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         for coord, api in targets:
             try:
                 await api.system_reboot()
-            except Exception:
+            except Exception as err:
+                try:
+                    coord._append_event(f"Reboot failed: {err}")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 continue
 
             _mark_coordinator_rebooting(coord, triggered_by=triggered_by)
