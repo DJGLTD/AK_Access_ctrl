@@ -1080,29 +1080,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await users_store.delete(key)
 
         # immediate cascade: delete from every device using robust lookup
-        for entry_id, coord, api, _ in hass.data[DOMAIN]["sync_manager"]._devices():
-            try:
-                id_records = await _lookup_device_user_ids_by_ha_key(api, key)
-                if id_records:
-                    for rec in id_records:
-                        await _delete_user_every_way(api, rec)
-                else:
+        manager: SyncManager | None = hass.data[DOMAIN].get("sync_manager")  # type: ignore[assignment]
+        if manager:
+            for entry_id, coord, api, _ in manager._devices():
+                try:
+                    id_records = await _lookup_device_user_ids_by_ha_key(api, key)
+                    if id_records:
+                        for rec in id_records:
+                            await _delete_user_every_way(api, rec)
+                    else:
+                        try:
+                            await api.user_delete(key)
+                        except Exception:
+                            pass
                     try:
-                        await api.user_delete(key)
+                        await coord.async_request_refresh()
                     except Exception:
                         pass
-                try:
-                    await coord.async_request_refresh()
                 except Exception:
                     pass
-            except Exception:
-                pass
 
         # remove face file from component assets
         try:
             face_path = Path(__file__).parent / "www" / "FaceData" / f"{key}.jpg"
             if face_path.exists():
                 face_path.unlink()
+        except Exception:
+            pass
+
+        try:
+            persist_face = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{key}.jpg"
+            if persist_face.exists():
+                persist_face.unlink()
         except Exception:
             pass
 
