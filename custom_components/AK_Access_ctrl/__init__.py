@@ -34,6 +34,9 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
     ENTRY_VERSION,
+    ADMIN_DASHBOARD_ICON,
+    ADMIN_DASHBOARD_TITLE,
+    ADMIN_DASHBOARD_URL_PATH,
 )
 
 from .api import AkuvoxAPI
@@ -41,6 +44,48 @@ from .coordinator import AkuvoxCoordinator
 from .http import face_base_url, register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
+
+
+def _register_admin_dashboard(hass: HomeAssistant) -> bool:
+    """Register the Akuvox admin dashboard panel."""
+
+    try:
+        from homeassistant.components import frontend
+    except ImportError:
+        return False
+
+    panel_config = {"url": "/akuvox-ac/"}
+
+    try:
+        frontend.async_register_built_in_panel(
+            hass,
+            "iframe",
+            ADMIN_DASHBOARD_TITLE,
+            ADMIN_DASHBOARD_ICON,
+            frontend_url_path=ADMIN_DASHBOARD_URL_PATH,
+            config=panel_config,
+            require_admin=True,
+            update=True,
+        )
+    except Exception:
+        return False
+
+    return True
+
+
+def _remove_admin_dashboard(hass: HomeAssistant) -> None:
+    """Remove the Akuvox admin dashboard panel if registered."""
+
+    try:
+        from homeassistant.components import frontend
+    except ImportError:
+        return
+
+    try:
+        frontend.async_remove_panel(hass, ADMIN_DASHBOARD_URL_PATH)
+    except Exception:
+        return
+
 
 # ---------------------- Helpers ---------------------- #
 def _now_hh_mm() -> str:
@@ -1100,6 +1145,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         register_ui(hass)
         hass.data[DOMAIN]["_ui_registered"] = True
 
+    if not hass.data[DOMAIN].get("_panel_registered"):
+        if _register_admin_dashboard(hass):
+            hass.data[DOMAIN]["_panel_registered"] = True
+
     async def _options_updated(_hass: HomeAssistant, updated_entry: ConfigEntry):
         if updated_entry.entry_id != entry.entry_id:
             return
@@ -1135,6 +1184,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "sync_manager",
                 "sync_queue",
                 "_ui_registered",
+                "_panel_registered",
             )
             for k in root.keys()
         )
@@ -1146,6 +1196,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
                 except Exception:
                     pass
                 root["sync_queue"]._handle = None  # type: ignore[attr-defined]
+
+            if root.pop("_panel_registered", False):
+                _remove_admin_dashboard(hass)
     return unload_ok
 
 

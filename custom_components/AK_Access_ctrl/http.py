@@ -10,16 +10,10 @@ from homeassistant.components.persistent_notification import async_create as not
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.network import get_url
 
-try:
-    from homeassistant.components.http.const import KEY_HASS_USER
-except ImportError:  # pragma: no cover - fallback for older HA cores
-    KEY_HASS_USER = "hass_user"  # type: ignore[assignment]
-
 from .const import DOMAIN
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
-LOGIN_REDIRECT = "/"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 
 DASHBOARD_ROUTES: Dict[str, str] = {
@@ -62,31 +56,6 @@ def face_base_url(hass: HomeAssistant, request: Optional[web.Request] = None) ->
     if base:
         return f"{base}{FACE_DATA_PATH}"
     return FACE_DATA_PATH
-
-
-async def _require_auth(request: web.Request) -> None:
-    if request.get(KEY_HASS_USER) is not None:
-        return
-
-    hass: HomeAssistant = request.app["hass"]
-    token = ""
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-    if not token:
-        token = request.query.get("token", "").strip()
-
-    validator = getattr(hass.auth, "async_validate_access_token", None)
-    if token and validator:
-        try:
-            refresh_token = await validator(token)
-            if refresh_token and getattr(refresh_token, "user", None):
-                request[KEY_HASS_USER] = refresh_token.user  # type: ignore[index]
-                return
-        except Exception:
-            pass
-
-    raise web.HTTPFound(LOGIN_REDIRECT)
 
 
 def _static_asset(path: str) -> Path:
@@ -214,10 +183,9 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
     name = "api:akuvox_ac:static"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, path: str = ""):
-        await _require_auth(request)
         asset = _static_asset(path)
         return web.FileResponse(asset)
 
@@ -225,11 +193,9 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, slug: str = ""):
-        await _require_auth(request)
-
         clean = (slug or "").strip().strip("/").lower()
         if not clean:
             clean = "index"
