@@ -771,8 +771,8 @@ class SyncManager:
             else:
                 schedule_id = sched_map.get(effective_schedule.lower(), "1001")
 
-            relay_suffix = "1" if key_holder else "2"
-            schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,1;" (key holder) or "1001,2;"
+            relay_suffix = "12" if key_holder else "1"
+            schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,12;" (key holder) or "1001,1;"
 
             start_raw = prof.get("access_start") or prof.get("permission_start")
             end_raw = prof.get("access_end") or prof.get("permission_end")
@@ -795,7 +795,7 @@ class SyncManager:
 
             if should_have_access and not window_active:
                 schedule_id = "1002"
-                schedule_relay = f"1002,{relay_suffix};"
+                schedule_relay = "1002,12;"
                 effective_schedule = "No Access"
 
             # ----- Build device payload -----
