@@ -183,7 +183,7 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
     name = "api:akuvox_ac:static"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request, path: str = ""):
         asset = _static_asset(path)
@@ -193,7 +193,7 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()

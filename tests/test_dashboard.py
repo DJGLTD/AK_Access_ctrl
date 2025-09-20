@@ -8,6 +8,7 @@ from custom_components.AK_Access_ctrl.const import (
 )
 
 akuvox_init = importlib.import_module("custom_components.AK_Access_ctrl.__init__")
+akuvox_http = importlib.import_module("custom_components.AK_Access_ctrl.http")
 
 
 def test_register_admin_dashboard_creates_panel(hass):
@@ -33,3 +34,35 @@ def test_register_admin_dashboard_creates_panel(hass):
     akuvox_init._remove_admin_dashboard(hass)
     assert ADMIN_DASHBOARD_URL_PATH in frontend.removed
     assert ADMIN_DASHBOARD_URL_PATH not in hass.data.get("frontend_panels", {})
+
+
+def test_http_views_require_auth_flags():
+    """Static assets must be world-readable but API endpoints stay auth protected."""
+
+    html_views = [
+        akuvox_http.AkuvoxStaticAssets,
+        akuvox_http.AkuvoxDashboardView,
+    ]
+
+    for cls in html_views:
+        view = cls()
+        assert (
+            view.requires_auth is False
+        ), f"{cls.__name__} should allow unauthenticated access to serve dashboard files"
+
+    api_views = [
+        akuvox_http.AkuvoxUIView,
+        akuvox_http.AkuvoxUIAction,
+        akuvox_http.AkuvoxUIDevices,
+        akuvox_http.AkuvoxUIPhones,
+        akuvox_http.AkuvoxUIReserveId,
+        akuvox_http.AkuvoxUIReleaseId,
+        akuvox_http.AkuvoxUIUploadFace,
+        akuvox_http.AkuvoxUIRemoteEnrol,
+    ]
+
+    for cls in api_views:
+        view = cls()
+        assert (
+            view.requires_auth is True
+        ), f"{cls.__name__} should remain protected because it mutates Akuvox data"
