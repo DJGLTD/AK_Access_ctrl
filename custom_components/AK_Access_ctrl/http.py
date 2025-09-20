@@ -10,16 +10,10 @@ from homeassistant.components.persistent_notification import async_create as not
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.network import get_url
 
-try:
-    from homeassistant.components.http.const import KEY_HASS_USER
-except ImportError:  # pragma: no cover - fallback for older HA cores
-    KEY_HASS_USER = "hass_user"  # type: ignore[assignment]
-
 from .const import DOMAIN
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
-LOGIN_REDIRECT = "/"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 
 DASHBOARD_ROUTES: Dict[str, str] = {
@@ -64,31 +58,6 @@ def face_base_url(hass: HomeAssistant, request: Optional[web.Request] = None) ->
     return FACE_DATA_PATH
 
 
-async def _require_auth(request: web.Request) -> None:
-    if request.get(KEY_HASS_USER) is not None:
-        return
-
-    hass: HomeAssistant = request.app["hass"]
-    token = ""
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-    if not token:
-        token = request.query.get("token", "").strip()
-
-    validator = getattr(hass.auth, "async_validate_access_token", None)
-    if token and validator:
-        try:
-            refresh_token = await validator(token)
-            if refresh_token and getattr(refresh_token, "user", None):
-                request[KEY_HASS_USER] = refresh_token.user  # type: ignore[index]
-                return
-        except Exception:
-            pass
-
-    raise web.HTTPFound(LOGIN_REDIRECT)
-
-
 def _static_asset(path: str) -> Path:
     clean = path.strip()
     if not clean or clean.endswith("/"):
@@ -120,6 +89,27 @@ def _is_ha_id(s: Any) -> bool:
 
 def _ha_id_from_int(n: int) -> str:
     return f"HA{n:03d}"
+
+
+def _json_safe(value: Any) -> Any:
+    """Best-effort conversion that keeps structures JSON serializable."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (dt.datetime, dt.date)):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+
+    return str(value)
 
 
 def _best_name(coord, entry_bucket: Dict[str, Any]) -> str:
@@ -214,10 +204,9 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
     name = "api:akuvox_ac:static"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, path: str = ""):
-        await _require_auth(request)
         asset = _static_asset(path)
         return web.FileResponse(asset)
 
@@ -225,11 +214,9 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, slug: str = ""):
-        await _require_auth(request)
-
         clean = (slug or "").strip().strip("/").lower()
         if not clean:
             clean = "index"
@@ -300,7 +287,7 @@ class AkuvoxUIView(HomeAssistantView):
                 "users": list(getattr(coord, "users", []) or []),
                 "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
             }
-            devices.append(dev)
+            devices.append(_json_safe(dev))
 
         kpis["devices"] = len(devices)
         kpis["pending"] = sum(1 for d in devices if d.get("sync_status") != "in_sync")
@@ -337,18 +324,20 @@ class AkuvoxUIView(HomeAssistantView):
                     if not _is_ha_id(key):
                         continue
                     registry_users.append(
-                        {
-                            "id": key,
-                            "name": (prof.get("name") or key),
-                            "groups": prof.get("groups") or [],
-                            "pin": prof.get("pin") or "",
-                            "face_url": prof.get("face_url") or "",
-                            "phone": prof.get("phone") or "",
-                            "status": prof.get("status") or "active",
-                            "schedule_name": prof.get("schedule_name") or "24/7 Access",
-                            "key_holder": bool(prof.get("key_holder", False)),
-                            "access_level": prof.get("access_level") or "",
-                        }
+                        _json_safe(
+                            {
+                                "id": key,
+                                "name": (prof.get("name") or key),
+                                "groups": prof.get("groups") or [],
+                                "pin": prof.get("pin") or "",
+                                "face_url": prof.get("face_url") or "",
+                                "phone": prof.get("phone") or "",
+                                "status": prof.get("status") or "active",
+                                "schedule_name": prof.get("schedule_name") or "24/7 Access",
+                                "key_holder": bool(prof.get("key_holder", False)),
+                                "access_level": prof.get("access_level") or "",
+                            }
+                        )
                     )
         except Exception:
             pass
@@ -362,9 +351,14 @@ class AkuvoxUIView(HomeAssistantView):
         except Exception:
             pass
 
-        return web.json_response(
-            {"kpis": kpis, "devices": devices, "registry_users": registry_users, "schedules": schedules}
-        )
+        payload = {
+            "kpis": _json_safe(kpis),
+            "devices": devices,
+            "registry_users": registry_users,
+            "schedules": _json_safe(schedules),
+        }
+
+        return web.json_response(payload)
 
 
 # ========================= ACTIONS =========================
