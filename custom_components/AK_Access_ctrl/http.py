@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import dataclasses
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from enum import Enum
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
@@ -179,11 +182,59 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
     return removed
 
 
+def _json_safe(value: Any) -> Any:
+    """Best-effort conversion of Home Assistant/Akuvox objects into JSON-safe data."""
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return value.isoformat()
+
+    if isinstance(value, Enum):
+        return _json_safe(value.value)
+
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return value.hex()
+
+    if dataclasses.is_dataclass(value):
+        try:
+            return _json_safe(dataclasses.asdict(value))
+        except Exception:
+            return str(value)
+
+    if isinstance(value, dict):
+        safe: Dict[str, Any] = {}
+        for key, val in value.items():
+            try:
+                str_key = str(key)
+            except Exception:
+                str_key = repr(key)
+            safe[str_key] = _json_safe(val)
+        return safe
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+
+    for attr in ("as_dict", "to_dict", "_asdict"):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                return _json_safe(method())
+            except Exception:
+                continue
+
+    return str(value)
+
+
 # ========================= STATE =========================
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
     name = "api:akuvox_ac:static"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request, path: str = ""):
         asset = _static_asset(path)
@@ -193,7 +244,7 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()
@@ -328,9 +379,14 @@ class AkuvoxUIView(HomeAssistantView):
         except Exception:
             pass
 
-        return web.json_response(
-            {"kpis": kpis, "devices": devices, "registry_users": registry_users, "schedules": schedules}
-        )
+        payload = {
+            "kpis": kpis,
+            "devices": devices,
+            "registry_users": registry_users,
+            "schedules": schedules,
+        }
+
+        return web.json_response(_json_safe(payload))
 
 
 # ========================= ACTIONS =========================
