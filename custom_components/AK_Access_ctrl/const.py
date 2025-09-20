@@ -36,3 +36,7 @@ DEFAULT_VERIFY_SSL    = False
 DEFAULT_POLL_INTERVAL = 30  # seconds
 
 EVENT_NON_KEY_ACCESS_GRANTED = "akuvox_non_key_access_granted"
+
+ADMIN_DASHBOARD_URL_PATH = "akuvox-access-control"
+ADMIN_DASHBOARD_TITLE = "Akuvox Access Control"
+ADMIN_DASHBOARD_ICON = "mdi:door-closed-lock"
