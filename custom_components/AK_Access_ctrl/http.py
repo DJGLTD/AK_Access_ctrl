@@ -277,6 +277,7 @@ class AkuvoxUIView(HomeAssistantView):
                 "type": (coord.health or {}).get("device_type"),
                 "ip": (coord.health or {}).get("ip"),
                 "online": (coord.health or {}).get("online", True),
+                "status": (coord.health or {}).get("status"),
                 "sync_status": (coord.health or {}).get("sync_status", "pending"),
                 "last_sync": (coord.health or {}).get("last_sync", "—"),
                 "events": list(getattr(coord, "events", []) or []),
@@ -367,6 +368,7 @@ class AkuvoxUIAction(AkuvoxUIView):
         action = data.get("action")
         payload = data.get("payload") or {}
         entry_id = data.get("entry_id")
+        ctx = request["context"] if "context" in request else None
 
         def err(msg: Exception | str, code: int = 400):
             text = str(msg) if isinstance(msg, str) else (str(msg) or "unknown error")
@@ -392,22 +394,23 @@ class AkuvoxUIAction(AkuvoxUIView):
         # Sync / Reboot
         if action == "sync_now":
             try:
-                await root["sync_queue"].sync_now(entry_id)
+                service_data = {"entry_id": entry_id} if entry_id else {}
+                await hass.services.async_call(DOMAIN, "sync_now", service_data, blocking=True, context=ctx)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)
 
         if action in ("force_full_sync", "sync_all"):
             try:
-                await root["sync_manager"].reconcile(full=True)
+                service_data = {"entry_id": entry_id} if entry_id else {}
+                await hass.services.async_call(DOMAIN, "force_full_sync", service_data, blocking=True, context=ctx)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)
 
         if action == "reboot_all":
             try:
-                for eid, coord, api, _ in root["sync_manager"]._devices():
-                    await api.system_reboot()
+                await hass.services.async_call(DOMAIN, "reboot_device", {}, blocking=True, context=ctx)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)
@@ -416,11 +419,7 @@ class AkuvoxUIAction(AkuvoxUIView):
             if not entry_id:
                 return err("entry_id required")
             try:
-                bucket = root.get(entry_id)
-                api = bucket and bucket.get("api")
-                if not api:
-                    return err("Device not found", code=404)
-                await api.system_reboot()
+                await hass.services.async_call(DOMAIN, "reboot_device", {"entry_id": entry_id}, blocking=True, context=ctx)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)

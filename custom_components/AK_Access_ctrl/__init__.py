@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
@@ -95,6 +96,29 @@ def _now_hh_mm() -> str:
         return ""
 
 
+def _context_user_name(hass: HomeAssistant, context) -> str:
+    """Best-effort friendly name for the actor behind a service/http call."""
+
+    default = "HA User"
+    if context is None:
+        return default
+
+    user_id = getattr(context, "user_id", None)
+    if not user_id:
+        return default
+
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if user and user.name:
+            return user.name
+        if user:
+            return user.id
+    except Exception:
+        return default
+
+    return default
+
+
 def _key_of_user(u: Dict[str, Any]) -> str:
     return str(u.get("UserID") or u.get("ID") or u.get("Name") or "")
 
@@ -105,6 +129,29 @@ def _ha_id_from_int(n: int) -> str:
 
 def _is_ha_id(s: str) -> bool:
     return isinstance(s, str) and len(s) == 5 and s.startswith("HA") and s[2:].isdigit()
+
+
+def _mark_coordinator_rebooting(coord: AkuvoxCoordinator, *, triggered_by: str, duration: float = 120.0) -> None:
+    """Flag coordinator as rebooting for UI purposes and log the event."""
+
+    try:
+        coord.health["status"] = "rebooting"
+        coord.health["online"] = False
+        coord.health["rebooting_until"] = time.time() + duration
+    except Exception:
+        pass
+
+    try:
+        coord._append_event(f"Device Rebooted by - {triggered_by}")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+def _log_full_sync(coord: AkuvoxCoordinator, triggered_by: str) -> None:
+    try:
+        coord._append_event(f"Full Sync Triggered by - {triggered_by}")  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 # ---------------------- Persistent stores ---------------------- #
@@ -445,6 +492,7 @@ class SyncQueue:
             self.next_sync_eta = None
 
     async def sync_now(self, entry_id: Optional[str] = None):
+        self._mark_health_pending(entry_id)
         if self._handle is not None:
             try:
                 self._handle()
@@ -906,7 +954,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     api = AkuvoxAPI(
         host=cfg.get(CONF_HOST),
-        port=cfg.get(CONF_PORT, 80),
+        port=cfg.get(CONF_PORT, 443),
         username=cfg.get(CONF_USERNAME) or None,
         password=cfg.get(CONF_PASSWORD) or None,
         use_https=cfg.get("use_https", DEFAULT_USE_HTTPS),
@@ -1074,19 +1122,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def svc_reboot_device(call):
         entry_id = call.data.get("entry_id")
+        triggered_by = _context_user_name(hass, getattr(call, "context", None))
+
+        root = hass.data[DOMAIN]
+        manager = root.get("sync_manager")
+        targets: List[Tuple[AkuvoxCoordinator, AkuvoxAPI]] = []
+
         if entry_id:
-            data = hass.data[DOMAIN].get(entry_id)
-            if data and data.get("api"):
-                try:
-                    await data["api"].system_reboot()
-                except Exception:
-                    pass
-        else:
-            for entry_id2, coord2, api2, _ in hass.data[DOMAIN]["sync_manager"]._devices():
-                try:
-                    await api2.system_reboot()
-                except Exception:
-                    pass
+            data = root.get(entry_id)
+            coord = data and data.get("coordinator")
+            api = data and data.get("api")
+            if coord and api:
+                targets.append((coord, api))
+        elif manager:
+            for _entry_id, coord, api, _ in manager._devices():
+                if coord and api:
+                    targets.append((coord, api))
+
+        for coord, api in targets:
+            try:
+                await api.system_reboot()
+            except Exception:
+                continue
+
+            _mark_coordinator_rebooting(coord, triggered_by=triggered_by)
+
+            try:
+                await coord.async_request_refresh()
+            except Exception:
+                pass
+
+    async def svc_force_full_sync(call):
+        entry_id = call.data.get("entry_id")
+        triggered_by = _context_user_name(hass, getattr(call, "context", None))
+
+        root = hass.data[DOMAIN]
+        manager: SyncManager = root.get("sync_manager")  # type: ignore[assignment]
+        queue: SyncQueue = root.get("sync_queue")  # type: ignore[assignment]
+
+        if not manager or not queue:
+            return
+
+        coords: List[AkuvoxCoordinator] = []
+        for entry, coord, *_ in manager._devices():
+            if entry_id and entry != entry_id:
+                continue
+            if coord:
+                coords.append(coord)
+
+        if not coords:
+            return
+
+        for coord in coords:
+            _log_full_sync(coord, triggered_by)
+
+        try:
+            await queue.sync_now(entry_id)
+        except Exception:
+            pass
 
     async def svc_sync_now(call):
         entry_id = call.data.get("entry_id")
@@ -1132,6 +1225,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "delete_user", svc_delete_user)
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)
     hass.services.async_register(DOMAIN, "reboot_device", svc_reboot_device)
+    hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)
     hass.services.async_register(DOMAIN, "create_group", svc_create_group)
     hass.services.async_register(DOMAIN, "delete_groups", svc_delete_groups)

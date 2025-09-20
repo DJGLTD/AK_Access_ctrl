@@ -21,6 +21,7 @@
     .badge-pending{background:#ffc107;color:#111}
     .badge-offline{background:#dc3545}
     .badge-online{background:#0dcaf0;color:#111}
+    .badge-rebooting{background:#6f42c1}
     .chip{display:inline-flex;align-items:center;gap:.3rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:.1rem .5rem;font-size:.75rem}
     .small-mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.85rem}
     .section-33{height:32.5vh; display:flex; gap:1rem}
@@ -131,9 +132,20 @@ const $ = (sel) => document.querySelector(sel);
 function badge(text, kind){
   const k = kind === 'online' ? 'badge-online'
           : kind === 'offline' ? 'badge-offline'
+          : kind === 'rebooting' ? 'badge-rebooting'
           : kind === 'in_sync' ? 'badge-in-sync'
           : 'badge-pending';
   return `<span class="badge ${k}">${text}</span>`;
+}
+
+let autoSyncSavedTimer = null;
+function showAutoSyncSaved(msg = 'Saved ✓'){
+  const el = document.getElementById('autoSyncStatus');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('d-none');
+  if (autoSyncSavedTimer) clearTimeout(autoSyncSavedTimer);
+  autoSyncSavedTimer = setTimeout(() => el.classList.add('d-none'), 2000);
 }
 
 function renderKPIs(k){
@@ -158,23 +170,35 @@ function renderDevices(devs){
   const tqs = tokenQS();
   const rows = (devs || []).map(d => {
     const online = !!d.online;
-    const status = online ? badge('Online','online') : badge('Offline','offline');
-    const sync   = online ? (d.sync_status === 'in_sync' ? badge('In Sync','in_sync') : badge('Pending','pending')) : '—';
+    const statusKeyRaw = d.status ?? (online ? 'online' : 'offline');
+    const statusKey = String(statusKeyRaw).toLowerCase();
+    const isOnline = statusKey === 'online';
+    let statusBadge;
+    if (statusKey === 'rebooting') statusBadge = badge('Rebooting', 'rebooting');
+    else if (statusKey === 'online') statusBadge = badge('Online', 'online');
+    else if (statusKey === 'offline') statusBadge = badge('Offline', 'offline');
+    else statusBadge = badge(statusKeyRaw, 'pending');
+
+    const syncBadge = statusKey === 'offline'
+      ? '—'
+      : d.sync_status === 'in_sync'
+        ? badge('In Sync', 'in_sync')
+        : badge('Pending', 'pending');
     const last   = d.last_sync || '—';
     const id     = d.entry_id || d.id || '';
     const name   = safeDeviceName(d);
 
-    const syncBtn   = (online && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
-    const rebootBtn = (online && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
+    const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
+    const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
     const editHref  = id ? `${UI_ROOT}/device-edit${tqs}${tqs ? '&' : '?'}id=${encodeURIComponent(id)}` : '';
-    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" target="_top" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
+    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" target="_top" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
 
     return `<tr>
       <td>${name}</td>
       <td>${d.type || '-'}</td>
       <td class="small-mono">${d.ip || '-'}</td>
-      <td>${status}</td>
-      <td>${sync}</td>
+      <td>${statusBadge}</td>
+      <td>${syncBadge}</td>
       <td>${last}</td>
       <td>${syncBtn}</td>
       <td>${rebootBtn}</td>
@@ -205,6 +229,20 @@ function renderDevices(devs){
         }
       }
       refresh();
+    });
+  });
+
+  $('#tblDevices').querySelectorAll('a[data-edit-device]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      const href = link.href;
+      let navigated = false;
+      try {
+        if (window.top && window.top !== window) {
+          window.top.location.href = href;
+          navigated = true;
+        }
+      } catch (err) {}
+      if (navigated) ev.preventDefault();
     });
   });
 }
@@ -310,7 +348,7 @@ function renderUsers(devs, registryUsers){
 
     const editHref = `${UI_ROOT}/users${tqs}${tqs ? `&` : `?`}id=${encodeURIComponent(u.id)}`;
     const actions = /^HA\d{3}$/.test(u.id)
-      ? `<a class="btn btn-sm btn-primary" target="_top" href="${editHref}">Edit</a>
+      ? `<a class="btn btn-sm btn-primary" data-edit-user="${u.id}" target="_top" href="${editHref}">Edit</a>
          <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
       : '';
 
@@ -335,6 +373,20 @@ function renderUsers(devs, registryUsers){
       } catch (e) {
         alert('Delete failed: ' + e.message);
       }
+    });
+  });
+
+  $('#tblUsers').querySelectorAll('a[data-edit-user]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      const href = link.href;
+      let navigated = false;
+      try {
+        if (window.top && window.top !== window) {
+          window.top.location.href = href;
+          navigated = true;
+        }
+      } catch (err) {}
+      if (navigated) ev.preventDefault();
     });
   });
 }
@@ -377,7 +429,8 @@ async function forceFullSync(){
   let ok = false;
   try { await apiPost(actionUrl, { action: 'sync_all' }); ok = true; } catch {}
   if (!ok) { try { await apiPost(actionUrl, { action: 'force_full_sync' }); ok = true; } catch {} }
-  try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {}
+  try { await callService('akuvox_ac','force_full_sync', {}); ok = true; } catch {}
+  if (!ok) { try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {} }
   if (!ok) alert('Force Full Sync failed to trigger');
   refresh();
 }
@@ -400,12 +453,22 @@ document.addEventListener('DOMContentLoaded', () => {
   autoEl?.addEventListener('change', async () => {
     const v = (autoEl.value || '').trim();
     if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
+    let ok = false;
     try{
       await apiPost(actionUrl, { action:'set_daily_sync', payload:{ time:v } });
+      ok = true;
     }catch(e){
-      try { await callService('akuvox_ac','set_daily_sync', { time: v }); } catch {}
+      try {
+        await callService('akuvox_ac','set_daily_sync', { time: v });
+        ok = true;
+      } catch {}
     }
-    document.getElementById('kpiNext').textContent = v;
+    if (ok) {
+      document.getElementById('kpiNext').textContent = v;
+      showAutoSyncSaved();
+    } else {
+      alert('Failed to update auto sync time');
+    }
   });
 
   // initial + poll
@@ -423,23 +486,16 @@ document.addEventListener('DOMContentLoaded', () => {
   a.href = href;
   a.target = '_top';
   a.addEventListener('click', (e) => {
-    try { window.top.location.href = href; e.preventDefault(); } catch {}
+    let navigated = false;
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.href = href;
+        navigated = true;
+      }
+    } catch (err) {}
+    if (navigated) e.preventDefault();
   });
 })();
-
-/* Auto Sync setter (save on change) */
-const autoEl = document.getElementById('autoSyncInput');
-autoEl?.addEventListener('change', async () => {
-  const v = (autoEl.value || '').trim();
-  if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
-  try{
-    await apiPost(actionUrl, { action:'set_daily_sync', payload:{ time:v } });
-  }catch(e){
-    // optional HA service fallback if you add it; ignored if not present
-    try { await callService('akuvox_ac','set_daily_sync', { time: v }); } catch {}
-  }
-  document.getElementById('kpiNext').textContent = v;
-});
 
 /* ===== Countdown + watchdog ===== */
 let nextSyncTimer = null;
@@ -495,8 +551,12 @@ setInterval(refresh, 5000);
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
         <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
         <div class="box2"><button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now </button></div>
-        <div class="box text-end"><div>Auto Sync</div><input id="autoSyncInput" class="form-control form-control-sm" placeholder="HH:MM" style="width:6rem;display:inline-block">
-        </div></div>
+        <div class="box text-end">
+          <div>Auto Sync</div>
+          <input id="autoSyncInput" class="form-control form-control-sm" placeholder="HH:MM" style="width:6rem;display:inline-block">
+          <div id="autoSyncStatus" class="text-success small mt-1 d-none">Saved ✓</div>
+        </div>
+      </div>
     </div>
 
     <div class="section-33">

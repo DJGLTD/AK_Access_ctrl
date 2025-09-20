@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.core import HomeAssistant
@@ -52,6 +53,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "device_type": "",         # set by __init__.py
             "ip": "",
             "online": False,
+            "status": "offline",
             "sync_status": "pending",
             "last_sync": None,
             "last_error": None,
@@ -100,6 +102,16 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         last_error = None
         last_ping = None
+        now_ts = time.time()
+        reboot_raw = self.health.get("rebooting_until")
+        if isinstance(reboot_raw, (int, float)):
+            reboot_deadline = float(reboot_raw)
+        else:
+            try:
+                reboot_deadline = float(reboot_raw)
+            except (TypeError, ValueError):
+                reboot_deadline = 0.0
+        reboot_active = reboot_deadline and reboot_deadline > now_ts
         try:
             info = await self.api.ping_info()
             last_ping = info
@@ -110,6 +122,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
             # Online/offline transition events (+ on-online sync)
             if is_up:
+                self.health["status"] = "online"
+                if reboot_deadline:
+                    self.health.pop("rebooting_until", None)
                 if prev is False:
                     self._append_event("Device came online")
                     await self._kick_sync_now()
@@ -117,6 +132,23 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     # First time we see it online after startup and never synced
                     await self._kick_sync_now()
             else:
+                self.health["online"] = False
+                if reboot_active:
+                    self.health["status"] = "rebooting"
+                    self._was_online = False
+                    self.health["last_error"] = None
+                    self.health["last_ping"] = last_ping
+                    return
+
+                if reboot_deadline and reboot_deadline <= now_ts and self.health.get("status") == "rebooting":
+                    self.health.pop("rebooting_until", None)
+                    try:
+                        self._append_event("Device still offline after reboot window")
+                    except Exception:
+                        pass
+
+                self.health["status"] = "offline"
+                self.health.pop("rebooting_until", None)
                 if prev is True or prev is None:
                     self._append_event("Device went offline")
                 self.health["last_error"] = None

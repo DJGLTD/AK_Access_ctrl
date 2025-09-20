@@ -100,6 +100,14 @@ sync_now:
       selector:
         text:
 
+force_full_sync:
+  name: Force full sync
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
 create_group:
   name: Create sync group
   fields:
