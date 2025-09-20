@@ -165,6 +165,46 @@ const qs = new URLSearchParams(location.search);
 /* accept both ?entry_id= and ?id= */
 const ENTRY_ID = qs.get('entry_id') || qs.get('id') || '';
 
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
 /* ===== UI helpers ===== */
 function showError(msg){
   const box = document.getElementById('errorBox');
@@ -181,13 +221,8 @@ function showOK(msg='Saved ✓'){
   ok.classList.remove('d-none');
   setTimeout(()=> ok.classList.add('d-none'), 1800);
 }
-function tokenQS(){
-  const t = sessionStorage.getItem('akuvox_ll_token');
-  return t ? `?token=${encodeURIComponent(t)}` : '';
-}
 function goBack(){
-  const url = `${UI_ROOT}/index${tokenQS()}`;
-  try { window.top.location.href = url; } catch { location.href = url; }
+  openInApp('index', {}, { replaceState: true });
 }
 
 /* Render checklist of all groups with current selections */

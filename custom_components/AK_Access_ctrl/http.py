@@ -10,7 +10,12 @@ from homeassistant.components.persistent_notification import async_create as not
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.network import get_url
 
-from .const import DOMAIN, CONF_DEVICE_GROUPS
+from .const import (
+    DOMAIN,
+    CONF_DEVICE_GROUPS,
+    INTEGRATION_VERSION,
+    INTEGRATION_VERSION_LABEL,
+)
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -22,6 +27,8 @@ def _persistent_face_dir(hass: HomeAssistant) -> Path:
     return (root / "AK_Access_ctrl" / "FaceData").resolve()
 
 DASHBOARD_ROUTES: Dict[str, str] = {
+    "head": "head.html",
+    "head.html": "head.html",
     "device-edit": "device_edit.html",
     "device_edit": "device_edit.html",
     "device_edit.html": "device_edit.html",
@@ -242,7 +249,7 @@ class AkuvoxDashboardView(HomeAssistantView):
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()
         if not clean:
-            clean = "index"
+            clean = "head"
 
         target = DASHBOARD_ROUTES.get(clean)
         if not target and clean.endswith(".html"):
@@ -278,6 +285,8 @@ class AkuvoxUIView(HomeAssistantView):
             "auto_sync_time": None,
             "next_sync_eta": None,
         }
+        kpis["version"] = INTEGRATION_VERSION_LABEL
+        kpis["version_raw"] = INTEGRATION_VERSION
         devices: List[Dict[str, Any]] = []
 
         # Devices
@@ -725,6 +734,50 @@ class AkuvoxUIReleaseId(HomeAssistantView):
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+class AkuvoxUIReservationPing(HomeAssistantView):
+    """
+    POST JSON: { "id": "HA001" }
+    Refreshes reserved_at for empty reservations to keep them alive while the
+    add-user page remains open. Returns { ok, active } where active indicates
+    whether the reservation is still valid.
+    """
+
+    url = "/api/akuvox_ac/ui/reservation_ping"
+    name = "api:akuvox_ac:ui_reservation_ping"
+    requires_auth = True
+
+    async def post(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+        users_store = root.get("users_store")
+        if not users_store:
+            return web.json_response({"ok": False, "error": "users_store not ready"}, status=500)
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        uid = str(data.get("id") or "").strip()
+        if not _is_ha_id(uid):
+            return web.json_response({"ok": False, "error": "valid HA id required"}, status=400)
+
+        store_data = users_store.data.setdefault("users", {})  # type: ignore[attr-defined]
+        profile = store_data.get(uid)
+        if not profile:
+            return web.json_response({"ok": True, "active": False})
+
+        if not _profile_is_empty_reserved(profile):
+            return web.json_response({"ok": True, "active": False})
+
+        profile["reserved_at"] = _now_iso()
+        try:
+            await users_store.async_save()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return web.json_response({"ok": True, "active": True})
+
+
 # ========================= Face upload =========================
 class AkuvoxUIUploadFace(HomeAssistantView):
     """
@@ -918,5 +971,6 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxUIPhones())
     hass.http.register_view(AkuvoxUIReserveId())
     hass.http.register_view(AkuvoxUIReleaseId())   # <-- new
+    hass.http.register_view(AkuvoxUIReservationPing())
     hass.http.register_view(AkuvoxUIUploadFace())
     hass.http.register_view(AkuvoxUIRemoteEnrol())

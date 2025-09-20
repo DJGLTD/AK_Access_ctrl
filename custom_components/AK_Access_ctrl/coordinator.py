@@ -117,12 +117,18 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             last_ping = info
             is_up = bool(info.get("ok"))
             prev = self._was_online
-            self.health["online"] = is_up
             self._was_online = is_up
 
-            # Online/offline transition events (+ on-online sync)
             if is_up:
+                if reboot_active and self.health.get("status") == "rebooting" and prev is not False:
+                    self.health["status"] = "rebooting"
+                    self.health["online"] = False
+                    self.health["last_error"] = None
+                    self.health["last_ping"] = last_ping
+                    return
+
                 self.health["status"] = "online"
+                self.health["online"] = True
                 if reboot_deadline:
                     self.health.pop("rebooting_until", None)
                 if prev is False:
@@ -155,6 +161,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 self.health["last_ping"] = last_ping
                 return
 
+            self.health["last_ping"] = last_ping
+
             # Load users so integrity checker & UI can see them
             try:
                 users = await self.api.user_list()
@@ -168,6 +176,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         except Exception as e:
             last_error = _safe_str(e)
+            self.health["online"] = False
+            if reboot_active:
+                self.health["status"] = "rebooting"
+            else:
+                self.health["status"] = "offline"
         finally:
             self.health["last_error"] = last_error
             self.health["last_ping"] = last_ping

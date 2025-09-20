@@ -118,12 +118,47 @@ async function callService(domain, service, data = {}) {
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
-function tokenQS() {
-  const t = sessionStorage.getItem('akuvox_ll_token');
-  return t ? `?token=${encodeURIComponent(t)}` : '';
+const UI_ROOT = '/akuvox-ac';
+
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
 }
 
-const UI_ROOT = '/akuvox-ac';
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
 
 /* ========= RENDERERS + WIRING ========= */
 const stateUrl  = '/api/akuvox_ac/ui/state';
@@ -197,6 +232,18 @@ function renderKPIs(k){
     const el = document.getElementById('autoSyncInput');
     if (el && !el.value) el.value = auto;
   }
+  const footer = document.querySelector('.footer-note');
+  if (footer) {
+    const versionLabel = k.version || '';
+    const raw = k.version_raw || '';
+    if (versionLabel || raw) {
+      footer.textContent = raw && raw !== versionLabel
+        ? `Integration version ${versionLabel || raw} (${raw})`
+        : `Integration version ${versionLabel || raw}`;
+    } else {
+      footer.textContent = '';
+    }
+  }
 }
 
 function safeDeviceName(d){
@@ -205,7 +252,6 @@ function safeDeviceName(d){
 }
 
 function renderDevices(devs){
-  const tqs = tokenQS();
   const rows = (devs || []).map(d => {
     const online = !!d.online;
     const statusKeyRaw = d.status ?? (online ? 'online' : 'offline');
@@ -228,8 +274,8 @@ function renderDevices(devs){
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
     const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
-    const editHref  = id ? `${UI_ROOT}/device-edit${tqs}${tqs ? '&' : '?'}id=${encodeURIComponent(id)}` : '';
-    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" target="_top" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
+    const editHref  = id ? buildHref('device-edit', { id }) : '';
+    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
 
     return `<tr>
       <td>${name}</td>
@@ -272,15 +318,9 @@ function renderDevices(devs){
 
   $('#tblDevices').querySelectorAll('a[data-edit-device]').forEach(link => {
     link.addEventListener('click', (ev) => {
-      const href = link.href;
-      let navigated = false;
-      try {
-        if (window.top && window.top !== window) {
-          window.top.location.href = href;
-          navigated = true;
-        }
-      } catch (err) {}
-      if (navigated) ev.preventDefault();
+      ev.preventDefault();
+      const entryId = link.dataset.editDevice || '';
+      openInApp('device-edit', entryId ? { id: entryId } : {});
     });
   });
 }
@@ -335,7 +375,6 @@ function idMatchesFilter(id){
   return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
 }
 function renderUsers(devs, registryUsers){
-  const tqs = tokenQS();
   const by = new Map();
 
   (registryUsers || []).forEach(r => {
@@ -384,9 +423,9 @@ function renderUsers(devs, registryUsers){
     else if (u.access === 'Denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
     else accessBadge = '<span class="badge badge-pending">Pending</span>';
 
-    const editHref = `${UI_ROOT}/users${tqs}${tqs ? `&` : `?`}id=${encodeURIComponent(u.id)}`;
+    const editHref = buildHref('users', { id: u.id });
     const actions = /^HA\d{3}$/.test(u.id)
-      ? `<a class="btn btn-sm btn-primary" data-edit-user="${u.id}" target="_top" href="${editHref}">Edit</a>
+      ? `<a class="btn btn-sm btn-primary" data-edit-user="${u.id}" href="${editHref}">Edit</a>
          <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
       : '';
 
@@ -416,15 +455,9 @@ function renderUsers(devs, registryUsers){
 
   $('#tblUsers').querySelectorAll('a[data-edit-user]').forEach(link => {
     link.addEventListener('click', (ev) => {
-      const href = link.href;
-      let navigated = false;
-      try {
-        if (window.top && window.top !== window) {
-          window.top.location.href = href;
-          navigated = true;
-        }
-      } catch (err) {}
-      if (navigated) ev.preventDefault();
+      ev.preventDefault();
+      const uid = link.dataset.editUser || '';
+      openInApp('users', uid ? { id: uid } : {});
     });
   });
 }
@@ -519,20 +552,12 @@ document.addEventListener('DOMContentLoaded', () => {
 (() => {
   const a = document.getElementById('btnAddUser');
   if (!a) return;
-  const tqs = tokenQS();
-  const base = `${UI_ROOT}/users`;
-  const href = `${base}${tqs}`;
+  const href = buildHref('users');
   a.href = href;
-  a.target = '_top';
+  a.removeAttribute('target');
   a.addEventListener('click', (e) => {
-    let navigated = false;
-    try {
-      if (window.top && window.top !== window) {
-        window.top.location.href = href;
-        navigated = true;
-      }
-    } catch (err) {}
-    if (navigated) e.preventDefault();
+    e.preventDefault();
+    openInApp('users');
   });
 })();
 

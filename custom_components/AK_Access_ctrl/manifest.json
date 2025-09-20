@@ -1,7 +1,7 @@
 {
   "domain": "akuvox_ac",
   "name": "Akuvox Access Control",
-  "version": "0.2.1",
+  "version": "0.1.0b0",
   "documentation": "https://example.invalid/akuvox_ac",
   "issue_tracker": "https://example.invalid/akuvox_ac/issues",
   "codeowners": ["@you"],
