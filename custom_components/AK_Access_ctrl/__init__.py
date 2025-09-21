@@ -1220,7 +1220,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         enabled = bool(call.data.get("enabled", True))
         if entry_id in hass.data[DOMAIN]:
             hass.data[DOMAIN][entry_id]["options"]["exit_device"] = enabled
-            await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id)
+            queue: SyncQueue = hass.data[DOMAIN].get("sync_queue")  # type: ignore[assignment]
+            if queue:
+                queue.mark_change(entry_id)
 
     async def svc_set_auto_reboot(call):
         time_hhmm = call.data.get("time")
