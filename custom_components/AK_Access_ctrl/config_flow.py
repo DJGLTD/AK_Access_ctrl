@@ -27,16 +27,17 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: Dict[str, str] = {}
 
         if user_input is not None:
+            # Always use port 80 for the integration.
+            data = {**user_input, CONF_PORT: 80}
             # unique_id as host:port to avoid dup
-            uniq = f"{user_input[CONF_HOST]}:{user_input.get(CONF_PORT, 80)}"
+            uniq = f"{data[CONF_HOST]}:{data[CONF_PORT]}"
             await self.async_set_unique_id(uniq)
             self._abort_if_unique_id_configured()
-            return self.async_create_entry(title=user_input[CONF_DEVICE_NAME], data=user_input)
+            return self.async_create_entry(title=data[CONF_DEVICE_NAME], data=data)
 
         schema = vol.Schema({
             vol.Required(CONF_DEVICE_NAME): str,
             vol.Required(CONF_HOST): str,
-            vol.Optional(CONF_PORT, default=80): int,
             vol.Required(CONF_DEVICE_TYPE, default="Intercom"): vol.In(DEVICE_TYPES),
             vol.Optional(CONF_USERNAME, default=""): str,
             vol.Optional(CONF_PASSWORD, default=""): str,

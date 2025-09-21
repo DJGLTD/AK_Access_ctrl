@@ -8,7 +8,6 @@
         "data": {
           "device_name": "Device Name",
           "host": "IP Address",
-          "port": "Port",
           "device_type": "Device Type",
           "username": "Username",
           "password": "Password"
