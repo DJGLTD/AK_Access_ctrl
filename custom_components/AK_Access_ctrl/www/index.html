@@ -55,38 +55,159 @@
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
 
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
 function findHaToken() {
   const ll = sessionStorage.getItem('akuvox_ll_token');
   if (ll) return ll;
-
-  const scan = (stor) => {
-    try {
-      const raw = stor.getItem('hassTokens');
-      if (raw) {
-        const o = JSON.parse(raw);
-        return o.access_token || o?.token?.access_token || o?.data?.access_token || null;
-      }
-      for (const k of Object.keys(stor)) {
-        if (!/auth|token|hass/i.test(k)) continue;
-        try {
-          const o = JSON.parse(stor.getItem(k));
-          const t = o?.access_token || o?.token?.access_token || o?.data?.access_token;
-          if (t) return t;
-        } catch {}
-      }
-    } catch {}
-    return null;
-  };
-
-  let t = scan(sessionStorage) || scan(localStorage);
-  if (t) return t;
-  try {
-    if (window.parent && window.parent !== window && window.parent.origin === window.origin) {
-      t = scan(window.parent.sessionStorage) || scan(window.parent.localStorage);
-      if (t) return t;
-    }
-  } catch {}
-  return null;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
 }
 
 const SAME_ORIGIN = { credentials: 'same-origin' };
