@@ -17,14 +17,38 @@
 
 const UI_ROOT = '/akuvox-ac';
 const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
 
-function currentBearer(){
+function findHaToken(){
   return sessionStorage.getItem('akuvox_ll_token') || null;
 }
 
-function authHeaders(){
-  const token = currentBearer();
-  return token ? { 'Authorization': 'Bearer ' + token } : {};
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
 }
 
 function buildError(res, text){
@@ -48,7 +72,7 @@ function buildHref(slug, params = {}){
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
-  const token = currentBearer();
+  const token = findHaToken();
   if (token) search.set('token', token);
   const query = search.toString();
   const clean = String(slug || '').replace(/_/g, '-');
@@ -93,7 +117,7 @@ function handleAuthError(err){
 }
 
 async function getState(){
-  const res = await fetch('/api/akuvox_ac/ui/state', { ...SAME_ORIGIN, headers: authHeaders() });
+  const res = await fetchWithAuth('/api/akuvox_ac/ui/state');
   if (!res.ok){
     const text = await res.text();
     const err = buildError(res, text);
@@ -104,10 +128,9 @@ async function getState(){
 }
 
 async function action(act, payload){
-  const res = await fetch('/api/akuvox_ac/ui/action', {
+  const res = await fetchWithAuth('/api/akuvox_ac/ui/action', {
     method: 'POST',
-    ...SAME_ORIGIN,
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: act, payload })
   });
   if (!res.ok){

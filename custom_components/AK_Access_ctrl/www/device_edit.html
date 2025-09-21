@@ -138,9 +138,36 @@ function findHaToken() {
   } catch {}
   return null;
 }
-const BEARER = findHaToken();
-const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
 function buildError(res, text) {
   const msg = `${res.status}: ${text || res.statusText || 'Request failed'}`;
   const err = new Error(msg);
@@ -155,7 +182,7 @@ function isAuthError(err) {
   return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
 }
 async function apiGet(url) {
-  const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  const r = await fetchWithAuth(url);
   if (!r.ok) {
     const text = await r.text();
     const err = buildError(r, text);
@@ -165,10 +192,9 @@ async function apiGet(url) {
   return r.json();
 }
 async function apiPost(url, body) {
-  const r = await fetch(url, {
+  const r = await fetchWithAuth(url, {
     method: 'POST',
-    ...SAME_ORIGIN,
-    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {})
   });
   if (!r.ok) {

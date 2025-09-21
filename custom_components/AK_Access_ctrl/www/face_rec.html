@@ -23,8 +23,36 @@
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
 function findHaToken(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t || null; }
-const AUTH_HEADERS = (findHaToken()) ? { 'Authorization': 'Bearer ' + findHaToken() } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
 
 function buildError(res, text){
   const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
@@ -148,11 +176,9 @@ async function uploadBlobAsJpg(blob){
 
   setBusy(true);
   try{
-    const r = await fetch('/api/akuvox_ac/ui/upload_face', {
+    const r = await fetchWithAuth('/api/akuvox_ac/ui/upload_face', {
       method:'POST',
-      headers: { ...AUTH_HEADERS }, // let browser set multipart boundary
-      body: fd,
-      ...SAME_ORIGIN
+      body: fd
     });
     const text = await r.text();
     let res = {};
