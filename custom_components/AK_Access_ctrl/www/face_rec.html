@@ -151,6 +151,7 @@ const API_UPLOAD_FACE = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face
 
 function qsGet(k){ return new URLSearchParams(location.search).get(k) || ''; }
 const USER_ID = qsGet('user');      // e.g. HA001
+const USER_NAME = (qsGet('name') || '').trim();
 const DEVICE_ID = qsGet('device');  // informational for now
 
 function setBusy(yes){
@@ -272,7 +273,25 @@ async function uploadFromFile(){
 
 /* ---------- init ---------- */
 document.addEventListener('DOMContentLoaded', ()=>{
-  document.getElementById('userBadge').textContent = USER_ID || '(unknown)';
+  const badge = document.getElementById('userBadge');
+  if (badge){
+    if (USER_ID){
+      badge.textContent = USER_ID;
+    }else{
+      badge.textContent = '(unknown)';
+    }
+    if (!USER_ID){
+      badge.style.display = 'none';
+    }
+  }
+  const nameEl = document.getElementById('userName');
+  if (nameEl){
+    if (USER_NAME){
+      nameEl.textContent = USER_NAME;
+    }else{
+      nameEl.style.display = 'none';
+    }
+  }
   if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
     startCamera();
   }else{
@@ -288,7 +307,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   </div>
 
   <div class="card p-3 mb-3">
-    <div class="mb-2"><span class="muted">User:</span> <span id="userBadge" class="badge bg-secondary"></span></div>
+    <div class="mb-2 d-flex align-items-center flex-wrap gap-2">
+      <span class="muted">User:</span>
+      <span id="userName" class="fw-semibold"></span>
+      <span id="userBadge" class="badge bg-secondary"></span>
+    </div>
 
     <!-- Camera capture -->
     <div class="row g-3 align-items-start">

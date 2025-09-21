@@ -6,6 +6,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
@@ -19,9 +20,12 @@ from homeassistant.helpers.network import get_url
 from .const import (
     DOMAIN,
     CONF_DEVICE_GROUPS,
+    CONF_RELAY_ROLES,
     INTEGRATION_VERSION,
     INTEGRATION_VERSION_LABEL,
 )
+
+from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -384,6 +388,81 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
     return removed
 
 
+_SPECIAL_DEVICE_KEYS = {
+    "groups_store",
+    "users_store",
+    "schedules_store",
+    "settings_store",
+    "sync_manager",
+    "sync_queue",
+    "_ui_registered",
+    "_panel_registered",
+}
+
+
+def _iter_device_buckets(root: Dict[str, Any]):
+    for entry_id, data in list((root or {}).items()):
+        if entry_id in _SPECIAL_DEVICE_KEYS:
+            continue
+        if not isinstance(data, dict):
+            continue
+        coord = data.get("coordinator")
+        if not coord:
+            continue
+        opts = data.get("options")
+        if not isinstance(opts, dict):
+            opts = {}
+            data["options"] = opts
+        yield entry_id, data, coord, opts
+
+
+def _device_relay_roles(opts: Dict[str, Any], device_type: Any) -> Dict[str, str]:
+    raw = opts.get(CONF_RELAY_ROLES)
+    if not isinstance(raw, dict):
+        raw = {
+            "relay_a": opts.get("relay_a_role"),
+            "relay_b": opts.get("relay_b_role"),
+        }
+    return normalize_relay_roles(raw, device_type)
+
+
+def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool]:
+    devices: List[Dict[str, Any]] = []
+    any_alarm = False
+    for entry_id, bucket, coord, opts in _iter_device_buckets(root):
+        health = getattr(coord, "health", {}) or {}
+        device_type_raw = str(health.get("device_type") or "").strip()
+        relay_roles = _device_relay_roles(opts, device_type_raw)
+        try:
+            opts[CONF_RELAY_ROLES] = relay_roles
+        except Exception:
+            pass
+
+        dev = {
+            "entry_id": entry_id,
+            "name": _best_name(coord, bucket),
+            "type": health.get("device_type"),
+            "ip": health.get("ip"),
+            "online": health.get("online", True),
+            "status": health.get("status"),
+            "sync_status": health.get("sync_status", "pending"),
+            "last_sync": health.get("last_sync", "—"),
+            "events": list(getattr(coord, "events", []) or []),
+            "_users": list(getattr(coord, "users", []) or []),
+            "users": list(getattr(coord, "users", []) or []),
+            "exit_device": bool(opts.get("exit_device", False)),
+            "participate_in_sync": bool(opts.get("participate_in_sync", True)),
+            "sync_groups": list(opts.get("sync_groups") or ["Default"]),
+            "relay_roles": relay_roles,
+        }
+        dev["alarm_capable"] = relay_alarm_capable(relay_roles)
+        devices.append(dev)
+        if dev["alarm_capable"]:
+            any_alarm = True
+
+    return devices, any_alarm
+
+
 # ========================= STATE =========================
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
@@ -481,51 +560,16 @@ class AkuvoxUIView(HomeAssistantView):
             "schedules": {},
             "groups": [],
             "all_groups": [],
+            "capabilities": {"alarm_relay": False},
         }
 
         kpis: Dict[str, Any] = response["kpis"]
-        devices: List[Dict[str, Any]] = response["devices"]
 
         try:
-            for entry_id, data in list((root or {}).items()):
-                if entry_id in (
-                    "groups_store",
-                    "users_store",
-                    "schedules_store",
-                    "settings_store",
-                    "sync_manager",
-                    "sync_queue",
-                    "_ui_registered",
-                    "_panel_registered",
-                ):
-                    continue
-
-                if not isinstance(data, dict):
-                    continue
-
-                coord = data.get("coordinator")
-                if not coord:
-                    continue
-
-                disp_name = _best_name(coord, data)
-                opts = data.get("options") or {}
-                dev = {
-                    "entry_id": entry_id,
-                    "name": disp_name,
-                    "type": (coord.health or {}).get("device_type"),
-                    "ip": (coord.health or {}).get("ip"),
-                    "online": (coord.health or {}).get("online", True),
-                    "status": (coord.health or {}).get("status"),
-                    "sync_status": (coord.health or {}).get("sync_status", "pending"),
-                    "last_sync": (coord.health or {}).get("last_sync", "—"),
-                    "events": list(getattr(coord, "events", []) or []),
-                    "_users": list(getattr(coord, "users", []) or []),
-                    "users": list(getattr(coord, "users", []) or []),
-                    "exit_device": bool(opts.get("exit_device", False)),
-                    "participate_in_sync": bool(opts.get("participate_in_sync", True)),
-                    "sync_groups": list(opts.get("sync_groups") or ["Default"]),
-                }
-                devices.append(dev)
+            devices_serialized, any_alarm = _serialize_devices(root)
+            response["devices"] = devices_serialized
+            response["capabilities"] = {"alarm_relay": any_alarm}
+            devices = devices_serialized
 
             kpis["devices"] = len(devices)
             kpis["pending"] = sum(
@@ -768,14 +812,87 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return err("entry_id required")
             try:
                 enabled = bool(payload.get("enabled", True))
-                root[entry_id]["options"]["exit_device"] = enabled
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                opts = bucket.get("options")
+                if not isinstance(opts, dict):
+                    opts = {}
+                    bucket["options"] = opts
+                opts["exit_device"] = enabled
+
+                entry_obj = hass.config_entries.async_get_entry(entry_id)
+                if entry_obj:
+                    new_options = dict(entry_obj.options)
+                    new_options["exit_device"] = enabled
+                    hass.config_entries.async_update_entry(entry_obj, options=new_options)
+
                 queue = root.get("sync_queue")
                 if queue:
                     try:
                         queue.mark_change(entry_id)
                     except Exception:
                         pass
-                return web.json_response({"ok": True})
+                return web.json_response({"ok": True, "exit_device": enabled})
+            except Exception as e:
+                return err(e)
+
+        if action == "set_device_relays":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                coord = bucket.get("coordinator")
+                if not coord:
+                    return err("device coordinator not ready", code=409)
+                health = getattr(coord, "health", {}) or {}
+                device_type = str(health.get("device_type") or "").strip()
+
+                opts = bucket.get("options")
+                if not isinstance(opts, dict):
+                    opts = {}
+                    bucket["options"] = opts
+
+                relays_payload = (
+                    payload.get("relays") if isinstance(payload.get("relays"), dict) else payload
+                )
+                current_roles = _device_relay_roles(opts, device_type)
+                if isinstance(relays_payload, dict):
+                    for key in ("relay_a", "relay_b"):
+                        if key in relays_payload:
+                            current_roles[key] = relays_payload[key]
+                normalized = normalize_relay_roles(current_roles, device_type)
+                opts[CONF_RELAY_ROLES] = normalized
+
+                entry_obj = hass.config_entries.async_get_entry(entry_id)
+                if entry_obj:
+                    new_options = dict(entry_obj.options)
+                    new_options[CONF_RELAY_ROLES] = normalized
+                    hass.config_entries.async_update_entry(entry_obj, options=new_options)
+
+                queue = root.get("sync_queue")
+                if queue:
+                    try:
+                        queue.mark_change(entry_id)
+                    except Exception:
+                        pass
+
+                alarm_any = False
+                try:
+                    _, alarm_any = _serialize_devices(root)
+                except Exception:
+                    alarm_any = False
+
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "relay_roles": normalized,
+                        "alarm_capable": relay_alarm_capable(normalized),
+                        "device_alarm_any": alarm_any,
+                    }
+                )
             except Exception as e:
                 return err(e)
 
@@ -902,6 +1019,8 @@ class AkuvoxUISettings(HomeAssistantView):
         settings = root.get("settings_store")
         users_store = root.get("users_store")
 
+        devices, any_alarm = _serialize_devices(root)
+
         interval = None
         delay = None
         alerts = {"targets": {}}
@@ -938,6 +1057,14 @@ class AkuvoxUISettings(HomeAssistantView):
 
         registry_users.sort(key=lambda x: x.get("name", "").lower())
 
+        schedules: Dict[str, Any] = {}
+        schedules_store = root.get("schedules_store")
+        if schedules_store:
+            try:
+                schedules = schedules_store.all()
+            except Exception:
+                schedules = {}
+
         return web.json_response(
             {
                 "ok": True,
@@ -945,6 +1072,9 @@ class AkuvoxUISettings(HomeAssistantView):
                 "auto_sync_delay_minutes": delay,
                 "alerts": alerts,
                 "registry_users": registry_users,
+                "schedules": schedules,
+                "devices": devices,
+                "capabilities": {"alarm_relay": any_alarm},
                 "min_minutes": 5,
                 "max_minutes": 24 * 60,
                 "min_auto_sync_delay_minutes": 5,
@@ -1226,23 +1356,37 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         id_val: Optional[str] = None
         file_bytes: Optional[bytes] = None
 
-        if request.content_type and "multipart" in request.content_type.lower():
-            reader = await request.multipart()
-            while True:
-                part = await reader.next()
-                if part is None:
-                    break
-                if part.name == "id":
-                    id_val = (await part.text()).strip()
-                elif part.name == "file":
-                    # read file fully
-                    chunks = []
-                    while True:
-                        chunk = await part.read_chunk()
-                        if not chunk:
-                            break
-                        chunks.append(chunk)
-                    file_bytes = b"".join(chunks)
+        content_type = (request.content_type or "").lower()
+        if "multipart" in content_type:
+            try:
+                data = await request.post()
+            except Exception:
+                data = {}
+
+            if data:
+                # Common HTML <input name="id"/> field
+                raw_id = data.get("id")
+                if isinstance(raw_id, (str, bytes, bytearray)):
+                    id_val = raw_id.decode() if isinstance(raw_id, (bytes, bytearray)) else raw_id
+                    id_val = id_val.strip()
+
+                # File uploads arrive as aiohttp.web.FileField instances
+                candidate = data.get("file") or data.get("upload") or data.get("image")
+                if isinstance(candidate, web.FileField):
+                    with candidate.file:
+                        try:
+                            candidate.file.seek(0)
+                        except Exception:
+                            pass
+                        file_bytes = candidate.file.read()
+                elif isinstance(candidate, (bytes, bytearray)):
+                    file_bytes = bytes(candidate)
+
+                if file_bytes is not None and not isinstance(file_bytes, (bytes, bytearray)):
+                    try:
+                        file_bytes = bytes(file_bytes)
+                    except Exception:
+                        file_bytes = None
         else:
             try:
                 data = await request.json()
@@ -1326,14 +1470,38 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
             data = {}
         user_id = str(data.get("id") or "").strip()
         phone_service = str(data.get("phone_service") or "").strip()
+        raw_name = data.get("name")
+        provided_name = ""
+        if isinstance(raw_name, str):
+            provided_name = raw_name.strip()
+        elif raw_name not in (None, ""):
+            provided_name = str(raw_name).strip()
 
         if not _is_ha_id(user_id):
             return web.json_response({"ok": False, "error": "valid HA user id required"}, status=400)
         if not phone_service:
             return web.json_response({"ok": False, "error": "phone_service required"}, status=400)
 
+        users_store = root.get("users_store")
+        profile_name = ""
+        if users_store:
+            try:
+                existing = users_store.get(user_id, {}) or {}
+            except Exception:
+                existing = {}
+            candidate = existing.get("name")
+            if isinstance(candidate, str):
+                profile_name = candidate.strip()
+            elif candidate not in (None, ""):
+                profile_name = str(candidate).strip()
+
+        display_name = profile_name or provided_name or user_id
+
         # Construct enrol URL (served from /api/AK_AC)
-        enrol_url = f"/akuvox-ac/face-rec?user={user_id}"
+        params = {"user": user_id}
+        if profile_name or provided_name:
+            params["name"] = profile_name or provided_name
+        enrol_url = f"/akuvox-ac/face-rec?{urlencode(params)}"
 
         # Push via HA mobile app notify service
         try:
@@ -1342,7 +1510,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
                 phone_service,
                 {
                     "title": "Akuvox: Face Enrolment",
-                    "message": f"Tap to enrol face for {user_id}",
+                    "message": f"Tap To Enrol {display_name}",
                     "data": {
                         "url": enrol_url
                     },
@@ -1355,9 +1523,13 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 
         # Persistent notification fallback
         try:
+            if display_name != user_id:
+                display_label = f"**{display_name}** ({user_id})"
+            else:
+                display_label = f"**{user_id}**"
             notify(
                 hass,
-                f"Face enrolment requested for **{user_id}**.\n\n"
+                f"Face enrolment requested for {display_label}.\n\n"
                 f"[Open enrolment page]({enrol_url})",
                 title="Akuvox: Face Enrolment",
                 notification_id=f"akuvox_face_enrol_{user_id}",
@@ -1366,16 +1538,16 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
             pass
 
         # Ensure profile is pending and has a canonical face_url
-        try:
-            users_store = root.get("users_store")
-            if users_store:
+        if users_store:
+            try:
                 await users_store.upsert_profile(
                     user_id,
                     status="pending",
                     face_url=f"{face_base_url(hass, request)}/{user_id}.jpg",
+                    name=profile_name or provided_name or None,
                 )
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # Ensure the change is picked up on the next sync cycle
         queue = root.get("sync_queue")
@@ -1385,7 +1557,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
             except Exception:
                 pass
 
-        return web.json_response({"ok": True, "enrol_url": enrol_url})
+        return web.json_response({"ok": True, "enrol_url": enrol_url, "name": display_name})
 
 
 # ========================= REGISTER =========================
