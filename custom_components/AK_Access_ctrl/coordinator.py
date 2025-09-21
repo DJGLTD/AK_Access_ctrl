@@ -26,6 +26,61 @@ def _now_iso(hass: HomeAssistant) -> str:
     return dt_util.utcnow().isoformat() + "Z"
 
 
+def _derive_targets_from_raw(raw: Any, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
+    out: List[str] = []
+    if not isinstance(raw, dict):
+        return out
+
+    norm_user = str(user_id).strip() if user_id not in (None, "") else None
+    for target, cfg in raw.items():
+        if not isinstance(target, str) or not target:
+            continue
+        config = cfg if isinstance(cfg, dict) else {}
+        if event_type == "device_offline" and config.get("device_offline"):
+            out.append(target)
+        elif event_type == "integrity_failed" and config.get("integrity_failed"):
+            out.append(target)
+        elif event_type == "any_denied" and config.get("any_denied"):
+            out.append(target)
+        elif event_type == "user_granted":
+            granted_cfg = config.get("granted") if isinstance(config.get("granted"), dict) else {}
+            any_flag = bool(granted_cfg.get("any")) if isinstance(granted_cfg, dict) else bool(config.get("granted_any"))
+            users_raw = granted_cfg.get("users") if isinstance(granted_cfg, dict) else config.get("granted_users")
+            if any_flag:
+                out.append(target)
+            elif norm_user and users_raw:
+                if isinstance(users_raw, (list, tuple, set)):
+                    normalized = {str(u).strip() for u in users_raw if str(u).strip()}
+                elif isinstance(users_raw, str):
+                    normalized = {users_raw.strip()}
+                else:
+                    normalized = set()
+                if norm_user in normalized:
+                    out.append(target)
+    return out
+
+
+def _alert_targets_for_event(hass: HomeAssistant, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
+    root = hass.data.get(DOMAIN, {}) or {}
+    settings = root.get("settings_store")
+    if not settings:
+        return []
+
+    resolver = getattr(settings, "targets_for_event", None)
+    if callable(resolver):
+        try:
+            return list(resolver(event_type, user_id=user_id))
+        except Exception:
+            pass
+
+    data = getattr(settings, "data", {})
+    alerts = {}
+    if isinstance(data, dict):
+        alerts = data.get("alerts") or {}
+    targets = alerts.get("targets") if isinstance(alerts, dict) else {}
+    return _derive_targets_from_raw(targets, event_type, user_id=user_id)
+
+
 class AkuvoxCoordinator(DataUpdateCoordinator):
     """Polls device, tracks health/events/users, and keeps a stable friendly name."""
 
@@ -43,6 +98,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         notifications = self.storage.data.get("notifications")
         if not isinstance(notifications, dict):
             self.storage.data["notifications"] = {}
+        alerts_state = self.storage.data.get("alerts_state")
+        if not isinstance(alerts_state, dict):
+            self.storage.data["alerts_state"] = {}
+        self._alerts_state = self.storage.data.get("alerts_state", {})
 
         # Friendly display name (persist and surface in multiple places for UI)
         self.device_name: str = device_name or "Akuvox Device"
@@ -103,6 +162,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         last_error = None
         last_ping = None
         now_ts = time.time()
+        alerts_state: Dict[str, Any] = self.storage.data.setdefault("alerts_state", {})
+        alerts_dirty = False
+        alerts_saved = False
         reboot_raw = self.health.get("rebooting_until")
         if isinstance(reboot_raw, (int, float)):
             reboot_deadline = float(reboot_raw)
@@ -137,6 +199,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 elif prev is None and not self.health.get("last_sync"):
                     # First time we see it online after startup and never synced
                     await self._kick_sync_now()
+                if alerts_state.get("offline_since"):
+                    alerts_state["offline_since"] = None
+                    alerts_state["offline_notified"] = False
+                    alerts_dirty = True
             else:
                 self.health["online"] = False
                 if reboot_active:
@@ -159,6 +225,31 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     self._append_event("Device went offline")
                 self.health["last_error"] = None
                 self.health["last_ping"] = last_ping
+                offline_since = alerts_state.get("offline_since")
+                if not offline_since:
+                    alerts_state["offline_since"] = now_ts
+                    alerts_state["offline_notified"] = False
+                    alerts_dirty = True
+                else:
+                    try:
+                        offline_since_val = float(offline_since)
+                    except Exception:
+                        offline_since_val = now_ts
+                        alerts_state["offline_since"] = offline_since_val
+                        alerts_dirty = True
+                    if not alerts_state.get("offline_notified") and now_ts - offline_since_val >= 300:
+                        try:
+                            await self._send_alert_notification("device_offline", extra={"offline_since": offline_since_val})
+                        except Exception as err:
+                            _LOGGER.debug("Failed to dispatch offline notification: %s", _safe_str(err))
+                        alerts_state["offline_notified"] = True
+                        alerts_dirty = True
+                if alerts_dirty:
+                    try:
+                        await self.storage.async_save()
+                        alerts_saved = True
+                    except Exception as err:
+                        _LOGGER.debug("Failed to persist offline state: %s", _safe_str(err))
                 return
 
             self.health["last_ping"] = last_ping
@@ -181,9 +272,19 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 self.health["status"] = "rebooting"
             else:
                 self.health["status"] = "offline"
+                if not alerts_state.get("offline_since"):
+                    alerts_state["offline_since"] = now_ts
+                    alerts_state["offline_notified"] = False
+                    alerts_dirty = True
         finally:
             self.health["last_error"] = last_error
             self.health["last_ping"] = last_ping
+
+        if alerts_dirty and not alerts_saved:
+            try:
+                await self.storage.async_save()
+            except Exception as err:
+                _LOGGER.debug("Failed to persist alert state: %s", _safe_str(err))
 
     async def _process_door_events(self):
         """Fetch recent door events and handle non-key access notifications."""
@@ -330,6 +431,61 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         uses_key = any(word in summary for word in ("card", "rfid", "key", "tag", "fob"))
         return not uses_key
 
+    def _event_summary_tokens(self, event: Dict[str, Any]) -> List[str]:
+        tokens: List[str] = []
+        for key in (
+            "Event",
+            "EventType",
+            "Type",
+            "Description",
+            "Result",
+            "Reason",
+            "OpenMethod",
+            "AccessMethod",
+            "Mode",
+            "Way",
+        ):
+            val = event.get(key)
+            if isinstance(val, str) and val:
+                tokens.append(val.lower())
+        return tokens
+
+    def _event_is_access_denied(self, tokens: List[str]) -> bool:
+        if not tokens:
+            return False
+        summary = " ".join(tokens)
+        denied_words = (
+            "denied",
+            "refused",
+            "invalid",
+            "failed",
+            "fail",
+            "error",
+            "unauthorized",
+            "forbidden",
+            "rejected",
+        )
+        return any(word in summary for word in denied_words)
+
+    def _event_is_access_granted(self, tokens: List[str]) -> bool:
+        if not tokens:
+            return False
+        if self._event_is_access_denied(tokens):
+            return False
+        summary = " ".join(tokens)
+        granted_words = (
+            "grant",
+            "granted",
+            "allowed",
+            "success",
+            "opened",
+            "open",
+            "unlock",
+            "passed",
+            "access ok",
+        )
+        return any(word in summary for word in granted_words)
+
     async def _handle_door_event(self, event: Dict[str, Any], notify_targets: List[str]) -> bool:
         """Handle a single door event, firing HA events as needed."""
 
@@ -358,6 +514,29 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             if notify_targets:
                 await self._dispatch_notification(event, notify_targets)
 
+        tokens = self._event_summary_tokens(event)
+        summary_text = " ".join(tokens)
+        if tokens and self._event_is_access_denied(tokens):
+            try:
+                await self._send_alert_notification(
+                    "any_denied",
+                    user_id=user_id,
+                    summary=summary_text,
+                    extra={"event": event},
+                )
+            except Exception as err:
+                _LOGGER.debug("Failed to dispatch denied alert: %s", _safe_str(err))
+        elif tokens and self._event_is_access_granted(tokens):
+            try:
+                await self._send_alert_notification(
+                    "user_granted",
+                    user_id=user_id,
+                    summary=summary_text,
+                    extra={"event": event},
+                )
+            except Exception as err:
+                _LOGGER.debug("Failed to dispatch granted alert: %s", _safe_str(err))
+
         return storage_changed
 
     async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
@@ -382,3 +561,58 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 await service.async_call("notify", target, data, blocking=False)
             except Exception as err:
                 _LOGGER.debug("Failed to dispatch notification to %s: %s", target, _safe_str(err))
+
+    async def _send_alert_notification(
+        self,
+        event_type: str,
+        *,
+        user_id: Optional[str] = None,
+        summary: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        targets = _alert_targets_for_event(self.hass, event_type, user_id=user_id)
+        if not targets:
+            return
+
+        data: Dict[str, Any] = {
+            "event_type": event_type,
+            "device_name": self.device_name,
+            "entry_id": self.entry_id,
+        }
+        if user_id:
+            data["user_id"] = user_id
+        if summary:
+            data["summary"] = summary
+        if extra:
+            for key, value in extra.items():
+                if key not in data:
+                    data[key] = value
+
+        if event_type == "device_offline":
+            message = f"{self.device_name} has been offline for 5 minutes."
+        elif event_type == "integrity_failed":
+            message = f"Integrity check failed for {self.device_name}."
+        elif event_type == "any_denied":
+            who = user_id or "Unknown user"
+            message = f"Access denied for {who} on {self.device_name}."
+        elif event_type == "user_granted":
+            who = user_id or "Unknown user"
+            message = f"{who} granted access on {self.device_name}."
+        else:
+            message = summary or f"{event_type} on {self.device_name}"
+
+        title = f"Akuvox • {self.device_name}"
+        service = getattr(self.hass, "services", None)
+        if not service or not hasattr(service, "async_call"):
+            return
+
+        for target in targets:
+            try:
+                await service.async_call(
+                    "notify",
+                    target,
+                    {"title": title, "message": message, "data": data},
+                    blocking=False,
+                )
+            except Exception as err:
+                _LOGGER.debug("Failed to notify %s: %s", target, _safe_str(err))

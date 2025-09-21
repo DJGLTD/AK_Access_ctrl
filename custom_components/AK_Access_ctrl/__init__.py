@@ -249,6 +249,18 @@ class AkuvoxUsersStore(Store):
     def all_ha_ids(self) -> List[str]:
         return [k for k in (self.data.get("users") or {}).keys() if _is_ha_id(k)]
 
+    def next_free_ha_id(self, *, blocked: Optional[List[str]] = None) -> str:
+        used: set[str] = set(self.all_ha_ids())
+        if blocked:
+            used.update(str(b) for b in blocked if _is_ha_id(str(b)))
+
+        n = 1
+        while True:
+            candidate = _ha_id_from_int(n)
+            if candidate not in used:
+                return candidate
+            n += 1
+
     def reserve_id(self, ha_id: str):
         self.data["users"].setdefault(ha_id, {})
 
@@ -296,17 +308,40 @@ class AkuvoxUsersStore(Store):
 
 
 class AkuvoxSettingsStore(Store):
+    DEFAULT_INTEGRITY_MINUTES = 15
+
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, f"{DOMAIN}_settings.json")
         self.data: Dict[str, Any] = {
             "auto_sync_time": None,
             "auto_reboot": {"time": None, "days": []},
+            "integrity_interval_minutes": self.DEFAULT_INTEGRITY_MINUTES,
+            "alerts": {"targets": {}},
         }
 
     async def async_load(self):
         x = await super().async_load()
         if x:
-            self.data = x
+            base = dict(self.data)
+            base.update(x)
+            self.data = base
+
+        if not isinstance(self.data.get("auto_reboot"), dict):
+            self.data["auto_reboot"] = {"time": None, "days": []}
+
+        integ = self.data.get("integrity_interval_minutes", self.DEFAULT_INTEGRITY_MINUTES)
+        try:
+            integ = int(integ)
+        except Exception:
+            integ = self.DEFAULT_INTEGRITY_MINUTES
+        self.data["integrity_interval_minutes"] = int(integ)
+
+        alerts = self.data.get("alerts")
+        if not isinstance(alerts, dict):
+            alerts = {}
+        targets = alerts.get("targets") if isinstance(alerts, dict) else {}
+        alerts["targets"] = self._sanitize_alert_targets(targets)
+        self.data["alerts"] = alerts
 
     async def async_save(self):
         await super().async_save(self.data)
@@ -325,18 +360,86 @@ class AkuvoxSettingsStore(Store):
         self.data["auto_reboot"] = {"time": time_hhmm, "days": list(days or [])}
         await self.async_save()
 
+    def get_integrity_interval_minutes(self) -> int:
+        try:
+            return int(self.data.get("integrity_interval_minutes", self.DEFAULT_INTEGRITY_MINUTES))
+        except Exception:
+            return self.DEFAULT_INTEGRITY_MINUTES
 
-async def _allocate_lowest_ha_id(users_store: AkuvoxUsersStore, in_use_ids: List[str]) -> str:
-    used = set(in_use_ids or [])
-    used.update(users_store.all_ha_ids())
-    n = 1
-    while True:
-        candidate = _ha_id_from_int(n)
-        if candidate not in used:
-            users_store.reserve_id(candidate)
-            await users_store.async_save()
-            return candidate
-        n += 1
+    async def set_integrity_interval_minutes(self, minutes: int):
+        self.data["integrity_interval_minutes"] = int(minutes)
+        await self.async_save()
+
+    def _sanitize_alert_targets(self, raw: Any) -> Dict[str, Dict[str, Any]]:
+        cleaned: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw, dict):
+            for target, cfg in raw.items():
+                if not isinstance(target, str) or not target.strip():
+                    continue
+                data: Dict[str, Any] = {}
+                if isinstance(cfg, dict):
+                    data["device_offline"] = bool(cfg.get("device_offline"))
+                    data["integrity_failed"] = bool(cfg.get("integrity_failed"))
+                    data["any_denied"] = bool(cfg.get("any_denied"))
+                    granted_cfg = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
+                    if not granted_cfg and isinstance(cfg.get("granted_users"), list):
+                        granted_cfg = {
+                            "any": bool(cfg.get("granted_any")),
+                            "users": cfg.get("granted_users"),
+                        }
+                else:
+                    data["device_offline"] = False
+                    data["integrity_failed"] = False
+                    data["any_denied"] = False
+                    granted_cfg = {}
+
+                users_raw = []
+                if isinstance(granted_cfg, dict):
+                    users_raw = granted_cfg.get("users") or []
+                    any_flag = bool(granted_cfg.get("any"))
+                else:
+                    any_flag = False
+
+                users_list: List[str] = []
+                if isinstance(users_raw, (list, tuple, set)):
+                    for item in users_raw:
+                        s = str(item).strip()
+                        if s:
+                            users_list.append(s)
+                elif isinstance(users_raw, str) and users_raw.strip():
+                    users_list = [users_raw.strip()]
+
+                data["granted"] = {"any": any_flag, "users": users_list}
+                cleaned[target] = data
+        return cleaned
+
+    def get_alert_targets(self) -> Dict[str, Dict[str, Any]]:
+        alerts = self.data.get("alerts") or {}
+        targets = alerts.get("targets") if isinstance(alerts, dict) else {}
+        return self._sanitize_alert_targets(targets)
+
+    async def set_alert_targets(self, targets: Dict[str, Any]):
+        self.data.setdefault("alerts", {})["targets"] = self._sanitize_alert_targets(targets)
+        await self.async_save()
+
+    def targets_for_event(self, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
+        mapping = self.get_alert_targets()
+        out: List[str] = []
+        norm_user = str(user_id).strip() if user_id not in (None, "") else None
+        for target, cfg in mapping.items():
+            if event_type == "device_offline" and cfg.get("device_offline"):
+                out.append(target)
+            elif event_type == "integrity_failed" and cfg.get("integrity_failed"):
+                out.append(target)
+            elif event_type == "any_denied" and cfg.get("any_denied"):
+                out.append(target)
+            elif event_type == "user_granted":
+                granted = cfg.get("granted") or {}
+                if granted.get("any"):
+                    out.append(target)
+                elif norm_user and norm_user in (granted.get("users") or []):
+                    out.append(target)
+        return out
 
 
 # ---------------------- Robust device user lookup + delete ---------------------- #
@@ -519,17 +622,47 @@ class SyncManager:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._auto_unsub = None
-        self._integrity_unsub = async_track_time_interval(
-            hass,
-            self._integrity_check_cb,
-            timedelta(minutes=15),
-        )
+        self._integrity_unsub = None
+        self._integrity_minutes = 15
+        self._apply_integrity_interval(self._integrity_minutes)
         self._reboot_unsub = None
         self._interval_unsub = async_track_time_interval(
             hass,
             self._interval_sync_cb,
             timedelta(minutes=30),
         )
+
+    def _apply_integrity_interval(self, minutes: int):
+        minutes = max(5, min(24 * 60, int(minutes)))
+        if self._integrity_unsub:
+            try:
+                self._integrity_unsub()
+            except Exception:
+                pass
+            self._integrity_unsub = None
+
+        self._integrity_minutes = minutes
+        self._integrity_unsub = async_track_time_interval(
+            self.hass,
+            self._integrity_check_cb,
+            timedelta(minutes=minutes),
+        )
+
+    def set_integrity_interval(self, minutes: Optional[int]):
+        if minutes is None:
+            minutes = self._settings_store().get_integrity_interval_minutes()
+        try:
+            value = int(minutes)
+        except Exception as exc:
+            raise ValueError("Invalid integrity interval") from exc
+        value = max(5, min(24 * 60, value))
+        settings: AkuvoxSettingsStore = self._settings_store()
+        self.hass.async_create_task(settings.set_integrity_interval_minutes(value))
+        if value != getattr(self, "_integrity_minutes", None):
+            self._apply_integrity_interval(value)
+
+    def get_integrity_interval_minutes(self) -> int:
+        return getattr(self, "_integrity_minutes", 15)
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
@@ -910,6 +1043,11 @@ class SyncManager:
                         coord._append_event("Integrity mismatch — queued sync")  # type: ignore[attr-defined]
                     except Exception:
                         pass
+                    try:
+                        if hasattr(coord, "_send_alert_notification"):
+                            await coord._send_alert_notification("integrity_failed")  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                     sq.mark_change(entry_id)
                     await sq.sync_now(entry_id)
             except Exception:
@@ -947,6 +1085,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 root["sync_manager"].set_auto_sync_time(t)
             except Exception:
                 pass
+        try:
+            root["sync_manager"].set_integrity_interval(settings.get_integrity_interval_minutes())
+        except Exception:
+            pass
         ar = settings.get_auto_reboot()
         if ar and (ar.get("time") and (ar.get("days"))):
             try:
@@ -1012,29 +1154,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         d = call.data
         name: str = d["name"].strip()
 
-        # collect in-use HA ids from all device snapshots
-        in_use_ha_ids: List[str] = []
-        for k, v in hass.data[DOMAIN].items():
-            if k in (
-                "groups_store",
-                "users_store",
-                "schedules_store",
-                "settings_store",
-                "sync_manager",
-                "sync_queue",
-                "_ui_registered",
-            ):
-                continue
-            c: AkuvoxCoordinator = v.get("coordinator")
-            if not c:
-                continue
-            for u in c.users or []:
-                uid = str(u.get("UserID") or u.get("ID") or "")
-                if _is_ha_id(uid):
-                    in_use_ha_ids.append(uid)
-
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-        ha_id = await _allocate_lowest_ha_id(users_store, in_use_ha_ids)
+        ha_id = users_store.next_free_ha_id()
+        users_store.reserve_id(ha_id)
+        await users_store.async_save()
 
         # Canonical FaceUrl that the device will fetch
         face_url = f"{face_base_url(hass)}/{ha_id}.jpg"
