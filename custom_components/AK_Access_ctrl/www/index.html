@@ -1285,6 +1285,20 @@ function focusSectionFromParams(){
   } catch (err) {}
 }
 
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data || {};
+  if (data.type !== 'akuvox-action') return;
+  const action = String(data.action || '').toLowerCase();
+  if (action === 'reboot_all' || action === 'reboot') {
+    rebootAll();
+  } else if (action === 'force_full_sync' || action === 'sync_all') {
+    forceFullSync();
+  } else if (action === 'sync_now') {
+    syncAllNow();
+  }
+});
+
 // ✅ Wait until the DOM exists before wiring buttons/inputs
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
@@ -1392,11 +1406,6 @@ setInterval(refresh, 5000);
   <div class="workspace">
     <div class="kpi">
       <div class="kpi-group">
-        <div class="box2"><button id="btnRebootAll" class="btn btn-danger"><i class="bi bi-power"></i> Reboot All</button></div>
-        <div class="box2"><button id="btnForceFull" class="btn btn-warning"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button></div>
-        <div class="box2"><button id="btnGlobalSettings" class="btn btn-secondary"><i class="bi bi-gear"></i> Global Settings</button></div>
-      </div>
-      <div class="kpi-group justify-content-end">
         <div class="box text-end"><div>Users</div><div id="kpiUsers">—</div></div>
         <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
