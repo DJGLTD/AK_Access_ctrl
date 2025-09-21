@@ -30,6 +30,7 @@ Follow the on‑screen steps. See the in‑integration options and services for 
 
 ## Notes
 - Web assets (in `custom_components/AK_Access_ctrl/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
+- Uploaded face images are stored within the integration directory at `custom_components/akuvox_ac/www/FaceData/`.
 - Hidden Akuvox dashboards are available at `/akuvox-ac/index`, `/akuvox-ac/users`, `/akuvox-ac/device-edit`, `/akuvox-ac/schedules`, and `/akuvox-ac/face-rec`; they respect the same authentication (HA session or `?token=` query parameter).
 - The included `manifest.json` declares the domain as `akuvox_ac`.
 - If you previously used a different folder layout (e.g., "Config Files" / "WWW Files"), that has been normalized to the Home Assistant conventions here.

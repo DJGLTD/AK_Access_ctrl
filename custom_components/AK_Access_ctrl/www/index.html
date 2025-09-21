@@ -776,6 +776,53 @@ function renderEvents(devs){
 function idMatchesFilter(id){
   return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
 }
+const FACE_URL_FIELDS = ['face_url','faceUrl','FaceUrl','FaceURL'];
+const FACE_STATUS_FIELDS = [
+  'face_active','faceActive','FaceActive','face','Face','face_status','FaceStatus',
+  'faceEnabled','FaceEnabled','face_enable','FaceEnable','faceRecognition','FaceRecognition',
+  'has_face','hasFace','HasFace'
+];
+
+function normalizeFaceFlag(value){
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  if (typeof value === 'string'){
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (['1','true','yes','y','on','active','enabled','present','available'].includes(lower)) return true;
+    if (['0','false','no','n','off','inactive','disabled','absent','missing'].includes(lower)) return false;
+  }
+  return null;
+}
+
+function extractFaceUrl(record){
+  if (!record || typeof record !== 'object') return '';
+  for (const key of FACE_URL_FIELDS){
+    const raw = record[key];
+    if (typeof raw === 'string' && raw.trim()){
+      return raw.trim();
+    }
+  }
+  return '';
+}
+
+function computeFaceActive(record){
+  if (!record || typeof record !== 'object') return false;
+  for (const key of FACE_STATUS_FIELDS){
+    if (!(key in record)) continue;
+    const normalized = normalizeFaceFlag(record[key]);
+    if (normalized !== null) return normalized;
+  }
+  const url = extractFaceUrl(record);
+  if (url){
+    const status = String(record.status || record.Status || '').trim().toLowerCase();
+    if (status === 'pending') return false;
+    return true;
+  }
+  return false;
+}
+
 function renderUsers(devs, registryUsers){
   const devices = Array.isArray(devs) ? devs : [];
   const normalizedDevices = devices.map(d => {
@@ -808,6 +855,8 @@ function renderUsers(devs, registryUsers){
       schedule_id: r.schedule_id || '',
       access_level: r.access_level || '',
       key_holder: !!r.key_holder,
+      face_url: extractFaceUrl(r),
+      face_active: computeFaceActive(r),
       _seenOn: new Set(),
       _denied: false
     });
@@ -822,6 +871,8 @@ function renderUsers(devs, registryUsers){
       const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
       const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
       const last = u.LastAccess || u.last_access || '—';
+      const deviceFaceUrl = extractFaceUrl(u);
+      const deviceFaceActive = computeFaceActive(u);
 
       if (!by.has(key)) {
         by.set(key, {
@@ -832,7 +883,9 @@ function renderUsers(devs, registryUsers){
           isCloud,
           last,
           presentOnDevice: true,
-          fromRegistry: false
+          fromRegistry: false,
+          face_url: deviceFaceUrl,
+          face_active: deviceFaceActive
         });
         return;
       }
@@ -851,6 +904,14 @@ function renderUsers(devs, registryUsers){
         cur._denied = true;
       } else if (!cur.fromRegistry) {
         cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      }
+      if (!cur.face_url && deviceFaceUrl) {
+        cur.face_url = deviceFaceUrl;
+      }
+      if (typeof cur.face_active !== 'boolean') {
+        cur.face_active = deviceFaceActive;
+      } else if (!cur.face_active && deviceFaceActive) {
+        cur.face_active = true;
       }
       by.set(key, cur);
     });
@@ -887,10 +948,14 @@ function renderUsers(devs, registryUsers){
       accessText = 'Pending';
     }
     const { _seenOn, _denied, ...rest } = item;
+    const faceActiveFinal = typeof rest.face_active === 'boolean'
+      ? rest.face_active
+      : computeFaceActive(rest);
     return {
       ...rest,
       access: accessText,
-      presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified)
+      presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
+      face_active: !!faceActiveFinal
     };
   });
 
@@ -902,7 +967,7 @@ function renderUsers(devs, registryUsers){
     if (u.isCloud) {
       return `<tr>
         <td>${u.name}</td>
-        <td colspan="4" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
+        <td colspan="5" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
       </tr>`;
     }
     const chips = (u.groups || []).map(g => `<span class="chip">${g}</span>`).join(' ');
@@ -912,6 +977,9 @@ function renderUsers(devs, registryUsers){
     if (!accessStr || accessLower === 'pending') accessBadge = '<span class="badge badge-pending">Pending</span>';
     else if (accessLower === 'denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
     else accessBadge = `<span class="badge badge-in-sync">${escapeHtml(accessStr)}</span>`;
+    const faceBadge = u.face_active
+      ? '<span class="badge badge-in-sync">Active</span>'
+      : '<span class="badge bg-secondary">Inactive</span>';
 
     const editHref = buildHref('users', { id: u.id });
     const actions = /^HA\d{3}$/.test(u.id)
@@ -923,12 +991,13 @@ function renderUsers(devs, registryUsers){
       <td>${u.name}</td>
       <td>${chips || '—'}</td>
       <td>${accessBadge}</td>
+      <td>${faceBadge}</td>
       <td>${u.last || '—'}</td>
       <td>${actions}</td>
     </tr>`;
   }).join('');
 
-  $('#tblUsers').innerHTML = rows || '<tr><td colspan="5" class="text-muted">No users</td></tr>';
+  $('#tblUsers').innerHTML = rows || '<tr><td colspan="6" class="text-muted">No users</td></tr>';
 
   $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1310,9 +1379,9 @@ setInterval(refresh, 5000);
         <div class="card-body">
           <table class="table table-sm table-dark mb-0 table-center">
             <thead>
-              <tr><th>Name</th><th>Groups</th><th>Access</th><th>Last Access</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Last Access</th><th>Actions</th></tr>
             </thead>
-            <tbody id="tblUsers"><tr><td colspan="5" class="text-muted">Loading…</td></tr></tbody>
+            <tbody id="tblUsers"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>

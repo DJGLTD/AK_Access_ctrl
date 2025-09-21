@@ -1421,7 +1421,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 except Exception:
                     pass
 
-        # remove face file from component assets
+        # remove face file from the integration's asset folder
         try:
             face_path = Path(__file__).parent / "www" / "FaceData" / f"{key}.jpg"
             if face_path.exists():
@@ -1429,10 +1429,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         except Exception:
             pass
 
+        # clean up any legacy face file stored under /config/www/AK_Access_ctrl
         try:
-            persist_face = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{key}.jpg"
-            if persist_face.exists():
-                persist_face.unlink()
+            legacy_face = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{key}.jpg"
+            if legacy_face.exists():
+                legacy_face.unlink()
         except Exception:
             pass
 
