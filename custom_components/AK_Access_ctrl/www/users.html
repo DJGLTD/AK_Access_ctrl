@@ -9,12 +9,43 @@
   <style>
     :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
     body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .container-narrow{ max-width:960px; margin:0 auto; }
     .card{ background:#111a2b; border:1px solid #1b2942; }
+    .card + .card{ margin-top:1.5rem; }
     label{ color:#fff; }
     .muted{ color:var(--muted); }
     .btn-toggle{ width: 220px; }
     .uploader-hint { font-size: .9rem; color: var(--muted); }
     .form-text code { color: #c7dfff; }
+    .existing-card{ background:#0f1f33; border:1px solid #1b2e4b; }
+    .existing-card .card-title{ margin:0; font-size:1.05rem; font-weight:600; }
+    .existing-card .list-group-item{ background:#0d1d33; border:1px solid rgba(255,255,255,0.05); border-radius:0.75rem; margin-bottom:0.6rem; padding:1rem 1.1rem; color:var(--text); transition:transform .15s ease, border-color .15s ease; }
+    .existing-card .list-group-item:last-child{ margin-bottom:0; }
+    .existing-card .list-group-item .badge{ background:rgba(13,202,240,.18); color:var(--accent); }
+    .existing-card .list-group-item small{ color:var(--muted); }
+    .existing-card .list-group-item-action{ display:flex; flex-direction:column; align-items:flex-start; gap:0.3rem; text-align:left; }
+    .existing-card .list-group-item-action:hover{ transform:translateY(-1px); border-color:rgba(13,202,240,.4); }
+    .existing-card .list-group-item-action.active,
+    .existing-card .list-group-item-action:focus{ border-color:rgba(13,202,240,.45); box-shadow:0 0 0 0.2rem rgba(13,202,240,.18); }
+    .existing-card .list-empty{ border-radius:0.75rem; background:#0d1d33; padding:1rem; color:var(--muted); text-align:center; }
+    .existing-search{ min-width:220px; }
+    .existing-search input{ background:#0b1728; border:1px solid #1b2e4b; color:var(--text); }
+    .existing-search input:focus{ border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(13,202,240,.2); }
+    .face-options{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    @media (max-width: 992px){
+      .container-narrow{ max-width:100%; }
+    }
+    @media (max-width: 720px){
+      .container-narrow{ padding:0.75rem; }
+      .card{ padding:1.25rem; }
+      .btn-toggle{ width:100%; }
+      .face-options{ flex-direction:column; }
+      .action-buttons{ flex-direction:column; }
+      .action-buttons .btn, .action-buttons a{ width:100%; }
+      .existing-search{ width:100%; }
+      .existing-card .list-group-item{ margin-bottom:0.75rem; }
+    }
   </style>
 </head>
 <body>
@@ -480,6 +511,30 @@ function setReservationMessage(html, tone = 'muted') {
   el.innerHTML = `<span class="${cls}">${html}</span>`;
 }
 
+function showExistingHint(html, tone = 'muted') {
+  const el = document.getElementById('existingUsersHint');
+  if (!el) return;
+  if (!html) {
+    el.innerHTML = '';
+    return;
+  }
+  let cls = 'muted';
+  if (tone === 'accent') cls = 'text-info';
+  else if (tone === 'warning') cls = 'text-warning';
+  else if (tone === 'error') cls = 'text-danger';
+  el.innerHTML = `<span class="${cls}">${html}</span>`;
+}
+
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch] || ch));
+}
+
 function updateKeyHolderAvailability(){
   const row = document.getElementById('keyHolderRow');
   const input = document.getElementById('key_holder');
@@ -569,6 +624,116 @@ async function reserveNewId(options = {}) {
     }
     return '';
   }
+}
+
+function renderExistingUsers(){
+  const list = document.getElementById('existingUsersList');
+  if (!list) return;
+  const searchInput = document.getElementById('userSearch');
+  const filter = (searchInput?.value || '').trim().toLowerCase();
+  const raw = Array.isArray(REGISTRY) ? REGISTRY : [];
+  const normalized = raw.map((u) => {
+    const id = String(u.id || u.UserID || u.ID || '').trim();
+    const name = u.name || u.Name || id;
+    const groups = Array.isArray(u.groups) ? u.groups : Array.isArray(u.Groups) ? u.Groups : [];
+    const last = u.last_access || u.LastAccess || '';
+    return { id, name, groups, last };
+  }).filter(u => u.id);
+
+  if (!normalized.length) {
+    list.innerHTML = '<div class="list-empty">No Home Assistant managed users yet. Create a new profile above.</div>';
+    showExistingHint('Add a new user above to get started.', 'accent');
+    return;
+  }
+
+  const filtered = normalized.filter(u => {
+    if (!filter) return true;
+    const hay = `${u.id} ${u.name} ${(u.groups || []).join(' ')}`.toLowerCase();
+    return hay.includes(filter);
+  }).sort((a,b) => a.name.localeCompare(b.name, undefined, { sensitivity:'base' }));
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="list-empty">No users match that search.</div>';
+    showExistingHint('Try a different name, ID or group.', 'warning');
+    return;
+  }
+
+  const activeId = CURRENT?.id ? String(CURRENT.id) : '';
+  list.innerHTML = filtered.map((u) => {
+    const classes = ['list-group-item', 'list-group-item-action'];
+    if (activeId && activeId === String(u.id)) classes.push('active');
+    const groupsLabel = (u.groups || []).length ? (u.groups || []).join(', ') : 'No groups assigned';
+    const lastLine = u.last ? `<small>Last access: ${escapeHtml(u.last)}</small>` : '';
+    return `
+      <button type="button" class="${classes.join(' ')}" data-user-id="${escapeHtml(u.id)}">
+        <div class="d-flex justify-content-between align-items-center w-100">
+          <span class="fw-semibold">${escapeHtml(u.name)}</span>
+          <span class="badge">${escapeHtml(u.id)}</span>
+        </div>
+        <small>${escapeHtml(groupsLabel)}</small>
+        ${lastLine}
+      </button>
+    `;
+  }).join('');
+
+  list.querySelectorAll('[data-user-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userId || '';
+      if (uid) selectExistingUser(uid);
+    });
+  });
+}
+
+function selectExistingUser(id, options = {}){
+  const targetId = String(id || '').trim();
+  if (!targetId) return;
+  const candidates = Array.isArray(REGISTRY) ? REGISTRY : [];
+  const existing = candidates.find(u => String(u.id || u.UserID || u.ID || '').trim() === targetId);
+  if (!existing) {
+    alert('Unable to find that user in Home Assistant.');
+    return;
+  }
+
+  CURRENT = {
+    ...blankProfile(existing.id || targetId),
+    ...existing,
+    groups: Array.isArray(existing.groups)
+      ? [...existing.groups]
+      : Array.isArray(existing.Groups)
+      ? [...existing.Groups]
+      : ['Default'],
+  };
+  if (!CURRENT.schedule_id && CURRENT.schedule_name) {
+    CURRENT.schedule_id = idForName(CURRENT.schedule_name);
+  }
+
+  RESERVED_ID = null;
+  stopReservationHeartbeat();
+  setReservationMessage('');
+
+  const idRow = document.getElementById('idRow');
+  if (idRow) idRow.style.display = 'block';
+  const idInput = document.getElementById('user_id');
+  if (idInput) idInput.value = CURRENT.id || targetId;
+  document.getElementById('title').textContent = 'Edit User';
+
+  fillForm();
+  fillPhones();
+  updateKeyHolderAvailability();
+  renderExistingUsers();
+  showExistingHint('Editing existing user profile.', 'accent');
+
+  if (options?.updateUrl !== false) {
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set('id', CURRENT.id || targetId);
+      url.searchParams.delete('mode');
+      history.replaceState(history.state || {}, '', url);
+    } catch (err) {}
+  }
+
+  const nameInput = document.getElementById('name');
+  if (nameInput) nameInput.focus();
 }
 
 // ---------- schedule id mapping helpers ----------
@@ -693,30 +858,26 @@ async function load(){
     }
 
     const params = new URLSearchParams(location.search);
-    const id = params.get('id');
-    if (id){
-      // Edit existing
-      const existing = REGISTRY.find(u => u.id === id);
-      if (existing){
-        CURRENT = {
-          ...blankProfile(existing.id),
-          ...existing,
-          groups: Array.isArray(existing.groups) ? [...existing.groups] : ['Default'],
-        };
-        if (!CURRENT.schedule_id && CURRENT.schedule_name){
-          CURRENT.schedule_id = idForName(CURRENT.schedule_name);
-        }
+    const id = (params.get('id') || '').trim();
+    const modeParam = (params.get('mode') || '').toLowerCase();
+    const startInEditMode = modeParam === 'edit';
+    let handledBySelect = false;
+
+    if (id) {
+      const hasMatch = (REGISTRY || []).some(u => String(u.id || u.UserID || u.ID || '') === id);
+      if (hasMatch) {
+        selectExistingUser(id, { updateUrl: false });
+        handledBySelect = true;
       } else {
         CURRENT = blankProfile(id);
+        RESERVED_ID = null;
+        stopReservationHeartbeat();
+        setReservationMessage('');
+        document.getElementById('title').textContent = 'Edit User';
+        document.getElementById('idRow').style.display = 'block';
+        document.getElementById('user_id').value = CURRENT.id;
       }
-      RESERVED_ID = null;
-      stopReservationHeartbeat();
-      setReservationMessage('');
-      document.getElementById('title').textContent = 'Edit User';
-      document.getElementById('idRow').style.display = 'block';
-      document.getElementById('user_id').value = CURRENT.id;
-    }else{
-      // Add new — reserve an ID up-front so we can upload the face on Save
+    } else if (!startInEditMode) {
       document.getElementById('title').textContent = 'Add User';
       RESERVED_ID = null;
       CURRENT = blankProfile('');
@@ -727,9 +888,32 @@ async function load(){
       } else {
         document.getElementById('idRow').style.display = 'none';
       }
+      showExistingHint('Need to update someone? Pick them from the list below.', 'muted');
+    } else {
+      CURRENT = blankProfile('');
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      setReservationMessage('');
+      document.getElementById('title').textContent = 'Edit User';
+      document.getElementById('idRow').style.display = 'none';
+      showExistingHint('Select a user below to start editing.', 'accent');
     }
-    fillForm();
-    fillPhones();
+
+    if (!handledBySelect) {
+      fillForm();
+      fillPhones();
+    }
+
+    renderExistingUsers();
+
+    const searchInput = document.getElementById('userSearch');
+    if (searchInput && !searchInput.dataset.bound) {
+      searchInput.addEventListener('input', () => renderExistingUsers());
+      searchInput.dataset.bound = '1';
+    }
+    if (startInEditMode && !id && searchInput) {
+      searchInput.focus();
+    }
   } finally {
     setBusy(false);
   }
@@ -899,7 +1083,7 @@ async function save(){
     // Back to list
     stopReservationHeartbeat();
     RESERVED_ID = null;
-    openInApp('index', {}, { replaceState: true });
+    openInApp('index', { section: 'users' }, { replaceState: true });
   } catch (e){
     if (handleAuthError(e)) return;
     alert('Save failed: ' + (e && e.message ? e.message : e));
@@ -913,7 +1097,7 @@ async function cancelEdit(evt){
   if (evt) evt.preventDefault();
   stopReservationHeartbeat();
   await releaseReservation();
-  openInApp('index', {}, { replaceState: true });
+  openInApp('index', { section: 'users' }, { replaceState: true });
 }
 
 function showPanel(which){
@@ -922,7 +1106,7 @@ function showPanel(which){
 }
 </script>
 
-<div class="container py-3">
+<div class="container py-3 container-narrow">
   <div class="d-flex align-items-center gap-2">
     <h2 id="title" class="m-0">User</h2>
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
@@ -947,7 +1131,7 @@ function showPanel(which){
 
     <div class="mb-3">
       <label class="form-label">Face Recognition</label>
-      <div class="d-flex gap-2 mb-2">
+      <div class="face-options mb-2">
         <button class="btn btn-outline-light btn-toggle" onclick="showPanel('local')"><i class="bi bi-upload me-1"></i>Local enrolment</button>
         <button class="btn btn-outline-light btn-toggle" onclick="showPanel('remote')"><i class="bi bi-wifi me-1"></i>Remote enrolment</button>
       </div>
@@ -987,12 +1171,28 @@ function showPanel(which){
       <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
     </div>
 
-    <div class="d-flex gap-2 mb-3">
+    <div class="action-buttons mb-3">
       <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
       <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
     <hr class="my-3"/>
+  </div>
+
+  <div class="card existing-card p-3">
+    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+      <div>
+        <p class="card-title">Existing users</p>
+        <div id="existingUsersHint" class="muted small">Browse Home Assistant managed profiles.</div>
+      </div>
+      <div class="existing-search">
+        <label for="userSearch" class="form-label visually-hidden">Search users</label>
+        <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search name or ID" aria-label="Search users"/>
+      </div>
+    </div>
+    <div class="list-group list-group-flush mt-3" id="existingUsersList">
+      <div class="list-empty">Loading users…</div>
+    </div>
   </div>
 </div>
 <script>load()</script>
