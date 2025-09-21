@@ -116,8 +116,54 @@ function handleAuthError(err){
   return true;
 }
 
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const API_STATE  = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
+
 async function getState(){
-  const res = await fetchWithAuth('/api/akuvox_ac/ui/state');
+  const res = await fetchWithAuth(API_STATE);
   if (!res.ok){
     const text = await res.text();
     const err = buildError(res, text);
@@ -128,7 +174,7 @@ async function getState(){
 }
 
 async function action(act, payload){
-  const res = await fetchWithAuth('/api/akuvox_ac/ui/action', {
+  const res = await fetchWithAuth(API_ACTION, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: act, payload })

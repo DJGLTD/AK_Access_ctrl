@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import time
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
+from homeassistant.components.http.auth import async_sign_path
+from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
 
@@ -25,6 +28,19 @@ STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 
 RESERVATION_TTL_MINUTES = 2
+SIGNED_API_PATHS: Dict[str, str] = {
+    "state": "/api/akuvox_ac/ui/state",
+    "action": "/api/akuvox_ac/ui/action",
+    "settings": "/api/akuvox_ac/ui/settings",
+    "phones": "/api/akuvox_ac/ui/phones",
+    "reserve_id": "/api/akuvox_ac/ui/reserve_id",
+    "release_id": "/api/akuvox_ac/ui/release_id",
+    "reservation_ping": "/api/akuvox_ac/ui/reservation_ping",
+    "upload_face": "/api/akuvox_ac/ui/upload_face",
+    "remote_enrol": "/api/akuvox_ac/ui/remote_enrol",
+    "devices": "/api/akuvox_ac/ui/devices",
+    "service_edit_user": "/api/services/akuvox_ac/edit_user",
+}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,6 +109,67 @@ def _static_asset(path: str) -> Path:
     if not candidate.is_file():
         raise web.HTTPNotFound()
     return candidate
+
+
+def _signed_paths_for_request(
+    hass: HomeAssistant, request: web.Request
+) -> Dict[str, str]:
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    if not refresh_id:
+        return {}
+
+    signed: Dict[str, str] = {}
+
+    for key, path in SIGNED_API_PATHS.items():
+        try:
+            signed[key] = async_sign_path(
+                hass,
+                path,
+                dt.timedelta(minutes=10),
+                refresh_token_id=refresh_id,
+            )
+        except Exception as err:  # pragma: no cover - best effort
+            _LOGGER.debug("Failed to sign %s for Akuvox UI: %s", path, err)
+
+    return signed
+
+
+def _inject_signed_paths(html: str, signed: Dict[str, str]) -> str:
+    if not signed:
+        return html
+
+    try:
+        payload = json.dumps(signed)
+    except Exception:  # pragma: no cover - shouldn't happen
+        return html
+
+    script = (
+        "<script>"
+        "(function(){"
+        "  try {"
+        "    const incoming = Object.freeze(%s);"
+        "    const target = Object.assign({}, window.AK_AC_SIGNED_PATHS || {}, incoming);"
+        "    window.AK_AC_SIGNED_PATHS = target;"
+        "    try { sessionStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
+        "    try { localStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
+        "  } catch (err) {}"
+        "})();"
+        "</script>"
+    ) % payload
+
+    lowered = html.lower()
+    head_index = lowered.find("</head>")
+    if head_index != -1:
+        return html[:head_index] + script + html[head_index:]
+
+    body_index = lowered.find("<body")
+    if body_index != -1:
+        insert_at = lowered.find(">", body_index)
+        if insert_at != -1:
+            insert_at += 1
+            return html[:insert_at] + script + html[insert_at:]
+
+    return script + html
 
 
 def _only_hhmm(v: Optional[str]) -> str:
@@ -361,6 +438,16 @@ class AkuvoxDashboardView(HomeAssistantView):
             raise web.HTTPNotFound()
 
         asset = _static_asset(target)
+        if asset.suffix.lower() == ".html":
+            hass: HomeAssistant = request.app["hass"]
+            signed = _signed_paths_for_request(hass, request)
+            try:
+                html = asset.read_text(encoding="utf-8")
+            except Exception:
+                html = asset.read_text()
+            html = _inject_signed_paths(html, signed)
+            return web.Response(text=html, content_type="text/html")
+
         return web.FileResponse(asset)
 
 

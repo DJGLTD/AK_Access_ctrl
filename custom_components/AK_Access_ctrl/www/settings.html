@@ -162,6 +162,49 @@ function handleAuthError(err){
   return true;
 }
 
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
 async function apiGet(url){
   const r = await fetchWithAuth(url);
   if (!r.ok){
@@ -221,8 +264,8 @@ function openInApp(view, params = {}, options = {}) {
   return delivered;
 }
 
-const API_SETTINGS = '/api/akuvox_ac/ui/settings';
-const API_PHONES = '/api/akuvox_ac/ui/phones';
+const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
+const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 
 let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
 let PHONES = [];

@@ -135,6 +135,51 @@ function getToken(){
   return sessionStorage.getItem('akuvox_ll_token') || null;
 }
 
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
+
 function buildUrl(view, params = {}){
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([k,v]) => {
@@ -211,7 +256,7 @@ async function fetchVersion(){
   const token = getToken();
   const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
   try {
-    const res = await fetch('/api/akuvox_ac/ui/state', {
+    const res = await fetch(API_STATE, {
       credentials: 'same-origin',
       headers
     });
