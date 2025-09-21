@@ -41,6 +41,8 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "schedules.html": "schedules.html",
     "users": "users.html",
     "users.html": "users.html",
+    "settings": "settings.html",
+    "settings.html": "settings.html",
 }
 
 
@@ -621,6 +623,107 @@ class AkuvoxUIDevices(HomeAssistantView):
         return web.json_response({"devices": out})
 
 
+class AkuvoxUISettings(HomeAssistantView):
+    url = "/api/akuvox_ac/ui/settings"
+    name = "api:akuvox_ac:ui_settings"
+    requires_auth = True
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+
+        settings = root.get("settings_store")
+        users_store = root.get("users_store")
+
+        interval = None
+        alerts = {"targets": {}}
+        if settings:
+            try:
+                interval = settings.get_integrity_interval_minutes()
+            except Exception:
+                interval = None
+            try:
+                alerts = {"targets": settings.get_alert_targets()}
+            except Exception:
+                data = getattr(settings, "data", {})
+                if isinstance(data, dict):
+                    raw = data.get("alerts") or {}
+                    targets = raw.get("targets") if isinstance(raw, dict) else {}
+                    alerts = {"targets": targets if isinstance(targets, dict) else {}}
+
+        registry_users: List[Dict[str, str]] = []
+        if users_store:
+            try:
+                for key, prof in (users_store.all() or {}).items():
+                    if not _is_ha_id(key):
+                        continue
+                    if _profile_is_empty_reserved(prof):
+                        continue
+                    name = prof.get("name") or key
+                    registry_users.append({"id": key, "name": name})
+            except Exception:
+                pass
+
+        registry_users.sort(key=lambda x: x.get("name", "").lower())
+
+        return web.json_response(
+            {
+                "ok": True,
+                "integrity_interval_minutes": interval,
+                "alerts": alerts,
+                "registry_users": registry_users,
+                "min_minutes": 5,
+                "max_minutes": 24 * 60,
+            }
+        )
+
+    async def post(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        settings = root.get("settings_store")
+        manager = root.get("sync_manager")
+
+        response: Dict[str, Any] = {"ok": True}
+
+        if "integrity_interval_minutes" in payload:
+            minutes = payload.get("integrity_interval_minutes")
+            if manager and hasattr(manager, "set_integrity_interval"):
+                try:
+                    manager.set_integrity_interval(minutes)
+                    if hasattr(manager, "get_integrity_interval_minutes"):
+                        response["integrity_interval_minutes"] = manager.get_integrity_interval_minutes()
+                except Exception as err:
+                    return web.json_response({"ok": False, "error": str(err)}, status=400)
+            elif settings:
+                try:
+                    value = int(minutes)
+                except Exception:
+                    return web.json_response({"ok": False, "error": "invalid interval"}, status=400)
+                value = max(5, min(24 * 60, value))
+                try:
+                    await settings.set_integrity_interval_minutes(value)
+                    response["integrity_interval_minutes"] = value
+                except Exception as err:
+                    return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "alerts" in payload and settings and hasattr(settings, "set_alert_targets"):
+            alerts_payload = payload.get("alerts") or {}
+            targets = alerts_payload.get("targets") if isinstance(alerts_payload, dict) else {}
+            try:
+                await settings.set_alert_targets(targets)
+                response["alerts"] = {"targets": settings.get_alert_targets()}
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        return web.json_response(response)
+
+
 # ========================= NEW: list HA mobile app targets =========================
 class AkuvoxUIPhones(HomeAssistantView):
     """
@@ -673,19 +776,30 @@ class AkuvoxUIReserveId(HomeAssistantView):
         if not users_store:
             return web.json_response({"ok": False, "error": "users_store not ready"}, status=500)
 
-        # Gather existing HA ids
+        # Find lowest free HA### using local registry only
         try:
-            existing = set(k for k in (users_store.all() or {}).keys() if _is_ha_id(k))
+            if hasattr(users_store, "next_free_ha_id"):
+                candidate = users_store.next_free_ha_id()  # type: ignore[attr-defined]
+            else:
+                existing = set(k for k in (users_store.all() or {}).keys() if _is_ha_id(k))
+                n = 1
+                while True:
+                    candidate = _ha_id_from_int(n)
+                    if candidate not in existing:
+                        break
+                    n += 1
         except Exception:
-            existing = set()
-
-        # Find lowest free HA###
-        n = 1
-        while True:
-            candidate = _ha_id_from_int(n)
-            if candidate not in existing:
-                break
-            n += 1
+            n = 1
+            while True:
+                candidate = _ha_id_from_int(n)
+                try:
+                    current = users_store.all()  # type: ignore[attr-defined]
+                except Exception:
+                    current = {}
+                existing_keys = set(k for k in (current or {}).keys() if _is_ha_id(k))
+                if candidate not in existing_keys:
+                    break
+                n += 1
 
         # Reserve pending profile; set reserved_at and prefill face_url
         try:
@@ -978,6 +1092,7 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxUIView())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
+    hass.http.register_view(AkuvoxUISettings())
     hass.http.register_view(AkuvoxUIPhones())
     hass.http.register_view(AkuvoxUIReserveId())
     hass.http.register_view(AkuvoxUIReleaseId())   # <-- new

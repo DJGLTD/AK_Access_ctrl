@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Global Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .small-mono{ font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function findHaToken(){ const ll = sessionStorage.getItem('akuvox_ll_token'); return ll || null; }
+const BEARER = findHaToken();
+const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
+const SAME_ORIGIN = { credentials: 'same-origin' };
+
+async function apiGet(url){
+  const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetch(url, { method:'POST', ...SAME_ORIGIN, headers:{'Content-Type':'application/json', ...AUTH_HEADERS}, body: JSON.stringify(body||{}) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+const UI_ROOT = '/akuvox-ac';
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
+const API_SETTINGS = '/api/akuvox_ac/ui/settings';
+const API_PHONES = '/api/akuvox_ac/ui/phones';
+
+let SETTINGS_DATA = { integrity_interval_minutes: null, alerts: { targets: {} }, registry_users: [] };
+let PHONES = [];
+let USERS = [];
+let ALERT_TARGETS = {};
+let alertsSaving = false;
+let integritySaving = false;
+
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+function setIntegrityStatus(text, tone = 'muted') {
+  const el = document.getElementById('integrityStatus');
+  if (!el) return;
+  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
+  el.textContent = text;
+  el.className = tone === 'error' ? 'text-danger' : tone === 'success' ? 'text-success' : 'muted';
+}
+function setAlertsStatus(text, tone = 'muted') {
+  const el = document.getElementById('alertsStatus');
+  if (!el) return;
+  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
+  el.textContent = text;
+  el.className = tone === 'error' ? 'text-danger small' : tone === 'success' ? 'text-success small' : 'muted small';
+  el.classList.remove('visually-hidden');
+}
+
+function minutesToHHMM(minutes){
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const hrs = Math.floor(value / 60);
+  const mins = value % 60;
+  return `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}`;
+}
+function hhmmToMinutes(str){
+  if (!str || typeof str !== 'string') return null;
+  const clean = str.trim();
+  if (!/^\d{1,2}:\d{2}$/.test(clean)) return null;
+  const [h, m] = clean.split(':');
+  const hours = Number(h);
+  const mins = Number(m);
+  if (!Number.isInteger(hours) || !Number.isInteger(mins)) return null;
+  const total = hours * 60 + mins;
+  if (mins >= 60) return null;
+  return Math.max(5, Math.min(1440, total));
+}
+
+function friendlyName(service){
+  const found = PHONES.find(p => p.service === service);
+  if (found) return found.name || found.service;
+  return service;
+}
+
+function ensureTargetDefaults(target){
+  if (!ALERT_TARGETS[target] || typeof ALERT_TARGETS[target] !== 'object'){
+    ALERT_TARGETS[target] = {
+      device_offline: false,
+      integrity_failed: false,
+      any_denied: false,
+      granted: { any: false, users: [] }
+    };
+  } else {
+    const cfg = ALERT_TARGETS[target];
+    if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
+    if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
+    if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
+    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+    if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
+    if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
+    cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u))));
+  }
+}
+
+function renderIntegrity(){
+  const input = document.getElementById('integrityInput');
+  if (!input) return;
+  const minutes = SETTINGS_DATA.integrity_interval_minutes || 15;
+  input.value = minutesToHHMM(minutes);
+  setIntegrityStatus('');
+}
+
+function availablePhonesForSelect(){
+  const configured = new Set(Object.keys(ALERT_TARGETS || {}));
+  return PHONES.filter(p => !configured.has(p.service));
+}
+
+function renderAlerts(){
+  const wrap = document.getElementById('alertsContainer');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const targets = Object.keys(ALERT_TARGETS || {});
+
+  const addSel = document.getElementById('addTargetSelect');
+  if (addSel){
+    addSel.innerHTML = '';
+    const opts = availablePhonesForSelect();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = opts.length ? 'Add device…' : '(no additional devices)';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    addSel.appendChild(placeholder);
+    opts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.service;
+      opt.textContent = friendlyName(p.service);
+      addSel.appendChild(opt);
+    });
+    addSel.disabled = opts.length === 0;
+  }
+
+  if (!targets.length){
+    const empty = document.createElement('div');
+    empty.className = 'text-muted';
+    empty.textContent = PHONES.length ? 'No alert targets configured yet.' : 'No Home Assistant mobile app notify targets were found.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  targets.sort((a,b) => friendlyName(a).localeCompare(friendlyName(b))).forEach(service => {
+    ensureTargetDefaults(service);
+    const cfg = ALERT_TARGETS[service];
+    const card = document.createElement('div');
+    card.className = 'card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-phone"></i> ${friendlyName(service)}</span>
+        <button class="btn btn-sm btn-outline-danger" data-remove="${service}"><i class="bi bi-x-lg"></i> Remove</button>
+      </div>
+      <div class="card-body">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="device_offline" ${cfg.device_offline ? 'checked' : ''}>
+          <label class="form-check-label">Device Offline (5 minute delay)</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="integrity_failed" ${cfg.integrity_failed ? 'checked' : ''}>
+          <label class="form-check-label">Device Integrity Check Failed</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="any_denied" ${cfg.any_denied ? 'checked' : ''}>
+          <label class="form-check-label">Any User Denied Access</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_any" ${cfg.granted.any ? 'checked' : ''}>
+          <label class="form-check-label">Any User Granted Access</label>
+        </div>
+        <div class="mt-3">
+          <label class="form-label">Specific users to notify on grant</label>
+          <select class="form-select" multiple size="5" data-target="${service}" data-field="granted_users"></select>
+          <div class="form-text">Hold Ctrl/Cmd to select multiple users.</div>
+        </div>
+      </div>`;
+    const select = card.querySelector('select[data-field="granted_users"]');
+    if (select){
+      USERS.forEach(user => {
+        const opt = document.createElement('option');
+        opt.value = user.id;
+        opt.textContent = `${user.name} (${user.id})`;
+        if (cfg.granted.users.includes(user.id)) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+    wrap.appendChild(card);
+  });
+
+  wrap.querySelectorAll('button[data-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const service = btn.getAttribute('data-remove');
+      if (!service) return;
+      delete ALERT_TARGETS[service];
+      SETTINGS_DATA.alerts = SETTINGS_DATA.alerts || { targets: {} };
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      renderAlerts();
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('input[data-field]').forEach(input => {
+    input.addEventListener('change', async () => {
+      const service = input.getAttribute('data-target');
+      const field = input.getAttribute('data-field');
+      if (!service || !field) return;
+      ensureTargetDefaults(service);
+      const cfg = ALERT_TARGETS[service];
+      const checked = input.checked;
+      if (field === 'device_offline') cfg.device_offline = checked;
+      else if (field === 'integrity_failed') cfg.integrity_failed = checked;
+      else if (field === 'any_denied') cfg.any_denied = checked;
+      else if (field === 'granted_any') cfg.granted.any = checked;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('select[data-field="granted_users"]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const service = sel.getAttribute('data-target');
+      if (!service) return;
+      ensureTargetDefaults(service);
+      const values = Array.from(sel.selectedOptions).map(opt => opt.value);
+      ALERT_TARGETS[service].granted.users = values;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+}
+
+async function saveIntegrity(minutes){
+  if (integritySaving) return;
+  integritySaving = true;
+  try{
+    setIntegrityStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { integrity_interval_minutes: minutes });
+    if (res.integrity_interval_minutes){
+      SETTINGS_DATA.integrity_interval_minutes = res.integrity_interval_minutes;
+      setIntegrityStatus('Saved ✓', 'success');
+    } else {
+      setIntegrityStatus('Saved ✓', 'success');
+    }
+  }catch(err){
+    setIntegrityStatus('Save failed', 'error');
+    alert('Failed to update integrity interval: ' + (err && err.message ? err.message : err));
+  }finally{
+    integritySaving = false;
+  }
+}
+
+async function saveAlerts(){
+  if (alertsSaving) return;
+  alertsSaving = true;
+  try{
+    setAlertsStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
+    if (res.alerts && res.alerts.targets){
+      ALERT_TARGETS = res.alerts.targets;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    }
+    setAlertsStatus('Saved ✓', 'success');
+  }catch(err){
+    setAlertsStatus('Save failed', 'error');
+    alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
+  }finally{
+    alertsSaving = false;
+  }
+}
+
+async function loadData(){
+  setBusy(true);
+  try{
+    const [settingsResp, phonesResp] = await Promise.all([
+      apiGet(API_SETTINGS),
+      apiGet(API_PHONES).catch(() => ({ phones: [] }))
+    ]);
+    SETTINGS_DATA = settingsResp || { integrity_interval_minutes: 15, alerts: { targets: {} }, registry_users: [] };
+    PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
+    USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+    ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
+    Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    renderIntegrity();
+    renderAlerts();
+  } catch (err){
+    alert('Failed to load settings: ' + (err && err.message ? err.message : err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnBack')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openInApp('index', {}, { replaceState: true });
+  });
+
+  const integrityInput = document.getElementById('integrityInput');
+  integrityInput?.addEventListener('change', async () => {
+    const val = hhmmToMinutes(integrityInput.value);
+    if (val === null){
+      setIntegrityStatus('Enter a valid HH:MM between 00:05 and 24:00', 'error');
+      return;
+    }
+    SETTINGS_DATA.integrity_interval_minutes = val;
+    await saveIntegrity(val);
+  });
+
+  document.getElementById('addTargetSelect')?.addEventListener('change', async (ev) => {
+    const service = ev.target.value;
+    if (!service) return;
+    ensureTargetDefaults(service);
+    ALERT_TARGETS[service] = ALERT_TARGETS[service];
+    SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+    ev.target.value = '';
+    renderAlerts();
+    await saveAlerts();
+  });
+
+  loadData();
+});
+</script>
+
+<div class="container py-3">
+  <div class="d-flex align-items-center gap-2">
+    <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
+    <h2 class="m-0">Global Settings</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Integrity Check Interval</div>
+    <div class="card-body">
+      <p class="muted">Set how often Home Assistant performs the integrity check. Minimum 5 minutes, maximum 24 hours.</p>
+      <div class="d-flex align-items-center gap-2" style="max-width: 220px;">
+        <input id="integrityInput" class="form-control" placeholder="HH:MM" />
+      </div>
+      <div id="integrityStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Alert Targets</span>
+      <select id="addTargetSelect" class="form-select form-select-sm" style="width:auto;"></select>
+    </div>
+    <div class="card-body">
+      <p class="muted">Choose which Home Assistant mobile app devices receive alerts. Configure per-device notification rules below.</p>
+      <div id="alertsContainer"></div>
+      <div id="alertsStatus" class="visually-hidden mt-3"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

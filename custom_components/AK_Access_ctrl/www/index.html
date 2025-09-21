@@ -281,7 +281,7 @@ function renderDevices(devs){
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
     const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
     const editHref  = id ? buildHref('device-edit', { id }) : '';
-    const editBtn   = id ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
+    const editBtn   = (isOnline && id) ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
 
     return `<tr>
       <td>${name}</td>
@@ -525,6 +525,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
+  document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openInApp('settings');
+  });
 
   const addUserBtn = document.getElementById('btnAddUser');
   if (addUserBtn) {
@@ -609,6 +613,7 @@ setInterval(refresh, 5000);
       <div class="kpi-group">
         <div class="box2"><button id="btnRebootAll" class="btn btn-danger"><i class="bi bi-power"></i> Reboot All</button></div>
         <div class="box2"><button id="btnForceFull" class="btn btn-warning"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button></div>
+        <div class="box2"><button id="btnGlobalSettings" class="btn btn-secondary"><i class="bi bi-gear"></i> Global Settings</button></div>
       </div>
       <div class="kpi-group justify-content-end">
         <div class="box text-end"><div>Users</div><div id="kpiUsers">—</div></div>
