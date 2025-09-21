@@ -55,6 +55,76 @@
   </div>
 
   <script>
+  const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+  function readAuthSigFrom(search = location.search){
+    try {
+      const params = new URLSearchParams(search);
+      const value = params.get('authSig');
+      return value || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function rememberAuthSig(value){
+    if (!value) return;
+    try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+    try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+    try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+    try {
+      if (window.parent && window.parent !== window) {
+        const parent = window.parent;
+        try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+        try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+        try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+      }
+    } catch (err) {}
+  }
+
+  function currentAuthSig(){
+    const fromUrl = readAuthSigFrom();
+    if (fromUrl) {
+      rememberAuthSig(fromUrl);
+      return fromUrl;
+    }
+
+    const sources = [
+      () => {
+        try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+      },
+      () => {
+        try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+      },
+      () => {
+        try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+      },
+      () => {
+        try {
+          if (window.parent && window.parent !== window) {
+            const parent = window.parent;
+            return parent.AK_AC_AUTH_SIG
+              || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+              || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+          }
+        } catch (err) {}
+        return null;
+      }
+    ];
+
+    for (const getter of sources) {
+      const value = getter();
+      if (value) {
+        rememberAuthSig(value);
+        return value;
+      }
+    }
+
+    return '';
+  }
+
+  rememberAuthSig(readAuthSigFrom());
+
   (function(){
     const retryBtn = document.getElementById('retry');
     if (!retryBtn) return;
@@ -63,11 +133,19 @@
         const params = new URLSearchParams(location.search);
         const token = sessionStorage.getItem('akuvox_ll_token');
         if (token && !params.has('token')) params.set('token', token);
+        const authSig = currentAuthSig();
+        if (authSig && !params.has('authSig')) params.set('authSig', authSig);
         const search = params.toString();
         const target = `/akuvox-ac/index${search ? `?${search}` : ''}`;
         window.location.replace(target);
       } catch (err) {
-        window.location.replace('/akuvox-ac/index');
+        const authSig = currentAuthSig();
+        if (authSig) {
+          const suffix = `?authSig=${encodeURIComponent(authSig)}`;
+          window.location.replace(`/akuvox-ac/index${suffix}`);
+        } else {
+          window.location.replace('/akuvox-ac/index');
+        }
       }
     });
   })();

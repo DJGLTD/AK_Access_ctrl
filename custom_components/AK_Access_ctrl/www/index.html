@@ -92,6 +92,76 @@ function findHaToken() {
 const SAME_ORIGIN = { credentials: 'same-origin' };
 const REJECTED_TOKENS = new Set();
 
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search) {
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value) {
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig() {
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
 function nextBearerToken(){
   const token = findHaToken();
   if (!token) return null;
@@ -182,6 +252,8 @@ function buildHref(slug, params = {}) {
   });
   const token = sessionStorage.getItem('akuvox_ll_token');
   if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
   const query = search.toString();
   const clean = String(slug || '').replace(/_/g, '-');
   return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
@@ -228,7 +300,20 @@ function redirectToUnauthorized(params = {}) {
     if (typeof buildHref === 'function') {
       href = buildHref('unauthorized', targetParams);
     }
-  } catch (err) {}
+  } catch (err) {
+    try {
+      const search = new URLSearchParams();
+      Object.entries(targetParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') search.set(key, value);
+      });
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
+      if (authSig && !search.has('authSig')) search.set('authSig', authSig);
+      const query = search.toString();
+      if (query) href = `/akuvox-ac/unauthorized?${query}`;
+    } catch (err2) {}
+  }
 
   let delivered = false;
   try {

@@ -135,6 +135,76 @@ function getToken(){
   return sessionStorage.getItem('akuvox_ll_token') || null;
 }
 
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search) {
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value) {
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig() {
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+window.AK_AC_AUTH_SIG = currentAuthSig();
+
 function collectSignedPaths(){
   const result = {};
   const merge = (candidate) => {
@@ -187,6 +257,8 @@ function buildUrl(view, params = {}){
   });
   const token = getToken();
   if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
   const query = search.toString();
   const slug = view.replace(/_/g,'-');
   return `${UI_ROOT}/${slug}${query ? `?${query}` : ''}`;
@@ -230,6 +302,8 @@ function updateHistory(view, params, { replaceState = false } = {}){
   });
   if (view !== DEFAULT_VIEW) search.set('view', view);
   else search.delete('view');
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
   const query = search.toString();
   const url = query ? `${location.pathname}?${query}` : location.pathname;
   if (replaceState) history.replaceState(state, '', url);
