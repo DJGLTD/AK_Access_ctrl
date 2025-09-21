@@ -146,8 +146,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             root = self.hass.data.get(DOMAIN, {}) or {}
             sq = root.get("sync_queue")
             if sq:
-                # Show 'pending' right away so UI reflects the action
-                self.health["sync_status"] = "pending"
+                # Surface an in-progress state immediately so dashboards update
+                self.health["sync_status"] = "in_progress"
                 await sq.sync_now(self.entry_id)
         except Exception:
             # best-effort only

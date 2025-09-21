@@ -72,14 +72,71 @@ const BEARER = findHaToken();
 const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
 
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {}
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
 async function apiGet(url){
   const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 async function apiPost(url, body){
   const r = await fetch(url, { method:'POST', ...SAME_ORIGIN, headers:{'Content-Type':'application/json', ...AUTH_HEADERS}, body: JSON.stringify(body||{}) });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 const UI_ROOT = '/akuvox-ac';
@@ -179,6 +236,7 @@ async function heartbeatTick() {
     }
     reservationMisses = 0;
   } catch (err) {
+    if (handleAuthError(err)) return;
     reservationMisses += 1;
     if (reservationMisses >= 6) {
       setReservationMessage('Connection lost. Releasing reserved ID and trying again…', 'warning');
@@ -217,6 +275,7 @@ async function reserveNewId(options = {}) {
     return newId;
   } catch (err) {
     RESERVED_ID = null;
+    if (handleAuthError(err)) return '';
     if (options.showWarning !== false) {
       setReservationMessage('ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.', 'warning');
     }
@@ -310,6 +369,7 @@ async function load(){
     try {
       state = await apiGet('/api/akuvox_ac/ui/state');
     } catch (err) {
+      if (handleAuthError(err)) return;
       console.warn('Failed to load Akuvox state', err);
       alert('Failed to load Akuvox data. Default values will be used until the connection succeeds.');
       state = { schedules: {}, registry_users: [] };
@@ -322,6 +382,7 @@ async function load(){
       const resp = await apiGet('/api/akuvox_ac/ui/phones');
       PHONES = resp.phones || [];
     } catch (err) {
+      if (handleAuthError(err)) return;
       console.warn('Failed to load phone list', err);
       PHONES = [];
     }
@@ -451,7 +512,9 @@ async function save(){
           document.getElementById('idRow').style.display = 'block';
           document.getElementById('user_id').value = CURRENT.id;
         }
-      }catch{}
+      }catch(err){
+        if (handleAuthError(err)) return;
+      }
       if (!CURRENT.id){
         alert('Could not reserve a user ID. Please try again.');
         return;
@@ -472,11 +535,18 @@ async function save(){
     };
 
     // Save/update the profile against the reserved ID
-    await fetch('/api/services/akuvox_ac/edit_user', {
+    const saveRes = await fetch('/api/services/akuvox_ac/edit_user', {
       method:'POST',
       headers:{'Content-Type':'application/json', ...AUTH_HEADERS},
       body: JSON.stringify({ id: CURRENT.id, ...payload })
     });
+    if (!saveRes.ok){
+      const txt = await saveRes.text();
+      const err = buildError(saveRes, txt);
+      handleAuthError(err);
+      throw err;
+    }
+    try { await saveRes.json(); } catch {}
 
     // If a photo is selected, upload it now
     const fileInput = document.getElementById('facefile');
@@ -492,7 +562,9 @@ async function save(){
       });
       if (!r.ok){
         const t = await r.text();
-        throw new Error(t || 'Face upload failed');
+        const err = buildError(r, t);
+        handleAuthError(err);
+        throw err;
       }
       try { await r.json(); } catch {}
     }
@@ -504,10 +576,11 @@ async function save(){
     if (remoteVisible && phoneService){
       try{
         await apiPost('/api/akuvox_ac/ui/remote_enrol', { id: CURRENT.id, phone_service: phoneService });
-        const resSpan = document.getElementById('remoteResult'); 
+        const resSpan = document.getElementById('remoteResult');
         if (resSpan) resSpan.textContent = 'Enrolment request sent.';
       }catch(e){
-        const resSpan = document.getElementById('remoteResult'); 
+        if (handleAuthError(e)) return;
+        const resSpan = document.getElementById('remoteResult');
         if (resSpan) resSpan.textContent = 'Failed to send enrolment request.';
       }
     }
@@ -517,6 +590,7 @@ async function save(){
     RESERVED_ID = null;
     openInApp('index', {}, { replaceState: true });
   } catch (e){
+    if (handleAuthError(e)) return;
     alert('Save failed: ' + (e && e.message ? e.message : e));
   } finally {
     setBusy(false);

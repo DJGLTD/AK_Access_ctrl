@@ -141,9 +141,27 @@ function findHaToken() {
 const BEARER = findHaToken();
 const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
+function buildError(res, text) {
+  const msg = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(msg);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+function isAuthError(err) {
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
 async function apiGet(url) {
   const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  if (!r.ok) {
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 async function apiPost(url, body) {
@@ -153,7 +171,12 @@ async function apiPost(url, body) {
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify(body || {})
   });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  if (!r.ok) {
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 
@@ -203,6 +226,43 @@ function openInApp(view, params = {}, options = {}) {
     window.location.href = href;
   }
   return delivered;
+}
+
+function redirectToUnauthorized(params = {}) {
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {}
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try {
+      window.location.replace(href);
+    } catch (err) {
+      window.location.href = href;
+    }
+  }
+  return true;
+}
+
+function handleAuthError(err) {
+  if (!isAuthError(err)) {
+    return false;
+  }
+  redirectToUnauthorized();
+  return true;
 }
 
 /* ===== UI helpers ===== */
@@ -274,7 +334,6 @@ async function createGroup(name){
 
 /* ===== Init & wiring ===== */
 async function init(){
-  if (!BEARER) { showError('No auth token found. Open inside Home Assistant or append ?token='); return; }
   if (!ENTRY_ID) { showError('Missing device id in URL (?entry_id=ENTRY_ID)'); return; }
 
   document.getElementById('btnBack').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
@@ -320,6 +379,7 @@ async function init(){
         renderGroupChecklist(all, cur);
         document.getElementById('createSaveRow').classList.remove('hidden');
       }catch(e){
+        if (handleAuthError(e)) return;
         showError('Failed to create group: ' + (e.message || e));
       }
     });
@@ -337,6 +397,7 @@ async function init(){
         renderGroupChecklist(all, cur);
         document.getElementById('createSaveRow').classList.remove('hidden');
       }catch(e){
+        if (handleAuthError(e)) return;
         showError('Failed to create group: ' + (e.message || e));
       }
     });
@@ -348,11 +409,13 @@ async function init(){
         await saveDeviceGroups(groups);
         showOK('Saved ✓');
       }catch(e){
+        if (handleAuthError(e)) return;
         showError('Save failed: ' + (e.message || e));
       }
     });
 
   }catch(e){
+    if (handleAuthError(e)) return;
     showError(String(e));
   }
 }

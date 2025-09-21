@@ -316,6 +316,7 @@ class AkuvoxSettingsStore(Store):
             "auto_sync_time": None,
             "auto_reboot": {"time": None, "days": []},
             "integrity_interval_minutes": self.DEFAULT_INTEGRITY_MINUTES,
+            "auto_sync_delay_minutes": 30,
             "alerts": {"targets": {}},
         }
 
@@ -328,6 +329,14 @@ class AkuvoxSettingsStore(Store):
 
         if not isinstance(self.data.get("auto_reboot"), dict):
             self.data["auto_reboot"] = {"time": None, "days": []}
+
+        delay = self.data.get("auto_sync_delay_minutes", 30)
+        try:
+            delay = int(delay)
+        except Exception:
+            delay = 30
+        delay = max(5, min(60, delay))
+        self.data["auto_sync_delay_minutes"] = delay
 
         integ = self.data.get("integrity_interval_minutes", self.DEFAULT_INTEGRITY_MINUTES)
         try:
@@ -358,6 +367,22 @@ class AkuvoxSettingsStore(Store):
 
     async def set_auto_reboot(self, time_hhmm: Optional[str], days: List[str]):
         self.data["auto_reboot"] = {"time": time_hhmm, "days": list(days or [])}
+        await self.async_save()
+
+    def get_auto_sync_delay_minutes(self) -> int:
+        try:
+            value = int(self.data.get("auto_sync_delay_minutes", 30))
+        except Exception:
+            value = 30
+        return max(5, min(60, value))
+
+    async def set_auto_sync_delay_minutes(self, minutes: int):
+        try:
+            value = int(minutes)
+        except Exception as err:
+            raise ValueError("Invalid auto sync delay") from err
+        value = max(5, min(60, value))
+        self.data["auto_sync_delay_minutes"] = value
         await self.async_save()
 
     def get_integrity_interval_minutes(self) -> int:
@@ -489,23 +514,57 @@ class SyncQueue:
         self._pending_all = False
         self._pending_devices: set[str] = set()
         self.next_sync_eta: Optional[datetime] = None
+        self._last_mark: Optional[datetime] = None
+        self._last_delay_from_default = False
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
 
-    def _mark_health_pending(self, entry_id: Optional[str]):
+    def _default_delay_minutes(self) -> int:
+        root = self._root()
+        settings = root.get("settings_store")
+        if settings and hasattr(settings, "get_auto_sync_delay_minutes"):
+            try:
+                return settings.get_auto_sync_delay_minutes()
+            except Exception:
+                pass
+        return 30
+
+    def _normalize_delay(self, delay_minutes: Optional[int]) -> int:
+        if delay_minutes is None:
+            return self._default_delay_minutes()
+        try:
+            value = int(delay_minutes)
+        except Exception:
+            return self._default_delay_minutes()
+        if value <= 0:
+            return 0
+        return max(5, min(60, value))
+
+    def _set_health_status(self, entry_id: Optional[str], status: str):
         root = self._root()
 
+        try:
+            status_value = str(status or "pending")
+        except Exception:
+            status_value = "pending"
+
         def mark(coord: AkuvoxCoordinator):
-            coord.health["sync_status"] = "pending"
+            coord.health["sync_status"] = status_value
 
         if entry_id:
             data = root.get(entry_id)
             if data and data.get("coordinator"):
                 mark(data["coordinator"])
-        else:
-            for k, data in root.items():
-                if k in (
+            return
+
+        pending_targets: set[str] = set()
+        if self._pending_devices:
+            pending_targets.update(self._pending_devices)
+
+        if not pending_targets or self._pending_all:
+            for key, data in root.items():
+                if key in (
                     "groups_store",
                     "users_store",
                     "schedules_store",
@@ -515,12 +574,16 @@ class SyncQueue:
                     "settings_store",
                 ):
                     continue
-                coord = data.get("coordinator")
-                if coord:
-                    mark(coord)
+                pending_targets.add(key)
 
-    def mark_change(self, entry_id: Optional[str] = None, delay_minutes: int = 30):
-        self._mark_health_pending(entry_id)
+        for key in pending_targets:
+            data = root.get(key)
+            coord = data.get("coordinator") if isinstance(data, dict) else None
+            if coord:
+                mark(coord)
+
+    def mark_change(self, entry_id: Optional[str] = None, delay_minutes: Optional[int] = None):
+        self._set_health_status(entry_id, "pending")
         if entry_id:
             self._pending_devices.add(entry_id)
         else:
@@ -533,13 +596,49 @@ class SyncQueue:
                 pass
             self._handle = None
 
-        eta = datetime.now() + timedelta(minutes=delay_minutes)
+        effective_delay = self._normalize_delay(delay_minutes)
+        self._last_delay_from_default = delay_minutes is None
+        now = datetime.now()
+        self._last_mark = now
+        eta = now + timedelta(minutes=effective_delay)
         self.next_sync_eta = eta
+
+        if effective_delay <= 0:
+            self.hass.async_create_task(self.run())
+            return
 
         def _schedule_cb(_now):
             self.hass.async_create_task(self.run())
 
-        self._handle = async_call_later(self.hass, delay_minutes * 60, _schedule_cb)
+        self._handle = async_call_later(self.hass, effective_delay * 60, _schedule_cb)
+
+    def refresh_default_delay(self):
+        if self._handle is None or not self._last_delay_from_default or not self._last_mark:
+            return
+
+        default_minutes = self._default_delay_minutes()
+        eta = self._last_mark + timedelta(minutes=default_minutes)
+        remaining = (eta - datetime.now()).total_seconds()
+
+        try:
+            self._handle()
+        except Exception:
+            pass
+        self._handle = None
+
+        if remaining <= 0:
+            self.next_sync_eta = datetime.now()
+            self._last_delay_from_default = True
+            self.hass.async_create_task(self.run())
+            return
+
+        self.next_sync_eta = eta
+        self._last_delay_from_default = True
+
+        def _schedule_cb(_now):
+            self.hass.async_create_task(self.run())
+
+        self._handle = async_call_later(self.hass, remaining, _schedule_cb)
 
     async def run(self, only_entry: Optional[str] = None):
         async with self._lock:
@@ -576,6 +675,10 @@ class SyncQueue:
 
             for entry_id, coord, _api in targets:
                 try:
+                    coord.health["sync_status"] = "in_progress"
+                except Exception:
+                    pass
+                try:
                     await manager.reconcile_device(entry_id, full=True)
                     coord.health["sync_status"] = "in_sync"
                     coord.health["last_sync"] = _now_hh_mm()
@@ -600,7 +703,7 @@ class SyncQueue:
             self.next_sync_eta = None
 
     async def sync_now(self, entry_id: Optional[str] = None):
-        self._mark_health_pending(entry_id)
+        self._set_health_status(entry_id, "in_progress")
         if self._handle is not None:
             try:
                 self._handle()

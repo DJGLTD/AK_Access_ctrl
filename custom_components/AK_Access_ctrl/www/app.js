@@ -62,6 +62,8 @@ async function loadDevices() {
     const onlineBadge = online ? badge("Online", "badge-online") : badge("Offline", "badge-offline");
     const syncBadge = syncState === "in_sync"
       ? badge("In Sync", "badge-in-sync")
+      : syncState === "in_progress"
+      ? badge("In Progress", "badge-in-progress bg-info text-dark")
       : syncState === "pending"
       ? badge("Pending Sync", "badge-pending")
       : badge(esc(syncState), "bg-secondary");
