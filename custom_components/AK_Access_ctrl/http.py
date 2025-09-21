@@ -500,7 +500,12 @@ class AkuvoxUIAction(AkuvoxUIView):
             try:
                 enabled = bool(payload.get("enabled", True))
                 root[entry_id]["options"]["exit_device"] = enabled
-                await root["sync_queue"].sync_now(entry_id)
+                queue = root.get("sync_queue")
+                if queue:
+                    try:
+                        queue.mark_change(entry_id)
+                    except Exception:
+                        pass
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)
@@ -560,9 +565,9 @@ class AkuvoxUIAction(AkuvoxUIView):
                 queue = root.get("sync_queue")
                 if queue:
                     try:
-                        await queue.sync_now(entry_id)
-                    except Exception:
                         queue.mark_change(entry_id)
+                    except Exception:
+                        pass
 
                 return web.json_response({"ok": True, "groups": groups})
             except Exception as e:
@@ -866,12 +871,11 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         except Exception:
             pass
 
-        # Trigger immediate sync so FaceUrl is pushed right now
-        try:
-            await root["sync_queue"].sync_now(None)
-        except Exception:
+        # Queue a sync so FaceUrl is pushed during the next cycle
+        queue = root.get("sync_queue")
+        if queue:
             try:
-                root.get("sync_queue").mark_change(None, delay_minutes=0)
+                queue.mark_change(None)
             except Exception:
                 pass
 
@@ -956,11 +960,13 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         except Exception:
             pass
 
-        # Optionally push a sync now
-        try:
-            await root["sync_queue"].sync_now(None)
-        except Exception:
-            pass
+        # Ensure the change is picked up on the next sync cycle
+        queue = root.get("sync_queue")
+        if queue:
+            try:
+                queue.mark_change(None)
+            except Exception:
+                pass
 
         return web.json_response({"ok": True, "enrol_url": enrol_url})
 
