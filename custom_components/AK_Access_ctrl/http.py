@@ -30,6 +30,55 @@ from .relay import alarm_capable as relay_alarm_capable, normalize_roles as norm
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
+FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
+
+
+def _component_face_dir() -> Path:
+    """Return the canonical location for uploaded face images."""
+
+    return (COMPONENT_ROOT / "www" / "FaceData").resolve()
+
+
+def _legacy_face_dir(hass: HomeAssistant) -> Path:
+    """Legacy location used by earlier builds for face images."""
+
+    root = Path(hass.config.path("www"))
+    return (root / "AK_Access_ctrl" / "FaceData").resolve()
+
+
+def _face_candidate(base: Path, user_id: str, ext: str) -> Optional[Path]:
+    try:
+        candidate = (base / f"{user_id}.{ext}").resolve()
+        candidate.relative_to(base)
+    except Exception:
+        return None
+    return candidate
+
+
+def _face_file_exists_in(base: Path, user_id: str) -> bool:
+    for ext in FACE_FILE_EXTENSIONS:
+        candidate = _face_candidate(base, user_id, ext)
+        if candidate is not None and candidate.is_file():
+            return True
+    return False
+
+
+def _face_image_exists(hass: HomeAssistant, user_id: str) -> bool:
+    if not user_id:
+        return False
+    try:
+        if _face_file_exists_in(_component_face_dir(), user_id):
+            return True
+    except Exception:
+        pass
+    try:
+        legacy_dir = _legacy_face_dir(hass)
+    except Exception:
+        return False
+    try:
+        return _face_file_exists_in(legacy_dir, user_id)
+    except Exception:
+        return False
 
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {
@@ -50,8 +99,21 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _persistent_face_dir(hass: HomeAssistant) -> Path:
-    root = Path(hass.config.path("www"))
-    return (root / "AK_Access_ctrl" / "FaceData").resolve()
+    """Compatibility shim for callers expecting the persistent face directory."""
+
+    return _component_face_dir()
+
+
+def _legacy_face_candidate(hass: HomeAssistant, relative: str) -> Optional[Path]:
+    """Return a resolved legacy face path for migration, if it exists."""
+
+    try:
+        legacy_root = _legacy_face_dir(hass)
+        candidate = (legacy_root / relative).resolve()
+        candidate.relative_to(legacy_root)
+    except Exception:
+        return None
+    return candidate
 
 DASHBOARD_ROUTES: Dict[str, str] = {
     "head": "head.html",
@@ -472,7 +534,8 @@ class AkuvoxStaticAssets(HomeAssistantView):
     async def get(self, request: web.Request, path: str = ""):
         hass: HomeAssistant = request.app["hass"]
         clean = (path or "").lstrip("/")
-        if clean.lower().startswith("facedata"):
+        is_face_request = clean.lower().startswith("facedata")
+        if is_face_request:
             rel = clean[8:].lstrip("/")
             if rel:
                 base = _persistent_face_dir(hass)
@@ -483,8 +546,23 @@ class AkuvoxStaticAssets(HomeAssistantView):
                     raise web.HTTPForbidden()
                 if candidate.is_file():
                     return web.FileResponse(candidate)
+
+                legacy_candidate = _legacy_face_candidate(hass, rel)
+                if legacy_candidate and legacy_candidate.is_file():
+                    try:
+                        base.mkdir(parents=True, exist_ok=True)
+                        candidate.write_bytes(legacy_candidate.read_bytes())
+                    except Exception:
+                        return web.FileResponse(legacy_candidate)
+                    else:
+                        try:
+                            legacy_candidate.unlink()
+                        except Exception:
+                            pass
+                        return web.FileResponse(candidate)
+
         asset = _static_asset(path)
-        if clean.lower().startswith("facedata"):
+        if is_face_request:
             rel = clean[8:].lstrip("/")
             if rel:
                 try:
@@ -492,8 +570,16 @@ class AkuvoxStaticAssets(HomeAssistantView):
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     dest = (dest_dir / rel).resolve()
                     dest.relative_to(dest_dir)
-                    if not dest.exists() and asset.is_file():
-                        dest.write_bytes(asset.read_bytes())
+                    if not dest.exists():
+                        legacy_candidate = _legacy_face_candidate(hass, rel)
+                        if legacy_candidate and legacy_candidate.exists():
+                            dest.write_bytes(legacy_candidate.read_bytes())
+                            try:
+                                legacy_candidate.unlink()
+                            except Exception:
+                                pass
+                        elif asset.is_file() and asset != dest:
+                            dest.write_bytes(asset.read_bytes())
                 except Exception:
                     pass
         return web.FileResponse(asset)
@@ -631,6 +717,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "groups": groups,
                             "pin": prof.get("pin") or "",
                             "face_url": prof.get("face_url") or "",
+                            "face_active": _face_image_exists(hass, key),
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
                             "schedule_name": prof.get("schedule_name")
@@ -1341,7 +1428,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
       - id: HA001 (required)
       - file: image/jpeg (required)
 
-    Saves to custom_components/AK_Access_ctrl/www/FaceData/<ID>.jpg
+    Saves to custom_components/akuvox_ac/www/FaceData/<ID>.jpg
     Updates users_store face_url (public URL) and marks status=pending.
     Triggers immediate sync.
     """
@@ -1399,7 +1486,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         if not file_bytes:
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
 
-        # Save under persistent FaceData folder inside /config/www/AK_Access_ctrl
+        # Save under persistent FaceData folder inside the custom component
         dest_dir = _persistent_face_dir(hass)
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1415,8 +1502,8 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         except Exception as e:
             return web.json_response({"ok": False, "error": f"write failed: {e}"}, status=500)
         try:
-            legacy = (STATIC_ROOT / "FaceData" / f"{id_val}.jpg")
-            if legacy.exists():
+            legacy = _legacy_face_candidate(hass, f"{id_val}.jpg")
+            if legacy and legacy.exists():
                 legacy.unlink()
         except Exception:
             pass
