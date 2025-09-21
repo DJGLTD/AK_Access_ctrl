@@ -18,6 +18,7 @@
     .card-header{ border-bottom:1px solid var(--border); font-weight:600; color:var(--text); }
     thead{ background:#0f1a2c; color:var(--muted) }
     .badge-in-sync{background:#198754}
+    .badge-in-progress{background:#0dcaf0;color:#111}
     .badge-pending{background:#ffc107;color:#111}
     .badge-offline{background:#dc3545}
     .badge-online{background:#0dcaf0;color:#111}
@@ -92,9 +93,27 @@ const BEARER = findHaToken();
 const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
 
+function buildError(res, text) {
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+function isAuthError(err) {
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
 async function apiGet(url) {
   const res = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
   return res.json();
 }
 async function apiPost(url, body) {
@@ -104,7 +123,12 @@ async function apiPost(url, body) {
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify(body || {})
   });
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
   return res.json();
 }
 async function callService(domain, service, data = {}) {
@@ -115,7 +139,12 @@ async function callService(domain, service, data = {}) {
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify(data)
   });
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
   return res.json();
 }
 const UI_ROOT = '/akuvox-ac';
@@ -160,18 +189,61 @@ function openInApp(view, params = {}, options = {}) {
   return delivered;
 }
 
+function redirectToUnauthorized(params = {}) {
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    if (typeof buildHref === 'function') {
+      href = buildHref('unauthorized', targetParams);
+    }
+  } catch (err) {}
+
+  let delivered = false;
+  try {
+    if (typeof requestParentNav === 'function') {
+      delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+    }
+  } catch (err) {}
+
+  if (!delivered) {
+    try {
+      window.location.replace(href);
+    } catch (err) {
+      window.location.href = href;
+    }
+  }
+  return true;
+}
+
+function handleAuthError(err) {
+  if (!isAuthError(err)) {
+    return false;
+  }
+  redirectToUnauthorized();
+  return true;
+}
+
 /* ========= RENDERERS + WIRING ========= */
 const stateUrl  = '/api/akuvox_ac/ui/state';
 const actionUrl = '/api/akuvox_ac/ui/action';
 const $ = (sel) => document.querySelector(sel);
 
-function badge(text, kind){
+function badge(text, kind, attrs = ''){
   const k = kind === 'online' ? 'badge-online'
           : kind === 'offline' ? 'badge-offline'
           : kind === 'rebooting' ? 'badge-rebooting'
           : kind === 'in_sync' ? 'badge-in-sync'
+          : kind === 'in_progress' ? 'badge-in-progress'
           : 'badge-pending';
-  return `<span class="badge ${k}">${text}</span>`;
+  const attr = attrs ? ` ${attrs}` : '';
+  return `<span class="badge ${k}"${attr}>${text}</span>`;
 }
 
 let autoSyncSavedTimer = null;
@@ -222,16 +294,32 @@ function showAutoSyncSaved(msg = 'Saved ✓', restoreValue = null){
 }
 
 function renderKPIs(k){
-  if (k.next_sync_eta) startNextSyncCountdown(k.next_sync_eta, k.auto_sync_time);
+  const nextEl = document.getElementById('kpiNext');
+  if (k.next_sync_eta) {
+    startNextSyncCountdown(k.next_sync_eta, k.auto_sync_time || k.next_sync);
+  } else if (nextEl) {
+    nextEl.textContent = k.next_sync || k.auto_sync_time || '—';
+  }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
   const pendingRaw = Number(k?.pending ?? 0);
   const pendingCount = Number.isFinite(pendingRaw) ? pendingRaw : 0;
   $('#kpiPending').textContent = String(pendingCount);
-  $('#kpiNext').textContent    = (k.next_sync || '—');
+  const syncActive = !!k.sync_active;
   const syncNowBox = document.getElementById('kpiSyncNowBox');
   if (syncNowBox) {
-    syncNowBox.style.display = pendingCount > 1 ? '' : 'none';
+    const showSync = pendingCount > 1 && !syncActive;
+    syncNowBox.style.display = showSync ? '' : 'none';
+    const btn = syncNowBox.querySelector('button');
+    if (btn) {
+      if (showSync) btn.removeAttribute('disabled');
+      else btn.setAttribute('disabled', 'disabled');
+    }
+  }
+  const forceBtn = document.getElementById('btnForceFull');
+  if (forceBtn) {
+    if (syncActive) forceBtn.setAttribute('disabled', 'disabled');
+    else forceBtn.removeAttribute('disabled');
   }
   const auto = k.auto_sync_time;
   if (auto) {
@@ -252,6 +340,33 @@ function renderKPIs(k){
   }
 }
 
+const ESCAPE_HTML_LOOKUP = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+};
+
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, ch => ESCAPE_HTML_LOOKUP[ch] ?? ch);
+}
+
+function normalizeGroupsList(groups){
+  if (Array.isArray(groups)) {
+    return groups.length ? groups.map(g => String(g)) : ['Default'];
+  }
+  if (groups === null || groups === undefined || groups === '') {
+    return ['Default'];
+  }
+  return [String(groups)];
+}
+
+function groupsIntersect(a, b){
+  const set = new Set((b || []).map(g => String(g).toLowerCase()));
+  return (a || []).some(g => set.has(String(g).toLowerCase()));
+}
+
 function safeDeviceName(d){
   // prefer the most intentional field from backend
   return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
@@ -269,13 +384,20 @@ function renderDevices(devs){
     else if (statusKey === 'offline') statusBadge = badge('Offline', 'offline');
     else statusBadge = badge(statusKeyRaw, 'pending');
 
-    const syncBadge = statusKey === 'offline'
-      ? '—'
-      : d.sync_status === 'in_sync'
-        ? badge('In Sync', 'in_sync')
-        : badge('Pending', 'pending');
-    const last   = d.last_sync || '—';
     const id     = d.entry_id || d.id || '';
+    const syncStatusRaw = String(d.sync_status || '').toLowerCase();
+    const syncAttr = id ? `data-sync-status="${escapeHtml(id)}"` : '';
+    let syncBadge;
+    if (statusKey === 'offline') {
+      syncBadge = '—';
+    } else if (syncStatusRaw === 'in_sync') {
+      syncBadge = badge('In Sync', 'in_sync', syncAttr);
+    } else if (syncStatusRaw === 'in_progress') {
+      syncBadge = badge('In Progress', 'in_progress', syncAttr);
+    } else {
+      syncBadge = badge('Pending', 'pending', syncAttr);
+    }
+    const last   = d.last_sync || '—';
     const name   = safeDeviceName(d);
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
@@ -381,42 +503,128 @@ function idMatchesFilter(id){
   return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
 }
 function renderUsers(devs, registryUsers){
+  const devices = Array.isArray(devs) ? devs : [];
+  const normalizedDevices = devices.map(d => {
+    const entryId = String(d.entry_id || d.id || '');
+    const groups = normalizeGroupsList(d.sync_groups);
+    const participates = d.participate_in_sync !== false;
+    const online = d.online !== false;
+    const syncStatusRaw = String(d.sync_status || '').toLowerCase();
+    const syncStatus = syncStatusRaw || 'pending';
+    return { entryId, groups, participates, online, syncStatus };
+  });
+
   const by = new Map();
 
   (registryUsers || []).forEach(r => {
     const key = String(r.id || r.UserID || r.ID || '');
     if (!key) return;
+    const groups = normalizeGroupsList(r.groups || []);
     by.set(key, {
-      id: key, name: r.name || key, groups: r.groups || [],
-      access: 'Pending', isCloud: false, last: '—', presentOnDevice: false
+      id: key,
+      name: r.name || key,
+      groups,
+      access: 'Pending',
+      isCloud: false,
+      last: '—',
+      presentOnDevice: false,
+      fromRegistry: true,
+      status: r.status || 'active',
+      schedule_name: r.schedule_name || '24/7 Access',
+      schedule_id: r.schedule_id || '',
+      access_level: r.access_level || '',
+      key_holder: !!r.key_holder,
+      _seenOn: new Set(),
+      _denied: false
     });
   });
 
-  (devs || []).forEach(d => (d._users || d.users || []).forEach(u => {
-    const key = String(u.ID || u.UserID || u.Name || '');
-    if (!key) return;
-    const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
-    const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
-    const last = u.LastAccess || u.last_access || '—';
+  devices.forEach(d => {
+    const entryId = String(d.entry_id || d.id || '');
+    const deviceGroups = normalizeGroupsList(d.sync_groups || []);
+    (d._users || d.users || []).forEach(u => {
+      const key = String(u.ID || u.UserID || u.Name || '');
+      if (!key) return;
+      const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
+      const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
+      const last = u.LastAccess || u.last_access || '—';
 
-    if (!by.has(key)) {
-      by.set(key, { id:key, name:u.Name||key, groups:u.Groups||u.groups||[], access: accessAllowed?'Allowed':'Denied', isCloud, last, presentOnDevice:true });
-    } else {
+      if (!by.has(key)) {
+        by.set(key, {
+          id: key,
+          name: u.Name || key,
+          groups: normalizeGroupsList(u.Groups || u.groups || deviceGroups),
+          access: accessAllowed ? 'Allowed' : 'Denied',
+          isCloud,
+          last,
+          presentOnDevice: true,
+          fromRegistry: false
+        });
+        return;
+      }
+
       const cur = by.get(key);
       cur.isCloud = cur.isCloud || isCloud;
       cur.presentOnDevice = true;
-      cur.groups = cur.groups && cur.groups.length ? cur.groups : (u.Groups || u.groups || []);
-      cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      if (!cur.groups || cur.groups.length === 0) {
+        cur.groups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
+      }
       cur.last = last || cur.last;
+      if (cur.fromRegistry && cur._seenOn instanceof Set && entryId) {
+        cur._seenOn.add(entryId);
+      }
+      if (cur.fromRegistry && !accessAllowed) {
+        cur._denied = true;
+      } else if (!cur.fromRegistry) {
+        cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      }
       by.set(key, cur);
-    }
-  }));
+    });
+  });
 
-  const list = [...by.values()]
+  const list = Array.from(by.values()).map(item => {
+    if (!item.fromRegistry) {
+      return item;
+    }
+    const seenIds = Array.from(item._seenOn instanceof Set ? item._seenOn : []);
+    const shouldHost = normalizedDevices.filter(dev =>
+      dev.participates &&
+      dev.online &&
+      groupsIntersect(item.groups, dev.groups)
+    );
+    const requiredIds = shouldHost.map(dev => dev.entryId).filter(id => !!id);
+    const pendingDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
+    const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
+    const allVerified = readyDevices.length
+      ? readyDevices.every(dev => seenIds.includes(dev.entryId))
+      : !requiredIds.length;
+    const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
+    const baseLower = String(baseLabel).toLowerCase();
+    let accessText;
+    if (item._denied && baseLower !== 'no access') {
+      accessText = 'Denied';
+    } else if (String(item.status || '').toLowerCase() === 'pending') {
+      accessText = 'Pending';
+    } else if (pendingDevices.length) {
+      accessText = 'Pending';
+    } else if (!requiredIds.length || allVerified) {
+      accessText = baseLabel;
+    } else {
+      accessText = 'Pending';
+    }
+    const { _seenOn, _denied, ...rest } = item;
+    return {
+      ...rest,
+      access: accessText,
+      presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified)
+    };
+  });
+
+  const listSorted = list
     .filter(u => u.isCloud || idMatchesFilter(u.id))
     .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
 
-  const rows = list.map(u => {
+  const rows = listSorted.map(u => {
     if (u.isCloud) {
       return `<tr>
         <td>${u.name}</td>
@@ -424,10 +632,12 @@ function renderUsers(devs, registryUsers){
       </tr>`;
     }
     const chips = (u.groups || []).map(g => `<span class="chip">${g}</span>`).join(' ');
+    const accessStr = String(u.access || '').trim();
+    const accessLower = accessStr.toLowerCase();
     let accessBadge = '';
-    if (u.access === 'Allowed') accessBadge = '<span class="badge badge-in-sync">Allowed</span>';
-    else if (u.access === 'Denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
-    else accessBadge = '<span class="badge badge-pending">Pending</span>';
+    if (!accessStr || accessLower === 'pending') accessBadge = '<span class="badge badge-pending">Pending</span>';
+    else if (accessLower === 'denied') accessBadge = '<span class="badge badge-pending">Denied</span>';
+    else accessBadge = `<span class="badge badge-in-sync">${escapeHtml(accessStr)}</span>`;
 
     const editHref = buildHref('users', { id: u.id });
     const actions = /^HA\d{3}$/.test(u.id)
@@ -471,16 +681,6 @@ function renderUsers(devs, registryUsers){
 /* ===== Fetch + render ===== */
 async function refresh(){
   try{
-    if (!BEARER) {
-      document.querySelector('#tblDevices').innerHTML =
-        '<tr><td colspan="9" class="text-warning">No auth token found. Open this page inside Home Assistant or append <code>?token=&lt;LONG_LIVED_TOKEN&gt;</code> to the URL.</td></tr>';
-      document.querySelector('#eventList').innerHTML =
-        '<li class="event-item"><span class="event-title dim">No auth token found.</span></li>';
-      document.querySelector('#tblUsers').innerHTML =
-        '<tr><td colspan="5" class="text-warning">No auth token found.</td></tr>';
-      return;
-    }
-
     const state = await apiGet(stateUrl);
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
@@ -489,33 +689,189 @@ async function refresh(){
     renderUsers(devs, state.registry_users || []);
   } catch(e){
     console.error('state load failed', e);
+    if (handleAuthError(e)) return;
     document.querySelector('#tblDevices').innerHTML =
-      `<tr><td colspan="9" class="text-danger">Failed to load: ${String(e)}</td></tr>`;
+      `<tr><td colspan="9" class="text-danger">Failed to load: ${escapeHtml(String(e))}</td></tr>`;
   }
 }
 
 async function syncAllNow(){
+  const syncNowBox = document.getElementById('kpiSyncNowBox');
+  const btn = document.getElementById('btnSyncNowEta');
+  if (btn) {
+    btn.setAttribute('disabled', 'disabled');
+  }
+  if (syncNowBox) {
+    syncNowBox.style.display = 'none';
+  }
+
+  const statusBadges = Array.from(document.querySelectorAll('[data-sync-status]'));
+  const badgeSnapshots = statusBadges.map(el => ({
+    el,
+    text: el.textContent,
+    className: el.className,
+  }));
+  statusBadges.forEach(el => {
+    el.textContent = 'In Progress';
+    el.classList.remove('badge-pending', 'badge-in-sync');
+    el.classList.add('badge-in-progress');
+  });
+
   let ok = false;
-  try { await apiPost(actionUrl, { action: 'sync_now' }); ok = true; } catch {}
-  try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {}
-  if (!ok) alert('Sync Now failed to trigger');
+  let lastError = '';
+  try {
+    const res = await apiPost(actionUrl, { action: 'sync_now' });
+    if (res && typeof res === 'object') {
+      if (res.ok) ok = true;
+      else if ('ok' in res && !res.ok) lastError = res.error || '';
+    } else if (res === true) {
+      ok = true;
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    lastError = err?.message || String(err);
+  }
+
+  if (!ok) {
+    try {
+      await callService('akuvox_ac','sync_now', {});
+      ok = true;
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      if (!lastError) lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    badgeSnapshots.forEach(({ el, text, className }) => {
+      el.textContent = text;
+      el.className = className;
+    });
+    if (syncNowBox) {
+      syncNowBox.style.display = '';
+    }
+    if (btn) {
+      btn.removeAttribute('disabled');
+    }
+    alert(`Sync Now failed${lastError ? `: ${lastError}` : ''}`);
+    return;
+  }
+
   refresh();
 }
 
 async function forceFullSync(){
+  const syncNowBox = document.getElementById('kpiSyncNowBox');
+  const syncBtn = document.getElementById('btnSyncNowEta');
+  const forceBtn = document.getElementById('btnForceFull');
+
+  if (forceBtn) {
+    forceBtn.setAttribute('disabled', 'disabled');
+  }
+  if (syncBtn) {
+    syncBtn.setAttribute('disabled', 'disabled');
+  }
+  if (syncNowBox) {
+    syncNowBox.style.display = 'none';
+  }
+
+  const statusBadges = Array.from(document.querySelectorAll('[data-sync-status]'));
+  const badgeSnapshots = statusBadges.map(el => ({
+    el,
+    text: el.textContent,
+    className: el.className,
+  }));
+  statusBadges.forEach(el => {
+    el.textContent = 'In Progress';
+    el.classList.remove('badge-pending', 'badge-in-sync');
+    el.classList.add('badge-in-progress');
+  });
+
   let ok = false;
-  try { await apiPost(actionUrl, { action: 'sync_all' }); ok = true; } catch {}
-  if (!ok) { try { await apiPost(actionUrl, { action: 'force_full_sync' }); ok = true; } catch {} }
-  try { await callService('akuvox_ac','force_full_sync', {}); ok = true; } catch {}
-  if (!ok) { try { await callService('akuvox_ac','sync_now', {}); ok = true; } catch {} }
-  if (!ok) alert('Force Full Sync failed to trigger');
+  let lastError = '';
+
+  const handleResult = (res) => {
+    if (res && typeof res === 'object') {
+      if (res.ok) ok = true;
+      else if ('ok' in res && !res.ok) lastError = res.error || lastError;
+    } else if (res === true) {
+      ok = true;
+    }
+  };
+
+  if (!ok) {
+    try {
+      const res = await apiPost(actionUrl, { action: 'sync_all' });
+      handleResult(res);
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    try {
+      const res = await apiPost(actionUrl, { action: 'force_full_sync' });
+      handleResult(res);
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      if (!lastError) lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    try {
+      await callService('akuvox_ac','force_full_sync', {});
+      ok = true;
+    } catch (err) {
+      if (!lastError) lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    try {
+      await callService('akuvox_ac','sync_now', {});
+      ok = true;
+    } catch (err) {
+      if (!lastError) lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    badgeSnapshots.forEach(({ el, text, className }) => {
+      el.textContent = text;
+      el.className = className;
+    });
+    if (syncNowBox) {
+      syncNowBox.style.display = '';
+    }
+    if (syncBtn) {
+      syncBtn.removeAttribute('disabled');
+    }
+    if (forceBtn) {
+      forceBtn.removeAttribute('disabled');
+    }
+    alert(`Force Full Sync failed${lastError ? `: ${lastError}` : ''}`);
+    return;
+  }
+
   refresh();
 }
 
 async function rebootAll(){
   let ok = false;
-  try { await apiPost(actionUrl, { action: 'reboot_all' }); ok = true; } catch {}
-  try { await callService('akuvox_ac','reboot_device', {}); ok = true; } catch {}
+  try {
+    await apiPost(actionUrl, { action: 'reboot_all' });
+    ok = true;
+  } catch (err) {
+    if (handleAuthError(err)) return;
+  }
+  try {
+    await callService('akuvox_ac','reboot_device', {});
+    ok = true;
+  } catch (err) {
+    if (handleAuthError(err)) return;
+  }
   if (!ok) alert('Reboot All failed to trigger');
   refresh();
 }
@@ -546,14 +902,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const v = (autoEl.value || '').trim();
     if (!/^\d{2}:\d{2}$/.test(v)) { alert('Use HH:MM'); return; }
     let ok = false;
-    try{
+    try {
       await apiPost(actionUrl, { action:'set_daily_sync', payload:{ time:v } });
       ok = true;
-    }catch(e){
+    } catch (err) {
+      if (handleAuthError(err)) return;
       try {
         await callService('akuvox_ac','set_daily_sync', { time: v });
         ok = true;
-      } catch {}
+      } catch (fallbackErr) {
+        if (handleAuthError(fallbackErr)) return;
+      }
     }
     if (ok) {
       document.getElementById('kpiNext').textContent = v;
@@ -572,17 +931,26 @@ document.addEventListener('DOMContentLoaded', () => {
 let nextSyncTimer = null;
 let nextSyncWatchdog = null;
 function startNextSyncCountdown(iso, fallbackTime){
+  const nextEl = document.getElementById('kpiNext');
   if (nextSyncTimer) { clearInterval(nextSyncTimer); nextSyncTimer = null; }
   if (nextSyncWatchdog) { clearInterval(nextSyncWatchdog); nextSyncWatchdog = null; }
-  if (!iso) return;
+  if (!iso || !nextEl) {
+    if (nextEl) nextEl.textContent = fallbackTime || '—';
+    return;
+  }
 
-  const eta = new Date(iso).getTime();
+  const eta = Date.parse(iso);
+  if (Number.isNaN(eta)) {
+    nextEl.textContent = fallbackTime || '—';
+    return;
+  }
+
   function tick(){
     const now = Date.now();
-    let diff = Math.max(0, Math.floor((eta - now)/1000));
+    const diff = Math.max(0, Math.floor((eta - now)/1000));
     const mm = String(Math.floor(diff/60)).padStart(2,'0');
     const ss = String(diff%60).padStart(2,'0');
-    document.getElementById('kpiNext').textContent = `${mm}:${ss}`;
+    nextEl.textContent = `${mm}:${ss}`;
     if (diff <= 0){ clearInterval(nextSyncTimer); nextSyncTimer=null; }
   }
   tick();
@@ -597,7 +965,10 @@ function startNextSyncCountdown(iso, fallbackTime){
       if (allOk){
         clearInterval(nextSyncTimer); nextSyncTimer=null;
         clearInterval(nextSyncWatchdog); nextSyncWatchdog=null;
-        document.getElementById('kpiNext').textContent = state.kpis?.auto_sync_time || fallbackTime || '—';
+        const el = document.getElementById('kpiNext');
+        if (el) {
+          el.textContent = state.kpis?.auto_sync_time || fallbackTime || '—';
+        }
       }
     }catch{}
   }, 60000);

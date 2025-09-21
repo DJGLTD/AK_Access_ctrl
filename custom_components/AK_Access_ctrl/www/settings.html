@@ -13,6 +13,25 @@
     label{ color:#fff; }
     .muted{ color:var(--muted); }
     .small-mono{ font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .saved-input-wrap{ position:relative; max-width:220px; width:100%; }
+    .saved-input-wrap input{ width:100%; }
+    .saved-overlay{
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:0.375rem;
+      background:rgba(25,135,84,0.85);
+      color:#fff;
+      font-weight:600;
+      letter-spacing:0.05em;
+      text-transform:uppercase;
+      pointer-events:none;
+      opacity:0;
+      transition:opacity 0.2s ease-in-out;
+    }
+    .saved-overlay.visible{ opacity:1; }
   </style>
 </head>
 <body>
@@ -69,14 +88,71 @@ const BEARER = findHaToken();
 const AUTH_HEADERS = BEARER ? { 'Authorization': 'Bearer ' + BEARER } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
 
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {}
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
 async function apiGet(url){
   const r = await fetch(url, { ...SAME_ORIGIN, headers: AUTH_HEADERS });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 async function apiPost(url, body){
   const r = await fetch(url, { method:'POST', ...SAME_ORIGIN, headers:{'Content-Type':'application/json', ...AUTH_HEADERS}, body: JSON.stringify(body||{}) });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
   return r.json();
 }
 const UI_ROOT = '/akuvox-ac';
@@ -121,20 +197,100 @@ function openInApp(view, params = {}, options = {}) {
 const API_SETTINGS = '/api/akuvox_ac/ui/settings';
 const API_PHONES = '/api/akuvox_ac/ui/phones';
 
-let SETTINGS_DATA = { integrity_interval_minutes: null, alerts: { targets: {} }, registry_users: [] };
+let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
 let PHONES = [];
 let USERS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let integritySaving = false;
+let integritySavedTimer = null;
+let autoSyncSaving = false;
+let autoSyncSavedTimer = null;
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+function hideIntegritySavedOverlay(){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+    integritySavedTimer = null;
+  }
+}
+function showIntegritySavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+  }
+  integritySavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    integritySavedTimer = null;
+  }, 5000);
+}
+function hideAutoSyncSavedOverlay(){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+    autoSyncSavedTimer = null;
+  }
+}
+function showAutoSyncSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+  }
+  autoSyncSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    autoSyncSavedTimer = null;
+  }, 5000);
+}
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
   if (!el) return;
-  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showIntegritySavedOverlay(text || 'Saved');
+    return;
+  }
+  hideIntegritySavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
   el.textContent = text;
-  el.className = tone === 'error' ? 'text-danger' : tone === 'success' ? 'text-success' : 'muted';
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setAutoSyncStatus(text, tone = 'muted') {
+  const el = document.getElementById('autoSyncStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showAutoSyncSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideAutoSyncSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
 }
 function setAlertsStatus(text, tone = 'muted') {
   const el = document.getElementById('alertsStatus');
@@ -143,6 +299,31 @@ function setAlertsStatus(text, tone = 'muted') {
   el.textContent = text;
   el.className = tone === 'error' ? 'text-danger small' : tone === 'success' ? 'text-success small' : 'muted small';
   el.classList.remove('visually-hidden');
+}
+
+function autoSyncRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_auto_sync_delay_minutes);
+  const maxRaw = Number(SETTINGS_DATA?.max_auto_sync_delay_minutes);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 60;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function renderAutoSyncDelay(){
+  const input = document.getElementById('autoSyncDelayInput');
+  if (!input) return;
+  const { min, max } = autoSyncRange();
+  let minutes = Number(SETTINGS_DATA.auto_sync_delay_minutes);
+  if (!Number.isFinite(minutes)) minutes = 30;
+  minutes = Math.round(minutes);
+  if (minutes < min) minutes = min;
+  if (minutes > max) minutes = max;
+  SETTINGS_DATA.auto_sync_delay_minutes = minutes;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(minutes);
+  setAutoSyncStatus('');
 }
 
 function minutesToHHMM(minutes){
@@ -333,15 +514,40 @@ async function saveIntegrity(minutes){
     const res = await apiPost(API_SETTINGS, { integrity_interval_minutes: minutes });
     if (res.integrity_interval_minutes){
       SETTINGS_DATA.integrity_interval_minutes = res.integrity_interval_minutes;
-      setIntegrityStatus('Saved ✓', 'success');
+      setIntegrityStatus('Saved', 'success');
     } else {
-      setIntegrityStatus('Saved ✓', 'success');
+      setIntegrityStatus('Saved', 'success');
     }
   }catch(err){
+    if (handleAuthError(err)) return;
     setIntegrityStatus('Save failed', 'error');
     alert('Failed to update integrity interval: ' + (err && err.message ? err.message : err));
   }finally{
     integritySaving = false;
+  }
+}
+
+async function saveAutoSyncDelay(minutes){
+  if (autoSyncSaving) return;
+  autoSyncSaving = true;
+  try{
+    setAutoSyncStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { auto_sync_delay_minutes: minutes });
+    const returned = Number(res.auto_sync_delay_minutes);
+    if (Number.isFinite(returned)){
+      const { min, max } = autoSyncRange();
+      const normalized = Math.min(max, Math.max(min, Math.round(returned)));
+      SETTINGS_DATA.auto_sync_delay_minutes = normalized;
+      const input = document.getElementById('autoSyncDelayInput');
+      if (input) input.value = String(normalized);
+    }
+    setAutoSyncStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setAutoSyncStatus('Save failed', 'error');
+    alert('Failed to update automatic sync delay: ' + (err && err.message ? err.message : err));
+  }finally{
+    autoSyncSaving = false;
   }
 }
 
@@ -358,6 +564,7 @@ async function saveAlerts(){
     }
     setAlertsStatus('Saved ✓', 'success');
   }catch(err){
+    if (handleAuthError(err)) return;
     setAlertsStatus('Save failed', 'error');
     alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
   }finally{
@@ -370,16 +577,34 @@ async function loadData(){
   try{
     const [settingsResp, phonesResp] = await Promise.all([
       apiGet(API_SETTINGS),
-      apiGet(API_PHONES).catch(() => ({ phones: [] }))
+      apiGet(API_PHONES).catch((err) => {
+        handleAuthError(err);
+        return { phones: [] };
+      })
     ]);
-    SETTINGS_DATA = settingsResp || { integrity_interval_minutes: 15, alerts: { targets: {} }, registry_users: [] };
+    SETTINGS_DATA = settingsResp || { integrity_interval_minutes: 15, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
+    const minDelay = Number(settingsResp?.min_auto_sync_delay_minutes);
+    const maxDelay = Number(settingsResp?.max_auto_sync_delay_minutes);
+    const safeMinDelay = Number.isFinite(minDelay) ? Math.max(1, Math.round(minDelay)) : 5;
+    const safeMaxDelay = Number.isFinite(maxDelay) ? Math.max(safeMinDelay, Math.round(maxDelay)) : Math.max(safeMinDelay, 60);
+    SETTINGS_DATA.min_auto_sync_delay_minutes = safeMinDelay;
+    SETTINGS_DATA.max_auto_sync_delay_minutes = safeMaxDelay;
+    const rawDelayValue = SETTINGS_DATA.auto_sync_delay_minutes;
+    let delayValue = Number(rawDelayValue);
+    if (!Number.isFinite(delayValue) || rawDelayValue === null || rawDelayValue === undefined || rawDelayValue === '') delayValue = 30;
+    delayValue = Math.round(delayValue);
+    if (delayValue < safeMinDelay) delayValue = safeMinDelay;
+    if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;
+    SETTINGS_DATA.auto_sync_delay_minutes = delayValue;
     PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
     ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
     Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    renderAutoSyncDelay();
     renderIntegrity();
     renderAlerts();
   } catch (err){
+    if (handleAuthError(err)) return;
     alert('Failed to load settings: ' + (err && err.message ? err.message : err));
   } finally {
     setBusy(false);
@@ -392,7 +617,35 @@ document.addEventListener('DOMContentLoaded', () => {
     openInApp('index', {}, { replaceState: true });
   });
 
+  const autoSyncInput = document.getElementById('autoSyncDelayInput');
+  autoSyncInput?.addEventListener('input', () => {
+    hideAutoSyncSavedOverlay();
+    setAutoSyncStatus('');
+  });
+  autoSyncInput?.addEventListener('change', async () => {
+    const { min, max } = autoSyncRange();
+    const rawStr = (autoSyncInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    SETTINGS_DATA.auto_sync_delay_minutes = val;
+    autoSyncInput.value = String(val);
+    await saveAutoSyncDelay(val);
+  });
+
   const integrityInput = document.getElementById('integrityInput');
+  integrityInput?.addEventListener('input', hideIntegritySavedOverlay);
   integrityInput?.addEventListener('change', async () => {
     const val = hhmmToMinutes(integrityInput.value);
     if (val === null){
@@ -426,11 +679,24 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
 
   <div class="card mt-3">
+    <div class="card-header">Automatic Change Sync Delay</div>
+    <div class="card-body">
+      <p class="muted">Set how long to wait before automatically syncing user updates to every participating device. Lower values push changes out sooner, while higher values batch multiple edits together. Choose between 5 and 60 minutes.</p>
+      <div class="saved-input-wrap">
+        <input id="autoSyncDelayInput" class="form-control" type="number" min="5" max="60" step="1" />
+        <div id="autoSyncSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="autoSyncStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
     <div class="card-header">Integrity Check Interval</div>
     <div class="card-body">
-      <p class="muted">Set how often Home Assistant performs the integrity check. Minimum 5 minutes, maximum 24 hours.</p>
-      <div class="d-flex align-items-center gap-2" style="max-width: 220px;">
+      <p class="muted">Integrity checks automatically compare each device's data with the server so everything stays accurate and up to date. Choose how often to run them (minimum 5 minutes, maximum 24 hours).</p>
+      <div class="saved-input-wrap">
         <input id="integrityInput" class="form-control" placeholder="HH:MM" />
+        <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="integrityStatus" class="visually-hidden small mt-2"></div>
     </div>

@@ -26,6 +26,56 @@ function findHaToken(){ const t = sessionStorage.getItem('akuvox_ll_token'); ret
 const AUTH_HEADERS = (findHaToken()) ? { 'Authorization': 'Bearer ' + findHaToken() } : {};
 const SAME_ORIGIN = { credentials: 'same-origin' };
 
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'akuvox-nav', view: 'unauthorized', slug: 'unauthorized', params: {} }, window.location.origin);
+    }
+  } catch (err) {}
+
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    const token = sessionStorage.getItem('akuvox_ll_token');
+    if (token) {
+      const search = new URLSearchParams();
+      search.set('token', token);
+      href = `/akuvox-ac/unauthorized?${search.toString()}`;
+    }
+  } catch (err) {}
+
+  try { window.location.replace(href); }
+  catch (err) { window.location.href = href; }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
 function qsGet(k){ return new URLSearchParams(location.search).get(k) || ''; }
 const USER_ID = qsGet('user');      // e.g. HA001
 const DEVICE_ID = qsGet('device');  // informational for now
@@ -108,11 +158,15 @@ async function uploadBlobAsJpg(blob){
     let res = {};
     try { res = JSON.parse(text); } catch { res = { ok: r.ok, raw: text }; }
     if (!r.ok || res.ok === false){
-      setStatus('Upload failed: ' + (res.error || text || r.status), false);
+      const err = res && res.error ? new Error(res.error) : buildError(r, text);
+      handleAuthError(err);
+      if (res && res.error) err.message = res.error;
+      setStatus('Upload failed: ' + (res.error || text || err.message || r.status), false);
       return;
     }
     setStatus('Face uploaded. A sync will push it to the device shortly.', true);
   }catch(e){
+    if (handleAuthError(e)) return;
     setStatus('Upload error: ' + (e && e.message ? e.message : e), false);
   }finally{
     setBusy(false);

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +50,8 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "users.html": "users.html",
     "settings": "settings.html",
     "settings.html": "settings.html",
+    "unauthorized": "unauthorized.html",
+    "unauthorized.html": "unauthorized.html",
 }
 
 
@@ -109,6 +112,97 @@ def _is_ha_id(s: Any) -> bool:
 
 def _ha_id_from_int(n: int) -> str:
     return f"HA{n:03d}"
+
+
+def _context_user_name(hass: HomeAssistant, context) -> str:
+    """Return a friendly name for the user behind an HTTP/service call."""
+
+    default = "HA User"
+    if context is None:
+        return default
+
+    user_id = getattr(context, "user_id", None)
+    if not user_id:
+        return default
+
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if user:
+            if user.name:
+                return user.name
+            if user.id:
+                return user.id
+    except Exception:
+        return default
+
+    return default
+
+
+def _flag_rebooting(coord, *, triggered_by: str, duration: float = 300.0) -> None:
+    """Mirror the reboot status tracking used by the service helper."""
+
+    try:
+        coord.health["status"] = "rebooting"
+        coord.health["online"] = False
+        coord.health["rebooting_until"] = time.time() + duration
+        coord.health["last_error"] = None
+    except Exception:
+        pass
+
+    try:
+        coord._append_event(f"Device Rebooted by - {triggered_by}")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+async def _reboot_devices_direct(
+    root: Dict[str, Any], *, entry_id: Optional[str], triggered_by: str
+) -> bool:
+    """Best-effort reboot helper used when the HA service call fails."""
+
+    manager = root.get("sync_manager")
+    targets: List[Any] = []
+
+    if entry_id:
+        data = root.get(entry_id) or {}
+        coord = data.get("coordinator")
+        api = data.get("api")
+        if coord and api:
+            targets.append((coord, api))
+        else:
+            raise RuntimeError("Device not available for reboot")
+    elif manager:
+        for _entry_id, coord, api, *_ in manager._devices():
+            if coord and api:
+                targets.append((coord, api))
+
+    if not targets:
+        raise RuntimeError("No devices available to reboot")
+
+    success = False
+
+    for coord, api in targets:
+        try:
+            await api.system_reboot()
+        except Exception as err:
+            try:
+                coord._append_event(f"Reboot failed: {err}")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            continue
+
+        success = True
+        _flag_rebooting(coord, triggered_by=triggered_by)
+
+        try:
+            await coord.async_request_refresh()
+        except Exception:
+            pass
+
+    if not success:
+        raise RuntimeError("Failed to trigger reboot")
+
+    return True
 
 
 def _normalize_groups(groups: Any) -> List[str]:
@@ -327,6 +421,7 @@ class AkuvoxUIView(HomeAssistantView):
                     continue
 
                 disp_name = _best_name(coord, data)
+                opts = data.get("options") or {}
                 dev = {
                     "entry_id": entry_id,
                     "name": disp_name,
@@ -339,7 +434,9 @@ class AkuvoxUIView(HomeAssistantView):
                     "events": list(getattr(coord, "events", []) or []),
                     "_users": list(getattr(coord, "users", []) or []),
                     "users": list(getattr(coord, "users", []) or []),
-                    "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
+                    "exit_device": bool(opts.get("exit_device", False)),
+                    "participate_in_sync": bool(opts.get("participate_in_sync", True)),
+                    "sync_groups": list(opts.get("sync_groups") or ["Default"]),
                 }
                 devices.append(dev)
 
@@ -348,6 +445,10 @@ class AkuvoxUIView(HomeAssistantView):
                 1
                 for d in devices
                 if d.get("sync_status") != "in_sync" and d.get("online", True)
+            )
+            kpis["sync_active"] = any(
+                d.get("online", True) and d.get("sync_status") == "in_progress"
+                for d in devices
             )
 
             us = root.get("users_store")
@@ -475,36 +576,104 @@ class AkuvoxUIAction(AkuvoxUIView):
 
         # Sync / Reboot
         if action == "sync_now":
+            queue = root.get("sync_queue")
             try:
                 service_data = {"entry_id": entry_id} if entry_id else {}
                 await hass.services.async_call(DOMAIN, "sync_now", service_data, blocking=True, context=ctx)
                 return web.json_response({"ok": True})
-            except Exception as e:
-                return err(e)
+            except Exception as service_err:
+                _LOGGER.debug("Sync-now service call failed via UI: %s", service_err)
+                if not queue:
+                    return err(service_err)
+                try:
+                    await queue.sync_now(entry_id)
+                    return web.json_response({"ok": True})
+                except Exception as queue_err:
+                    return err(queue_err)
 
         if action in ("force_full_sync", "sync_all"):
+            queue = root.get("sync_queue")
+            manager = root.get("sync_manager")
             try:
                 service_data = {"entry_id": entry_id} if entry_id else {}
-                await hass.services.async_call(DOMAIN, "force_full_sync", service_data, blocking=True, context=ctx)
+                await hass.services.async_call(
+                    DOMAIN, "force_full_sync", service_data, blocking=True, context=ctx
+                )
                 return web.json_response({"ok": True})
-            except Exception as e:
-                return err(e)
+            except Exception as service_err:
+                _LOGGER.debug("Force full sync service call failed via UI: %s", service_err)
+                if not queue or not manager:
+                    return err(service_err)
+
+                triggered_by = _context_user_name(hass, ctx)
+                coords: List[Any] = []
+
+                if entry_id:
+                    data = root.get(entry_id) or {}
+                    coord = data.get("coordinator")
+                    if coord:
+                        coords.append(coord)
+                else:
+                    try:
+                        for _entry_id, coord, *_ in manager._devices():
+                            if coord:
+                                coords.append(coord)
+                    except Exception:
+                        coords = []
+
+                for coord in coords:
+                    try:
+                        coord._append_event(  # type: ignore[attr-defined]
+                            f"Full Sync Triggered by - {triggered_by}"
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    await queue.sync_now(entry_id)
+                    return web.json_response({"ok": True})
+                except Exception as queue_err:
+                    return err(queue_err)
 
         if action == "reboot_all":
             try:
-                await hass.services.async_call(DOMAIN, "reboot_device", {}, blocking=True, context=ctx)
+                await hass.services.async_call(
+                    DOMAIN, "reboot_device", {}, blocking=True, context=ctx
+                )
                 return web.json_response({"ok": True})
-            except Exception as e:
-                return err(e)
+            except Exception as service_err:
+                _LOGGER.debug("Reboot-all service call failed via UI: %s", service_err)
+                triggered_by = _context_user_name(hass, ctx)
+                try:
+                    await _reboot_devices_direct(root, entry_id=None, triggered_by=triggered_by)
+                    return web.json_response({"ok": True})
+                except Exception as fallback_err:
+                    return err(fallback_err)
 
         if action == "reboot_device":
             if not entry_id:
                 return err("entry_id required")
             try:
-                await hass.services.async_call(DOMAIN, "reboot_device", {"entry_id": entry_id}, blocking=True, context=ctx)
+                await hass.services.async_call(
+                    DOMAIN,
+                    "reboot_device",
+                    {"entry_id": entry_id},
+                    blocking=True,
+                    context=ctx,
+                )
                 return web.json_response({"ok": True})
-            except Exception as e:
-                return err(e)
+            except Exception as service_err:
+                _LOGGER.debug(
+                    "Reboot service call failed via UI for %s: %s", entry_id, service_err
+                )
+                triggered_by = _context_user_name(hass, ctx)
+                try:
+                    await _reboot_devices_direct(
+                        root, entry_id=entry_id, triggered_by=triggered_by
+                    )
+                    return web.json_response({"ok": True})
+                except Exception as fallback_err:
+                    return err(fallback_err)
 
         # Device options
         if action == "set_exit_device":
@@ -647,12 +816,17 @@ class AkuvoxUISettings(HomeAssistantView):
         users_store = root.get("users_store")
 
         interval = None
+        delay = None
         alerts = {"targets": {}}
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
             except Exception:
                 interval = None
+            try:
+                delay = settings.get_auto_sync_delay_minutes()
+            except Exception:
+                delay = None
             try:
                 alerts = {"targets": settings.get_alert_targets()}
             except Exception:
@@ -681,10 +855,13 @@ class AkuvoxUISettings(HomeAssistantView):
             {
                 "ok": True,
                 "integrity_interval_minutes": interval,
+                "auto_sync_delay_minutes": delay,
                 "alerts": alerts,
                 "registry_users": registry_users,
                 "min_minutes": 5,
                 "max_minutes": 24 * 60,
+                "min_auto_sync_delay_minutes": 5,
+                "max_auto_sync_delay_minutes": 60,
             }
         )
 
@@ -699,6 +876,7 @@ class AkuvoxUISettings(HomeAssistantView):
 
         settings = root.get("settings_store")
         manager = root.get("sync_manager")
+        queue = root.get("sync_queue")
 
         response: Dict[str, Any] = {"ok": True}
 
@@ -722,6 +900,28 @@ class AkuvoxUISettings(HomeAssistantView):
                     response["integrity_interval_minutes"] = value
                 except Exception as err:
                     return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "auto_sync_delay_minutes" in payload:
+            if not settings or not hasattr(settings, "set_auto_sync_delay_minutes"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+
+            minutes = payload.get("auto_sync_delay_minutes")
+            try:
+                value = int(minutes)
+            except Exception:
+                return web.json_response({"ok": False, "error": "invalid delay"}, status=400)
+            value = max(5, min(60, value))
+            try:
+                await settings.set_auto_sync_delay_minutes(value)
+                response["auto_sync_delay_minutes"] = settings.get_auto_sync_delay_minutes()
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+            if queue and hasattr(queue, "refresh_default_delay"):
+                try:
+                    queue.refresh_default_delay()
+                except Exception:
+                    pass
 
         if "alerts" in payload and settings and hasattr(settings, "set_alert_targets"):
             alerts_payload = payload.get("alerts") or {}
