@@ -267,6 +267,7 @@ let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
 let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
+let ANY_ALARM_CAPABLE = true;
 
 let reservationTimer = null;
 let reservationMisses = 0;
@@ -281,6 +282,19 @@ function setReservationMessage(html, tone = 'muted') {
   }
   const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'muted';
   el.innerHTML = `<span class="${cls}">${html}</span>`;
+}
+
+function updateKeyHolderAvailability(){
+  const row = document.getElementById('keyHolderRow');
+  const input = document.getElementById('key_holder');
+  if (!row || !input) return;
+  if (ANY_ALARM_CAPABLE){
+    row.style.display = '';
+  } else {
+    row.style.display = 'none';
+    input.checked = false;
+    if (CURRENT) CURRENT.key_holder = false;
+  }
 }
 
 function stopReservationHeartbeat() {
@@ -451,6 +465,24 @@ async function load(){
       alert('Failed to load Akuvox data. Default values will be used until the connection succeeds.');
       state = { schedules: {}, registry_users: [] };
     }
+    ANY_ALARM_CAPABLE = false;
+    if (state && typeof state === 'object'){
+      const caps = state.capabilities;
+      if (caps && typeof caps === 'object' && typeof caps.alarm_relay === 'boolean'){
+        ANY_ALARM_CAPABLE = caps.alarm_relay;
+      }
+      if (!ANY_ALARM_CAPABLE && Array.isArray(state.devices)){
+        ANY_ALARM_CAPABLE = state.devices.some(dev => {
+          if (!dev || typeof dev !== 'object') return false;
+          const roles = dev.relay_roles || {};
+          const norm = (val) => String(val ?? '').toLowerCase().replace(/[\s-]+/g, '_');
+          const a = norm(roles.relay_a);
+          const b = norm(roles.relay_b);
+          return a === 'alarm' || a === 'door_alarm' || b === 'alarm' || b === 'door_alarm';
+        });
+      }
+    }
+    updateKeyHolderAvailability();
     SCHEDULES = state.schedules || {};
     REGISTRY = state.registry_users || [];
 
@@ -532,7 +564,11 @@ function fillForm(){
   CURRENT.schedule_id = selectedId;
   CURRENT.schedule_name = nameForId(selectedId);
 
-  document.getElementById('key_holder').checked = !!CURRENT.key_holder;
+  const keyInput = document.getElementById('key_holder');
+  if (keyInput){
+    keyInput.checked = ANY_ALARM_CAPABLE && !!CURRENT.key_holder;
+  }
+  updateKeyHolderAvailability();
 
   const localHelp = document.getElementById('localHelp');
   if (localHelp && !localHelp.innerHTML){
@@ -608,7 +644,7 @@ async function save(){
       phone: document.getElementById('phone').value.trim() || undefined,
       schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
       schedule_name: selectedScheduleName,      // for UI/state clarity
-      key_holder: document.getElementById('key_holder').checked,
+      key_holder: ANY_ALARM_CAPABLE ? document.getElementById('key_holder').checked : false,
     };
 
     // Save/update the profile against the reserved ID
@@ -650,7 +686,11 @@ async function save(){
     const phoneService = phoneSel && phoneSel.value ? phoneSel.value : '';
     if (remoteVisible && phoneService){
       try{
-        await apiPost(API_REMOTE_ENROL, { id: CURRENT.id, phone_service: phoneService });
+        await apiPost(API_REMOTE_ENROL, {
+          id: CURRENT.id,
+          phone_service: phoneService,
+          name: document.getElementById('name').value.trim()
+        });
         const resSpan = document.getElementById('remoteResult');
         if (resSpan) resSpan.textContent = 'Enrolment request sent.';
       }catch(e){
@@ -743,9 +783,10 @@ function showPanel(which){
     <div class="mb-3">
       <label class="form-label">Access Schedule</label>
       <select id="schedule" class="form-select"></select>
+      <div class="form-text muted">Need a new schedule? Open <b>Global Settings → Access Schedules</b> to build one, then come back and select it here.</div>
     </div>
 
-    <div class="form-check mb-3">
+    <div class="form-check mb-3" id="keyHolderRow">
       <input class="form-check-input" type="checkbox" id="key_holder">
       <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
     </div>

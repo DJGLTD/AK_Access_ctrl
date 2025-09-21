@@ -32,6 +32,13 @@ CONF_PASSWORD      = "password"
 CONF_PARTICIPATE   = "participate_in_sync"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_DEVICE_GROUPS = "device_groups"
+CONF_RELAY_ROLES  = "relay_roles"
+
+# Relay roles
+RELAY_ROLE_NONE       = "none"
+RELAY_ROLE_DOOR       = "door"
+RELAY_ROLE_ALARM      = "alarm"
+RELAY_ROLE_DOOR_ALARM = "door_alarm"
 
 # Defaults
 DEFAULT_USE_HTTPS     = False

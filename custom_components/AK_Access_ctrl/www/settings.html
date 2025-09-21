@@ -32,6 +32,35 @@
       transition:opacity 0.2s ease-in-out;
     }
     .saved-overlay.visible{ opacity:1; }
+    .schedule-card{ overflow:hidden; }
+    .schedule-day{
+      background:#0d1729;
+      border:1px solid var(--border);
+      border-radius:0.5rem;
+      padding:0.75rem;
+      margin-bottom:1rem;
+    }
+    .schedule-day-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:0.75rem;
+      margin-bottom:0.75rem;
+    }
+    .schedule-day-empty{
+      color:var(--muted);
+      font-style:italic;
+      font-size:0.9rem;
+    }
+    .schedule-time-input{ font-family:inherit; }
+    .device-option{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:1rem; }
+    .device-option + .device-option{ margin-top:1rem; }
+    .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
+    .device-meta{ color:var(--muted); font-size:0.9rem; }
+    @media (max-width: 576px){
+      .schedule-day-header{ flex-direction:column; align-items:flex-start; }
+      .schedule-day-header .btn{ width:100%; }
+    }
   </style>
 </head>
 <body>
@@ -266,16 +295,44 @@ function openInApp(view, params = {}, options = {}) {
 
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 
-let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
+const RELAY_ROLE_LABELS = {
+  none: 'Not used',
+  door: 'Door Relay',
+  alarm: 'Alarm Relay',
+  door_alarm: 'Door and Alarm Relay'
+};
+const RELAY_ROLE_ORDER = ['none', 'door', 'alarm', 'door_alarm'];
+
+let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [], capabilities: { alarm_relay: false } };
 let PHONES = [];
 let USERS = [];
+let DEVICES = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let integritySaving = false;
 let integritySavedTimer = null;
 let autoSyncSaving = false;
 let autoSyncSavedTimer = null;
+const DEVICE_STATUS_TIMERS = new Map();
+const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
+const SCHEDULE_DAY_ORDER = [
+  { key: 'mon', label: 'Monday' },
+  { key: 'tue', label: 'Tuesday' },
+  { key: 'wed', label: 'Wednesday' },
+  { key: 'thu', label: 'Thursday' },
+  { key: 'fri', label: 'Friday' },
+  { key: 'sat', label: 'Saturday' },
+  { key: 'sun', label: 'Sunday' }
+];
+let SCHEDULES = {};
+let SELECTED_SCHEDULE = '';
+let EDITING_SCHEDULE_NAME = '';
+let scheduleSaving = false;
+let scheduleDeleting = false;
+let scheduleStatusTimer = null;
+let scheduleReadOnly = false;
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
 function hideIntegritySavedOverlay(){
@@ -442,6 +499,247 @@ function ensureTargetDefaults(target){
   }
 }
 
+function escapeSelector(value){
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+  return String(value || '').replace(/([\W])/g, '\\$1');
+}
+
+function relayValueNormalized(value, fallback = 'door'){
+  const raw = (value ?? '').toString().trim().toLowerCase();
+  if (!raw) return fallback;
+  const clean = raw.replace(/[\s-]+/g, '_');
+  if (RELAY_ROLE_ORDER.includes(clean)) return clean;
+  if (clean === 'not_used' || clean === 'unused' || clean === 'none') return 'none';
+  if (clean === 'door' || clean === 'door_relay') return 'door';
+  if (clean === 'alarm' || clean === 'alarm_relay') return 'alarm';
+  if (clean === 'door_and_alarm' || clean === 'door_alarm_relay' || clean === 'doorandalarm') return 'door_alarm';
+  return fallback;
+}
+
+function deviceById(entryId){
+  return DEVICES.find(d => d.entry_id === entryId);
+}
+
+function populateRelaySelect(select, value){
+  if (!select) return;
+  const normalized = relayValueNormalized(value, 'door');
+  select.innerHTML = '';
+  RELAY_ROLE_ORDER.forEach(role => {
+    const opt = document.createElement('option');
+    opt.value = role;
+    opt.textContent = RELAY_ROLE_LABELS[role] || role;
+    select.appendChild(opt);
+  });
+  if (RELAY_ROLE_ORDER.includes(normalized)) {
+    select.value = normalized;
+  } else {
+    select.value = 'door';
+  }
+}
+
+function applyDeviceValues(card, device){
+  if (!card || !device) return;
+  const roles = device.relay_roles && typeof device.relay_roles === 'object' ? device.relay_roles : {};
+  populateRelaySelect(card.querySelector('select[data-relay="relay_a"]'), roles.relay_a);
+  const relayB = card.querySelector('select[data-relay="relay_b"]');
+  if (relayB) populateRelaySelect(relayB, roles.relay_b);
+  const exitToggle = card.querySelector('input[data-exit-toggle]');
+  if (exitToggle) exitToggle.checked = !!device.exit_device;
+}
+
+function clearDeviceStatusTimers(){
+  DEVICE_STATUS_TIMERS.forEach(timer => clearTimeout(timer));
+  DEVICE_STATUS_TIMERS.clear();
+}
+
+function setDeviceStatus(entryId, text, tone = 'muted'){
+  const selector = `[data-device="${escapeSelector(entryId)}"] [data-device-status]`;
+  const status = document.querySelector(selector);
+  if (!status) return;
+  if (DEVICE_STATUS_TIMERS.has(entryId)){
+    clearTimeout(DEVICE_STATUS_TIMERS.get(entryId));
+    DEVICE_STATUS_TIMERS.delete(entryId);
+  }
+  if (!text){
+    status.textContent = '';
+    status.className = 'small muted mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' muted';
+  status.className = cls;
+  status.textContent = text;
+  if (tone === 'success'){
+    const timer = setTimeout(() => {
+      const node = document.querySelector(selector);
+      if (node){
+        node.textContent = '';
+        node.className = 'small muted mt-2';
+      }
+      DEVICE_STATUS_TIMERS.delete(entryId);
+    }, 4000);
+    DEVICE_STATUS_TIMERS.set(entryId, timer);
+  }
+}
+
+function updateRelaySummary(){
+  const summary = document.getElementById('deviceRelaySummary');
+  if (!summary) return;
+  const anyAlarm = DEVICES.some(dev => {
+    if (typeof dev.alarm_capable === 'boolean') return dev.alarm_capable;
+    const roles = dev.relay_roles || {};
+    const aVal = relayValueNormalized(roles.relay_a, 'door');
+    const bVal = relayValueNormalized(roles.relay_b, 'none');
+    return aVal === 'alarm' || aVal === 'door_alarm' || bVal === 'alarm' || bVal === 'door_alarm';
+  });
+  SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
+  SETTINGS_DATA.capabilities.alarm_relay = anyAlarm;
+  if (!DEVICES.length){
+    summary.textContent = 'No devices have been added yet.';
+    summary.className = 'small muted mt-2';
+    return;
+  }
+  if (anyAlarm){
+    summary.textContent = 'Key Holder can be enabled for users because an alarm-capable relay is configured.';
+    summary.className = 'small text-success mt-2';
+  } else {
+    summary.textContent = 'Set a relay to Alarm or Door and Alarm to enable the Key Holder option when editing users.';
+    summary.className = 'small muted mt-2';
+  }
+}
+
+function renderDeviceOptions(){
+  const container = document.getElementById('deviceOptions');
+  if (!container) return;
+  clearDeviceStatusTimers();
+  container.innerHTML = '';
+  if (!DEVICES.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No devices available yet.';
+    container.appendChild(empty);
+    updateRelaySummary();
+    return;
+  }
+  const sorted = [...DEVICES].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+  sorted.forEach(device => {
+    const card = document.createElement('div');
+    card.className = 'device-option';
+    card.setAttribute('data-device', device.entry_id);
+    const typeLabel = device.type || 'Device';
+    const isKeypad = String(device.type || '').toLowerCase() === 'keypad';
+    const ipHtml = device.ip ? `<span class="device-meta">IP: ${device.ip}</span>` : '';
+    const keypadNote = isKeypad ? '<div class="form-text muted mt-1">Keypads expose Relay A only.</div>' : '';
+    card.innerHTML = `
+      <div class="device-header">
+        <div>
+          <div class="fw-semibold">${device.name || 'Device'}</div>
+          <div class="device-meta">${typeLabel}</div>
+        </div>
+        ${ipHtml}
+      </div>
+      <div class="row g-3 mt-2">
+        <div class="col-sm-6 col-lg-4">
+          <label class="form-label">Relay A action</label>
+          <select class="form-select" data-relay="relay_a"></select>
+        </div>
+        ${isKeypad ? '' : `
+        <div class="col-sm-6 col-lg-4">
+          <label class="form-label">Relay B action</label>
+          <select class="form-select" data-relay="relay_b"></select>
+        </div>`}
+      </div>
+      ${keypadNote}
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" data-exit-toggle ${device.exit_device ? 'checked' : ''}>
+        <label class="form-check-label">Treat as exit device (bypass user schedules)</label>
+      </div>
+      <div class="small muted mt-2" data-device-status=""></div>
+    `;
+    container.appendChild(card);
+    applyDeviceValues(card, device);
+    setDeviceStatus(device.entry_id, '');
+  });
+  updateRelaySummary();
+}
+
+async function handleRelaySelectChange(select){
+  const card = select.closest('[data-device]');
+  if (!card) return;
+  const entryId = card.getAttribute('data-device');
+  if (!entryId) return;
+  const selects = Array.from(card.querySelectorAll('select[data-relay]'));
+  const payload = {};
+  selects.forEach(sel => {
+    const key = sel.getAttribute('data-relay');
+    if (key) payload[key] = sel.value;
+  });
+  setDeviceStatus(entryId, 'Saving…');
+  selects.forEach(sel => { sel.disabled = true; sel.classList.add('disabled'); });
+  try {
+    const res = await apiPost(API_ACTION, { action: 'set_device_relays', entry_id: entryId, payload });
+    const device = deviceById(entryId);
+    if (device){
+      if (res && res.relay_roles){
+        device.relay_roles = { ...res.relay_roles };
+      } else {
+        device.relay_roles = device.relay_roles || {};
+        Object.entries(payload).forEach(([key, value]) => {
+          device.relay_roles[key] = relayValueNormalized(value, device.relay_roles[key]);
+        });
+      }
+      if (res && 'alarm_capable' in res){
+        device.alarm_capable = !!res.alarm_capable;
+      } else {
+        const roles = device.relay_roles || {};
+        device.alarm_capable = ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_a, 'door'))
+          || ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_b, 'none'));
+      }
+    }
+    if (res && 'device_alarm_any' in res){
+      SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
+      SETTINGS_DATA.capabilities.alarm_relay = !!res.device_alarm_any;
+    }
+    setDeviceStatus(entryId, 'Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setDeviceStatus(entryId, 'Save failed', 'error');
+    const device = deviceById(entryId);
+    if (device) applyDeviceValues(card, device);
+    alert('Failed to update relay mapping: ' + (err && err.message ? err.message : err));
+  } finally {
+    selects.forEach(sel => { sel.disabled = false; sel.classList.remove('disabled'); });
+    updateRelaySummary();
+  }
+}
+
+async function handleExitToggleChange(input){
+  const card = input.closest('[data-device]');
+  if (!card) return;
+  const entryId = card.getAttribute('data-device');
+  if (!entryId) return;
+  const checked = input.checked;
+  setDeviceStatus(entryId, 'Saving…');
+  input.disabled = true;
+  try {
+    const res = await apiPost(API_ACTION, { action: 'set_exit_device', entry_id: entryId, payload: { enabled: checked } });
+    const device = deviceById(entryId);
+    if (device) device.exit_device = res && 'exit_device' in res ? !!res.exit_device : checked;
+    setDeviceStatus(entryId, 'Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setDeviceStatus(entryId, 'Save failed', 'error');
+    input.checked = !checked;
+    const device = deviceById(entryId);
+    if (device) device.exit_device = input.checked;
+    alert('Failed to update exit device setting: ' + (err && err.message ? err.message : err));
+  } finally {
+    input.disabled = false;
+  }
+}
+
 function renderIntegrity(){
   const input = document.getElementById('integrityInput');
   if (!input) return;
@@ -576,6 +874,369 @@ function renderAlerts(){
   });
 }
 
+function blankScheduleSpec(){
+  const out = { always_permit_exit: false };
+  SCHEDULE_DAY_ORDER.forEach(({ key }) => { out[key] = []; });
+  return out;
+}
+
+function cloneScheduleSpec(spec){
+  const base = blankScheduleSpec();
+  if (!spec || typeof spec !== 'object') return base;
+  SCHEDULE_DAY_ORDER.forEach(({ key }) => {
+    const spans = Array.isArray(spec[key]) ? spec[key] : [];
+    base[key] = spans
+      .filter(span => Array.isArray(span) && span.length >= 2)
+      .map(span => [String(span[0] || '').trim(), String(span[1] || '').trim()]);
+  });
+  if ('always_permit_exit' in spec){
+    const raw = spec.always_permit_exit;
+    if (typeof raw === 'string'){
+      base.always_permit_exit = ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
+    } else {
+      base.always_permit_exit = !!raw;
+    }
+  }
+  return base;
+}
+
+function scheduleNames(){
+  return Object.keys(SCHEDULES || {}).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function scheduleIsBuiltin(name){
+  return BUILTIN_SCHEDULES.has(String(name || '').trim());
+}
+
+function setScheduleStatus(text, tone = 'muted'){
+  const el = document.getElementById('scheduleStatus');
+  if (!el) return;
+  if (scheduleStatusTimer){
+    clearTimeout(scheduleStatusTimer);
+    scheduleStatusTimer = null;
+  }
+  if (!text){
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' muted';
+  el.className = cls;
+  el.textContent = text;
+  if (tone === 'success'){
+    scheduleStatusTimer = setTimeout(() => {
+      const node = document.getElementById('scheduleStatus');
+      if (!node) return;
+      node.textContent = '';
+      node.className = 'visually-hidden small mt-2';
+      scheduleStatusTimer = null;
+    }, 4000);
+  }
+}
+
+function populateScheduleSelect(preferred = ''){
+  const select = document.getElementById('scheduleSelect');
+  if (!select) return '';
+  const names = scheduleNames();
+  select.innerHTML = '';
+  const newOpt = document.createElement('option');
+  newOpt.value = '';
+  newOpt.textContent = 'Create new schedule…';
+  select.appendChild(newOpt);
+  names.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+  let chosen = '';
+  if (preferred && (preferred === '' || names.includes(preferred))){
+    chosen = preferred;
+  } else if (names.includes(SELECTED_SCHEDULE)){
+    chosen = SELECTED_SCHEDULE;
+  } else if (names.includes('24/7 Access')){
+    chosen = '24/7 Access';
+  } else if (names.length){
+    chosen = names[0];
+  }
+  select.value = chosen;
+  return chosen;
+}
+
+function updateScheduleSelection(value){
+  SELECTED_SCHEDULE = value || '';
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    scheduleReadOnly = true;
+    EDITING_SCHEDULE_NAME = SELECTED_SCHEDULE;
+  } else {
+    scheduleReadOnly = false;
+    EDITING_SCHEDULE_NAME = value ? value : '';
+  }
+  setScheduleStatus('');
+  renderScheduleEditor();
+}
+
+function createScheduleRow(day, start = '', end = '', readOnly = false){
+  const row = document.createElement('div');
+  row.className = 'row g-2 align-items-center mb-2';
+  row.setAttribute('data-sched-row', '1');
+  row.setAttribute('data-day', day);
+
+  const startCol = document.createElement('div');
+  startCol.className = 'col-12 col-md-4 col-lg-3';
+  const startGroup = document.createElement('div');
+  startGroup.className = 'input-group input-group-sm';
+  const startLabel = document.createElement('span');
+  startLabel.className = 'input-group-text';
+  startLabel.textContent = 'Start';
+  const startInput = document.createElement('input');
+  startInput.className = 'form-control form-control-sm schedule-time-input';
+  startInput.placeholder = 'HH:MM';
+  startInput.value = start || '';
+  startInput.maxLength = 5;
+  startInput.autocomplete = 'off';
+  startInput.inputMode = 'numeric';
+  startInput.pattern = '\\d{1,2}:\\d{2}';
+  if (readOnly){ startInput.disabled = true; }
+  startGroup.append(startLabel, startInput);
+  startCol.appendChild(startGroup);
+  row.appendChild(startCol);
+
+  const endCol = document.createElement('div');
+  endCol.className = 'col-12 col-md-4 col-lg-3';
+  const endGroup = document.createElement('div');
+  endGroup.className = 'input-group input-group-sm';
+  const endLabel = document.createElement('span');
+  endLabel.className = 'input-group-text';
+  endLabel.textContent = 'End';
+  const endInput = document.createElement('input');
+  endInput.className = 'form-control form-control-sm schedule-time-input';
+  endInput.placeholder = 'HH:MM';
+  endInput.value = end || '';
+  endInput.maxLength = 5;
+  endInput.autocomplete = 'off';
+  endInput.inputMode = 'numeric';
+  endInput.pattern = '\\d{1,2}:\\d{2}';
+  if (readOnly){ endInput.disabled = true; }
+  endGroup.append(endLabel, endInput);
+  endCol.appendChild(endGroup);
+  row.appendChild(endCol);
+
+  const btnCol = document.createElement('div');
+  btnCol.className = 'col-12 col-md-4 col-lg-3';
+  if (!readOnly){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm btn-outline-danger w-100';
+    btn.setAttribute('data-remove-row', '');
+    btn.setAttribute('data-day', day);
+    btn.innerHTML = '<i class="bi bi-x-lg me-1"></i>Remove';
+    btnCol.appendChild(btn);
+  }
+  row.appendChild(btnCol);
+
+  return row;
+}
+
+function updateScheduleDayEmptyState(day){
+  const list = document.querySelector(`[data-day-rows="${day}"]`);
+  const empty = document.querySelector(`[data-day-empty="${day}"]`);
+  if (!list || !empty) return;
+  const hasRows = !!list.querySelector('[data-sched-row]');
+  empty.style.display = hasRows ? 'none' : 'block';
+}
+
+function renderScheduleEditor(){
+  const spec = SELECTED_SCHEDULE && SCHEDULES[SELECTED_SCHEDULE]
+    ? cloneScheduleSpec(SCHEDULES[SELECTED_SCHEDULE])
+    : blankScheduleSpec();
+  const nameInput = document.getElementById('scheduleNameInput');
+  if (nameInput){
+    nameInput.value = EDITING_SCHEDULE_NAME || '';
+    nameInput.disabled = scheduleReadOnly;
+  }
+  const helper = document.getElementById('scheduleHelper');
+  if (helper){
+    if (scheduleReadOnly){
+      helper.textContent = 'Built-in schedules show the default behaviour. Use "Create new schedule…" to build your own time windows.';
+    } else {
+      helper.textContent = 'Add HH:MM windows for each day when access is allowed. Leave a day empty to block access that day.';
+    }
+  }
+  const exitToggle = document.getElementById('scheduleExitCheckbox');
+  if (exitToggle){
+    exitToggle.checked = !!spec.always_permit_exit;
+    exitToggle.disabled = scheduleReadOnly;
+  }
+  const saveBtn = document.getElementById('scheduleSaveBtn');
+  if (saveBtn){
+    saveBtn.disabled = scheduleReadOnly;
+  }
+  const deleteBtn = document.getElementById('scheduleDeleteBtn');
+  if (deleteBtn){
+    deleteBtn.disabled = scheduleReadOnly || !SELECTED_SCHEDULE;
+  }
+
+  const container = document.getElementById('scheduleDays');
+  if (!container) return;
+  container.innerHTML = '';
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    const block = document.createElement('div');
+    block.className = 'schedule-day';
+    block.setAttribute('data-day-container', key);
+
+    const header = document.createElement('div');
+    header.className = 'schedule-day-header';
+    const title = document.createElement('h6');
+    title.className = 'm-0';
+    title.textContent = label;
+    header.appendChild(title);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-light';
+    addBtn.setAttribute('data-add-day', key);
+    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add window';
+    if (scheduleReadOnly) addBtn.disabled = true;
+    header.appendChild(addBtn);
+    block.appendChild(header);
+
+    const list = document.createElement('div');
+    list.setAttribute('data-day-rows', key);
+    block.appendChild(list);
+
+    const empty = document.createElement('div');
+    empty.setAttribute('data-day-empty', key);
+    empty.className = 'schedule-day-empty';
+    empty.textContent = 'No time windows yet.';
+    block.appendChild(empty);
+
+    const spans = spec[key] || [];
+    spans.forEach(span => {
+      list.appendChild(createScheduleRow(key, span[0], span[1], scheduleReadOnly));
+    });
+    container.appendChild(block);
+    updateScheduleDayEmptyState(key);
+  });
+}
+
+function addScheduleRow(day){
+  if (!day || scheduleReadOnly) return;
+  const list = document.querySelector(`[data-day-rows="${day}"]`);
+  if (!list) return;
+  list.appendChild(createScheduleRow(day, '', '', false));
+  updateScheduleDayEmptyState(day);
+}
+
+function gatherScheduleSpec(){
+  const spec = blankScheduleSpec();
+  document.querySelectorAll('[data-sched-row]').forEach(row => {
+    const day = row.getAttribute('data-day');
+    if (!day || !(day in spec)) return;
+    const inputs = row.querySelectorAll('input');
+    if (inputs.length < 2) return;
+    const start = inputs[0].value.trim();
+    const end = inputs[1].value.trim();
+    if (start && end) spec[day].push([start, end]);
+  });
+  const exitToggle = document.getElementById('scheduleExitCheckbox');
+  spec.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  return spec;
+}
+
+async function callAction(actionName, payload){
+  const res = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: actionName, payload })
+  });
+  if (!res.ok){
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (body && body.ok === false){
+    throw new Error(body.error || 'Action failed');
+  }
+  return body;
+}
+
+async function saveSchedule(){
+  if (scheduleSaving || scheduleReadOnly) return;
+  const input = document.getElementById('scheduleNameInput');
+  const name = (input && typeof input.value === 'string') ? input.value.trim() : '';
+  if (!name){
+    setScheduleStatus('Enter a schedule name.', 'error');
+    input?.focus();
+    return;
+  }
+  if (scheduleIsBuiltin(name) && !scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedule names are reserved. Choose a different name.', 'error');
+    return;
+  }
+  const spec = gatherScheduleSpec();
+  scheduleSaving = true;
+  try{
+    setScheduleStatus('Saving…');
+    await callAction('upsert_schedule', { name, spec });
+    SCHEDULES[name] = spec;
+    const next = populateScheduleSelect(name);
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Save failed', 'error');
+    alert('Failed to save schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleSaving = false;
+  }
+}
+
+async function deleteSchedule(){
+  if (scheduleDeleting) return;
+  if (!SELECTED_SCHEDULE){
+    setScheduleStatus('Choose a schedule to delete.', 'error');
+    return;
+  }
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedules cannot be deleted.', 'error');
+    return;
+  }
+  const confirmed = window.confirm(`Delete schedule "${SELECTED_SCHEDULE}"?`);
+  if (!confirmed) return;
+  scheduleDeleting = true;
+  try{
+    setScheduleStatus('Deleting…');
+    await callAction('delete_schedule', { name: SELECTED_SCHEDULE });
+    delete SCHEDULES[SELECTED_SCHEDULE];
+    const next = populateScheduleSelect('');
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule deleted', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Delete failed', 'error');
+    alert('Failed to delete schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleDeleting = false;
+  }
+}
+
+function startNewSchedule(){
+  const select = document.getElementById('scheduleSelect');
+  if (select){
+    select.value = '';
+  }
+  updateScheduleSelection('');
+  const input = document.getElementById('scheduleNameInput');
+  if (input && !input.disabled){
+    input.focus();
+  }
+}
+
 async function saveIntegrity(minutes){
   if (integritySaving) return;
   integritySaving = true;
@@ -666,10 +1327,39 @@ async function loadData(){
     if (delayValue < safeMinDelay) delayValue = safeMinDelay;
     if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;
     SETTINGS_DATA.auto_sync_delay_minutes = delayValue;
-    PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
-    USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
-    ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
-    Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+      PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
+      USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+      ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
+      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+      const rawDevices = Array.isArray(settingsResp?.devices) ? settingsResp.devices : [];
+      DEVICES = rawDevices.map(dev => {
+        const clone = { ...dev };
+        const roles = dev && typeof dev.relay_roles === 'object' ? dev.relay_roles : {};
+        clone.relay_roles = {
+          relay_a: relayValueNormalized(roles.relay_a, 'door'),
+          relay_b: relayValueNormalized(roles.relay_b, 'none'),
+        };
+        clone.exit_device = !!dev.exit_device;
+        clone.alarm_capable = typeof dev.alarm_capable === 'boolean'
+          ? dev.alarm_capable
+          : ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_a) || ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_b);
+        return clone;
+      });
+      SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
+        ? { ...settingsResp.capabilities }
+        : { alarm_relay: false };
+      renderDeviceOptions();
+      const rawSchedules = settingsResp?.schedules;
+    if (rawSchedules && typeof rawSchedules === 'object'){
+      SCHEDULES = {};
+      Object.entries(rawSchedules).forEach(([name, spec]) => {
+        SCHEDULES[name] = cloneScheduleSpec(spec);
+      });
+    } else {
+      SCHEDULES = {};
+    }
+    const nextSchedule = populateScheduleSelect(SELECTED_SCHEDULE);
+    updateScheduleSelection(nextSchedule);
     renderAutoSyncDelay();
     renderIntegrity();
     renderAlerts();
@@ -685,6 +1375,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnBack')?.addEventListener('click', (e) => {
     e.preventDefault();
     openInApp('index', {}, { replaceState: true });
+  });
+
+  const deviceOptions = document.getElementById('deviceOptions');
+  deviceOptions?.addEventListener('change', async (ev) => {
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    if (target.matches('select[data-relay]')) {
+      await handleRelaySelectChange(target);
+    } else if (target.matches('input[data-exit-toggle]')) {
+      await handleExitToggleChange(target);
+    }
   });
 
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
@@ -737,6 +1438,54 @@ document.addEventListener('DOMContentLoaded', () => {
     await saveAlerts();
   });
 
+  const scheduleSelect = document.getElementById('scheduleSelect');
+  scheduleSelect?.addEventListener('change', (ev) => {
+    updateScheduleSelection(ev.target.value);
+  });
+  document.getElementById('scheduleCreateBtn')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    startNewSchedule();
+  });
+  document.getElementById('scheduleSaveBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await saveSchedule();
+  });
+  document.getElementById('scheduleDeleteBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await deleteSchedule();
+  });
+  const scheduleNameInput = document.getElementById('scheduleNameInput');
+  scheduleNameInput?.addEventListener('input', (ev) => {
+    EDITING_SCHEDULE_NAME = ev.target.value;
+    setScheduleStatus('');
+  });
+  const scheduleDays = document.getElementById('scheduleDays');
+  scheduleDays?.addEventListener('click', (ev) => {
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    const addBtn = target.closest('[data-add-day]');
+    if (addBtn){
+      ev.preventDefault();
+      const day = addBtn.getAttribute('data-add-day');
+      if (day) addScheduleRow(day);
+      return;
+    }
+    const removeBtn = target.closest('[data-remove-row]');
+    if (removeBtn){
+      ev.preventDefault();
+      if (scheduleReadOnly) return;
+      const day = removeBtn.getAttribute('data-day');
+      const row = removeBtn.closest('[data-sched-row]');
+      if (row) row.remove();
+      if (day) updateScheduleDayEmptyState(day);
+      setScheduleStatus('');
+    }
+  });
+  scheduleDays?.addEventListener('input', () => { setScheduleStatus(''); });
+  document.getElementById('scheduleExitCheckbox')?.addEventListener('change', () => {
+    if (!scheduleReadOnly) setScheduleStatus('');
+  });
+
   loadData();
 });
 </script>
@@ -769,6 +1518,48 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="integrityStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Device Relay Mapping</div>
+    <div class="card-body">
+      <p class="muted small">Choose how each relay behaves and mark interior stations as exit devices. The Key Holder option is available when any relay is set to Alarm or Door and Alarm.</p>
+      <div id="deviceOptions"></div>
+      <div id="deviceRelaySummary" class="small muted mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3 schedule-card" id="access-schedules">
+    <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
+      <div>
+        <div class="fw-semibold">Access Schedules</div>
+        <div class="muted small">Create custom access windows that you can assign to users. Built-in schedules remain available for quick selection.</div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <label class="form-label m-0 small text-uppercase muted" for="scheduleSelect">Schedule</label>
+        <select id="scheduleSelect" class="form-select form-select-sm" style="min-width:220px;"></select>
+        <button class="btn btn-sm btn-outline-light" id="scheduleCreateBtn"><i class="bi bi-plus-lg me-1"></i>New</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="mb-3">
+        <label class="form-label" for="scheduleNameInput">Schedule name</label>
+        <input id="scheduleNameInput" class="form-control" placeholder="e.g. Weekdays 09:00-17:00" />
+        <div id="scheduleHelper" class="form-text muted mt-1"></div>
+      </div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="scheduleExitCheckbox">
+        <label class="form-check-label" for="scheduleExitCheckbox">Always permit exit devices</label>
+        <div class="form-text muted">When enabled, users assigned to this schedule receive 24/7 access on any device flagged as an exit device.</div>
+      </div>
+      <p class="muted small">Add one or more HH:MM ranges for each day to control when credentials are valid. Leave a day empty to block access on that day.</p>
+      <div id="scheduleDays" class="mt-3"></div>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-success" id="scheduleSaveBtn"><i class="bi bi-check2 me-1"></i>Save schedule</button>
+        <button class="btn btn-outline-danger" id="scheduleDeleteBtn"><i class="bi bi-trash3 me-1"></i>Delete</button>
+      </div>
+      <div id="scheduleStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 

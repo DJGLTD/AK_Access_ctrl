@@ -190,6 +190,15 @@ async function action(act, payload){
 
 let SCHEDS = {};
 
+function scheduleExitFlag(spec){
+  if (!spec || typeof spec !== 'object') return false;
+  const raw = spec.always_permit_exit;
+  if (typeof raw === 'string'){
+    return ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
+  }
+  return !!raw;
+}
+
 function row(day, idx, start = '', end = ''){
   return `<div class="row g-2 align-items-center mb-1" data-day="${day}" data-idx="${idx}">
     <div class="col-2 text-capitalize">${day}</div>
@@ -202,6 +211,11 @@ function row(day, idx, start = '', end = ''){
 function render(name){
   const container = document.getElementById('editor');
   container.innerHTML = '';
+  const exitToggle = document.getElementById('schedExit');
+  if (exitToggle){
+    exitToggle.checked = scheduleExitFlag(SCHEDS[name] || {});
+    exitToggle.disabled = name === '24/7 Access' || name === 'No Access';
+  }
   const days = ['mon','tue','wed','thu','fri','sat','sun'];
   days.forEach(day => {
     const spans = (SCHEDS[name] && SCHEDS[name][day]) || [];
@@ -240,6 +254,8 @@ async function save(){
       if (start && end) out[day].push([start, end]);
     });
   });
+  const exitToggle = document.getElementById('schedExit');
+  out.always_permit_exit = !!(exitToggle && exitToggle.checked);
   try {
     await action('upsert_schedule', { name, spec: out });
     location.reload();
@@ -295,6 +311,11 @@ async function load(){
       <select id="schedSel" class="form-select form-select-sm"></select>
     </div>
     <div class="mb-2"><label class="form-label">Schedule name</label><input id="schedName" class="form-control"/></div>
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="schedExit">
+      <label class="form-check-label" for="schedExit">Always permit exit devices</label>
+      <div class="form-text">Exit devices treat this schedule as 24/7 when enabled.</div>
+    </div>
     <div id="editor"></div>
     <div class="mt-3 d-flex gap-2">
       <button class="btn btn-success" onclick="save()">Save</button>

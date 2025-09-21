@@ -34,11 +34,14 @@ from .const import (
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
+    CONF_RELAY_ROLES,
     ENTRY_VERSION,
     ADMIN_DASHBOARD_ICON,
     ADMIN_DASHBOARD_TITLE,
     ADMIN_DASHBOARD_URL_PATH,
 )
+
+from .relay import normalize_roles as normalize_relay_roles, relay_suffix_for_user
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
@@ -189,24 +192,68 @@ class AkuvoxGroupsStore(Store):
 
 class AkuvoxSchedulesStore(Store):
     """Named week schedules stored centrally, synced to devices during reconcile."""
+
+    _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, f"{DOMAIN}_schedules.json")
         self.data: Dict[str, Any] = {"schedules": {}}
+
+    @staticmethod
+    def _as_bool(val: Any) -> bool:
+        if isinstance(val, str):
+            return val.strip().lower() in {"1", "true", "yes", "y", "on", "enable", "enabled"}
+        return bool(val)
+
+    def _default_exit_flag(self, name: str) -> bool:
+        low = (name or "").strip().lower()
+        return low in {"24/7 access", "24/7", "24x7", "always"}
+
+    def _normalize_payload(self, name: str, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized: Dict[str, Any] = {day: [] for day in self._DAYS}
+        normalized["always_permit_exit"] = self._default_exit_flag(name)
+
+        if isinstance(payload, dict):
+            for day in self._DAYS:
+                spans = payload.get(day)
+                if not isinstance(spans, (list, tuple)):
+                    continue
+                cleaned: List[List[str]] = []
+                for span in spans:
+                    if not isinstance(span, (list, tuple)) or len(span) < 2:
+                        continue
+                    start = str(span[0] or "").strip()
+                    end = str(span[1] or "").strip()
+                    if start and end:
+                        cleaned.append([start, end])
+                normalized[day] = cleaned
+
+            if "always_permit_exit" in payload:
+                normalized["always_permit_exit"] = self._as_bool(payload.get("always_permit_exit"))
+
+        return normalized
 
     async def async_load(self):
         x = await super().async_load()
         if x and isinstance(x.get("schedules"), dict):
             self.data = x
-        sdata = self.data.get("schedules") or {}
-        changed = False
-        if "24/7 Access" not in sdata:
-            sdata["24/7 Access"] = {d: [["00:00", "24:00"]] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
-            changed = True
-        if "No Access" not in sdata:
-            sdata["No Access"] = {d: [] for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
-            changed = True
+
+        original = self.data.get("schedules") or {}
+        existing: Dict[str, Any] = {}
+        for name, spec in original.items():
+            existing[name] = self._normalize_payload(name, spec if isinstance(spec, dict) else {})
+
+        if "24/7 Access" not in existing:
+            existing["24/7 Access"] = self._normalize_payload(
+                "24/7 Access",
+                {day: [["00:00", "24:00"]] for day in self._DAYS},
+            )
+        if "No Access" not in existing:
+            existing["No Access"] = self._normalize_payload("No Access", {day: [] for day in self._DAYS})
+
+        changed = original != existing
+        self.data["schedules"] = existing
         if changed:
-            self.data["schedules"] = sdata
             await self.async_save()
 
     async def async_save(self):
@@ -216,7 +263,7 @@ class AkuvoxSchedulesStore(Store):
         return dict(self.data.get("schedules") or {})
 
     async def upsert(self, name: str, payload: Dict[str, Any]):
-        self.data.setdefault("schedules", {})[name] = payload
+        self.data.setdefault("schedules", {})[name] = self._normalize_payload(name, payload)
         await self.async_save()
 
     async def delete(self, name: str):
@@ -908,11 +955,16 @@ class SyncManager:
         for name, spec in (schedules or {}).items():
             if name in ("24/7 Access", "No Access"):
                 continue
+            sanitized: Dict[str, Any]
+            if isinstance(spec, dict):
+                sanitized = {day: spec.get(day, []) for day in AkuvoxSchedulesStore._DAYS}
+            else:
+                sanitized = {day: [] for day in AkuvoxSchedulesStore._DAYS}
             try:
-                await api.schedule_set(name, spec)
+                await api.schedule_set(name, sanitized)
             except Exception:
                 try:
-                    await api.schedule_add(name, spec)
+                    await api.schedule_add(name, sanitized)
                 except Exception:
                     pass
 
@@ -964,8 +1016,15 @@ class SyncManager:
         device_groups: List[str] = list(opts.get("sync_groups", ["Default"]))
         users_store = self._users_store()
         schedules_store = self._schedules_store()
+        schedules_all: Dict[str, Any] = {}
+        if schedules_store:
+            try:
+                schedules_all = schedules_store.all()
+            except Exception:
+                schedules_all = {}
 
-        device_type = (coord.health.get("device_type") or "").strip().lower()
+        device_type_raw = (coord.health.get("device_type") or "").strip()
+        device_type = device_type_raw.lower()
         is_intercom = device_type == "intercom"
 
         registry: Dict[str, Any] = users_store.all() if users_store else {}
@@ -976,12 +1035,20 @@ class SyncManager:
 
         if full and schedules_store:
             try:
-                await self._push_schedules(api, schedules_store.all())
+                await self._push_schedules(api, schedules_all)
             except Exception:
                 pass
 
         # Resolve device schedule IDs after pushing (so we use what the device knows)
         sched_map = await self._device_schedule_map(api)
+
+        exit_allow_map: Dict[str, bool] = {}
+        for name, spec in (schedules_all or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            exit_allow_map[name.strip().lower()] = bool(spec.get("always_permit_exit"))
+        for builtin in ("24/7 access", "24/7", "24x7", "always"):
+            exit_allow_map.setdefault(builtin, True)
 
         def _find_local_by_key(ha_key: str) -> Optional[Dict[str, Any]]:
             for u in local_users:
@@ -1002,17 +1069,31 @@ class SyncManager:
 
             # ----- Schedule / relays -----
             schedule_name = (prof.get("schedule_name") or "24/7 Access").strip()
+            schedule_lower = schedule_name.lower()
             key_holder = bool(prof.get("key_holder"))
-            exit_override = bool(opts.get("exit_device"))
+            explicit_id = str(prof.get("schedule_id") or "").strip()
+
+            schedule_exit_enabled = bool(exit_allow_map.get(schedule_lower, False))
+            if not schedule_exit_enabled and explicit_id == "1001":
+                schedule_exit_enabled = True
+
+            exit_override = bool(opts.get("exit_device")) and bool(schedule_exit_enabled)
             effective_schedule = "24/7 Access" if exit_override else schedule_name
 
-            explicit_id = str(prof.get("schedule_id") or "").strip()
-            if explicit_id and explicit_id.isdigit():
+            if exit_override:
+                schedule_id = "1001"
+            elif explicit_id and explicit_id.isdigit():
                 schedule_id = explicit_id
             else:
                 schedule_id = sched_map.get(effective_schedule.lower(), "1001")
 
-            relay_suffix = "12" if key_holder else "1"
+            relay_roles = normalize_relay_roles(opts.get("relay_roles"), device_type_raw)
+            try:
+                opts["relay_roles"] = relay_roles
+            except Exception:
+                pass
+
+            relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
             schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,12;" or "1001,1;"
 
             # ----- Build device payload -----
@@ -1218,6 +1299,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     device_name = cfg.get(CONF_DEVICE_NAME, entry.title)
     device_type = cfg.get(CONF_DEVICE_TYPE, "Intercom")
 
+    raw_relays = cfg.get(CONF_RELAY_ROLES)
+    if not isinstance(raw_relays, dict):
+        raw_relays = {
+            "relay_a": cfg.get("relay_a_role"),
+            "relay_b": cfg.get("relay_b_role"),
+        }
+    relay_roles = normalize_relay_roles(raw_relays, device_type)
+
     coord = AkuvoxCoordinator(hass, api, storage, entry.entry_id, device_name)
     coord.health["device_type"] = device_type
     coord.health["ip"] = cfg.get(CONF_HOST)
@@ -1236,6 +1325,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "participate_in_sync": bool(cfg.get(CONF_PARTICIPATE, True)),
             "sync_groups": initial_groups,
             "exit_device": exit_device,
+            "relay_roles": relay_roles,
         },
     }
 
@@ -1446,6 +1536,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         enabled = bool(call.data.get("enabled", True))
         if entry_id in hass.data[DOMAIN]:
             hass.data[DOMAIN][entry_id]["options"]["exit_device"] = enabled
+            entry_obj = hass.config_entries.async_get_entry(entry_id)
+            if entry_obj:
+                new_options = dict(entry_obj.options)
+                new_options["exit_device"] = enabled
+                hass.config_entries.async_update_entry(entry_obj, options=new_options)
             queue: SyncQueue = hass.data[DOMAIN].get("sync_queue")  # type: ignore[assignment]
             if queue:
                 queue.mark_change(entry_id)
@@ -1496,11 +1591,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         new_interval = int(new_cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
         coord.update_interval = timedelta(seconds=max(10, new_interval))
         new_groups = list(new_cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
+        raw_roles = new_cfg.get(CONF_RELAY_ROLES)
+        if not isinstance(raw_roles, dict):
+            raw_roles = {
+                "relay_a": new_cfg.get("relay_a_role"),
+                "relay_b": new_cfg.get("relay_b_role"),
+            }
+        new_relay_roles = normalize_relay_roles(raw_roles, new_cfg.get(CONF_DEVICE_TYPE, "Intercom"))
         hass.data[DOMAIN][entry.entry_id]["options"].update(
             {
                 "participate_in_sync": bool(new_cfg.get(CONF_PARTICIPATE, True)),
                 "sync_groups": new_groups,
                 "exit_device": bool(new_cfg.get("exit_device", False)),
+                "relay_roles": new_relay_roles,
             }
         )
 
