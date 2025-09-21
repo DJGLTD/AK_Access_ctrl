@@ -146,6 +146,58 @@ function handleAuthError(err){
   return true;
 }
 
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const API_STATE           = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_PHONES          = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_RESERVE_ID      = signedPath('reserve_id', '/api/akuvox_ac/ui/reserve_id');
+const API_RELEASE_ID      = signedPath('release_id', '/api/akuvox_ac/ui/release_id');
+const API_RESERVATION_PING = signedPath('reservation_ping', '/api/akuvox_ac/ui/reservation_ping');
+const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face');
+const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
+const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
+
 async function apiGet(url){
   const r = await fetchWithAuth(url);
   if (!r.ok){
@@ -244,7 +296,7 @@ async function heartbeatTick() {
   if (!RESERVED_ID || reservationHeartbeatBusy) return;
   reservationHeartbeatBusy = true;
   try {
-    const res = await fetchWithAuth('/api/akuvox_ac/ui/reservation_ping', {
+    const res = await fetchWithAuth(API_RESERVATION_PING, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: RESERVED_ID })
@@ -290,7 +342,7 @@ async function reserveNewId(options = {}) {
   if (idRow) idRow.style.display = 'none';
   stopReservationHeartbeat();
   try {
-    const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
+    const res = await apiGet(API_RESERVE_ID);
     const newId = res && res.ok && res.id ? res.id : '';
     if (!newId) throw new Error('reserve failed');
     RESERVED_ID = newId;
@@ -365,12 +417,12 @@ async function releaseReservation(options = {}){
   if (options.keepalive && navigator.sendBeacon) {
     try {
       const blob = new Blob([payload], { type: 'application/json' });
-      const ok = navigator.sendBeacon('/api/akuvox_ac/ui/release_id', blob);
+      const ok = navigator.sendBeacon(API_RELEASE_ID, blob);
       if (ok) return;
     } catch (err) {}
   }
   try {
-    await fetchWithAuth('/api/akuvox_ac/ui/release_id', {
+    await fetchWithAuth(API_RELEASE_ID, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -392,7 +444,7 @@ async function load(){
   try{
     let state;
     try {
-      state = await apiGet('/api/akuvox_ac/ui/state');
+      state = await apiGet(API_STATE);
     } catch (err) {
       if (handleAuthError(err)) return;
       console.warn('Failed to load Akuvox state', err);
@@ -404,7 +456,7 @@ async function load(){
 
     // Load phones (notify services from HA mobile app)
     try {
-      const resp = await apiGet('/api/akuvox_ac/ui/phones');
+      const resp = await apiGet(API_PHONES);
       PHONES = resp.phones || [];
     } catch (err) {
       if (handleAuthError(err)) return;
@@ -530,7 +582,7 @@ async function save(){
     // Ensure we have or reserve an ID
     if (!CURRENT.id){
       try{
-        const res = await apiGet('/api/akuvox_ac/ui/reserve_id');
+        const res = await apiGet(API_RESERVE_ID);
         if (res && res.ok && res.id) {
           CURRENT.id = res.id;
           RESERVED_ID = CURRENT.id;
@@ -560,7 +612,7 @@ async function save(){
     };
 
     // Save/update the profile against the reserved ID
-    const saveRes = await fetchWithAuth('/api/services/akuvox_ac/edit_user', {
+    const saveRes = await fetchWithAuth(API_EDIT_USER, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ id: CURRENT.id, ...payload })
@@ -579,7 +631,7 @@ async function save(){
       const fd = new FormData();
       fd.append('id', CURRENT.id);
       fd.append('file', fileInput.files[0]);
-      const r = await fetchWithAuth('/api/akuvox_ac/ui/upload_face', {
+      const r = await fetchWithAuth(API_UPLOAD_FACE, {
         method: 'POST',
         body: fd
       });
@@ -598,7 +650,7 @@ async function save(){
     const phoneService = phoneSel && phoneSel.value ? phoneSel.value : '';
     if (remoteVisible && phoneService){
       try{
-        await apiPost('/api/akuvox_ac/ui/remote_enrol', { id: CURRENT.id, phone_service: phoneService });
+        await apiPost(API_REMOTE_ENROL, { id: CURRENT.id, phone_service: phoneService });
         const resSpan = document.getElementById('remoteResult');
         if (resSpan) resSpan.textContent = 'Enrolment request sent.';
       }catch(e){
