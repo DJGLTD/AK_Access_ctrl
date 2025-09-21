@@ -19,6 +19,76 @@ const UI_ROOT = '/akuvox-ac';
 const SAME_ORIGIN = { credentials: 'same-origin' };
 const REJECTED_TOKENS = new Set();
 
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
 function findHaToken(){
   return sessionStorage.getItem('akuvox_ll_token') || null;
 }
@@ -74,6 +144,8 @@ function buildHref(slug, params = {}){
   });
   const token = findHaToken();
   if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
   const query = search.toString();
   const clean = String(slug || '').replace(/_/g, '-');
   return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
@@ -320,10 +392,26 @@ async function load(){
     <div class="mt-3 d-flex gap-2">
       <button class="btn btn-success" onclick="save()">Save</button>
       <button class="btn btn-danger" onclick="del()">Delete</button>
-      <a class="btn btn-secondary" href="/akuvox-ac/index">Back</a>
+      <a class="btn btn-secondary" id="backBtn" href="#">Back</a>
     </div>
   </div>
 </div>
-<script>load()</script>
+<script>
+load();
+(function initBackButton(){
+  try {
+    const back = document.getElementById('backBtn');
+    if (!back) return;
+    const href = buildHref('index');
+    back.setAttribute('href', href);
+    back.addEventListener('click', (ev) => {
+      const delivered = requestParentNav('index', {}, { replaceState: false });
+      if (delivered) {
+        ev.preventDefault();
+      }
+    });
+  } catch (err) {}
+})();
+</script>
 </body>
 </html>
