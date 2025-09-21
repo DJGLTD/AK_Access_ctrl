@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +9,7 @@ from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
+
 from homeassistant.helpers.network import get_url
 
 from .const import (
@@ -20,6 +22,10 @@ from .const import (
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
+
+RESERVATION_TTL_MINUTES = 2
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _persistent_face_dir(hass: HomeAssistant) -> Path:
@@ -273,107 +279,117 @@ class AkuvoxUIView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         root = hass.data.get(DOMAIN, {}) or {}
 
-        # Opportunistic cleanup of stale reservations
         try:
-            _cleanup_stale_reservations(hass, max_age_minutes=120)
-        except Exception:
-            pass
+            _cleanup_stale_reservations(hass, max_age_minutes=RESERVATION_TTL_MINUTES)
+        except Exception as err:
+            _LOGGER.debug("Reservation cleanup failed: %s", err)
 
-        kpis: Dict[str, Any] = {
-            "devices": 0,
-            "users": 0,
-            "pending": 0,
-            "next_sync": "—",
-            "auto_sync_time": None,
-            "next_sync_eta": None,
+        response: Dict[str, Any] = {
+            "kpis": {
+                "devices": 0,
+                "users": 0,
+                "pending": 0,
+                "next_sync": "—",
+                "auto_sync_time": None,
+                "next_sync_eta": None,
+                "version": INTEGRATION_VERSION_LABEL,
+                "version_raw": INTEGRATION_VERSION,
+            },
+            "devices": [],
+            "registry_users": [],
+            "schedules": {},
+            "groups": [],
+            "all_groups": [],
         }
-        kpis["version"] = INTEGRATION_VERSION_LABEL
-        kpis["version_raw"] = INTEGRATION_VERSION
-        devices: List[Dict[str, Any]] = []
 
-        # Devices
-        for entry_id, data in (root or {}).items():
-            if entry_id in (
-                "groups_store",
-                "users_store",
-                "schedules_store",
-                "settings_store",
-                "sync_manager",
-                "sync_queue",
-                "_ui_registered",
-                "_panel_registered",
-            ):
-                continue
+        kpis: Dict[str, Any] = response["kpis"]
+        devices: List[Dict[str, Any]] = response["devices"]
 
-            if not isinstance(data, dict):
-                # Guard against sentinel values (e.g. booleans) stored in hass.data.
-                continue
-
-            coord = data.get("coordinator")
-            if not coord:
-                continue
-
-            disp_name = _best_name(coord, data)
-            dev = {
-                "entry_id": entry_id,
-                "name": disp_name,
-                "type": (coord.health or {}).get("device_type"),
-                "ip": (coord.health or {}).get("ip"),
-                "online": (coord.health or {}).get("online", True),
-                "status": (coord.health or {}).get("status"),
-                "sync_status": (coord.health or {}).get("sync_status", "pending"),
-                "last_sync": (coord.health or {}).get("last_sync", "—"),
-                "events": list(getattr(coord, "events", []) or []),
-                "_users": list(getattr(coord, "users", []) or []),
-                "users": list(getattr(coord, "users", []) or []),
-                "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
-            }
-            devices.append(dev)
-
-        kpis["devices"] = len(devices)
-        kpis["pending"] = sum(
-            1
-            for d in devices
-            if d.get("sync_status") != "in_sync" and d.get("online", True)
-        )
-
-        # Users KPI (only HA### ids)
         try:
+            for entry_id, data in list((root or {}).items()):
+                if entry_id in (
+                    "groups_store",
+                    "users_store",
+                    "schedules_store",
+                    "settings_store",
+                    "sync_manager",
+                    "sync_queue",
+                    "_ui_registered",
+                    "_panel_registered",
+                ):
+                    continue
+
+                if not isinstance(data, dict):
+                    continue
+
+                coord = data.get("coordinator")
+                if not coord:
+                    continue
+
+                disp_name = _best_name(coord, data)
+                dev = {
+                    "entry_id": entry_id,
+                    "name": disp_name,
+                    "type": (coord.health or {}).get("device_type"),
+                    "ip": (coord.health or {}).get("ip"),
+                    "online": (coord.health or {}).get("online", True),
+                    "status": (coord.health or {}).get("status"),
+                    "sync_status": (coord.health or {}).get("sync_status", "pending"),
+                    "last_sync": (coord.health or {}).get("last_sync", "—"),
+                    "events": list(getattr(coord, "events", []) or []),
+                    "_users": list(getattr(coord, "users", []) or []),
+                    "users": list(getattr(coord, "users", []) or []),
+                    "exit_device": bool((data.get("options") or {}).get("exit_device", False)),
+                }
+                devices.append(dev)
+
+            kpis["devices"] = len(devices)
+            kpis["pending"] = sum(
+                1
+                for d in devices
+                if d.get("sync_status") != "in_sync" and d.get("online", True)
+            )
+
             us = root.get("users_store")
             if us:
-                profiles = us.all() or {}
+                try:
+                    profiles = us.all() or {}
+                except Exception:
+                    profiles = {}
                 kpis["users"] = sum(
                     1
                     for key, prof in profiles.items()
                     if _is_ha_id(key) and not _profile_is_empty_reserved(prof)
                 )
-        except Exception:
-            pass
 
-        # Next Sync + settings
-        try:
             mgr = root.get("sync_manager")
             if mgr:
-                kpis["next_sync"] = _only_hhmm(mgr.get_next_sync_text())
+                try:
+                    kpis["next_sync"] = _only_hhmm(mgr.get_next_sync_text())
+                except Exception:
+                    pass
             sq = root.get("sync_queue")
             if getattr(sq, "next_sync_eta", None):
-                kpis["next_sync_eta"] = getattr(sq, "next_sync_eta").isoformat()
+                try:
+                    kpis["next_sync_eta"] = getattr(sq, "next_sync_eta").isoformat()
+                except Exception:
+                    pass
             settings = root.get("settings_store")
             if settings:
-                kpis["auto_sync_time"] = settings.get_auto_sync_time()
-                kpis["auto_reboot"] = settings.get_auto_reboot()
-        except Exception:
-            pass
+                try:
+                    kpis["auto_sync_time"] = settings.get_auto_sync_time()
+                    kpis["auto_reboot"] = settings.get_auto_reboot()
+                except Exception:
+                    pass
 
-        # Registry users
-        registry_users: List[Dict[str, Any]] = []
-        try:
-            us = root.get("users_store")
+            registry_users: List[Dict[str, Any]] = []
             if us:
-                for key, prof in (us.all() or {}).items():
-                    if not _is_ha_id(key):
-                        continue
-                    if _profile_is_empty_reserved(prof):
+                try:
+                    all_users = us.all() or {}
+                except Exception:
+                    all_users = {}
+                for key, prof in all_users.items():
+                    if not _is_ha_id(key) or _profile_is_empty_reserved(prof):
                         continue
                     groups = _normalize_groups(prof.get("groups"))
                     registry_users.append(
@@ -385,43 +401,38 @@ class AkuvoxUIView(HomeAssistantView):
                             "face_url": prof.get("face_url") or "",
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
-                            "schedule_name": prof.get("schedule_name") or "24/7 Access",
+                            "schedule_name": prof.get("schedule_name")
+                            or "24/7 Access",
                             "schedule_id": prof.get("schedule_id") or "",
                             "key_holder": bool(prof.get("key_holder", False)),
                             "access_level": prof.get("access_level") or "",
                         }
                     )
-        except Exception:
-            pass
+            response["registry_users"] = registry_users
 
-        # Schedules
-        schedules = {}
-        try:
+            schedules = {}
             ss = root.get("schedules_store")
             if ss:
-                schedules = ss.all()
-        except Exception:
-            pass
+                try:
+                    schedules = ss.all()
+                except Exception:
+                    schedules = {}
+            response["schedules"] = schedules
 
-        # Groups registry for device editor
-        all_groups: List[str] = []
-        try:
+            groups: List[str] = []
             gs = root.get("groups_store")
             if gs:
-                all_groups = gs.groups()
-        except Exception:
-            pass
+                try:
+                    groups = gs.groups()
+                except Exception:
+                    groups = []
+            response["groups"] = groups
+            response["all_groups"] = groups
 
-        return web.json_response(
-            {
-                "kpis": kpis,
-                "devices": devices,
-                "registry_users": registry_users,
-                "schedules": schedules,
-                "groups": all_groups,
-                "all_groups": all_groups,
-            }
-        )
+        except Exception as err:
+            _LOGGER.debug("Failed to build Akuvox state payload: %s", err)
+
+        return web.json_response(response)
 
 
 # ========================= ACTIONS =========================
@@ -775,6 +786,11 @@ class AkuvoxUIReserveId(HomeAssistantView):
         users_store = root.get("users_store")
         if not users_store:
             return web.json_response({"ok": False, "error": "users_store not ready"}, status=500)
+
+        try:
+            _cleanup_stale_reservations(hass, max_age_minutes=RESERVATION_TTL_MINUTES)
+        except Exception as err:
+            _LOGGER.debug("Reservation cleanup before reserve failed: %s", err)
 
         # Find lowest free HA### using local registry only
         try:
