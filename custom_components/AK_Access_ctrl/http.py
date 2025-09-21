@@ -329,7 +329,11 @@ class AkuvoxUIView(HomeAssistantView):
             devices.append(dev)
 
         kpis["devices"] = len(devices)
-        kpis["pending"] = sum(1 for d in devices if d.get("sync_status") != "in_sync")
+        kpis["pending"] = sum(
+            1
+            for d in devices
+            if d.get("sync_status") != "in_sync" and d.get("online", True)
+        )
 
         # Users KPI (only HA### ids)
         try:

@@ -959,7 +959,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     api = AkuvoxAPI(
         host=cfg.get(CONF_HOST),
-        port=cfg.get(CONF_PORT, 443),
+        port=cfg.get(CONF_PORT, 80),
         username=cfg.get(CONF_USERNAME) or None,
         password=cfg.get(CONF_PASSWORD) or None,
         use_https=cfg.get("use_https", DEFAULT_USE_HTTPS),

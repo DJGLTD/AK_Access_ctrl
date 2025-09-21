@@ -225,8 +225,14 @@ function renderKPIs(k){
   if (k.next_sync_eta) startNextSyncCountdown(k.next_sync_eta, k.auto_sync_time);
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
-  $('#kpiPending').textContent = k.pending ?? '0';
+  const pendingRaw = Number(k?.pending ?? 0);
+  const pendingCount = Number.isFinite(pendingRaw) ? pendingRaw : 0;
+  $('#kpiPending').textContent = String(pendingCount);
   $('#kpiNext').textContent    = (k.next_sync || '—');
+  const syncNowBox = document.getElementById('kpiSyncNowBox');
+  if (syncNowBox) {
+    syncNowBox.style.display = pendingCount > 1 ? '' : 'none';
+  }
   const auto = k.auto_sync_time;
   if (auto) {
     const el = document.getElementById('autoSyncInput');
@@ -520,6 +526,16 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
 
+  const addUserBtn = document.getElementById('btnAddUser');
+  if (addUserBtn) {
+    addUserBtn.href = buildHref('users');
+    addUserBtn.removeAttribute('target');
+    addUserBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('users');
+    });
+  }
+
   const autoEl = document.getElementById('autoSyncInput');
   autoEl?.addEventListener('focus', resetAutoSyncIndicator);
   autoEl?.addEventListener('change', async () => {
@@ -547,19 +563,6 @@ document.addEventListener('DOMContentLoaded', () => {
   refresh();
   setInterval(refresh, 5000);
 });
-
-/* Add User link */
-(() => {
-  const a = document.getElementById('btnAddUser');
-  if (!a) return;
-  const href = buildHref('users');
-  a.href = href;
-  a.removeAttribute('target');
-  a.addEventListener('click', (e) => {
-    e.preventDefault();
-    openInApp('users');
-  });
-})();
 
 /* ===== Countdown + watchdog ===== */
 let nextSyncTimer = null;
@@ -612,7 +615,7 @@ setInterval(refresh, 5000);
         <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
         <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
-        <div class="box2"><button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now </button></div>
+        <div class="box2" id="kpiSyncNowBox" style="display:none;"><button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now </button></div>
         <div class="box text-end">
           <div>Auto Sync</div>
           <input id="autoSyncInput" class="form-control form-control-sm" placeholder="HH:MM" style="width:6rem;display:inline-block">

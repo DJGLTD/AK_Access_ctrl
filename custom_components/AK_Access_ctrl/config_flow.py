@@ -28,7 +28,7 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             # unique_id as host:port to avoid dup
-            uniq = f"{user_input[CONF_HOST]}:{user_input.get(CONF_PORT, 443)}"
+            uniq = f"{user_input[CONF_HOST]}:{user_input.get(CONF_PORT, 80)}"
             await self.async_set_unique_id(uniq)
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=user_input[CONF_DEVICE_NAME], data=user_input)
@@ -36,7 +36,7 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({
             vol.Required(CONF_DEVICE_NAME): str,
             vol.Required(CONF_HOST): str,
-            vol.Optional(CONF_PORT, default=443): int,
+            vol.Optional(CONF_PORT, default=80): int,
             vol.Required(CONF_DEVICE_TYPE, default="Intercom"): vol.In(DEVICE_TYPES),
             vol.Optional(CONF_USERNAME, default=""): str,
             vol.Optional(CONF_PASSWORD, default=""): str,
