@@ -977,6 +977,7 @@ function setActiveNav(view){
   const hasUserId = frameParams ? frameParams.searchParams.has('id') : false;
   const currentSection = frameParams ? (frameParams.searchParams.get('section') || '') : '';
   const sectionLower = currentSection.toLowerCase();
+  const navView = view === 'diagnostics' ? 'settings' : view;
 
   document.querySelectorAll('nav.nav-buttons .nav-btn').forEach(btn => {
     const target = normalizeView(btn.dataset.view);
@@ -991,7 +992,7 @@ function setActiveNav(view){
         }
       }
     } else {
-      isActive = target === view;
+      isActive = target === navView;
     }
     if (isActive) btn.classList.add('active');
     else btn.classList.remove('active');
@@ -1020,7 +1021,7 @@ function setActiveNav(view){
         }
       }
     } else {
-      isActive = target === view;
+      isActive = target === navView;
     }
     if (isActive) btn.classList.add('active');
     else btn.classList.remove('active');

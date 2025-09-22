@@ -86,6 +86,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "action": "/api/akuvox_ac/ui/action",
     "settings": "/api/akuvox_ac/ui/settings",
     "phones": "/api/akuvox_ac/ui/phones",
+    "diagnostics": "/api/akuvox_ac/ui/diagnostics",
     "reserve_id": "/api/akuvox_ac/ui/reserve_id",
     "release_id": "/api/akuvox_ac/ui/release_id",
     "reservation_ping": "/api/akuvox_ac/ui/reservation_ping",
@@ -148,6 +149,10 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "settings.html": "settings",
     "settings-mob": "settings-mob",
     "settings-mob.html": "settings-mob",
+    "diagnostics": "diagnostics",
+    "diagnostics.html": "diagnostics",
+    "diagnostics-mob": "diagnostics-mob",
+    "diagnostics-mob.html": "diagnostics-mob",
     "unauthorized": "unauthorized",
     "unauthorized.html": "unauthorized",
     "unauthorized-mob": "unauthorized-mob",
@@ -1706,6 +1711,49 @@ class AkuvoxUIPhones(HomeAssistantView):
         return web.json_response({"phones": phones})
 
 
+# ========================= Device diagnostics =========================
+class AkuvoxUIDiagnostics(HomeAssistantView):
+    url = "/api/akuvox_ac/ui/diagnostics"
+    name = "api:akuvox_ac:ui_diagnostics"
+    requires_auth = True
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+
+        devices: List[Dict[str, Any]] = []
+        manager = root.get("sync_manager")
+        if manager:
+            try:
+                for entry_id, coord, api, _opts in manager._devices():  # type: ignore[attr-defined]
+                    try:
+                        recent = api.recent_requests(10)
+                    except Exception:
+                        recent = []
+
+                    name = (
+                        getattr(coord, "display_name", None)
+                        or coord.health.get("name")
+                        or entry_id
+                    )
+                    info: Dict[str, Any] = {
+                        "entry_id": entry_id,
+                        "name": name,
+                        "device_type": coord.health.get("device_type"),
+                        "ip": coord.health.get("ip"),
+                        "host": getattr(api, "host", None),
+                        "port": getattr(api, "port", None),
+                        "requests": recent,
+                    }
+                    if recent:
+                        info["last_request_at"] = recent[0].get("timestamp")
+                    devices.append(info)
+            except Exception as err:  # pragma: no cover - best effort
+                _LOGGER.debug("Failed to assemble diagnostics payload: %s", err)
+
+        return web.json_response({"devices": devices})
+
+
 # ========================= Reserve a fresh HA ID =========================
 class AkuvoxUIReserveId(HomeAssistantView):
     """
@@ -2095,6 +2143,7 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxUIDevices())
     hass.http.register_view(AkuvoxUISettings())
     hass.http.register_view(AkuvoxUIPhones())
+    hass.http.register_view(AkuvoxUIDiagnostics())
     hass.http.register_view(AkuvoxUIReserveId())
     hass.http.register_view(AkuvoxUIReleaseId())   # <-- new
     hass.http.register_view(AkuvoxUIReservationPing())

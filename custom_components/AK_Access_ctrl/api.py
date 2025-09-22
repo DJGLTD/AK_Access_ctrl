@@ -1,12 +1,44 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
+from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 from aiohttp import ClientSession, BasicAuth
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    """Return an ISO8601 UTC timestamp without microseconds."""
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _json_copy(value: Any) -> Any:
+    """Return a JSON-serialisable deep copy, falling back to string repr."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return json.loads(json.dumps(value))
+    except Exception:
+        try:
+            return json.loads(json.dumps(str(value)))
+        except Exception:
+            return str(value)
+
+
+def _truncate_string(value: str, limit: int = 800) -> str:
+    """Trim very long strings so diagnostics stay manageable."""
+
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 
 class AkuvoxAPI:
@@ -32,6 +64,9 @@ class AkuvoxAPI:
         self.verify_ssl = verify_ssl
         self._session = session
         self._rest_ok = True
+
+        # Keep a rolling window of recent requests for diagnostics
+        self._request_log = deque(maxlen=50)
 
         # Auto-detected working base; set after first successful probe
         # Tuple: (use_https: bool, port: int, verify_ssl: bool)
@@ -129,44 +164,81 @@ class AkuvoxAPI:
                     return [_redact(x) for x in obj]
                 return obj
 
-            if method == "POST":
-                _LOGGER.debug("POST %s payload=%s", url, _redact(payload or {}))
-                async with self._session.post(
-                    url,
-                    json=payload or {},
-                    headers=self._headers(),
-                    ssl=(verify if use_https else None),
-                    timeout=15,
-                    auth=self._auth,
-                ) as r:
-                    txt = None
-                    try:
-                        data = await r.json(content_type=None)
-                    except Exception:
-                        txt = await r.text()
-                        data = {"_raw": txt}
-                    _LOGGER.debug("POST %s -> %s / body=%s", url, r.status, txt or data)
-                    r.raise_for_status()
-                    return data
+            entry: Dict[str, Any] = {
+                "timestamp": _utc_now_iso(),
+                "method": method,
+                "url": url,
+                "path": rel,
+                "scheme": "https" if use_https else "http",
+                "port": port,
+                "verify_ssl": bool(verify if use_https else True),
+            }
+            if method == "POST" and payload is not None:
+                entry["payload"] = _redact(payload)
 
-            else:
-                _LOGGER.debug("GET %s", url)
-                async with self._session.get(
-                    url,
-                    headers=self._headers(),
-                    ssl=(verify if use_https else None),
-                    timeout=15,
-                    auth=self._auth,
-                ) as r:
-                    txt = None
-                    try:
-                        data = await r.json(content_type=None)
-                    except Exception:
-                        txt = await r.text()
-                        data = {"_raw": txt}
-                    _LOGGER.debug("GET %s -> %s / body=%s", url, r.status, txt or data)
-                    r.raise_for_status()
-                    return data
+            start = time.perf_counter()
+
+            try:
+                if method == "POST":
+                    _LOGGER.debug("POST %s payload=%s", url, _redact(payload or {}))
+                    async with self._session.post(
+                        url,
+                        json=payload or {},
+                        headers=self._headers(),
+                        ssl=(verify if use_https else None),
+                        timeout=15,
+                        auth=self._auth,
+                    ) as r:
+                        txt = None
+                        try:
+                            data = await r.json(content_type=None)
+                        except Exception:
+                            txt = await r.text()
+                            data = {"_raw": txt}
+                        _LOGGER.debug("POST %s -> %s / body=%s", url, r.status, txt or data)
+                        entry["status"] = r.status
+                        entry["ok"] = 200 <= r.status < 400
+                        if txt:
+                            entry["response_excerpt"] = _truncate_string(txt)
+                        else:
+                            entry["response_excerpt"] = _redact(data)
+                        r.raise_for_status()
+                        return data
+
+                else:
+                    _LOGGER.debug("GET %s", url)
+                    async with self._session.get(
+                        url,
+                        headers=self._headers(),
+                        ssl=(verify if use_https else None),
+                        timeout=15,
+                        auth=self._auth,
+                    ) as r:
+                        txt = None
+                        try:
+                            data = await r.json(content_type=None)
+                        except Exception:
+                            txt = await r.text()
+                            data = {"_raw": txt}
+                        _LOGGER.debug("GET %s -> %s / body=%s", url, r.status, txt or data)
+                        entry["status"] = r.status
+                        entry["ok"] = 200 <= r.status < 400
+                        if txt:
+                            entry["response_excerpt"] = _truncate_string(txt)
+                        else:
+                            entry["response_excerpt"] = _redact(data)
+                        r.raise_for_status()
+                        return data
+
+            except Exception as err:
+                entry.setdefault("status", getattr(err, "status", None))
+                entry["error"] = _truncate_string(str(err), 400)
+                raise
+            finally:
+                entry["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                if entry.get("payload") is None:
+                    entry.pop("payload", None)
+                self._remember_request(entry)
 
         # Compose bases to try (detected first, then common fallbacks)
         bases: List[Tuple[bool, int, bool]] = []
@@ -192,6 +264,31 @@ class AkuvoxAPI:
         except StopIteration:
             rel = "/api/"
         return await _attempt(self.use_https, self.port if self.port else (443 if self.use_https else 80), self.verify_ssl, rel)
+
+    def _remember_request(self, entry: Dict[str, Any]) -> None:
+        """Persist a sanitised copy of a request diagnostic entry."""
+
+        record: Dict[str, Any] = {}
+        base = dict(entry)
+        base.setdefault("timestamp", _utc_now_iso())
+        for key, value in base.items():
+            if isinstance(value, str):
+                if key in {"response_excerpt", "error"}:
+                    record[key] = _truncate_string(value, 800)
+                else:
+                    record[key] = value
+            else:
+                record[key] = _json_copy(value)
+        self._request_log.appendleft(record)
+
+    def recent_requests(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return a copy of the most recent request diagnostics."""
+
+        if limit is None or limit <= 0:
+            items = list(self._request_log)
+        else:
+            items = list(self._request_log)[:limit]
+        return [json.loads(json.dumps(item)) for item in items]
 
     async def _post_api(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST to /api/ then /action as fallback."""
