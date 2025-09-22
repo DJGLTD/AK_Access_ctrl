@@ -276,42 +276,40 @@ def _desired_device_user_payload(
         pass
 
     relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
-    schedule_relay = f"{schedule_id},{relay_suffix};"
+    schedule_relay = f"{schedule_id}-{relay_suffix};"
 
-    face_url_canonical = f"{face_root_base}/{ha_key}.jpg"
+    device_type = str(device_type_raw or "").strip().lower()
+    is_keypad = device_type == "keypad"
+
+    name_value = profile.get("name")
+    if name_value not in (None, ""):
+        name = str(name_value)
+    else:
+        name = ha_key
 
     desired: Dict[str, Any] = {
         "UserID": ha_key,
-        "ID": local.get("ID") or ha_key,
-        "Name": profile.get("name") or ha_key,
+        "Name": name,
         "WebRelay": "0",
         "ScheduleRelay": schedule_relay,
-        "ScheduleID": schedule_id,
-        "Schedule": effective_schedule,
-        "FaceUrl": face_url_canonical,
-        "FaceURL": face_url_canonical,
     }
 
-    desired["KeyHolder"] = key_holder
-    if profile.get("pin") not in (None, ""):
-        desired["PrivatePIN"] = str(profile.get("pin"))
-    if profile.get("phone"):
-        desired["PhoneNum"] = str(profile.get("phone"))
+    pin_value = profile.get("pin")
+    if pin_value not in (None, ""):
+        desired["PrivatePIN"] = str(pin_value)
 
-    if profile.get("face_url"):
-        desired["FaceUrl"] = profile["face_url"]
-        desired["FaceURL"] = profile["face_url"]
+    if not is_keypad:
+        phone_value = profile.get("phone")
+        if phone_value in (None, ""):
+            phone_value = local.get("PhoneNum") or local.get("Phone")
+        if phone_value not in (None, ""):
+            desired["PhoneNum"] = str(phone_value)
 
-    face_enabled_flag = _face_flag_from_record(profile)
-    if face_enabled_flag is None:
-        face_enabled_flag = _face_flag_from_record(local)
-    if face_enabled_flag is None and _face_asset_exists(hass, ha_key):
-        face_enabled_flag = True
-    face_enabled = bool(face_enabled_flag)
-    desired["Face"] = face_enabled
-    desired["FaceEnable"] = face_enabled
-    desired["FaceEnabled"] = face_enabled
-    desired["FaceRecognition"] = face_enabled
+        face_url = profile.get("face_url") or local.get("FaceUrl") or local.get("FaceURL")
+        if face_url in (None, ""):
+            face_url = f"{face_root_base}/{ha_key}.jpg"
+        if face_url not in (None, ""):
+            desired["FaceUrl"] = str(face_url)
 
     return desired
 
@@ -327,8 +325,10 @@ def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]
     if _norm(local.get("Name")) != _norm(expected.get("Name")):
         diffs.append("name")
 
-    if _norm(local.get("ID")) != _norm(expected.get("ID")):
-        diffs.append("device id")
+    expected_id = _norm(expected.get("ID"))
+    if expected_id:
+        if _norm(local.get("ID")) != expected_id:
+            diffs.append("device id")
 
     if _norm(local.get("UserID")) != _norm(expected.get("UserID")):
         diffs.append("user id")

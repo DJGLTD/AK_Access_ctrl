@@ -274,26 +274,49 @@ def _resolve_dashboard_asset(name: str, request: Optional[web.Request]) -> Path:
 def face_base_url(hass: HomeAssistant, request: Optional[web.Request] = None) -> str:
     """Return the absolute base URL that serves face images."""
 
-    base: Optional[str] = None
+    candidates: List[str] = []
+
+    internal_cfg = getattr(hass.config, "internal_url", None)
+    if internal_cfg:
+        candidates.append(str(internal_cfg))
+
+    try:
+        internal_guess = get_url(
+            hass,
+            allow_internal=True,
+            allow_external=False,
+            allow_cloud=False,
+            prefer_external=False,
+        )
+        if internal_guess:
+            candidates.append(str(internal_guess))
+    except Exception:
+        pass
 
     if request is not None:
         try:
-            base = str(request.url.origin())
+            origin = str(request.url.origin())
         except Exception:
-            base = None
+            origin = ""
+        if origin:
+            candidates.append(origin)
 
-    if not base:
-        try:
-            base = get_url(hass, prefer_external=True)
-        except Exception:
-            base = None
+    try:
+        fallback = get_url(hass, prefer_external=False)
+        if fallback:
+            candidates.append(str(fallback))
+    except Exception:
+        pass
 
-    if not base:
-        base = hass.config.external_url or hass.config.internal_url or ""
+    external_cfg = getattr(hass.config, "external_url", None)
+    if external_cfg:
+        candidates.append(str(external_cfg))
 
-    base = (base or "").rstrip("/")
-    if base:
-        return f"{base}{FACE_DATA_PATH}"
+    for base in candidates:
+        cleaned = str(base or "").strip().rstrip("/")
+        if cleaned:
+            return f"{cleaned}{FACE_DATA_PATH}"
+
     return FACE_DATA_PATH
 
 

@@ -254,7 +254,7 @@ class AkuvoxAPI:
         """
         Normalize ScheduleRelay:
           - Accept strings like "1001,1;" or "1001-12" and lists of entries
-          - Ensure comma separator between schedule ID and relay flags ("1" | "12")
+          - Ensure hyphen separator between schedule ID and relay flags ("1" | "12")
           - Ensure a single trailing ';' delimiter between entries
         """
 
@@ -300,7 +300,7 @@ class AkuvoxAPI:
             relays_unique = "".join(dict.fromkeys(ch for ch in relays if ch in ("1", "2")))
             relays = relays_unique or "1"
 
-            normalized.append(f"{sched},{relays}")
+            normalized.append(f"{sched}-{relays}")
 
         if not normalized:
             return ""
