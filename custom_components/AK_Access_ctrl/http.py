@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 from urllib.parse import urlencode
 
 from aiohttp import web
@@ -116,25 +116,159 @@ def _legacy_face_candidate(hass: HomeAssistant, relative: str) -> Optional[Path]
     return candidate
 
 DASHBOARD_ROUTES: Dict[str, str] = {
-    "head": "head.html",
-    "head.html": "head.html",
-    "device-edit": "device_edit.html",
-    "device_edit": "device_edit.html",
-    "device_edit.html": "device_edit.html",
-    "face-rec": "face_rec.html",
-    "face_rec": "face_rec.html",
-    "face_rec.html": "face_rec.html",
-    "index": "index.html",
-    "index.html": "index.html",
-    "schedules": "schedules.html",
-    "schedules.html": "schedules.html",
-    "users": "users.html",
-    "users.html": "users.html",
-    "settings": "settings.html",
-    "settings.html": "settings.html",
-    "unauthorized": "unauthorized.html",
-    "unauthorized.html": "unauthorized.html",
+    "head": "head",
+    "head.html": "head",
+    "head-mob": "head-mob",
+    "head-mob.html": "head-mob",
+    "device-edit": "device_edit",
+    "device_edit": "device_edit",
+    "device_edit.html": "device_edit",
+    "device-edit-mob": "device_edit-mob",
+    "device_edit-mob": "device_edit-mob",
+    "device_edit-mob.html": "device_edit-mob",
+    "face-rec": "face_rec",
+    "face_rec": "face_rec",
+    "face_rec.html": "face_rec",
+    "face-rec-mob": "face_rec-mob",
+    "face_rec-mob": "face_rec-mob",
+    "face_rec-mob.html": "face_rec-mob",
+    "index": "index",
+    "index.html": "index",
+    "index-mob": "index-mob",
+    "index-mob.html": "index-mob",
+    "schedules": "schedules",
+    "schedules.html": "schedules",
+    "schedules-mob": "schedules-mob",
+    "schedules-mob.html": "schedules-mob",
+    "users": "users",
+    "users.html": "users",
+    "users-mob": "users-mob",
+    "users-mob.html": "users-mob",
+    "settings": "settings",
+    "settings.html": "settings",
+    "settings-mob": "settings-mob",
+    "settings-mob.html": "settings-mob",
+    "unauthorized": "unauthorized",
+    "unauthorized.html": "unauthorized",
+    "unauthorized-mob": "unauthorized-mob",
+    "unauthorized-mob.html": "unauthorized-mob",
 }
+
+
+def _query_mobile_override(query: Mapping[str, str]) -> Optional[bool]:
+    """Return an explicit mobile preference from the request query if present."""
+
+    preference_keys = ("variant", "layout")
+    for key in preference_keys:
+        try:
+            raw = query.get(key)  # type: ignore[arg-type]
+        except Exception:
+            raw = None
+        if not raw:
+            continue
+        lowered = str(raw).strip().lower()
+        if lowered in {"mobile", "mob", "phone", "narrow"}:
+            return True
+        if lowered in {"desktop", "web", "full", "wide"}:
+            return False
+
+    boolish_keys = ("mobile", "is_mobile", "mobile_view")
+    for key in boolish_keys:
+        if key not in query:  # type: ignore[operator]
+            continue
+        try:
+            raw = query.get(key)  # type: ignore[arg-type]
+        except Exception:
+            raw = None
+        if raw is None:
+            return True
+        lowered = str(raw).strip().lower()
+        if lowered in {"", "1", "true", "t", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "f", "no", "n", "off"}:
+            return False
+        return bool(lowered)
+
+    return None
+
+
+def _request_prefers_mobile(request: Optional[web.Request]) -> bool:
+    """Determine whether the current HTTP request prefers the mobile dashboard."""
+
+    if request is None:
+        return False
+
+    try:
+        query = request.rel_url.query  # type: ignore[attr-defined]
+    except Exception:
+        query = None
+
+    if query is not None:
+        override = _query_mobile_override(query)
+        if override is not None:
+            return override
+
+    try:
+        user_agent = request.headers.get("User-Agent", "")
+    except Exception:
+        user_agent = ""
+
+    lowered = user_agent.lower()
+    if not lowered:
+        return False
+
+    if "mobi" in lowered or "iphone" in lowered or "ipod" in lowered:
+        return True
+    if "ipad" in lowered or "tablet" in lowered:
+        return True
+    if "android" in lowered and "windows" not in lowered:
+        if "tv" in lowered and "mobile" not in lowered and "tablet" not in lowered:
+            pass
+        else:
+            return True
+    if "iemobile" in lowered or "windows phone" in lowered:
+        return True
+    if "opera mini" in lowered:
+        return True
+
+    return False
+
+
+def _resolve_dashboard_asset(name: str, request: Optional[web.Request]) -> Path:
+    """Return the concrete asset path for the requested dashboard slug."""
+
+    base = (name or "").strip()
+    if not base:
+        raise web.HTTPNotFound()
+
+    if base.endswith(".html"):
+        base = base[:-5]
+
+    explicit_mobile = base.endswith("-mob")
+    prefer_mobile = _request_prefers_mobile(request) if not explicit_mobile else True
+    candidates: List[str] = []
+
+    if explicit_mobile:
+        candidates.append(f"{base}.html")
+        if base[:-4]:
+            candidates.append(f"{base[:-4]}.html")
+    elif prefer_mobile:
+        candidates.extend([f"{base}-mob.html", f"{base}.html"])
+    else:
+        candidates.extend([f"{base}.html", f"{base}-mob.html"])
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            return _static_asset(candidate)
+        except web.HTTPNotFound as err:
+            last_error = err
+            continue
+
+    if last_error:
+        raise last_error
+
+    raise web.HTTPNotFound()
 
 
 def face_base_url(hass: HomeAssistant, request: Optional[web.Request] = None) -> str:
@@ -242,7 +376,15 @@ def _only_hhmm(v: Optional[str]) -> str:
     if not v or v == "—":
         return "—"
     try:
-        return v.strip()[:5]
+        value = v.strip()
+        if (
+            len(value) >= 5
+            and value[2] == ":"
+            and value[:2].isdigit()
+            and value[3:5].isdigit()
+        ):
+            return value[:5]
+        return value
     except Exception:
         return str(v)
 
@@ -257,6 +399,254 @@ def _ha_id_from_int(n: int) -> str:
     return f"HA{n:03d}"
 
 
+_BOOLISH_TRUE = {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+    "enable",
+    "enabled",
+    "active",
+    "present",
+    "available",
+    "linked",
+}
+
+_BOOLISH_FALSE = {
+    "0",
+    "false",
+    "f",
+    "no",
+    "n",
+    "off",
+    "disable",
+    "disabled",
+    "inactive",
+    "absent",
+    "missing",
+    "unlinked",
+}
+
+_FACE_FLAG_KEYS = (
+    "face_active",
+    "faceActive",
+    "FaceActive",
+    "face",
+    "Face",
+    "face_status",
+    "FaceStatus",
+    "faceEnabled",
+    "FaceEnabled",
+    "face_enable",
+    "FaceEnable",
+    "faceRecognition",
+    "FaceRecognition",
+    "has_face",
+    "hasFace",
+    "HasFace",
+)
+
+
+def _normalize_boolish(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lower = value.strip().lower()
+        if not lower:
+            return None
+        if lower in _BOOLISH_TRUE:
+            return True
+        if lower in _BOOLISH_FALSE:
+            return False
+    return None
+
+
+def _face_flag_from_record(record: Mapping[str, Any]) -> Optional[bool]:
+    if not isinstance(record, Mapping):
+        return None
+    for key in _FACE_FLAG_KEYS:
+        if key not in record:
+            continue
+        flag = _normalize_boolish(record.get(key))
+        if flag is not None:
+            return flag
+    return None
+
+
+def _user_key(record: Mapping[str, Any]) -> str:
+    return str(
+        record.get("UserID")
+        or record.get("ID")
+        or record.get("Name")
+        or record.get("user_id")
+        or ""
+    )
+
+
+def _group_tokens(values: Any) -> set[str]:
+    tokens: set[str] = set()
+    if isinstance(values, (list, tuple, set)):
+        iterable = values
+    elif values in (None, ""):
+        iterable = []
+    else:
+        iterable = [values]
+    for item in iterable:
+        try:
+            text = str(item).strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        tokens.add(text.lower())
+    if not tokens:
+        tokens.add("default")
+    return tokens
+
+
+def _groups_overlap(user_groups: Any, device_groups: Any) -> bool:
+    return bool(_group_tokens(user_groups) & _group_tokens(device_groups))
+
+
+def _device_face_is_active(record: Mapping[str, Any]) -> bool:
+    flag = _face_flag_from_record(record)
+    if flag is not None:
+        return bool(flag)
+
+    url = str(
+        record.get("FaceUrl")
+        or record.get("FaceURL")
+        or record.get("face_url")
+        or ""
+    ).strip()
+    if not url:
+        return False
+
+    status = str(
+        record.get("face_status")
+        or record.get("FaceStatus")
+        or record.get("status")
+        or record.get("Status")
+        or ""
+    ).strip().lower()
+    if status in ("pending", "0", "false", "inactive", "waiting"):
+        return False
+
+    return True
+
+
+def _evaluate_face_status(
+    hass: HomeAssistant,
+    user: Mapping[str, Any],
+    devices: List[Dict[str, Any]],
+    stored_status: str,
+) -> str:
+    user_id = str(user.get("id") or "").strip()
+    if not user_id:
+        return "none"
+
+    face_url = str(user.get("face_url") or "").strip()
+    has_face_asset = _face_image_exists(hass, user_id)
+    wants_face = bool(face_url) or stored_status in {"pending", "active"} or has_face_asset
+    if not wants_face:
+        return "none"
+
+    user_groups = user.get("groups") or []
+    relevant_devices = [
+        dev
+        for dev in devices
+        if dev.get("participate_in_sync", True)
+        and _groups_overlap(user_groups, dev.get("sync_groups"))
+    ]
+
+    if not relevant_devices:
+        return "active"
+
+    for dev in relevant_devices:
+        if not dev.get("online", True):
+            return "pending"
+        sync_state = str(dev.get("sync_status") or "").strip().lower()
+        if sync_state != "in_sync":
+            return "pending"
+        record = None
+        for candidate in dev.get("_users") or dev.get("users") or []:
+            if _user_key(candidate) == user_id:
+                record = candidate
+                break
+        if record is None:
+            return "pending"
+        if not _device_face_is_active(record):
+            return "pending"
+
+    return "active"
+
+
+async def _refresh_face_statuses(
+    hass: HomeAssistant,
+    users_store,
+    registry_users: List[Dict[str, Any]],
+    devices: List[Dict[str, Any]],
+    profiles: Mapping[str, Any],
+) -> None:
+    if not registry_users:
+        return
+
+    profile_lookup = profiles or {}
+    for entry in registry_users:
+        user_id = str(entry.get("id") or "").strip()
+        if not _is_ha_id(user_id):
+            continue
+
+        stored = profile_lookup.get(user_id) or {}
+        stored_status = str(stored.get("face_status") or "").strip().lower()
+        stored_synced_at = stored.get("face_synced_at")
+
+        desired_status = _evaluate_face_status(hass, entry, devices, stored_status)
+
+        if desired_status == "active":
+            if stored_status != "active" or not stored_synced_at:
+                desired_synced_at = _now_iso()
+            else:
+                desired_synced_at = stored_synced_at
+        else:
+            desired_synced_at = None
+
+        entry["face_status"] = desired_status if desired_status != "none" else ""
+        entry["face_active"] = desired_status == "active"
+        if desired_synced_at:
+            entry["face_synced_at"] = desired_synced_at
+        else:
+            entry.pop("face_synced_at", None)
+
+        if not users_store:
+            continue
+
+        status_for_store = desired_status if desired_status in {"pending", "active"} else ""
+        stored_status_norm = stored_status if stored_status else ""
+
+        if status_for_store != stored_status_norm or desired_synced_at != stored_synced_at:
+            try:
+                await users_store.upsert_profile(
+                    user_id,
+                    face_status=status_for_store,
+                    face_synced_at=desired_synced_at or "",
+                )
+                updated = dict(stored)
+                if status_for_store:
+                    updated["face_status"] = status_for_store
+                else:
+                    updated.pop("face_status", None)
+                if desired_synced_at:
+                    updated["face_synced_at"] = desired_synced_at
+                else:
+                    updated.pop("face_synced_at", None)
+                profile_lookup[user_id] = updated
+            except Exception:
+                pass
 def _context_user_name(hass: HomeAssistant, context) -> str:
     """Return a friendly name for the user behind an HTTP/service call."""
 
@@ -602,7 +992,8 @@ class AkuvoxDashboardView(HomeAssistantView):
         if not target:
             raise web.HTTPNotFound()
 
-        asset = _static_asset(target)
+        asset = _resolve_dashboard_asset(target, request)
+        variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
         if asset.suffix.lower() == ".html":
             hass: HomeAssistant = request.app["hass"]
             signed = _signed_paths_for_request(hass, request)
@@ -611,9 +1002,11 @@ class AkuvoxDashboardView(HomeAssistantView):
             except Exception:
                 html = asset.read_text()
             html = _inject_signed_paths(html, signed)
-            return web.Response(text=html, content_type="text/html")
+            response = web.Response(text=html, content_type="text/html")
+            response.headers["X-AK-AC-Variant"] = variant
+            return response
 
-        return web.FileResponse(asset)
+        return web.FileResponse(asset, headers={"X-AK-AC-Variant": variant})
 
 
 class AkuvoxUIView(HomeAssistantView):
@@ -658,12 +1051,13 @@ class AkuvoxUIView(HomeAssistantView):
             devices = devices_serialized
 
             kpis["devices"] = len(devices)
+            queue_active = bool(getattr(root.get("sync_queue"), "_active", False))
             kpis["pending"] = sum(
                 1
                 for d in devices
                 if d.get("sync_status") != "in_sync" and d.get("online", True)
             )
-            kpis["sync_active"] = any(
+            kpis["sync_active"] = queue_active or any(
                 d.get("online", True) and d.get("sync_status") == "in_progress"
                 for d in devices
             )
@@ -681,13 +1075,15 @@ class AkuvoxUIView(HomeAssistantView):
                 )
 
             mgr = root.get("sync_manager")
-            if mgr:
+            if queue_active:
+                kpis["next_sync"] = "Syncing…"
+            elif mgr:
                 try:
                     kpis["next_sync"] = _only_hhmm(mgr.get_next_sync_text())
                 except Exception:
                     pass
             sq = root.get("sync_queue")
-            if getattr(sq, "next_sync_eta", None):
+            if not queue_active and getattr(sq, "next_sync_eta", None):
                 try:
                     kpis["next_sync_eta"] = getattr(sq, "next_sync_eta").isoformat()
                 except Exception:
@@ -701,6 +1097,7 @@ class AkuvoxUIView(HomeAssistantView):
                     pass
 
             registry_users: List[Dict[str, Any]] = []
+            all_users: Dict[str, Any] = {}
             if us:
                 try:
                     all_users = us.all() or {}
@@ -710,6 +1107,8 @@ class AkuvoxUIView(HomeAssistantView):
                     if not _is_ha_id(key) or _profile_is_empty_reserved(prof):
                         continue
                     groups = _normalize_groups(prof.get("groups"))
+                    face_status = str(prof.get("face_status") or "").strip().lower()
+                    face_synced_at = prof.get("face_synced_at")
                     registry_users.append(
                         {
                             "id": key,
@@ -717,7 +1116,10 @@ class AkuvoxUIView(HomeAssistantView):
                             "groups": groups,
                             "pin": prof.get("pin") or "",
                             "face_url": prof.get("face_url") or "",
-                            "face_active": _face_image_exists(hass, key),
+                            "face_status": face_status,
+                            "face_synced_at": face_synced_at,
+                            "face_active": face_status == "active"
+                            or _face_image_exists(hass, key),
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
                             "schedule_name": prof.get("schedule_name")
@@ -727,6 +1129,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "access_level": prof.get("access_level") or "",
                         }
                     )
+            await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
             response["registry_users"] = registry_users
 
             schedules = {}
@@ -761,13 +1164,20 @@ class AkuvoxUIAction(AkuvoxUIView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        root = hass.data.get(DOMAIN, {}) or {}
+        raw_root = hass.data.get(DOMAIN, {}) or {}
+        root = raw_root if isinstance(raw_root, dict) else {}
+
         try:
             data = await request.json()
         except Exception:
             data = {}
+        if not isinstance(data, dict):
+            data = {}
+
         action = data.get("action")
         payload = data.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
         entry_id = data.get("entry_id")
         ctx = request["context"] if "context" in request else None
 
@@ -1515,7 +1925,13 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         try:
             users_store = root.get("users_store")
             if users_store:
-                await users_store.upsert_profile(id_val, face_url=face_url_public, status="pending")
+                await users_store.upsert_profile(
+                    id_val,
+                    face_url=face_url_public,
+                    status="pending",
+                    face_status="pending",
+                    face_synced_at="",
+                )
         except Exception:
             pass
 

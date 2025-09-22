@@ -126,6 +126,230 @@ def _key_of_user(u: Dict[str, Any]) -> str:
     return str(u.get("UserID") or u.get("ID") or u.get("Name") or "")
 
 
+_BOOLISH_TRUE = {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+    "enable",
+    "enabled",
+    "active",
+    "present",
+    "available",
+    "linked",
+}
+
+_BOOLISH_FALSE = {
+    "0",
+    "false",
+    "f",
+    "no",
+    "n",
+    "off",
+    "disable",
+    "disabled",
+    "inactive",
+    "absent",
+    "missing",
+    "unlinked",
+}
+
+_FACE_FLAG_KEYS = (
+    "face_active",
+    "faceActive",
+    "FaceActive",
+    "face",
+    "Face",
+    "face_status",
+    "FaceStatus",
+    "faceEnabled",
+    "FaceEnabled",
+    "face_enable",
+    "FaceEnable",
+    "faceRecognition",
+    "FaceRecognition",
+    "has_face",
+    "hasFace",
+    "HasFace",
+)
+
+
+def _normalize_boolish(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lower = value.strip().lower()
+        if not lower:
+            return None
+        if lower in _BOOLISH_TRUE:
+            return True
+        if lower in _BOOLISH_FALSE:
+            return False
+    return None
+
+
+def _face_flag_from_record(record: Dict[str, Any]) -> Optional[bool]:
+    if not isinstance(record, dict):
+        return None
+    for key in _FACE_FLAG_KEYS:
+        if key in record:
+            flag = _normalize_boolish(record.get(key))
+            if flag is not None:
+                return flag
+    return None
+
+
+def _key_holder_from_record(record: Dict[str, Any]) -> Optional[bool]:
+    if not isinstance(record, dict):
+        return None
+    if "key_holder" in record:
+        flag = _normalize_boolish(record.get("key_holder"))
+        if flag is not None:
+            return flag
+    if "KeyHolder" in record:
+        flag = _normalize_boolish(record.get("KeyHolder"))
+        if flag is not None:
+            return flag
+    return None
+
+
+def _face_asset_exists(hass: HomeAssistant, user_id: str) -> bool:
+    try:
+        face_dir = Path(__file__).parent / "www" / "FaceData"
+        if (face_dir / f"{user_id}.jpg").exists():
+            return True
+        legacy = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{user_id}.jpg"
+        return legacy.exists()
+    except Exception:
+        return False
+
+
+def _desired_device_user_payload(
+    hass: HomeAssistant,
+    ha_key: str,
+    profile: Optional[Dict[str, Any]],
+    local: Optional[Dict[str, Any]],
+    *,
+    opts: Dict[str, Any],
+    sched_map: Optional[Dict[str, str]],
+    exit_allow_map: Optional[Dict[str, bool]],
+    face_root_base: str,
+    device_type_raw: str,
+) -> Dict[str, Any]:
+    """Build the canonical payload a device record should expose for a registry profile."""
+
+    profile = profile or {}
+    local = local or {}
+    sched_map = sched_map or {}
+    exit_allow_map = exit_allow_map or {}
+
+    schedule_name = (profile.get("schedule_name") or "24/7 Access").strip()
+    schedule_lower = schedule_name.lower()
+    key_holder_flag = _key_holder_from_record(profile)
+    if key_holder_flag is None:
+        key_holder_flag = _key_holder_from_record(local)
+    key_holder = bool(key_holder_flag)
+    explicit_id = str(profile.get("schedule_id") or "").strip()
+
+    schedule_exit_enabled = bool(exit_allow_map.get(schedule_lower, False))
+    if not schedule_exit_enabled and explicit_id == "1001":
+        schedule_exit_enabled = True
+
+    exit_override = bool(opts.get("exit_device")) and bool(schedule_exit_enabled)
+    effective_schedule = "24/7 Access" if exit_override else schedule_name
+
+    if exit_override:
+        schedule_id = "1001"
+    elif explicit_id and explicit_id.isdigit():
+        schedule_id = explicit_id
+    else:
+        schedule_id = sched_map.get(effective_schedule.lower(), "1001")
+
+    relay_roles = normalize_relay_roles(opts.get("relay_roles"), device_type_raw)
+    try:
+        opts["relay_roles"] = relay_roles
+    except Exception:
+        pass
+
+    relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
+    schedule_relay = f"{schedule_id},{relay_suffix};"
+
+    face_url_canonical = f"{face_root_base}/{ha_key}.jpg"
+
+    desired: Dict[str, Any] = {
+        "UserID": ha_key,
+        "ID": local.get("ID") or ha_key,
+        "Name": profile.get("name") or ha_key,
+        "WebRelay": "0",
+        "ScheduleRelay": schedule_relay,
+        "ScheduleID": schedule_id,
+        "Schedule": effective_schedule,
+        "FaceUrl": face_url_canonical,
+        "FaceURL": face_url_canonical,
+    }
+
+    desired["KeyHolder"] = key_holder
+    if profile.get("pin") not in (None, ""):
+        desired["PrivatePIN"] = str(profile.get("pin"))
+    if profile.get("phone"):
+        desired["PhoneNum"] = str(profile.get("phone"))
+
+    if profile.get("face_url"):
+        desired["FaceUrl"] = profile["face_url"]
+        desired["FaceURL"] = profile["face_url"]
+
+    face_enabled_flag = _face_flag_from_record(profile)
+    if face_enabled_flag is None:
+        face_enabled_flag = _face_flag_from_record(local)
+    if face_enabled_flag is None and _face_asset_exists(hass, ha_key):
+        face_enabled_flag = True
+    face_enabled = bool(face_enabled_flag)
+    desired["Face"] = face_enabled
+    desired["FaceEnable"] = face_enabled
+    desired["FaceEnabled"] = face_enabled
+    desired["FaceRecognition"] = face_enabled
+
+    return desired
+
+
+def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
+    """Return the list of high-level fields that differ between device data and expectations."""
+
+    diffs: List[str] = []
+
+    def _norm(val: Any) -> str:
+        return str(val or "").strip()
+
+    if _norm(local.get("Name")) != _norm(expected.get("Name")):
+        diffs.append("name")
+
+    if _norm(local.get("ID")) != _norm(expected.get("ID")):
+        diffs.append("device id")
+
+    if _norm(local.get("UserID")) != _norm(expected.get("UserID")):
+        diffs.append("user id")
+
+    if _norm(local.get("PrivatePIN") or local.get("Pin") or local.get("PIN")) != _norm(expected.get("PrivatePIN")):
+        diffs.append("pin")
+
+    expected_face = _face_flag_from_record(expected)
+    actual_face = _face_flag_from_record(local)
+    if expected_face is not None:
+        if bool(actual_face) != bool(expected_face):
+            diffs.append("face status")
+
+    expected_url = _norm(expected.get("FaceUrl") or expected.get("FaceURL"))
+    if expected_url:
+        if _norm(local.get("FaceUrl") or local.get("FaceURL")) != expected_url:
+            diffs.append("face url")
+
+    return diffs
+
+
 def _ha_id_from_int(n: int) -> str:
     return f"HA{n:03d}"  # no dash
 
@@ -319,6 +543,8 @@ class AkuvoxUsersStore(Store):
         groups: Optional[List[str]] = None,
         pin: Optional[str] = None,
         face_url: Optional[str] = None,
+        face_status: Optional[str] = None,
+        face_synced_at: Optional[str] = None,
         phone: Optional[str] = None,
         status: Optional[str] = None,
         schedule_name: Optional[str] = None,
@@ -335,6 +561,17 @@ class AkuvoxUsersStore(Store):
             u["pin"] = str(pin) if pin not in (None, "") else ""
         if face_url is not None:
             u["face_url"] = face_url
+        if face_status is not None:
+            normalized = str(face_status).strip().lower()
+            if normalized:
+                u["face_status"] = normalized
+            else:
+                u.pop("face_status", None)
+        if face_synced_at is not None:
+            if face_synced_at:
+                u["face_synced_at"] = str(face_synced_at)
+            else:
+                u.pop("face_synced_at", None)
         if phone is not None:
             u["phone"] = str(phone)
         if status is not None:
@@ -517,21 +754,30 @@ class AkuvoxSettingsStore(Store):
 # ---------------------- Robust device user lookup + delete ---------------------- #
 async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
+    target = str(ha_key or "").strip()
+    if not target:
+        return out
+
     try:
         dev_users = await api.user_list()
     except Exception:
         dev_users = []
 
+    seen: set[Tuple[str, str, str]] = set()
     for u in dev_users or []:
-        kid = _key_of_user(u)
-        if kid == ha_key:
-            out.append(
-                {
-                    "ID": str(u.get("ID") or ""),
-                    "UserID": str(u.get("UserID") or ""),
-                    "Name": str(u.get("Name") or ""),
-                }
-            )
+        dev_id = str(u.get("ID") or "")
+        user_id = str(u.get("UserID") or "")
+        name = str(u.get("Name") or "")
+        candidates = {c for c in (dev_id, user_id, name, _key_of_user(u)) if c}
+        if target not in candidates:
+            continue
+
+        key_tuple = (dev_id, user_id, name)
+        if key_tuple in seen:
+            continue
+        seen.add(key_tuple)
+        out.append({"ID": dev_id, "UserID": user_id, "Name": name})
+
     return out
 
 
@@ -563,6 +809,7 @@ class SyncQueue:
         self.next_sync_eta: Optional[datetime] = None
         self._last_mark: Optional[datetime] = None
         self._last_delay_from_default = False
+        self._active: bool = False
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
@@ -689,68 +936,73 @@ class SyncQueue:
 
     async def run(self, only_entry: Optional[str] = None):
         async with self._lock:
-            root = self._root()
-            targets: List[Tuple[str, AkuvoxCoordinator, AkuvoxAPI]] = []
-            if only_entry:
-                data = root.get(only_entry)
-                if data and data.get("coordinator") and data.get("api"):
-                    targets.append((only_entry, data["coordinator"], data["api"]))
-            else:
-                for k, data in root.items():
-                    if k in (
-                        "groups_store",
-                        "users_store",
-                        "schedules_store",
-                        "sync_manager",
-                        "sync_queue",
-                        "_ui_registered",
-                        "settings_store",
-                    ):
-                        continue
-                    coord = data.get("coordinator")
-                    api = data.get("api")
-                    if coord and api:
-                        if not self._pending_all and self._pending_devices and k not in self._pending_devices:
-                            continue
-                        targets.append((k, coord, api))
-
-            manager: SyncManager = root.get("sync_manager")  # type: ignore
-            if not manager:
-                self._handle = None
-                self.next_sync_eta = None
-                return
-
-            for entry_id, coord, _api in targets:
-                try:
-                    coord.health["sync_status"] = "in_progress"
-                except Exception:
-                    pass
-                try:
-                    await manager.reconcile_device(entry_id, full=True)
-                    coord.health["sync_status"] = "in_sync"
-                    coord.health["last_sync"] = _now_hh_mm()
-                    try:
-                        coord._append_event("Sync succeeded")  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                except Exception as err:
-                    coord.health["sync_status"] = "pending"
-                    try:
-                        coord._append_event(f"Sync failed: {err}")  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                try:
-                    await coord.async_request_refresh()
-                except Exception:
-                    pass
-
-            self._pending_all = False
-            self._pending_devices.clear()
-            self._handle = None
             self.next_sync_eta = None
+            self._active = True
+            try:
+                root = self._root()
+                targets: List[Tuple[str, AkuvoxCoordinator, AkuvoxAPI]] = []
+                if only_entry:
+                    data = root.get(only_entry)
+                    if data and data.get("coordinator") and data.get("api"):
+                        targets.append((only_entry, data["coordinator"], data["api"]))
+                else:
+                    for k, data in root.items():
+                        if k in (
+                            "groups_store",
+                            "users_store",
+                            "schedules_store",
+                            "sync_manager",
+                            "sync_queue",
+                            "_ui_registered",
+                            "settings_store",
+                        ):
+                            continue
+                        coord = data.get("coordinator")
+                        api = data.get("api")
+                        if coord and api:
+                            if (
+                                not self._pending_all
+                                and self._pending_devices
+                                and k not in self._pending_devices
+                            ):
+                                continue
+                            targets.append((k, coord, api))
+
+                manager: SyncManager = root.get("sync_manager")  # type: ignore
+                if not manager or not targets:
+                    return
+
+                for entry_id, coord, _api in targets:
+                    try:
+                        coord.health["sync_status"] = "in_progress"
+                    except Exception:
+                        pass
+                    try:
+                        await manager.reconcile_device(entry_id, full=True)
+                        coord.health["sync_status"] = "in_sync"
+                        coord.health["last_sync"] = _now_hh_mm()
+                        try:
+                            coord._append_event("Sync succeeded")  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    except Exception as err:
+                        coord.health["sync_status"] = "pending"
+                        try:
+                            coord._append_event(f"Sync failed: {err}")  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    try:
+                        await coord.async_request_refresh()
+                    except Exception:
+                        pass
+            finally:
+                self._pending_all = False
+                self._pending_devices.clear()
+                self._handle = None
+                self._active = False
 
     async def sync_now(self, entry_id: Optional[str] = None):
-        self._set_health_status(entry_id, "in_progress")
+        self._set_health_status(entry_id, "in_progress" if entry_id else "pending")
         if self._handle is not None:
             try:
                 self._handle()
@@ -872,8 +1124,11 @@ class SyncManager:
 
     def get_next_sync_text(self) -> str:
         sq: SyncQueue = self._root().get("sync_queue")
-        if sq and sq.next_sync_eta:
-            return sq.next_sync_eta.strftime("%H:%M")
+        if sq:
+            if getattr(sq, "_active", False):
+                return "Syncing…"
+            if sq.next_sync_eta:
+                return sq.next_sync_eta.strftime("%H:%M")
         settings: AkuvoxSettingsStore = self._settings_store()
         return settings.get_auto_sync_time() or "—"
 
@@ -1067,66 +1322,22 @@ class SyncManager:
             should_have_access = any(g in device_groups for g in ha_groups)
             local = _find_local_by_key(ha_key)
 
-            # ----- Schedule / relays -----
-            schedule_name = (prof.get("schedule_name") or "24/7 Access").strip()
-            schedule_lower = schedule_name.lower()
-            key_holder = bool(prof.get("key_holder"))
-            explicit_id = str(prof.get("schedule_id") or "").strip()
-
-            schedule_exit_enabled = bool(exit_allow_map.get(schedule_lower, False))
-            if not schedule_exit_enabled and explicit_id == "1001":
-                schedule_exit_enabled = True
-
-            exit_override = bool(opts.get("exit_device")) and bool(schedule_exit_enabled)
-            effective_schedule = "24/7 Access" if exit_override else schedule_name
-
-            if exit_override:
-                schedule_id = "1001"
-            elif explicit_id and explicit_id.isdigit():
-                schedule_id = explicit_id
-            else:
-                schedule_id = sched_map.get(effective_schedule.lower(), "1001")
-
-            relay_roles = normalize_relay_roles(opts.get("relay_roles"), device_type_raw)
-            try:
-                opts["relay_roles"] = relay_roles
-            except Exception:
-                pass
-
-            relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
-            schedule_relay = f"{schedule_id},{relay_suffix};"  # e.g. "1001,12;" or "1001,1;"
-
-            # ----- Build device payload -----
-            face_url_canonical = f"{face_root_base}/{ha_key}.jpg"
-
-            desired_base: Dict[str, Any] = {
-                "UserID": ha_key,
-                "ID": (local or {}).get("ID") or ha_key,
-                "Name": prof.get("name") or ha_key,
-                "WebRelay": "0",
-                "ScheduleRelay": schedule_relay,
-                # Hints some firmwares accept:
-                "ScheduleID": schedule_id,
-                "Schedule": effective_schedule,
-                # Face URL: send both casings for compatibility
-                "FaceUrl": face_url_canonical,
-                "FaceURL": face_url_canonical,
-            }
-            if "pin" in prof and prof.get("pin") not in (None, ""):
-                desired_base["PrivatePIN"] = str(prof["pin"])
-            if prof.get("phone"):
-                desired_base["PhoneNum"] = str(prof["phone"])
-
-            # If UI stored face_url, let it override the canonical path
-            if prof.get("face_url"):
-                desired_base["FaceUrl"] = prof["face_url"]
-                desired_base["FaceURL"] = prof["face_url"]
+            desired_base = _desired_device_user_payload(
+                self.hass,
+                ha_key,
+                prof,
+                local,
+                opts=opts,
+                sched_map=sched_map,
+                exit_allow_map=exit_allow_map,
+                face_root_base=face_root_base,
+                device_type_raw=device_type_raw,
+            )
 
             if should_have_access:
                 if not local:
                     add_batch.append(desired_base)
                 else:
-                    # replace on pending or any diff
                     replace = str(prof.get("status") or "").lower() == "pending" or any(
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
@@ -1203,28 +1414,89 @@ class SyncManager:
         registry = users_store.all() if users_store else {}
         reg_keys = [k for k in registry.keys() if _is_ha_id(k)]
 
+        schedules_store = self._schedules_store()
+        schedules_all: Dict[str, Any] = {}
+        if schedules_store:
+            try:
+                schedules_all = schedules_store.all()
+            except Exception:
+                schedules_all = {}
+
+        exit_allow_map: Dict[str, bool] = {}
+        for name, spec in (schedules_all or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            exit_allow_map[name.strip().lower()] = bool(spec.get("always_permit_exit"))
+        for builtin in ("24/7 access", "24/7", "24x7", "always"):
+            exit_allow_map.setdefault(builtin, True)
+
+        face_root_base = face_base_url(self.hass)
+
         for entry_id, coord, api, opts in self._devices():
             try:
+                opts = opts or {}
                 dev_users = await api.user_list()
                 coord.users = dev_users or []
-                local_keys = set(_key_of_user(u) for u in (coord.users or []))
+                device_records: Dict[str, List[Dict[str, Any]]] = {}
+                for record in coord.users or []:
+                    key = _key_of_user(record)
+                    device_records.setdefault(key, []).append(record)
 
-                device_groups: List[str] = list((opts or {}).get("sync_groups", ["Default"]))
-                should_have = set()
+                device_groups: List[str] = list(opts.get("sync_groups") or ["Default"])
+                should_have: set[str] = set()
                 for k in reg_keys:
                     prof = registry.get(k) or {}
                     ha_groups = list(prof.get("groups") or ["Default"])
                     if any(g in device_groups for g in ha_groups):
                         should_have.add(k)
 
-                if should_have == local_keys.intersection(should_have):
+                sched_map = await self._device_schedule_map(api)
+                device_type_raw = (coord.health.get("device_type") or "").strip()
+                mismatch_reason: Optional[str] = None
+
+                for ha_key in should_have:
+                    records = device_records.get(ha_key, [])
+                    if not records:
+                        mismatch_reason = f"missing {ha_key}"
+                        break
+                    if len(records) > 1:
+                        mismatch_reason = f"duplicate {ha_key}"
+                        break
+                    local = records[0]
+                    desired = _desired_device_user_payload(
+                        self.hass,
+                        ha_key,
+                        registry.get(ha_key) or {},
+                        local,
+                        opts=opts,
+                        sched_map=sched_map,
+                        exit_allow_map=exit_allow_map,
+                        face_root_base=face_root_base,
+                        device_type_raw=device_type_raw,
+                    )
+                    diffs = _integrity_field_differences(local, desired)
+                    if diffs:
+                        mismatch_reason = f"{ha_key} mismatch: {', '.join(diffs)}"
+                        break
+
+                if mismatch_reason is None:
+                    for key, records in device_records.items():
+                        if not _is_ha_id(key):
+                            continue
+                        if key in should_have:
+                            continue
+                        if records:
+                            mismatch_reason = f"rogue user {key}"
+                            break
+
+                if mismatch_reason is None:
                     try:
                         coord._append_event("Integrity check passed")  # type: ignore[attr-defined]
                     except Exception:
                         pass
                 else:
                     try:
-                        coord._append_event("Integrity mismatch — queued sync")  # type: ignore[attr-defined]
+                        coord._append_event(f"Integrity mismatch — {mismatch_reason}; queued sync")  # type: ignore[attr-defined]
                     except Exception:
                         pass
                     try:
@@ -1232,8 +1504,9 @@ class SyncManager:
                             await coord._send_alert_notification("integrity_failed")  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                    sq.mark_change(entry_id)
-                    await sq.sync_now(entry_id)
+                    if sq:
+                        sq.mark_change(entry_id)
+                        await sq.sync_now(entry_id)
             except Exception:
                 try:
                     coord._append_event("Integrity check error")  # type: ignore[attr-defined]
@@ -1396,12 +1669,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
     async def svc_delete_user(call):
-        key = str(call.data["id"])
-        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-        await users_store.delete(key)
+        raw_key = call.data.get("id") or call.data.get("key")
+        key = str(raw_key or "").strip()
+        if not key:
+            return
+
+        root = hass.data.get(DOMAIN, {})
+        users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
+        if users_store:
+            await users_store.delete(key)
 
         # immediate cascade: delete from every device using robust lookup
-        manager: SyncManager | None = hass.data[DOMAIN].get("sync_manager")  # type: ignore[assignment]
+        manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]
         if manager:
             for entry_id, coord, api, _ in manager._devices():
                 try:
@@ -1410,10 +1689,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                         for rec in id_records:
                             await _delete_user_every_way(api, rec)
                     else:
-                        try:
-                            await api.user_delete(key)
-                        except Exception:
-                            pass
+                        await _delete_user_every_way(
+                            api,
+                            {
+                                "ID": key,
+                                "UserID": key,
+                                "Name": key,
+                            },
+                        )
                     try:
                         await coord.async_request_refresh()
                     except Exception:
@@ -1437,7 +1720,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         except Exception:
             pass
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        queue: Optional[SyncQueue] = root.get("sync_queue")  # type: ignore[assignment]
+        if queue:
+            queue.mark_change(None)
 
     async def svc_upload_face(call):
         """
