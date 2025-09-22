@@ -355,10 +355,10 @@
         <i class="bi bi-people-fill"></i>
       </button>
       <div class="mobile-subgrid">
-        <button class="mobile-tile sub" type="button" data-view="index" data-section="users">
+        <button class="mobile-tile sub" type="button" data-view="user-overview">
           <div class="tile-text">
             <span class="tile-title">User overview</span>
-            <small>See device sync and assigned groups</small>
+            <small>Review sync status and assigned groups</small>
           </div>
           <i class="bi bi-layout-text-window-reverse"></i>
         </button>
@@ -368,13 +368,6 @@
             <small>Create a new access profile</small>
           </div>
           <i class="bi bi-person-plus-fill"></i>
-        </button>
-        <button class="mobile-tile sub" type="button" data-view="users" data-mode="edit">
-          <div class="tile-text">
-            <span class="tile-title">Edit user</span>
-            <small>Pick someone to update or revoke access</small>
-          </div>
-          <i class="bi bi-person-check-fill"></i>
         </button>
       </div>
     </div>
@@ -410,17 +403,17 @@
         </button>
       </div>
     </div>
-    <button class="mobile-tile" type="button" data-view="index" data-section="devices">
+    <button class="mobile-tile" type="button" data-view="device-management">
       <div class="tile-text">
         <span class="tile-title">Device management</span>
-        <small>Check health, reboot or sync panels</small>
+        <small>Check health, sync or reboot panels</small>
       </div>
       <i class="bi bi-hdd-network"></i>
     </button>
-    <button class="mobile-tile" type="button" data-view="index" data-section="events">
+    <button class="mobile-tile" type="button" data-view="event-history">
       <div class="tile-text">
         <span class="tile-title">Event history</span>
-        <small>See the latest entries and alarms</small>
+        <small>Review the latest entries and alarms</small>
       </div>
       <i class="bi bi-clock-history"></i>
     </button>
@@ -1258,6 +1251,11 @@ window.addEventListener('message', (event) => {
   if (data.type !== 'akuvox-nav') return;
   const view = normalizeView(data.view || data.slug || data.target || DEFAULT_VIEW);
   const params = data.params || {};
+  if (isMobileMode && data.mobileStage) {
+    const preserve = data.preserveMobileGroups === true || data.preserveGroups === true;
+    const stage = String(data.mobileStage).toLowerCase() === 'nav' ? 'nav' : 'content';
+    setMobileStage(stage, { preserveGroups: preserve });
+  }
   const opts = {
     updateHistory: data.updateHistory !== false,
     replaceState: !!data.replaceState

@@ -493,25 +493,15 @@ const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 
-const RELAY_ROLE_LABELS = {
-  none: 'Not used',
-  door: 'Door Relay',
-  alarm: 'Alarm Relay',
-  door_alarm: 'Door and Alarm Relay'
-};
-const RELAY_ROLE_ORDER = ['none', 'door', 'alarm', 'door_alarm'];
-
 let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [], capabilities: { alarm_relay: false } };
 let PHONES = [];
 let USERS = [];
-let DEVICES = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let integritySaving = false;
 let integritySavedTimer = null;
 let autoSyncSaving = false;
 let autoSyncSavedTimer = null;
-const DEVICE_STATUS_TIMERS = new Map();
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const SCHEDULE_DAY_ORDER = [
   { key: 'mon', label: 'Monday' },
@@ -698,242 +688,6 @@ function ensureTargetDefaults(target){
 function escapeSelector(value){
   if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
   return String(value || '').replace(/([\W])/g, '\\$1');
-}
-
-function relayValueNormalized(value, fallback = 'door'){
-  const raw = (value ?? '').toString().trim().toLowerCase();
-  if (!raw) return fallback;
-  const clean = raw.replace(/[\s-]+/g, '_');
-  if (RELAY_ROLE_ORDER.includes(clean)) return clean;
-  if (clean === 'not_used' || clean === 'unused' || clean === 'none') return 'none';
-  if (clean === 'door' || clean === 'door_relay') return 'door';
-  if (clean === 'alarm' || clean === 'alarm_relay') return 'alarm';
-  if (clean === 'door_and_alarm' || clean === 'door_alarm_relay' || clean === 'doorandalarm') return 'door_alarm';
-  return fallback;
-}
-
-function deviceById(entryId){
-  return DEVICES.find(d => d.entry_id === entryId);
-}
-
-function populateRelaySelect(select, value){
-  if (!select) return;
-  const normalized = relayValueNormalized(value, 'door');
-  select.innerHTML = '';
-  RELAY_ROLE_ORDER.forEach(role => {
-    const opt = document.createElement('option');
-    opt.value = role;
-    opt.textContent = RELAY_ROLE_LABELS[role] || role;
-    select.appendChild(opt);
-  });
-  if (RELAY_ROLE_ORDER.includes(normalized)) {
-    select.value = normalized;
-  } else {
-    select.value = 'door';
-  }
-}
-
-function applyDeviceValues(card, device){
-  if (!card || !device) return;
-  const roles = device.relay_roles && typeof device.relay_roles === 'object' ? device.relay_roles : {};
-  populateRelaySelect(card.querySelector('select[data-relay="relay_a"]'), roles.relay_a);
-  const relayB = card.querySelector('select[data-relay="relay_b"]');
-  if (relayB) populateRelaySelect(relayB, roles.relay_b);
-  const exitToggle = card.querySelector('input[data-exit-toggle]');
-  if (exitToggle) exitToggle.checked = !!device.exit_device;
-}
-
-function clearDeviceStatusTimers(){
-  DEVICE_STATUS_TIMERS.forEach(timer => clearTimeout(timer));
-  DEVICE_STATUS_TIMERS.clear();
-}
-
-function setDeviceStatus(entryId, text, tone = 'muted'){
-  const selector = `[data-device="${escapeSelector(entryId)}"] [data-device-status]`;
-  const status = document.querySelector(selector);
-  if (!status) return;
-  if (DEVICE_STATUS_TIMERS.has(entryId)){
-    clearTimeout(DEVICE_STATUS_TIMERS.get(entryId));
-    DEVICE_STATUS_TIMERS.delete(entryId);
-  }
-  if (!text){
-    status.textContent = '';
-    status.className = 'small muted mt-2';
-    return;
-  }
-  let cls = 'small mt-2';
-  if (tone === 'error') cls += ' text-danger';
-  else if (tone === 'success') cls += ' text-success';
-  else cls += ' muted';
-  status.className = cls;
-  status.textContent = text;
-  if (tone === 'success'){
-    const timer = setTimeout(() => {
-      const node = document.querySelector(selector);
-      if (node){
-        node.textContent = '';
-        node.className = 'small muted mt-2';
-      }
-      DEVICE_STATUS_TIMERS.delete(entryId);
-    }, 4000);
-    DEVICE_STATUS_TIMERS.set(entryId, timer);
-  }
-}
-
-function updateRelaySummary(){
-  const summary = document.getElementById('deviceRelaySummary');
-  if (!summary) return;
-  const anyAlarm = DEVICES.some(dev => {
-    if (typeof dev.alarm_capable === 'boolean') return dev.alarm_capable;
-    const roles = dev.relay_roles || {};
-    const aVal = relayValueNormalized(roles.relay_a, 'door');
-    const bVal = relayValueNormalized(roles.relay_b, 'none');
-    return aVal === 'alarm' || aVal === 'door_alarm' || bVal === 'alarm' || bVal === 'door_alarm';
-  });
-  SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
-  SETTINGS_DATA.capabilities.alarm_relay = anyAlarm;
-  if (!DEVICES.length){
-    summary.textContent = 'No devices have been added yet.';
-    summary.className = 'small muted mt-2';
-    return;
-  }
-  if (anyAlarm){
-    summary.textContent = 'Key Holder can be enabled for users because an alarm-capable relay is configured.';
-    summary.className = 'small text-success mt-2';
-  } else {
-    summary.textContent = 'Set a relay to Alarm or Door and Alarm to enable the Key Holder option when editing users.';
-    summary.className = 'small muted mt-2';
-  }
-}
-
-function renderDeviceOptions(){
-  const container = document.getElementById('deviceOptions');
-  if (!container) return;
-  clearDeviceStatusTimers();
-  container.innerHTML = '';
-  if (!DEVICES.length){
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = 'No devices available yet.';
-    container.appendChild(empty);
-    updateRelaySummary();
-    return;
-  }
-  const sorted = [...DEVICES].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
-  sorted.forEach(device => {
-    const card = document.createElement('div');
-    card.className = 'device-option';
-    card.setAttribute('data-device', device.entry_id);
-    const typeLabel = device.type || 'Device';
-    const isKeypad = String(device.type || '').toLowerCase() === 'keypad';
-    const ipHtml = device.ip ? `<span class="device-meta">IP: ${device.ip}</span>` : '';
-    const keypadNote = isKeypad ? '<div class="form-text muted mt-1">Keypads expose Relay A only.</div>' : '';
-    card.innerHTML = `
-      <div class="device-header">
-        <div>
-          <div class="fw-semibold">${device.name || 'Device'}</div>
-          <div class="device-meta">${typeLabel}</div>
-        </div>
-        ${ipHtml}
-      </div>
-      <div class="row g-3 mt-2">
-        <div class="col-sm-6 col-lg-4">
-          <label class="form-label">Relay A action</label>
-          <select class="form-select" data-relay="relay_a"></select>
-        </div>
-        ${isKeypad ? '' : `
-        <div class="col-sm-6 col-lg-4">
-          <label class="form-label">Relay B action</label>
-          <select class="form-select" data-relay="relay_b"></select>
-        </div>`}
-      </div>
-      ${keypadNote}
-      <div class="form-check mt-3">
-        <input class="form-check-input" type="checkbox" data-exit-toggle ${device.exit_device ? 'checked' : ''}>
-        <label class="form-check-label">Treat as exit device (bypass user schedules)</label>
-      </div>
-      <div class="small muted mt-2" data-device-status=""></div>
-    `;
-    container.appendChild(card);
-    applyDeviceValues(card, device);
-    setDeviceStatus(device.entry_id, '');
-  });
-  updateRelaySummary();
-}
-
-async function handleRelaySelectChange(select){
-  const card = select.closest('[data-device]');
-  if (!card) return;
-  const entryId = card.getAttribute('data-device');
-  if (!entryId) return;
-  const selects = Array.from(card.querySelectorAll('select[data-relay]'));
-  const payload = {};
-  selects.forEach(sel => {
-    const key = sel.getAttribute('data-relay');
-    if (key) payload[key] = sel.value;
-  });
-  setDeviceStatus(entryId, 'Saving…');
-  selects.forEach(sel => { sel.disabled = true; sel.classList.add('disabled'); });
-  try {
-    const res = await apiPost(API_ACTION, { action: 'set_device_relays', entry_id: entryId, payload });
-    const device = deviceById(entryId);
-    if (device){
-      if (res && res.relay_roles){
-        device.relay_roles = { ...res.relay_roles };
-      } else {
-        device.relay_roles = device.relay_roles || {};
-        Object.entries(payload).forEach(([key, value]) => {
-          device.relay_roles[key] = relayValueNormalized(value, device.relay_roles[key]);
-        });
-      }
-      if (res && 'alarm_capable' in res){
-        device.alarm_capable = !!res.alarm_capable;
-      } else {
-        const roles = device.relay_roles || {};
-        device.alarm_capable = ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_a, 'door'))
-          || ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_b, 'none'));
-      }
-    }
-    if (res && 'device_alarm_any' in res){
-      SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
-      SETTINGS_DATA.capabilities.alarm_relay = !!res.device_alarm_any;
-    }
-    setDeviceStatus(entryId, 'Saved ✓', 'success');
-  } catch (err) {
-    if (handleAuthError(err)) return;
-    setDeviceStatus(entryId, 'Save failed', 'error');
-    const device = deviceById(entryId);
-    if (device) applyDeviceValues(card, device);
-    alert('Failed to update relay mapping: ' + (err && err.message ? err.message : err));
-  } finally {
-    selects.forEach(sel => { sel.disabled = false; sel.classList.remove('disabled'); });
-    updateRelaySummary();
-  }
-}
-
-async function handleExitToggleChange(input){
-  const card = input.closest('[data-device]');
-  if (!card) return;
-  const entryId = card.getAttribute('data-device');
-  if (!entryId) return;
-  const checked = input.checked;
-  setDeviceStatus(entryId, 'Saving…');
-  input.disabled = true;
-  try {
-    const res = await apiPost(API_ACTION, { action: 'set_exit_device', entry_id: entryId, payload: { enabled: checked } });
-    const device = deviceById(entryId);
-    if (device) device.exit_device = res && 'exit_device' in res ? !!res.exit_device : checked;
-    setDeviceStatus(entryId, 'Saved ✓', 'success');
-  } catch (err) {
-    if (handleAuthError(err)) return;
-    setDeviceStatus(entryId, 'Save failed', 'error');
-    input.checked = !checked;
-    const device = deviceById(entryId);
-    if (device) device.exit_device = input.checked;
-    alert('Failed to update exit device setting: ' + (err && err.message ? err.message : err));
-  } finally {
-    input.disabled = false;
-  }
 }
 
 function renderIntegrity(){
@@ -1527,24 +1281,9 @@ async function loadData(){
       USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
       ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
       Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
-      const rawDevices = Array.isArray(settingsResp?.devices) ? settingsResp.devices : [];
-      DEVICES = rawDevices.map(dev => {
-        const clone = { ...dev };
-        const roles = dev && typeof dev.relay_roles === 'object' ? dev.relay_roles : {};
-        clone.relay_roles = {
-          relay_a: relayValueNormalized(roles.relay_a, 'door'),
-          relay_b: relayValueNormalized(roles.relay_b, 'none'),
-        };
-        clone.exit_device = !!dev.exit_device;
-        clone.alarm_capable = typeof dev.alarm_capable === 'boolean'
-          ? dev.alarm_capable
-          : ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_a) || ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_b);
-        return clone;
-      });
       SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
         ? { ...settingsResp.capabilities }
         : { alarm_relay: false };
-      renderDeviceOptions();
       const rawSchedules = settingsResp?.schedules;
     if (rawSchedules && typeof rawSchedules === 'object'){
       SCHEDULES = {};
@@ -1576,17 +1315,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('openDiagnosticsBtn')?.addEventListener('click', (e) => {
     e.preventDefault();
     openInApp('diagnostics');
-  });
-
-  const deviceOptions = document.getElementById('deviceOptions');
-  deviceOptions?.addEventListener('change', async (ev) => {
-    const target = ev.target;
-    if (!(target instanceof Element)) return;
-    if (target.matches('select[data-relay]')) {
-      await handleRelaySelectChange(target);
-    } else if (target.matches('input[data-exit-toggle]')) {
-      await handleExitToggleChange(target);
-    }
   });
 
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
@@ -1729,15 +1457,6 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="integrityStatus" class="visually-hidden small mt-2"></div>
-    </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="card-header">Device Relay Mapping</div>
-    <div class="card-body">
-      <p class="muted small">Choose how each relay behaves and mark interior stations as exit devices. The Key Holder option is available when any relay is set to Alarm or Door and Alarm.</p>
-      <div id="deviceOptions"></div>
-      <div id="deviceRelaySummary" class="small muted mt-2"></div>
     </div>
   </div>
 

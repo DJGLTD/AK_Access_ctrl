@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox • User Overview</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{
+      --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#9aa4b2;
+      --ok:#2ecc71; --warn:#ffc107; --bad:#ff4d4f; --dim:#6c7a92;
+    }
+    html,body{height:100%;}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+    .page{min-height:100vh;display:flex;flex-direction:column;padding:1rem;gap:1rem;max-width:960px;margin:0 auto;}
+    header.page-header{display:flex;align-items:center;gap:0.75rem;}
+    header.page-header h1{flex:1;font-size:1.35rem;margin:0;}
+    header.page-header .btn{white-space:nowrap;}
+    .summary-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+    .summary-card{background:var(--card);border:1px solid var(--border);border-radius:0.75rem;padding:0.85rem;display:flex;flex-direction:column;gap:0.4rem;}
+    .summary-card .label{color:var(--muted);font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;}
+    .summary-card .value{font-size:1.5rem;font-weight:600;}
+    .summary-card small{color:var(--muted);}
+    .user-list{display:flex;flex-direction:column;gap:1rem;}
+    .user-card{background:var(--card);border:1px solid var(--border);border-radius:1rem;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;}
+    .user-header{display:flex;gap:0.75rem;align-items:flex-start;}
+    .user-name{font-size:1.1rem;font-weight:600;}
+    .user-id{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.85rem;color:var(--muted);}
+    .status-stack{margin-left:auto;display:flex;flex-direction:column;gap:0.35rem;align-items:flex-end;}
+    .chip{display:inline-flex;align-items:center;gap:0.35rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:0.2rem 0.6rem;font-size:0.8rem;}
+    .user-groups{display:flex;flex-wrap:wrap;gap:0.35rem;}
+    .user-meta{display:flex;flex-direction:column;gap:0.35rem;color:var(--muted);font-size:0.92rem;}
+    .user-meta i{margin-right:0.4rem;color:var(--dim);}
+    .user-actions{display:flex;flex-wrap:wrap;gap:0.5rem;}
+    .badge{border-radius:0.65rem;padding:0.25rem 0.65rem;font-size:0.75rem;font-weight:600;display:inline-flex;align-items:center;gap:0.35rem;}
+    .badge .status-dot{display:inline-block;width:0.55rem;height:0.55rem;border-radius:50%;background:currentColor;}
+    .badge-in-sync{background:rgba(25,135,84,0.18);color:#5ef3a8;}
+    .badge-pending{background:rgba(255,193,7,0.18);color:#ffd86b;}
+    .badge-offline{background:rgba(220,53,69,0.18);color:#ff7a8c;}
+    .badge-inactive{background:rgba(108,117,125,0.2);color:#c2c9d1;}
+    .badge-online{background:rgba(13,202,240,0.18);color:#6be7ff;}
+    .badge-rebooting{background:rgba(111,66,193,0.18);color:#c49dff;}
+    .empty-state{background:var(--card);border:1px dashed var(--border);border-radius:0.75rem;padding:1.5rem;text-align:center;color:var(--muted);}
+    .last-updated{color:var(--muted);font-size:0.85rem;text-align:right;}
+    @media (max-width:720px){
+      .page{padding:0.75rem;}
+      header.page-header{flex-wrap:wrap;}
+      header.page-header h1{flex-basis:100%;font-size:1.25rem;}
+      header.page-header .btn{flex:1 1 calc(50% - 0.5rem);}
+      .summary-card .value{font-size:1.35rem;}
+      .status-stack{width:100%;flex-direction:row;justify-content:flex-start;gap:0.5rem;margin-left:0;}
+      .user-header{flex-direction:column;}
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <header class="page-header">
+    <button class="btn btn-outline-light btn-sm" id="backBtn"><i class="bi bi-chevron-left"></i> Back</button>
+    <h1>User Overview</h1>
+    <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+  </header>
+  <section class="summary-grid" aria-label="User summary">
+    <div class="summary-card">
+      <span class="label">Users</span>
+      <span class="value" id="summaryUsers">—</span>
+      <small>Total managed profiles</small>
+    </div>
+    <div class="summary-card">
+      <span class="label">Pending sync</span>
+      <span class="value" id="summaryPending">—</span>
+      <small>Awaiting device updates</small>
+    </div>
+    <div class="summary-card">
+      <span class="label">Face profiles</span>
+      <span class="value" id="summaryFaces">—</span>
+      <small>Active facial credentials</small>
+    </div>
+  </section>
+  <div class="last-updated" id="lastUpdated"></div>
+  <section class="user-list" id="userList" aria-live="polite"></section>
+</div>
+<script>
+(function captureToken(){
+  try {
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token');
+    if (token) sessionStorage.setItem('akuvox_ll_token', token);
+  } catch (err) {}
+})();
+
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+    let next = null;
+    try { next = current.parent; } catch (err) { next = null; }
+    if (next && next !== current && !visited.has(next)) { current = next; continue; }
+    try { next = current.opener; } catch (err) { next = null; }
+    if (next && next !== current && !visited.has(next)) { current = next; continue; }
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try { if (win.parent && win.parent !== win) attach(win.parent); } catch (err) {}
+    try { if (win.opener) attach(win.opener); } catch (err) {}
+  }
+  attach(window);
+})();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search) {
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value) {
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig() {
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+  const sources = [
+    () => { try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; } },
+    () => { try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; } },
+    () => { try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; } },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+  return '';
+}
+
+rememberAuthSig(currentAuthSig());
+
+function findHaToken() {
+  const sources = [
+    () => { try { return sessionStorage.getItem('hassTokens'); } catch (err) { return null; } },
+    () => { try { return localStorage.getItem('hassTokens'); } catch (err) { return null; } },
+    () => { try { return sessionStorage.getItem('akuvox_ll_token'); } catch (err) { return null; } },
+    () => { try { return localStorage.getItem('akuvox_ll_token'); } catch (err) { return null; } },
+    () => { try { return window.AK_AC_HA_AUTH || null; } catch (err) { return null; } },
+    () => { try { return window.AK_AC_HA_TOKEN || null; } catch (err) { return null; } },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_HA_AUTH
+            || parent.AK_AC_HA_TOKEN
+            || (parent.sessionStorage && parent.sessionStorage.getItem('akuvox_ll_token'))
+            || (parent.localStorage && parent.localStorage.getItem('akuvox_ll_token'));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+  for (const getter of sources) {
+    const raw = getter();
+    if (!raw) continue;
+    try {
+      if (typeof raw === 'string') {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed) || parsed.access_token || parsed.token;
+        if (token) return token;
+      } else if (typeof raw === 'object') {
+        const token = extractTokenFromAuth(raw);
+        if (token) return token;
+      }
+    } catch (err) {
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+    }
+  }
+  return walkAuthWindows(window);
+}
+
+const REJECTED_TOKENS = new Set();
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}) {
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? findHaToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+  const response = await fetch(url, { ...options, headers, credentials: 'same-origin' });
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)) {
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = findHaToken();
+    if (retryToken && retryToken !== bearer) {
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+  return response;
+}
+
+function buildError(res, text) {
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err) {
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+async function apiGet(url) {
+  const res = await fetchWithAuth(url);
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json();
+}
+
+async function apiPost(url, body) {
+  const res = await fetchWithAuth(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json();
+}
+
+async function callService(domain, service, data = {}) {
+  const url = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const res = await fetchWithAuth(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json().catch(() => ({}));
+}
+
+const SIGNED_PATHS = (function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      merge(window.parent.AK_AC_SIGNED_PATHS);
+      read(window.parent.sessionStorage);
+      read(window.parent.localStorage);
+    }
+  } catch (err) {}
+  return result;
+})();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
+const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
+const UI_ROOT   = '/akuvox-ac';
+
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      if (options.mobileStage) msg.mobileStage = options.mobileStage;
+      if (options.preserveGroups) msg.preserveMobileGroups = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
+function redirectToUnauthorized(params = {}) {
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {
+    try {
+      const search = new URLSearchParams();
+      Object.entries(targetParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') search.set(key, value);
+      });
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
+      if (authSig && !search.has('authSig')) search.set('authSig', authSig);
+      const query = search.toString();
+      if (query) href = `/akuvox-ac/unauthorized?${query}`;
+    } catch (err2) {}
+  }
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+  if (!delivered) {
+    try { window.location.replace(href); } catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err) {
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function goBack(){
+  requestParentNav('index', { section: 'users' }, { replaceState: true, mobileStage: 'nav', preserveGroups: true });
+}
+
+document.getElementById('backBtn').addEventListener('click', (ev) => { ev.preventDefault(); goBack(); });
+document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+
+function escapeHtml(value){
+  const lookup = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return String(value ?? '').replace(/[&<>"']/g, ch => lookup[ch] ?? ch);
+}
+
+function badge(label, type){
+  const kind = String(type || '').toLowerCase();
+  const cls = kind === 'in_sync' || kind === 'allowed' ? 'badge-in-sync'
+    : kind === 'pending' ? 'badge-pending'
+    : kind === 'denied' || kind === 'offline' ? 'badge-offline'
+    : kind === 'inactive' ? 'badge-inactive'
+    : kind === 'online' ? 'badge-online'
+    : kind === 'rebooting' ? 'badge-rebooting'
+    : 'badge-in-sync';
+  const text = escapeHtml(label ?? '—');
+  return `<span class="badge ${cls}"><span class="status-dot"></span>${text}</span>`;
+}
+
+function normalizeGroupsList(groups){
+  if (Array.isArray(groups)) {
+    return groups.length ? groups.map(g => String(g)) : ['Default'];
+  }
+  if (groups === null || groups === undefined || groups === '') {
+    return ['Default'];
+  }
+  return [String(groups)];
+}
+
+function groupsIntersect(a, b){
+  const set = new Set((b || []).map(g => String(g).toLowerCase()));
+  return (a || []).some(g => set.has(String(g).toLowerCase()));
+}
+
+function safeDeviceName(d){
+  return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
+}
+
+function idMatchesFilter(id){
+  return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
+}
+
+const FACE_URL_FIELDS = ['face_url','faceUrl','FaceUrl','FaceURL'];
+const FACE_STATUS_FIELDS = [
+  'face_active','faceActive','FaceActive','face','Face','face_status','FaceStatus',
+  'faceEnabled','FaceEnabled','face_enable','FaceEnable','faceRecognition','FaceRecognition',
+  'has_face','hasFace','HasFace'
+];
+const FACE_STATE_FIELDS = ['face_status','faceStatus','FaceStatus'];
+
+function normalizeFaceFlag(value){
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  if (typeof value === 'string'){
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (['1','true','yes','y','on','active','enabled','present','available'].includes(lower)) return true;
+    if (['0','false','no','n','off','inactive','disabled','absent','missing'].includes(lower)) return false;
+  }
+  return null;
+}
+
+function extractFaceStatus(record){
+  if (!record || typeof record !== 'object') return '';
+  for (const key of FACE_STATE_FIELDS){
+    if (!(key in record)) continue;
+    const raw = record[key];
+    if (typeof raw === 'string'){
+      const trimmed = raw.trim();
+      if (trimmed) return trimmed.toLowerCase();
+    }
+  }
+  return '';
+}
+
+function extractFaceUrl(record){
+  if (!record || typeof record !== 'object') return '';
+  for (const key of FACE_URL_FIELDS){
+    const raw = record[key];
+    if (typeof raw === 'string' && raw.trim()){
+      return raw.trim();
+    }
+  }
+  return '';
+}
+
+function computeFaceActive(record){
+  if (!record || typeof record !== 'object') return false;
+  for (const key of FACE_STATUS_FIELDS){
+    if (!(key in record)) continue;
+    const normalized = normalizeFaceFlag(record[key]);
+    if (normalized !== null) return normalized;
+  }
+  const url = extractFaceUrl(record);
+  if (url){
+    const status = String(record.status || record.Status || '').trim().toLowerCase();
+    if (status === 'pending') return false;
+    return true;
+  }
+  return false;
+}
+
+function compileUsers(devices, registryUsers){
+  const normalizedDevices = (devices || []).map(d => ({
+    entryId: String(d.entry_id || d.id || ''),
+    groups: normalizeGroupsList(d.sync_groups || []),
+    participates: d.participate_in_sync !== false,
+    online: d.online !== false,
+    syncStatus: String(d.sync_status || '').toLowerCase()
+  }));
+  const by = new Map();
+
+  (registryUsers || []).forEach(r => {
+    const key = String(r.id || r.UserID || r.ID || '');
+    if (!key) return;
+    const groups = normalizeGroupsList(r.groups || []);
+    const statusHint = extractFaceStatus(r);
+    by.set(key, {
+      id: key,
+      name: r.name || key,
+      groups,
+      access: 'Pending',
+      isCloud: false,
+      last: r.last_access || '—',
+      presentOnDevice: false,
+      fromRegistry: true,
+      status: r.status || 'active',
+      schedule_name: r.schedule_name || '24/7 Access',
+      schedule_id: r.schedule_id || '',
+      access_level: r.access_level || '',
+      key_holder: !!r.key_holder,
+      face_url: extractFaceUrl(r),
+      face_status: statusHint,
+      face_synced_at: r.face_synced_at || '',
+      face_active: typeof r.face_active === 'boolean'
+        ? r.face_active
+        : (statusHint === 'active' ? true : computeFaceActive(r)),
+      _seenOn: new Set(),
+      _denied: false
+    });
+  });
+
+  (devices || []).forEach(d => {
+    const entryId = String(d.entry_id || d.id || '');
+    const deviceGroups = normalizeGroupsList(d.sync_groups || []);
+    (d._users || d.users || []).forEach(u => {
+      const key = String(u.UserID || u.ID || u.Name || '');
+      if (!key) return;
+      const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
+      const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
+      const last = u.LastAccess || u.last_access || '—';
+      const deviceFaceUrl = extractFaceUrl(u);
+      const deviceFaceActive = computeFaceActive(u);
+
+      if (!by.has(key)) {
+        by.set(key, {
+          id: key,
+          name: u.Name || key,
+          groups: normalizeGroupsList(u.Groups || u.groups || deviceGroups),
+          access: accessAllowed ? 'Allowed' : 'Denied',
+          isCloud,
+          last,
+          presentOnDevice: true,
+          fromRegistry: false,
+          status: u.Status || u.status || '',
+          schedule_name: u.ScheduleName || u.schedule_name || '24/7 Access',
+          schedule_id: u.ScheduleID || u.schedule_id || '',
+          access_level: u.AccessLevel || u.access_level || '',
+          key_holder: !!u.KeyHolder,
+          face_url: deviceFaceUrl,
+          face_status: deviceFaceActive ? 'active' : '',
+          face_active: deviceFaceActive,
+          _seenOn: new Set(entryId ? [entryId] : [])
+        });
+        return;
+      }
+
+      const cur = by.get(key);
+      cur.isCloud = cur.isCloud || isCloud;
+      cur.presentOnDevice = true;
+      if (!cur.groups || cur.groups.length === 0) {
+        cur.groups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
+      }
+      cur.last = last || cur.last;
+      if (cur.fromRegistry && cur._seenOn instanceof Set && entryId) {
+        cur._seenOn.add(entryId);
+      }
+      if (cur.fromRegistry && !accessAllowed) {
+        cur._denied = true;
+      } else if (!cur.fromRegistry) {
+        cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      }
+      if (!cur.face_url && deviceFaceUrl) {
+        cur.face_url = deviceFaceUrl;
+      }
+      if (cur.fromRegistry) {
+        if (deviceFaceActive) {
+          cur._deviceFaceActive = true;
+        }
+      } else {
+        if (typeof cur.face_active !== 'boolean') {
+          cur.face_active = deviceFaceActive;
+        } else if (!cur.face_active && deviceFaceActive) {
+          cur.face_active = true;
+        }
+        const statusCurrent = String(cur.face_status || '').trim().toLowerCase();
+        if (!statusCurrent) {
+          cur.face_status = deviceFaceActive ? 'active' : '';
+        } else if (statusCurrent !== 'active' && deviceFaceActive) {
+          cur.face_status = 'active';
+        }
+      }
+      by.set(key, cur);
+    });
+  });
+
+  const list = Array.from(by.values()).map(item => {
+    if (!item.fromRegistry) {
+      return { ...item, deviceSummary: { required: 0, ready: 0, pending: 0, verified: item.presentOnDevice, seen: item._seenOn?.size || 0 } };
+    }
+    const seenIds = Array.from(item._seenOn instanceof Set ? item._seenOn : []);
+    const shouldHost = normalizedDevices.filter(dev =>
+      dev.participates &&
+      dev.online &&
+      groupsIntersect(item.groups, dev.groups)
+    );
+    const requiredIds = shouldHost.map(dev => dev.entryId).filter(id => !!id);
+    const pendingDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
+    const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
+    const allVerified = readyDevices.length
+      ? readyDevices.every(dev => seenIds.includes(dev.entryId))
+      : !requiredIds.length;
+    const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
+    const baseLower = String(baseLabel).toLowerCase();
+    let accessText;
+    if (item._denied && baseLower !== 'no access') {
+      accessText = 'Denied';
+    } else if (String(item.status || '').toLowerCase() === 'pending') {
+      accessText = 'Pending';
+    } else if (pendingDevices.length) {
+      accessText = 'Pending';
+    } else if (!requiredIds.length || allVerified) {
+      accessText = baseLabel;
+    } else {
+      accessText = 'Pending';
+    }
+    const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
+    const statusLower = String(rest.face_status || '').trim().toLowerCase();
+    let faceStatusFinal = statusLower;
+    let faceActiveFinal;
+
+    if (faceStatusFinal === 'active') {
+      faceActiveFinal = true;
+    } else if (faceStatusFinal === 'pending') {
+      faceActiveFinal = false;
+    } else {
+      if (typeof rest.face_active === 'boolean') {
+        faceActiveFinal = rest.face_active;
+      } else if (_deviceFaceActive) {
+        faceActiveFinal = true;
+      } else {
+        faceActiveFinal = computeFaceActive(rest);
+      }
+      faceStatusFinal = faceActiveFinal ? 'active' : '';
+    }
+
+    return {
+      ...rest,
+      access: accessText,
+      presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
+      face_active: !!faceActiveFinal,
+      face_status: faceStatusFinal,
+      deviceSummary: {
+        required: requiredIds.length,
+        ready: readyDevices.length,
+        pending: pendingDevices.length,
+        verified: allVerified,
+        seen: seenIds.length
+      }
+    };
+  });
+
+  return list
+    .filter(u => u.isCloud || idMatchesFilter(u.id))
+    .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, { sensitivity: 'base' }));
+}
+
+function renderSummary(kpis, users){
+  const total = Number(kpis?.users ?? users.length ?? 0);
+  const pending = Number(kpis?.pending ?? 0);
+  const faces = users.reduce((acc, u) => acc + (u.face_active ? 1 : 0), 0);
+  document.getElementById('summaryUsers').textContent = Number.isFinite(total) ? String(total) : '—';
+  document.getElementById('summaryPending').textContent = Number.isFinite(pending) ? String(pending) : '—';
+  document.getElementById('summaryFaces').textContent = String(faces);
+}
+
+function renderUsers(list){
+  const host = document.getElementById('userList');
+  host.innerHTML = '';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = '<i class="bi bi-people"></i> <div class="mt-2">No users to display.</div>';
+    host.appendChild(empty);
+    return;
+  }
+  list.forEach(u => {
+    const card = document.createElement('article');
+    card.className = 'user-card';
+    const accessLower = String(u.access || '').toLowerCase();
+    let accessBadge;
+    if (!u.access || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
+    else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
+    else accessBadge = badge(u.access, 'in_sync');
+
+    const faceStatusLower = String(u.face_status || '').toLowerCase();
+    let faceBadge;
+    if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
+      faceBadge = badge('Face active', 'in_sync');
+    } else if (faceStatusLower === 'pending') {
+      faceBadge = badge('Face pending', 'pending');
+    } else {
+      faceBadge = badge('Face inactive', 'inactive');
+    }
+
+    const chips = (u.groups || []).map(g => `<span class="chip">${escapeHtml(g)}</span>`).join(' ');
+    const schedule = escapeHtml(u.schedule_name || u.access_level || '—');
+    const coverage = u.deviceSummary || { required: 0, ready: 0, pending: 0, verified: false };
+    let coverageText;
+    if (!coverage.required) {
+      coverageText = u.presentOnDevice ? 'Synced to assigned devices' : 'No active device assignments';
+    } else {
+      const base = `${coverage.ready}/${coverage.required} devices ready`;
+      coverageText = coverage.pending ? `${base} • ${coverage.pending} pending` : base;
+    }
+    const seenNote = coverage.required && coverage.seen
+      ? `Seen on ${coverage.seen} device${coverage.seen === 1 ? '' : 's'}`
+      : '';
+
+    const actions = (!u.isCloud && idMatchesFilter(u.id))
+      ? `<button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>`
+      : '';
+
+    card.innerHTML = `
+      <div class="user-header">
+        <div>
+          <div class="user-name">${escapeHtml(u.name)}</div>
+          <div class="user-id">${escapeHtml(u.id)}</div>
+        </div>
+        <div class="status-stack">
+          ${accessBadge}
+          ${faceBadge}
+        </div>
+      </div>
+      <div class="user-groups">${chips || '<span class="text-muted">No groups</span>'}</div>
+      <div class="user-meta">
+        <div><i class="bi bi-clock-history"></i>Last access: ${escapeHtml(u.last || '—')}</div>
+        <div><i class="bi bi-calendar2-week"></i>Schedule: ${schedule}</div>
+        <div><i class="bi bi-hdd-network"></i>${escapeHtml(coverageText)}${seenNote ? ` • ${escapeHtml(seenNote)}` : ''}</div>
+      </div>
+      ${actions ? `<div class="user-actions">${actions}</div>` : ''}
+    `;
+    host.appendChild(card);
+  });
+
+  host.querySelectorAll('[data-edit-user]').forEach(btn => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const id = btn.dataset.editUser || '';
+      openInApp('users', id ? { id } : {});
+    });
+  });
+}
+
+async function refresh(){
+  try {
+    document.getElementById('refreshBtn').setAttribute('disabled', 'disabled');
+    const state = await apiGet(stateUrl);
+    const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
+    const list = compileUsers(devices, state.registry_users || []);
+    renderSummary(state.kpis || {}, list);
+    renderUsers(list);
+    const ts = new Date();
+    document.getElementById('lastUpdated').textContent = `Updated ${ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  } catch (err) {
+    console.error('Failed to load users', err);
+    if (handleAuthError(err)) return;
+    const host = document.getElementById('userList');
+    host.innerHTML = `<div class="empty-state text-danger">Failed to load users: ${escapeHtml(err.message || err)}</div>`;
+  } finally {
+    document.getElementById('refreshBtn').removeAttribute('disabled');
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>
