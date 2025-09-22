@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Access Denied</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous"/>
+  <style>
+    :root{
+      --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc;
+      --accent:#0dcaf0; --accent-dark:#0a92ad;
+    }
+    html, body { height:100%; }
+    body {
+      margin:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:var(--bg);
+      color:var(--text);
+      font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .card{
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:0.75rem;
+      max-width:420px;
+      padding:2.25rem 2rem;
+      text-align:center;
+      box-shadow:0 1.25rem 2.5rem rgba(0,0,0,0.35);
+    }
+    h1{ font-size:1.5rem; margin-bottom:1rem; }
+    p{ color:var(--muted); margin-bottom:1.25rem; }
+    .btn-primary{
+      background:var(--accent);
+      border-color:var(--accent-dark);
+      color:#02131d;
+      font-weight:600;
+    }
+    .btn-primary:hover,
+    .btn-primary:focus{
+      background:var(--accent-dark);
+      border-color:var(--accent-dark);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authentication Required</h1>
+    <p>The Akuvox dashboard can only be opened from inside your Home Assistant UI or with a valid long-lived access token.</p>
+    <div class="d-grid gap-2">
+      <a class="btn btn-primary" href="/">Go to Home Assistant</a>
+      <button class="btn btn-outline-light" id="retry">Retry dashboard</button>
+    </div>
+  </div>
+
+  <script>
+  const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+  function readAuthSigFrom(search = location.search){
+    try {
+      const params = new URLSearchParams(search);
+      const value = params.get('authSig');
+      return value || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function rememberAuthSig(value){
+    if (!value) return;
+    try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+    try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+    try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+    try {
+      if (window.parent && window.parent !== window) {
+        const parent = window.parent;
+        try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+        try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+        try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+      }
+    } catch (err) {}
+  }
+
+  function currentAuthSig(){
+    const fromUrl = readAuthSigFrom();
+    if (fromUrl) {
+      rememberAuthSig(fromUrl);
+      return fromUrl;
+    }
+
+    const sources = [
+      () => {
+        try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+      },
+      () => {
+        try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+      },
+      () => {
+        try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+      },
+      () => {
+        try {
+          if (window.parent && window.parent !== window) {
+            const parent = window.parent;
+            return parent.AK_AC_AUTH_SIG
+              || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+              || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+          }
+        } catch (err) {}
+        return null;
+      }
+    ];
+
+    for (const getter of sources) {
+      const value = getter();
+      if (value) {
+        rememberAuthSig(value);
+        return value;
+      }
+    }
+
+    return '';
+  }
+
+  rememberAuthSig(readAuthSigFrom());
+
+  (function(){
+    const retryBtn = document.getElementById('retry');
+    if (!retryBtn) return;
+    retryBtn.addEventListener('click', () => {
+      try {
+        const params = new URLSearchParams(location.search);
+        const token = sessionStorage.getItem('akuvox_ll_token');
+        if (token && !params.has('token')) params.set('token', token);
+        const authSig = currentAuthSig();
+        if (authSig && !params.has('authSig')) params.set('authSig', authSig);
+        const search = params.toString();
+        const target = `/akuvox-ac/index${search ? `?${search}` : ''}`;
+        window.location.replace(target);
+      } catch (err) {
+        const authSig = currentAuthSig();
+        if (authSig) {
+          const suffix = `?authSig=${encodeURIComponent(authSig)}`;
+          window.location.replace(`/akuvox-ac/index${suffix}`);
+        } else {
+          window.location.replace('/akuvox-ac/index');
+        }
+      }
+    });
+  })();
+  </script>
+</body>
+</html>

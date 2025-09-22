@@ -1,0 +1,1775 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Global Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .small-mono{ font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .saved-input-wrap{ position:relative; max-width:220px; width:100%; }
+    .saved-input-wrap input{ width:100%; }
+    .saved-overlay{
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:0.375rem;
+      background:rgba(25,135,84,0.85);
+      color:#fff;
+      font-weight:600;
+      letter-spacing:0.05em;
+      text-transform:uppercase;
+      pointer-events:none;
+      opacity:0;
+      transition:opacity 0.2s ease-in-out;
+    }
+    .saved-overlay.visible{ opacity:1; }
+    .schedule-card{ overflow:hidden; }
+    .schedule-day{
+      background:#0d1729;
+      border:1px solid var(--border);
+      border-radius:0.5rem;
+      padding:0.75rem;
+      margin-bottom:1rem;
+    }
+    .schedule-day-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:0.75rem;
+      margin-bottom:0.75rem;
+    }
+    .schedule-day-empty{
+      color:var(--muted);
+      font-style:italic;
+      font-size:0.9rem;
+    }
+    .schedule-time-input{ font-family:inherit; }
+    .device-option{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:1rem; }
+    .device-option + .device-option{ margin-top:1rem; }
+    .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
+    .device-meta{ color:var(--muted); font-size:0.9rem; }
+    @media (max-width: 576px){
+      .schedule-day-header{ flex-direction:column; align-items:flex-start; }
+      .schedule-day-header .btn{ width:100%; }
+    }
+  </style>
+</head>
+<body>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
+function findHaToken(){
+  const existing = sessionStorage.getItem('akuvox_ll_token');
+  if (existing) return existing;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
+}
+const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
+
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {
+    try {
+      const search = new URLSearchParams();
+      Object.entries(targetParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') search.set(key, value);
+      });
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
+      if (authSig && !search.has('authSig')) search.set('authSig', authSig);
+      const query = search.toString();
+      if (query) href = `/akuvox-ac/unauthorized?${query}`;
+    } catch (err2) {}
+  }
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+async function apiGet(url){
+  const r = await fetchWithAuth(url);
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetchWithAuth(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) });
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+const UI_ROOT = '/akuvox-ac';
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
+const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
+const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
+
+const RELAY_ROLE_LABELS = {
+  none: 'Not used',
+  door: 'Door Relay',
+  alarm: 'Alarm Relay',
+  door_alarm: 'Door and Alarm Relay'
+};
+const RELAY_ROLE_ORDER = ['none', 'door', 'alarm', 'door_alarm'];
+
+let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [], capabilities: { alarm_relay: false } };
+let PHONES = [];
+let USERS = [];
+let DEVICES = [];
+let ALERT_TARGETS = {};
+let alertsSaving = false;
+let integritySaving = false;
+let integritySavedTimer = null;
+let autoSyncSaving = false;
+let autoSyncSavedTimer = null;
+const DEVICE_STATUS_TIMERS = new Map();
+const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
+const SCHEDULE_DAY_ORDER = [
+  { key: 'mon', label: 'Monday' },
+  { key: 'tue', label: 'Tuesday' },
+  { key: 'wed', label: 'Wednesday' },
+  { key: 'thu', label: 'Thursday' },
+  { key: 'fri', label: 'Friday' },
+  { key: 'sat', label: 'Saturday' },
+  { key: 'sun', label: 'Sunday' }
+];
+let SCHEDULES = {};
+let SELECTED_SCHEDULE = '';
+let EDITING_SCHEDULE_NAME = '';
+let scheduleSaving = false;
+let scheduleDeleting = false;
+let scheduleStatusTimer = null;
+let scheduleReadOnly = false;
+
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+function hideIntegritySavedOverlay(){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+    integritySavedTimer = null;
+  }
+}
+function showIntegritySavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+  }
+  integritySavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    integritySavedTimer = null;
+  }, 5000);
+}
+function hideAutoSyncSavedOverlay(){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+    autoSyncSavedTimer = null;
+  }
+}
+function showAutoSyncSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+  }
+  autoSyncSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    autoSyncSavedTimer = null;
+  }, 5000);
+}
+function setIntegrityStatus(text, tone = 'muted') {
+  const el = document.getElementById('integrityStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showIntegritySavedOverlay(text || 'Saved');
+    return;
+  }
+  hideIntegritySavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setAutoSyncStatus(text, tone = 'muted') {
+  const el = document.getElementById('autoSyncStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showAutoSyncSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideAutoSyncSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setAlertsStatus(text, tone = 'muted') {
+  const el = document.getElementById('alertsStatus');
+  if (!el) return;
+  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
+  el.textContent = text;
+  el.className = tone === 'error' ? 'text-danger small' : tone === 'success' ? 'text-success small' : 'muted small';
+  el.classList.remove('visually-hidden');
+}
+
+function autoSyncRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_auto_sync_delay_minutes);
+  const maxRaw = Number(SETTINGS_DATA?.max_auto_sync_delay_minutes);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 60;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function renderAutoSyncDelay(){
+  const input = document.getElementById('autoSyncDelayInput');
+  if (!input) return;
+  const { min, max } = autoSyncRange();
+  let minutes = Number(SETTINGS_DATA.auto_sync_delay_minutes);
+  if (!Number.isFinite(minutes)) minutes = 30;
+  minutes = Math.round(minutes);
+  if (minutes < min) minutes = min;
+  if (minutes > max) minutes = max;
+  SETTINGS_DATA.auto_sync_delay_minutes = minutes;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(minutes);
+  setAutoSyncStatus('');
+}
+
+function minutesToHHMM(minutes){
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const hrs = Math.floor(value / 60);
+  const mins = value % 60;
+  return `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}`;
+}
+function hhmmToMinutes(str){
+  if (!str || typeof str !== 'string') return null;
+  const clean = str.trim();
+  if (!/^\d{1,2}:\d{2}$/.test(clean)) return null;
+  const [h, m] = clean.split(':');
+  const hours = Number(h);
+  const mins = Number(m);
+  if (!Number.isInteger(hours) || !Number.isInteger(mins)) return null;
+  const total = hours * 60 + mins;
+  if (mins >= 60) return null;
+  return Math.max(5, Math.min(1440, total));
+}
+
+function friendlyName(service){
+  const found = PHONES.find(p => p.service === service);
+  if (found) return found.name || found.service;
+  return service;
+}
+
+function ensureTargetDefaults(target){
+  if (!ALERT_TARGETS[target] || typeof ALERT_TARGETS[target] !== 'object'){
+    ALERT_TARGETS[target] = {
+      device_offline: false,
+      integrity_failed: false,
+      any_denied: false,
+      granted: { any: false, users: [] }
+    };
+  } else {
+    const cfg = ALERT_TARGETS[target];
+    if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
+    if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
+    if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
+    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+    if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
+    if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
+    cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u))));
+  }
+}
+
+function escapeSelector(value){
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+  return String(value || '').replace(/([\W])/g, '\\$1');
+}
+
+function relayValueNormalized(value, fallback = 'door'){
+  const raw = (value ?? '').toString().trim().toLowerCase();
+  if (!raw) return fallback;
+  const clean = raw.replace(/[\s-]+/g, '_');
+  if (RELAY_ROLE_ORDER.includes(clean)) return clean;
+  if (clean === 'not_used' || clean === 'unused' || clean === 'none') return 'none';
+  if (clean === 'door' || clean === 'door_relay') return 'door';
+  if (clean === 'alarm' || clean === 'alarm_relay') return 'alarm';
+  if (clean === 'door_and_alarm' || clean === 'door_alarm_relay' || clean === 'doorandalarm') return 'door_alarm';
+  return fallback;
+}
+
+function deviceById(entryId){
+  return DEVICES.find(d => d.entry_id === entryId);
+}
+
+function populateRelaySelect(select, value){
+  if (!select) return;
+  const normalized = relayValueNormalized(value, 'door');
+  select.innerHTML = '';
+  RELAY_ROLE_ORDER.forEach(role => {
+    const opt = document.createElement('option');
+    opt.value = role;
+    opt.textContent = RELAY_ROLE_LABELS[role] || role;
+    select.appendChild(opt);
+  });
+  if (RELAY_ROLE_ORDER.includes(normalized)) {
+    select.value = normalized;
+  } else {
+    select.value = 'door';
+  }
+}
+
+function applyDeviceValues(card, device){
+  if (!card || !device) return;
+  const roles = device.relay_roles && typeof device.relay_roles === 'object' ? device.relay_roles : {};
+  populateRelaySelect(card.querySelector('select[data-relay="relay_a"]'), roles.relay_a);
+  const relayB = card.querySelector('select[data-relay="relay_b"]');
+  if (relayB) populateRelaySelect(relayB, roles.relay_b);
+  const exitToggle = card.querySelector('input[data-exit-toggle]');
+  if (exitToggle) exitToggle.checked = !!device.exit_device;
+}
+
+function clearDeviceStatusTimers(){
+  DEVICE_STATUS_TIMERS.forEach(timer => clearTimeout(timer));
+  DEVICE_STATUS_TIMERS.clear();
+}
+
+function setDeviceStatus(entryId, text, tone = 'muted'){
+  const selector = `[data-device="${escapeSelector(entryId)}"] [data-device-status]`;
+  const status = document.querySelector(selector);
+  if (!status) return;
+  if (DEVICE_STATUS_TIMERS.has(entryId)){
+    clearTimeout(DEVICE_STATUS_TIMERS.get(entryId));
+    DEVICE_STATUS_TIMERS.delete(entryId);
+  }
+  if (!text){
+    status.textContent = '';
+    status.className = 'small muted mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' muted';
+  status.className = cls;
+  status.textContent = text;
+  if (tone === 'success'){
+    const timer = setTimeout(() => {
+      const node = document.querySelector(selector);
+      if (node){
+        node.textContent = '';
+        node.className = 'small muted mt-2';
+      }
+      DEVICE_STATUS_TIMERS.delete(entryId);
+    }, 4000);
+    DEVICE_STATUS_TIMERS.set(entryId, timer);
+  }
+}
+
+function updateRelaySummary(){
+  const summary = document.getElementById('deviceRelaySummary');
+  if (!summary) return;
+  const anyAlarm = DEVICES.some(dev => {
+    if (typeof dev.alarm_capable === 'boolean') return dev.alarm_capable;
+    const roles = dev.relay_roles || {};
+    const aVal = relayValueNormalized(roles.relay_a, 'door');
+    const bVal = relayValueNormalized(roles.relay_b, 'none');
+    return aVal === 'alarm' || aVal === 'door_alarm' || bVal === 'alarm' || bVal === 'door_alarm';
+  });
+  SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
+  SETTINGS_DATA.capabilities.alarm_relay = anyAlarm;
+  if (!DEVICES.length){
+    summary.textContent = 'No devices have been added yet.';
+    summary.className = 'small muted mt-2';
+    return;
+  }
+  if (anyAlarm){
+    summary.textContent = 'Key Holder can be enabled for users because an alarm-capable relay is configured.';
+    summary.className = 'small text-success mt-2';
+  } else {
+    summary.textContent = 'Set a relay to Alarm or Door and Alarm to enable the Key Holder option when editing users.';
+    summary.className = 'small muted mt-2';
+  }
+}
+
+function renderDeviceOptions(){
+  const container = document.getElementById('deviceOptions');
+  if (!container) return;
+  clearDeviceStatusTimers();
+  container.innerHTML = '';
+  if (!DEVICES.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No devices available yet.';
+    container.appendChild(empty);
+    updateRelaySummary();
+    return;
+  }
+  const sorted = [...DEVICES].sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+  sorted.forEach(device => {
+    const card = document.createElement('div');
+    card.className = 'device-option';
+    card.setAttribute('data-device', device.entry_id);
+    const typeLabel = device.type || 'Device';
+    const isKeypad = String(device.type || '').toLowerCase() === 'keypad';
+    const ipHtml = device.ip ? `<span class="device-meta">IP: ${device.ip}</span>` : '';
+    const keypadNote = isKeypad ? '<div class="form-text muted mt-1">Keypads expose Relay A only.</div>' : '';
+    card.innerHTML = `
+      <div class="device-header">
+        <div>
+          <div class="fw-semibold">${device.name || 'Device'}</div>
+          <div class="device-meta">${typeLabel}</div>
+        </div>
+        ${ipHtml}
+      </div>
+      <div class="row g-3 mt-2">
+        <div class="col-sm-6 col-lg-4">
+          <label class="form-label">Relay A action</label>
+          <select class="form-select" data-relay="relay_a"></select>
+        </div>
+        ${isKeypad ? '' : `
+        <div class="col-sm-6 col-lg-4">
+          <label class="form-label">Relay B action</label>
+          <select class="form-select" data-relay="relay_b"></select>
+        </div>`}
+      </div>
+      ${keypadNote}
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" data-exit-toggle ${device.exit_device ? 'checked' : ''}>
+        <label class="form-check-label">Treat as exit device (bypass user schedules)</label>
+      </div>
+      <div class="small muted mt-2" data-device-status=""></div>
+    `;
+    container.appendChild(card);
+    applyDeviceValues(card, device);
+    setDeviceStatus(device.entry_id, '');
+  });
+  updateRelaySummary();
+}
+
+async function handleRelaySelectChange(select){
+  const card = select.closest('[data-device]');
+  if (!card) return;
+  const entryId = card.getAttribute('data-device');
+  if (!entryId) return;
+  const selects = Array.from(card.querySelectorAll('select[data-relay]'));
+  const payload = {};
+  selects.forEach(sel => {
+    const key = sel.getAttribute('data-relay');
+    if (key) payload[key] = sel.value;
+  });
+  setDeviceStatus(entryId, 'Saving…');
+  selects.forEach(sel => { sel.disabled = true; sel.classList.add('disabled'); });
+  try {
+    const res = await apiPost(API_ACTION, { action: 'set_device_relays', entry_id: entryId, payload });
+    const device = deviceById(entryId);
+    if (device){
+      if (res && res.relay_roles){
+        device.relay_roles = { ...res.relay_roles };
+      } else {
+        device.relay_roles = device.relay_roles || {};
+        Object.entries(payload).forEach(([key, value]) => {
+          device.relay_roles[key] = relayValueNormalized(value, device.relay_roles[key]);
+        });
+      }
+      if (res && 'alarm_capable' in res){
+        device.alarm_capable = !!res.alarm_capable;
+      } else {
+        const roles = device.relay_roles || {};
+        device.alarm_capable = ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_a, 'door'))
+          || ['alarm', 'door_alarm'].includes(relayValueNormalized(roles.relay_b, 'none'));
+      }
+    }
+    if (res && 'device_alarm_any' in res){
+      SETTINGS_DATA.capabilities = SETTINGS_DATA.capabilities || {};
+      SETTINGS_DATA.capabilities.alarm_relay = !!res.device_alarm_any;
+    }
+    setDeviceStatus(entryId, 'Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setDeviceStatus(entryId, 'Save failed', 'error');
+    const device = deviceById(entryId);
+    if (device) applyDeviceValues(card, device);
+    alert('Failed to update relay mapping: ' + (err && err.message ? err.message : err));
+  } finally {
+    selects.forEach(sel => { sel.disabled = false; sel.classList.remove('disabled'); });
+    updateRelaySummary();
+  }
+}
+
+async function handleExitToggleChange(input){
+  const card = input.closest('[data-device]');
+  if (!card) return;
+  const entryId = card.getAttribute('data-device');
+  if (!entryId) return;
+  const checked = input.checked;
+  setDeviceStatus(entryId, 'Saving…');
+  input.disabled = true;
+  try {
+    const res = await apiPost(API_ACTION, { action: 'set_exit_device', entry_id: entryId, payload: { enabled: checked } });
+    const device = deviceById(entryId);
+    if (device) device.exit_device = res && 'exit_device' in res ? !!res.exit_device : checked;
+    setDeviceStatus(entryId, 'Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setDeviceStatus(entryId, 'Save failed', 'error');
+    input.checked = !checked;
+    const device = deviceById(entryId);
+    if (device) device.exit_device = input.checked;
+    alert('Failed to update exit device setting: ' + (err && err.message ? err.message : err));
+  } finally {
+    input.disabled = false;
+  }
+}
+
+function renderIntegrity(){
+  const input = document.getElementById('integrityInput');
+  if (!input) return;
+  const minutes = SETTINGS_DATA.integrity_interval_minutes || 15;
+  input.value = minutesToHHMM(minutes);
+  setIntegrityStatus('');
+}
+
+function availablePhonesForSelect(){
+  const configured = new Set(Object.keys(ALERT_TARGETS || {}));
+  return PHONES.filter(p => !configured.has(p.service));
+}
+
+function renderAlerts(){
+  const wrap = document.getElementById('alertsContainer');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const targets = Object.keys(ALERT_TARGETS || {});
+
+  const addSel = document.getElementById('addTargetSelect');
+  if (addSel){
+    addSel.innerHTML = '';
+    const opts = availablePhonesForSelect();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = opts.length ? 'Add device…' : '(no additional devices)';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    addSel.appendChild(placeholder);
+    opts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.service;
+      opt.textContent = friendlyName(p.service);
+      addSel.appendChild(opt);
+    });
+    addSel.disabled = opts.length === 0;
+  }
+
+  if (!targets.length){
+    const empty = document.createElement('div');
+    empty.className = 'text-muted';
+    empty.textContent = PHONES.length ? 'No alert targets configured yet.' : 'No Home Assistant mobile app notify targets were found.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  targets.sort((a,b) => friendlyName(a).localeCompare(friendlyName(b))).forEach(service => {
+    ensureTargetDefaults(service);
+    const cfg = ALERT_TARGETS[service];
+    const card = document.createElement('div');
+    card.className = 'card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-phone"></i> ${friendlyName(service)}</span>
+        <button class="btn btn-sm btn-outline-danger" data-remove="${service}"><i class="bi bi-x-lg"></i> Remove</button>
+      </div>
+      <div class="card-body">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="device_offline" ${cfg.device_offline ? 'checked' : ''}>
+          <label class="form-check-label">Device Offline (5 minute delay)</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="integrity_failed" ${cfg.integrity_failed ? 'checked' : ''}>
+          <label class="form-check-label">Device Integrity Check Failed</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="any_denied" ${cfg.any_denied ? 'checked' : ''}>
+          <label class="form-check-label">Any User Denied Access</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_any" ${cfg.granted.any ? 'checked' : ''}>
+          <label class="form-check-label">Any User Granted Access</label>
+        </div>
+        <div class="mt-3">
+          <label class="form-label">Specific users to notify on grant</label>
+          <select class="form-select" multiple size="5" data-target="${service}" data-field="granted_users"></select>
+          <div class="form-text">Hold Ctrl/Cmd to select multiple users.</div>
+        </div>
+      </div>`;
+    const select = card.querySelector('select[data-field="granted_users"]');
+    if (select){
+      USERS.forEach(user => {
+        const opt = document.createElement('option');
+        opt.value = user.id;
+        opt.textContent = `${user.name} (${user.id})`;
+        if (cfg.granted.users.includes(user.id)) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+    wrap.appendChild(card);
+  });
+
+  wrap.querySelectorAll('button[data-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const service = btn.getAttribute('data-remove');
+      if (!service) return;
+      delete ALERT_TARGETS[service];
+      SETTINGS_DATA.alerts = SETTINGS_DATA.alerts || { targets: {} };
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      renderAlerts();
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('input[data-field]').forEach(input => {
+    input.addEventListener('change', async () => {
+      const service = input.getAttribute('data-target');
+      const field = input.getAttribute('data-field');
+      if (!service || !field) return;
+      ensureTargetDefaults(service);
+      const cfg = ALERT_TARGETS[service];
+      const checked = input.checked;
+      if (field === 'device_offline') cfg.device_offline = checked;
+      else if (field === 'integrity_failed') cfg.integrity_failed = checked;
+      else if (field === 'any_denied') cfg.any_denied = checked;
+      else if (field === 'granted_any') cfg.granted.any = checked;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('select[data-field="granted_users"]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const service = sel.getAttribute('data-target');
+      if (!service) return;
+      ensureTargetDefaults(service);
+      const values = Array.from(sel.selectedOptions).map(opt => opt.value);
+      ALERT_TARGETS[service].granted.users = values;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+}
+
+function blankScheduleSpec(){
+  const out = { always_permit_exit: false };
+  SCHEDULE_DAY_ORDER.forEach(({ key }) => { out[key] = []; });
+  return out;
+}
+
+function cloneScheduleSpec(spec){
+  const base = blankScheduleSpec();
+  if (!spec || typeof spec !== 'object') return base;
+  SCHEDULE_DAY_ORDER.forEach(({ key }) => {
+    const spans = Array.isArray(spec[key]) ? spec[key] : [];
+    base[key] = spans
+      .filter(span => Array.isArray(span) && span.length >= 2)
+      .map(span => [String(span[0] || '').trim(), String(span[1] || '').trim()]);
+  });
+  if ('always_permit_exit' in spec){
+    const raw = spec.always_permit_exit;
+    if (typeof raw === 'string'){
+      base.always_permit_exit = ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
+    } else {
+      base.always_permit_exit = !!raw;
+    }
+  }
+  return base;
+}
+
+function scheduleNames(){
+  return Object.keys(SCHEDULES || {}).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function scheduleIsBuiltin(name){
+  return BUILTIN_SCHEDULES.has(String(name || '').trim());
+}
+
+function setScheduleStatus(text, tone = 'muted'){
+  const el = document.getElementById('scheduleStatus');
+  if (!el) return;
+  if (scheduleStatusTimer){
+    clearTimeout(scheduleStatusTimer);
+    scheduleStatusTimer = null;
+  }
+  if (!text){
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' muted';
+  el.className = cls;
+  el.textContent = text;
+  if (tone === 'success'){
+    scheduleStatusTimer = setTimeout(() => {
+      const node = document.getElementById('scheduleStatus');
+      if (!node) return;
+      node.textContent = '';
+      node.className = 'visually-hidden small mt-2';
+      scheduleStatusTimer = null;
+    }, 4000);
+  }
+}
+
+function populateScheduleSelect(preferred = ''){
+  const select = document.getElementById('scheduleSelect');
+  if (!select) return '';
+  const names = scheduleNames();
+  select.innerHTML = '';
+  const newOpt = document.createElement('option');
+  newOpt.value = '';
+  newOpt.textContent = 'Create new schedule…';
+  select.appendChild(newOpt);
+  names.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+  let chosen = '';
+  if (preferred && (preferred === '' || names.includes(preferred))){
+    chosen = preferred;
+  } else if (names.includes(SELECTED_SCHEDULE)){
+    chosen = SELECTED_SCHEDULE;
+  } else if (names.includes('24/7 Access')){
+    chosen = '24/7 Access';
+  } else if (names.length){
+    chosen = names[0];
+  }
+  select.value = chosen;
+  return chosen;
+}
+
+function updateScheduleSelection(value){
+  SELECTED_SCHEDULE = value || '';
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    scheduleReadOnly = true;
+    EDITING_SCHEDULE_NAME = SELECTED_SCHEDULE;
+  } else {
+    scheduleReadOnly = false;
+    EDITING_SCHEDULE_NAME = value ? value : '';
+  }
+  setScheduleStatus('');
+  renderScheduleEditor();
+}
+
+function createScheduleRow(day, start = '', end = '', readOnly = false){
+  const row = document.createElement('div');
+  row.className = 'row g-2 align-items-center mb-2';
+  row.setAttribute('data-sched-row', '1');
+  row.setAttribute('data-day', day);
+
+  const startCol = document.createElement('div');
+  startCol.className = 'col-12 col-md-4 col-lg-3';
+  const startGroup = document.createElement('div');
+  startGroup.className = 'input-group input-group-sm';
+  const startLabel = document.createElement('span');
+  startLabel.className = 'input-group-text';
+  startLabel.textContent = 'Start';
+  const startInput = document.createElement('input');
+  startInput.className = 'form-control form-control-sm schedule-time-input';
+  startInput.placeholder = 'HH:MM';
+  startInput.value = start || '';
+  startInput.maxLength = 5;
+  startInput.autocomplete = 'off';
+  startInput.inputMode = 'numeric';
+  startInput.pattern = '\\d{1,2}:\\d{2}';
+  if (readOnly){ startInput.disabled = true; }
+  startGroup.append(startLabel, startInput);
+  startCol.appendChild(startGroup);
+  row.appendChild(startCol);
+
+  const endCol = document.createElement('div');
+  endCol.className = 'col-12 col-md-4 col-lg-3';
+  const endGroup = document.createElement('div');
+  endGroup.className = 'input-group input-group-sm';
+  const endLabel = document.createElement('span');
+  endLabel.className = 'input-group-text';
+  endLabel.textContent = 'End';
+  const endInput = document.createElement('input');
+  endInput.className = 'form-control form-control-sm schedule-time-input';
+  endInput.placeholder = 'HH:MM';
+  endInput.value = end || '';
+  endInput.maxLength = 5;
+  endInput.autocomplete = 'off';
+  endInput.inputMode = 'numeric';
+  endInput.pattern = '\\d{1,2}:\\d{2}';
+  if (readOnly){ endInput.disabled = true; }
+  endGroup.append(endLabel, endInput);
+  endCol.appendChild(endGroup);
+  row.appendChild(endCol);
+
+  const btnCol = document.createElement('div');
+  btnCol.className = 'col-12 col-md-4 col-lg-3';
+  if (!readOnly){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm btn-outline-danger w-100';
+    btn.setAttribute('data-remove-row', '');
+    btn.setAttribute('data-day', day);
+    btn.innerHTML = '<i class="bi bi-x-lg me-1"></i>Remove';
+    btnCol.appendChild(btn);
+  }
+  row.appendChild(btnCol);
+
+  return row;
+}
+
+function updateScheduleDayEmptyState(day){
+  const list = document.querySelector(`[data-day-rows="${day}"]`);
+  const empty = document.querySelector(`[data-day-empty="${day}"]`);
+  if (!list || !empty) return;
+  const hasRows = !!list.querySelector('[data-sched-row]');
+  empty.style.display = hasRows ? 'none' : 'block';
+}
+
+function renderScheduleEditor(){
+  const spec = SELECTED_SCHEDULE && SCHEDULES[SELECTED_SCHEDULE]
+    ? cloneScheduleSpec(SCHEDULES[SELECTED_SCHEDULE])
+    : blankScheduleSpec();
+  const nameInput = document.getElementById('scheduleNameInput');
+  if (nameInput){
+    nameInput.value = EDITING_SCHEDULE_NAME || '';
+    nameInput.disabled = scheduleReadOnly;
+  }
+  const helper = document.getElementById('scheduleHelper');
+  if (helper){
+    if (scheduleReadOnly){
+      helper.textContent = 'Built-in schedules show the default behaviour. Use "Create new schedule…" to build your own time windows.';
+    } else {
+      helper.textContent = 'Add HH:MM windows for each day when access is allowed. Leave a day empty to block access that day.';
+    }
+  }
+  const exitToggle = document.getElementById('scheduleExitCheckbox');
+  if (exitToggle){
+    exitToggle.checked = !!spec.always_permit_exit;
+    exitToggle.disabled = scheduleReadOnly;
+  }
+  const saveBtn = document.getElementById('scheduleSaveBtn');
+  if (saveBtn){
+    saveBtn.disabled = scheduleReadOnly;
+  }
+  const deleteBtn = document.getElementById('scheduleDeleteBtn');
+  if (deleteBtn){
+    deleteBtn.disabled = scheduleReadOnly || !SELECTED_SCHEDULE;
+  }
+
+  const container = document.getElementById('scheduleDays');
+  if (!container) return;
+  container.innerHTML = '';
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    const block = document.createElement('div');
+    block.className = 'schedule-day';
+    block.setAttribute('data-day-container', key);
+
+    const header = document.createElement('div');
+    header.className = 'schedule-day-header';
+    const title = document.createElement('h6');
+    title.className = 'm-0';
+    title.textContent = label;
+    header.appendChild(title);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-sm btn-outline-light';
+    addBtn.setAttribute('data-add-day', key);
+    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add window';
+    if (scheduleReadOnly) addBtn.disabled = true;
+    header.appendChild(addBtn);
+    block.appendChild(header);
+
+    const list = document.createElement('div');
+    list.setAttribute('data-day-rows', key);
+    block.appendChild(list);
+
+    const empty = document.createElement('div');
+    empty.setAttribute('data-day-empty', key);
+    empty.className = 'schedule-day-empty';
+    empty.textContent = 'No time windows yet.';
+    block.appendChild(empty);
+
+    const spans = spec[key] || [];
+    spans.forEach(span => {
+      list.appendChild(createScheduleRow(key, span[0], span[1], scheduleReadOnly));
+    });
+    container.appendChild(block);
+    updateScheduleDayEmptyState(key);
+  });
+}
+
+function addScheduleRow(day){
+  if (!day || scheduleReadOnly) return;
+  const list = document.querySelector(`[data-day-rows="${day}"]`);
+  if (!list) return;
+  list.appendChild(createScheduleRow(day, '', '', false));
+  updateScheduleDayEmptyState(day);
+}
+
+function gatherScheduleSpec(){
+  const spec = blankScheduleSpec();
+  document.querySelectorAll('[data-sched-row]').forEach(row => {
+    const day = row.getAttribute('data-day');
+    if (!day || !(day in spec)) return;
+    const inputs = row.querySelectorAll('input');
+    if (inputs.length < 2) return;
+    const start = inputs[0].value.trim();
+    const end = inputs[1].value.trim();
+    if (start && end) spec[day].push([start, end]);
+  });
+  const exitToggle = document.getElementById('scheduleExitCheckbox');
+  spec.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  return spec;
+}
+
+async function callAction(actionName, payload){
+  const res = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: actionName, payload })
+  });
+  if (!res.ok){
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (body && body.ok === false){
+    throw new Error(body.error || 'Action failed');
+  }
+  return body;
+}
+
+async function saveSchedule(){
+  if (scheduleSaving || scheduleReadOnly) return;
+  const input = document.getElementById('scheduleNameInput');
+  const name = (input && typeof input.value === 'string') ? input.value.trim() : '';
+  if (!name){
+    setScheduleStatus('Enter a schedule name.', 'error');
+    input?.focus();
+    return;
+  }
+  if (scheduleIsBuiltin(name) && !scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedule names are reserved. Choose a different name.', 'error');
+    return;
+  }
+  const spec = gatherScheduleSpec();
+  scheduleSaving = true;
+  try{
+    setScheduleStatus('Saving…');
+    await callAction('upsert_schedule', { name, spec });
+    SCHEDULES[name] = spec;
+    const next = populateScheduleSelect(name);
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Save failed', 'error');
+    alert('Failed to save schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleSaving = false;
+  }
+}
+
+async function deleteSchedule(){
+  if (scheduleDeleting) return;
+  if (!SELECTED_SCHEDULE){
+    setScheduleStatus('Choose a schedule to delete.', 'error');
+    return;
+  }
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedules cannot be deleted.', 'error');
+    return;
+  }
+  const confirmed = window.confirm(`Delete schedule "${SELECTED_SCHEDULE}"?`);
+  if (!confirmed) return;
+  scheduleDeleting = true;
+  try{
+    setScheduleStatus('Deleting…');
+    await callAction('delete_schedule', { name: SELECTED_SCHEDULE });
+    delete SCHEDULES[SELECTED_SCHEDULE];
+    const next = populateScheduleSelect('');
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule deleted', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Delete failed', 'error');
+    alert('Failed to delete schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleDeleting = false;
+  }
+}
+
+function startNewSchedule(){
+  const select = document.getElementById('scheduleSelect');
+  if (select){
+    select.value = '';
+  }
+  updateScheduleSelection('');
+  const input = document.getElementById('scheduleNameInput');
+  if (input && !input.disabled){
+    input.focus();
+  }
+}
+
+async function saveIntegrity(minutes){
+  if (integritySaving) return;
+  integritySaving = true;
+  try{
+    setIntegrityStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { integrity_interval_minutes: minutes });
+    if (res.integrity_interval_minutes){
+      SETTINGS_DATA.integrity_interval_minutes = res.integrity_interval_minutes;
+      setIntegrityStatus('Saved', 'success');
+    } else {
+      setIntegrityStatus('Saved', 'success');
+    }
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setIntegrityStatus('Save failed', 'error');
+    alert('Failed to update integrity interval: ' + (err && err.message ? err.message : err));
+  }finally{
+    integritySaving = false;
+  }
+}
+
+async function saveAutoSyncDelay(minutes){
+  if (autoSyncSaving) return;
+  autoSyncSaving = true;
+  try{
+    setAutoSyncStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { auto_sync_delay_minutes: minutes });
+    const returned = Number(res.auto_sync_delay_minutes);
+    if (Number.isFinite(returned)){
+      const { min, max } = autoSyncRange();
+      const normalized = Math.min(max, Math.max(min, Math.round(returned)));
+      SETTINGS_DATA.auto_sync_delay_minutes = normalized;
+      const input = document.getElementById('autoSyncDelayInput');
+      if (input) input.value = String(normalized);
+    }
+    setAutoSyncStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setAutoSyncStatus('Save failed', 'error');
+    alert('Failed to update automatic sync delay: ' + (err && err.message ? err.message : err));
+  }finally{
+    autoSyncSaving = false;
+  }
+}
+
+async function saveAlerts(){
+  if (alertsSaving) return;
+  alertsSaving = true;
+  try{
+    setAlertsStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
+    if (res.alerts && res.alerts.targets){
+      ALERT_TARGETS = res.alerts.targets;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    }
+    setAlertsStatus('Saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setAlertsStatus('Save failed', 'error');
+    alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
+  }finally{
+    alertsSaving = false;
+  }
+}
+
+async function loadData(){
+  setBusy(true);
+  try{
+    const [settingsResp, phonesResp] = await Promise.all([
+      apiGet(API_SETTINGS),
+      apiGet(API_PHONES).catch((err) => {
+        handleAuthError(err);
+        return { phones: [] };
+      })
+    ]);
+    SETTINGS_DATA = settingsResp || { integrity_interval_minutes: 15, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
+    const minDelay = Number(settingsResp?.min_auto_sync_delay_minutes);
+    const maxDelay = Number(settingsResp?.max_auto_sync_delay_minutes);
+    const safeMinDelay = Number.isFinite(minDelay) ? Math.max(1, Math.round(minDelay)) : 5;
+    const safeMaxDelay = Number.isFinite(maxDelay) ? Math.max(safeMinDelay, Math.round(maxDelay)) : Math.max(safeMinDelay, 60);
+    SETTINGS_DATA.min_auto_sync_delay_minutes = safeMinDelay;
+    SETTINGS_DATA.max_auto_sync_delay_minutes = safeMaxDelay;
+    const rawDelayValue = SETTINGS_DATA.auto_sync_delay_minutes;
+    let delayValue = Number(rawDelayValue);
+    if (!Number.isFinite(delayValue) || rawDelayValue === null || rawDelayValue === undefined || rawDelayValue === '') delayValue = 30;
+    delayValue = Math.round(delayValue);
+    if (delayValue < safeMinDelay) delayValue = safeMinDelay;
+    if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;
+    SETTINGS_DATA.auto_sync_delay_minutes = delayValue;
+      PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
+      USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+      ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
+      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+      const rawDevices = Array.isArray(settingsResp?.devices) ? settingsResp.devices : [];
+      DEVICES = rawDevices.map(dev => {
+        const clone = { ...dev };
+        const roles = dev && typeof dev.relay_roles === 'object' ? dev.relay_roles : {};
+        clone.relay_roles = {
+          relay_a: relayValueNormalized(roles.relay_a, 'door'),
+          relay_b: relayValueNormalized(roles.relay_b, 'none'),
+        };
+        clone.exit_device = !!dev.exit_device;
+        clone.alarm_capable = typeof dev.alarm_capable === 'boolean'
+          ? dev.alarm_capable
+          : ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_a) || ['alarm', 'door_alarm'].includes(clone.relay_roles.relay_b);
+        return clone;
+      });
+      SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
+        ? { ...settingsResp.capabilities }
+        : { alarm_relay: false };
+      renderDeviceOptions();
+      const rawSchedules = settingsResp?.schedules;
+    if (rawSchedules && typeof rawSchedules === 'object'){
+      SCHEDULES = {};
+      Object.entries(rawSchedules).forEach(([name, spec]) => {
+        SCHEDULES[name] = cloneScheduleSpec(spec);
+      });
+    } else {
+      SCHEDULES = {};
+    }
+    const nextSchedule = populateScheduleSelect(SELECTED_SCHEDULE);
+    updateScheduleSelection(nextSchedule);
+    renderAutoSyncDelay();
+    renderIntegrity();
+    renderAlerts();
+  } catch (err){
+    if (handleAuthError(err)) return;
+    alert('Failed to load settings: ' + (err && err.message ? err.message : err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnBack')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openInApp('index', {}, { replaceState: true });
+  });
+
+  const deviceOptions = document.getElementById('deviceOptions');
+  deviceOptions?.addEventListener('change', async (ev) => {
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    if (target.matches('select[data-relay]')) {
+      await handleRelaySelectChange(target);
+    } else if (target.matches('input[data-exit-toggle]')) {
+      await handleExitToggleChange(target);
+    }
+  });
+
+  const autoSyncInput = document.getElementById('autoSyncDelayInput');
+  autoSyncInput?.addEventListener('input', () => {
+    hideAutoSyncSavedOverlay();
+    setAutoSyncStatus('');
+  });
+  autoSyncInput?.addEventListener('change', async () => {
+    const { min, max } = autoSyncRange();
+    const rawStr = (autoSyncInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    SETTINGS_DATA.auto_sync_delay_minutes = val;
+    autoSyncInput.value = String(val);
+    await saveAutoSyncDelay(val);
+  });
+
+  const integrityInput = document.getElementById('integrityInput');
+  integrityInput?.addEventListener('input', hideIntegritySavedOverlay);
+  integrityInput?.addEventListener('change', async () => {
+    const val = hhmmToMinutes(integrityInput.value);
+    if (val === null){
+      setIntegrityStatus('Enter a valid HH:MM between 00:05 and 24:00', 'error');
+      return;
+    }
+    SETTINGS_DATA.integrity_interval_minutes = val;
+    await saveIntegrity(val);
+  });
+
+  document.getElementById('addTargetSelect')?.addEventListener('change', async (ev) => {
+    const service = ev.target.value;
+    if (!service) return;
+    ensureTargetDefaults(service);
+    ALERT_TARGETS[service] = ALERT_TARGETS[service];
+    SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+    ev.target.value = '';
+    renderAlerts();
+    await saveAlerts();
+  });
+
+  const scheduleSelect = document.getElementById('scheduleSelect');
+  scheduleSelect?.addEventListener('change', (ev) => {
+    updateScheduleSelection(ev.target.value);
+  });
+  document.getElementById('scheduleCreateBtn')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    startNewSchedule();
+  });
+  document.getElementById('scheduleSaveBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await saveSchedule();
+  });
+  document.getElementById('scheduleDeleteBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await deleteSchedule();
+  });
+  const scheduleNameInput = document.getElementById('scheduleNameInput');
+  scheduleNameInput?.addEventListener('input', (ev) => {
+    EDITING_SCHEDULE_NAME = ev.target.value;
+    setScheduleStatus('');
+  });
+  const scheduleDays = document.getElementById('scheduleDays');
+  scheduleDays?.addEventListener('click', (ev) => {
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    const addBtn = target.closest('[data-add-day]');
+    if (addBtn){
+      ev.preventDefault();
+      const day = addBtn.getAttribute('data-add-day');
+      if (day) addScheduleRow(day);
+      return;
+    }
+    const removeBtn = target.closest('[data-remove-row]');
+    if (removeBtn){
+      ev.preventDefault();
+      if (scheduleReadOnly) return;
+      const day = removeBtn.getAttribute('data-day');
+      const row = removeBtn.closest('[data-sched-row]');
+      if (row) row.remove();
+      if (day) updateScheduleDayEmptyState(day);
+      setScheduleStatus('');
+    }
+  });
+  scheduleDays?.addEventListener('input', () => { setScheduleStatus(''); });
+  document.getElementById('scheduleExitCheckbox')?.addEventListener('change', () => {
+    if (!scheduleReadOnly) setScheduleStatus('');
+  });
+
+  loadData();
+});
+</script>
+
+<div class="container py-3">
+  <div class="d-flex align-items-center gap-2">
+    <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
+    <h2 class="m-0">Global Settings</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Automatic Change Sync Delay</div>
+    <div class="card-body">
+      <p class="muted">Set how long to wait before automatically syncing user updates to every participating device. Lower values push changes out sooner, while higher values batch multiple edits together. Choose between 5 and 60 minutes.</p>
+      <div class="saved-input-wrap">
+        <input id="autoSyncDelayInput" class="form-control" type="number" min="5" max="60" step="1" />
+        <div id="autoSyncSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="autoSyncStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Integrity Check Interval</div>
+    <div class="card-body">
+      <p class="muted">Integrity checks automatically compare each device's data with the server so everything stays accurate and up to date. Choose how often to run them (minimum 5 minutes, maximum 24 hours).</p>
+      <div class="saved-input-wrap">
+        <input id="integrityInput" class="form-control" placeholder="HH:MM" />
+        <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="integrityStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Device Relay Mapping</div>
+    <div class="card-body">
+      <p class="muted small">Choose how each relay behaves and mark interior stations as exit devices. The Key Holder option is available when any relay is set to Alarm or Door and Alarm.</p>
+      <div id="deviceOptions"></div>
+      <div id="deviceRelaySummary" class="small muted mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3 schedule-card" id="access-schedules">
+    <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
+      <div>
+        <div class="fw-semibold">Access Schedules</div>
+        <div class="muted small">Create custom access windows that you can assign to users. Built-in schedules remain available for quick selection.</div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <label class="form-label m-0 small text-uppercase muted" for="scheduleSelect">Schedule</label>
+        <select id="scheduleSelect" class="form-select form-select-sm" style="min-width:220px;"></select>
+        <button class="btn btn-sm btn-outline-light" id="scheduleCreateBtn"><i class="bi bi-plus-lg me-1"></i>New</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="mb-3">
+        <label class="form-label" for="scheduleNameInput">Schedule name</label>
+        <input id="scheduleNameInput" class="form-control" placeholder="e.g. Weekdays 09:00-17:00" />
+        <div id="scheduleHelper" class="form-text muted mt-1"></div>
+      </div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="scheduleExitCheckbox">
+        <label class="form-check-label" for="scheduleExitCheckbox">Always permit exit devices</label>
+        <div class="form-text muted">When enabled, users assigned to this schedule receive 24/7 access on any device flagged as an exit device.</div>
+      </div>
+      <p class="muted small">Add one or more HH:MM ranges for each day to control when credentials are valid. Leave a day empty to block access on that day.</p>
+      <div id="scheduleDays" class="mt-3"></div>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-success" id="scheduleSaveBtn"><i class="bi bi-check2 me-1"></i>Save schedule</button>
+        <button class="btn btn-outline-danger" id="scheduleDeleteBtn"><i class="bi bi-trash3 me-1"></i>Delete</button>
+      </div>
+      <div id="scheduleStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Alert Targets</span>
+      <select id="addTargetSelect" class="form-select form-select-sm" style="width:auto;"></select>
+    </div>
+    <div class="card-body">
+      <p class="muted">Choose which Home Assistant mobile app devices receive alerts. Configure per-device notification rules below.</p>
+      <div id="alertsContainer"></div>
+      <div id="alertsStatus" class="visually-hidden mt-3"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

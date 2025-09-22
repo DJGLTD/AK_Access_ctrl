@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Access Schedules</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>:root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; } body{ background:var(--bg); color:var(--text);} .card{background:#111a2b;border:1px solid #1b2942}</style>
+</head>
+<body>
+<script>
+(function captureToken(){
+  const qs = new URLSearchParams(location.search);
+  const token = qs.get('token');
+  if (token) sessionStorage.setItem('akuvox_ll_token', token);
+})();
+
+const UI_ROOT = '/akuvox-ac';
+const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
+function findHaToken(){
+  const existing = sessionStorage.getItem('akuvox_ll_token');
+  if (existing) return existing;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
+}
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
+
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function buildHref(slug, params = {}){
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = findHaToken();
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+
+function requestParentNav(view, params = {}, options = {}){
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = { type: 'akuvox-nav', view: String(view || ''), slug: String(view || ''), params };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  const href = buildHref('unauthorized', targetParams);
+  const delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const API_STATE  = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
+
+async function getState(){
+  const res = await fetchWithAuth(API_STATE);
+  if (!res.ok){
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json();
+}
+
+async function action(act, payload){
+  const res = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: act, payload })
+  });
+  if (!res.ok){
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json();
+}
+
+let SCHEDS = {};
+
+function scheduleExitFlag(spec){
+  if (!spec || typeof spec !== 'object') return false;
+  const raw = spec.always_permit_exit;
+  if (typeof raw === 'string'){
+    return ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
+  }
+  return !!raw;
+}
+
+function row(day, idx, start = '', end = ''){
+  return `<div class="row g-2 align-items-center mb-1" data-day="${day}" data-idx="${idx}">
+    <div class="col-2 text-capitalize">${day}</div>
+    <div class="col-4"><input class="form-control form-control-sm" placeholder="HH:MM" value="${start}"/></div>
+    <div class="col-4"><input class="form-control form-control-sm" placeholder="HH:MM" value="${end}"/></div>
+    <div class="col-2"><button class="btn btn-sm btn-outline-danger" onclick="removeRow('${day}',${idx})">Remove</button></div>
+  </div>`;
+}
+
+function render(name){
+  const container = document.getElementById('editor');
+  container.innerHTML = '';
+  const exitToggle = document.getElementById('schedExit');
+  if (exitToggle){
+    exitToggle.checked = scheduleExitFlag(SCHEDS[name] || {});
+    exitToggle.disabled = name === '24/7 Access' || name === 'No Access';
+  }
+  const days = ['mon','tue','wed','thu','fri','sat','sun'];
+  days.forEach(day => {
+    const spans = (SCHEDS[name] && SCHEDS[name][day]) || [];
+    if (!spans.length) {
+      container.insertAdjacentHTML('beforeend', row(day, 0, '', ''));
+    } else {
+      spans.forEach((span, idx) => container.insertAdjacentHTML('beforeend', row(day, idx, span[0], span[1])));
+    }
+  });
+}
+
+function removeRow(day, idx){
+  const rows = [...document.querySelectorAll(`[data-day="${day}"]`)];
+  const rowEl = rows[idx];
+  if (rowEl) rowEl.remove();
+}
+
+function addRow(day){
+  const rows = [...document.querySelectorAll(`[data-day="${day}"]`)];
+  const idx = rows.length;
+  document.getElementById('editor').insertAdjacentHTML('beforeend', row(day, idx, '', ''));
+}
+
+async function save(){
+  const name = document.getElementById('schedName').value.trim();
+  if (!name){ alert('Enter a schedule name'); return; }
+  if (name === '24/7 Access' || name === 'No Access'){ alert('Built-in schedules are fixed. Create a custom schedule.'); return; }
+  const out = {};
+  const days = ['mon','tue','wed','thu','fri','sat','sun'];
+  days.forEach(day => {
+    out[day] = [];
+    document.querySelectorAll(`[data-day="${day}"]`).forEach(div => {
+      const inputs = div.querySelectorAll('input');
+      const start = inputs[0].value.trim();
+      const end = inputs[1].value.trim();
+      if (start && end) out[day].push([start, end]);
+    });
+  });
+  const exitToggle = document.getElementById('schedExit');
+  out.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  try {
+    await action('upsert_schedule', { name, spec: out });
+    location.reload();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to save schedule: ' + (err && err.message ? err.message : err));
+  }
+}
+
+async function del(){
+  const name = document.getElementById('schedName').value.trim();
+  if (!name) return;
+  if (name === '24/7 Access' || name === 'No Access'){ alert('Built-in schedules cannot be deleted.'); return; }
+  try {
+    await action('delete_schedule', { name });
+    location.reload();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to delete schedule: ' + (err && err.message ? err.message : err));
+  }
+}
+
+async function load(){
+  try {
+    const st = await getState();
+    SCHEDS = st.schedules || {};
+    const sel = document.getElementById('schedSel');
+    const names = Object.keys(SCHEDS);
+    sel.innerHTML = names.map(n => `<option>${n}</option>`).join('');
+    sel.addEventListener('change', (e) => {
+      document.getElementById('schedName').value = e.target.value;
+      render(e.target.value);
+    });
+    if (names.length){
+      sel.value = names[0];
+      document.getElementById('schedName').value = sel.value;
+      render(sel.value);
+    } else {
+      document.getElementById('schedName').value = '';
+      document.getElementById('editor').innerHTML = '';
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to load schedules: ' + (err && err.message ? err.message : err));
+  }
+}
+</script>
+<div class="container py-3">
+  <h2>Access Schedules</h2>
+  <div class="card p-3">
+    <div class="mb-2">
+      <label class="form-label">Existing schedules</label>
+      <select id="schedSel" class="form-select form-select-sm"></select>
+    </div>
+    <div class="mb-2"><label class="form-label">Schedule name</label><input id="schedName" class="form-control"/></div>
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="schedExit">
+      <label class="form-check-label" for="schedExit">Always permit exit devices</label>
+      <div class="form-text">Exit devices treat this schedule as 24/7 when enabled.</div>
+    </div>
+    <div id="editor"></div>
+    <div class="mt-3 d-flex gap-2">
+      <button class="btn btn-success" onclick="save()">Save</button>
+      <button class="btn btn-danger" onclick="del()">Delete</button>
+      <a class="btn btn-secondary" id="backBtn" href="#">Back</a>
+    </div>
+  </div>
+</div>
+<script>
+load();
+(function initBackButton(){
+  try {
+    const back = document.getElementById('backBtn');
+    if (!back) return;
+    const href = buildHref('index');
+    back.setAttribute('href', href);
+    back.addEventListener('click', (ev) => {
+      const delivered = requestParentNav('index', {}, { replaceState: false });
+      if (delivered) {
+        ev.preventDefault();
+      }
+    });
+  } catch (err) {}
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox User Editor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .container-narrow{ max-width:960px; margin:0 auto; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    .card + .card{ margin-top:1.5rem; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .btn-toggle{ width: 220px; }
+    .uploader-hint { font-size: .9rem; color: var(--muted); }
+    .form-text code { color: #c7dfff; }
+    .existing-card{ background:#0f1f33; border:1px solid #1b2e4b; }
+    .existing-card .card-title{ margin:0; font-size:1.05rem; font-weight:600; }
+    .existing-card .list-group-item{ background:#0d1d33; border:1px solid rgba(255,255,255,0.05); border-radius:0.75rem; margin-bottom:0.6rem; padding:1rem 1.1rem; color:var(--text); transition:transform .15s ease, border-color .15s ease; }
+    .existing-card .list-group-item:last-child{ margin-bottom:0; }
+    .existing-card .list-group-item .badge{ background:rgba(13,202,240,.18); color:var(--accent); }
+    .existing-card .list-group-item small{ color:var(--muted); }
+    .existing-card .list-group-item-action{ display:flex; flex-direction:column; align-items:flex-start; gap:0.3rem; text-align:left; }
+    .existing-card .list-group-item-action:hover{ transform:translateY(-1px); border-color:rgba(13,202,240,.4); }
+    .existing-card .list-group-item-action.active,
+    .existing-card .list-group-item-action:focus{ border-color:rgba(13,202,240,.45); box-shadow:0 0 0 0.2rem rgba(13,202,240,.18); }
+    .existing-card .list-empty{ border-radius:0.75rem; background:#0d1d33; padding:1rem; color:var(--muted); text-align:center; }
+    .existing-search{ min-width:220px; }
+    .existing-search input{ background:#0b1728; border:1px solid #1b2e4b; color:var(--text); }
+    .existing-search input:focus{ border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(13,202,240,.2); }
+    .face-options{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    @media (max-width: 992px){
+      .container-narrow{ max-width:100%; }
+    }
+    @media (max-width: 720px){
+      .container-narrow{ padding:0.75rem; }
+      .card{ padding:1.25rem; }
+      .btn-toggle{ width:100%; }
+      .face-options{ flex-direction:column; }
+      .action-buttons{ flex-direction:column; }
+      .action-buttons .btn, .action-buttons a{ width:100%; }
+      .existing-search{ width:100%; }
+      .existing-card .list-group-item{ margin-bottom:0.75rem; }
+    }
+  </style>
+</head>
+<body>
+<script>
+/* -------------------- auth + helpers -------------------- */
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
+function findHaToken(){
+  const existing = sessionStorage.getItem('akuvox_ll_token');
+  if (existing) return existing;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
+}
+const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
+
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {
+    try {
+      const search = new URLSearchParams();
+      Object.entries(targetParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') search.set(key, value);
+      });
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
+      if (authSig && !search.has('authSig')) search.set('authSig', authSig);
+      const query = search.toString();
+      if (query) href = `/akuvox-ac/unauthorized?${query}`;
+    } catch (err2) {}
+  }
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const API_STATE           = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_PHONES          = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_RESERVE_ID      = signedPath('reserve_id', '/api/akuvox_ac/ui/reserve_id');
+const API_RELEASE_ID      = signedPath('release_id', '/api/akuvox_ac/ui/release_id');
+const API_RESERVATION_PING = signedPath('reservation_ping', '/api/akuvox_ac/ui/reservation_ping');
+const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face');
+const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
+const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
+
+async function apiGet(url){
+  const r = await fetchWithAuth(url);
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetchWithAuth(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) });
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+const UI_ROOT = '/akuvox-ac';
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
+/* -------------------- app state -------------------- */
+let SCHEDULES = {};     // { name: weekSpec, ... }
+let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
+let REGISTRY = [];      // UI list of known users from /ui/state
+let CURRENT = null;     // working user object
+let RESERVED_ID = null; // HA### id reserved for new-user workflow
+let ANY_ALARM_CAPABLE = true;
+
+let reservationTimer = null;
+let reservationMisses = 0;
+let reservationHeartbeatBusy = false;
+
+function setReservationMessage(html, tone = 'muted') {
+  const el = document.getElementById('localHelp');
+  if (!el) return;
+  if (!html) {
+    el.innerHTML = '';
+    return;
+  }
+  const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'muted';
+  el.innerHTML = `<span class="${cls}">${html}</span>`;
+}
+
+function showExistingHint(html, tone = 'muted') {
+  const el = document.getElementById('existingUsersHint');
+  if (!el) return;
+  if (!html) {
+    el.innerHTML = '';
+    return;
+  }
+  let cls = 'muted';
+  if (tone === 'accent') cls = 'text-info';
+  else if (tone === 'warning') cls = 'text-warning';
+  else if (tone === 'error') cls = 'text-danger';
+  el.innerHTML = `<span class="${cls}">${html}</span>`;
+}
+
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch] || ch));
+}
+
+function updateKeyHolderAvailability(){
+  const row = document.getElementById('keyHolderRow');
+  const input = document.getElementById('key_holder');
+  if (!row || !input) return;
+  if (ANY_ALARM_CAPABLE){
+    row.style.display = '';
+  } else {
+    row.style.display = 'none';
+    input.checked = false;
+    if (CURRENT) CURRENT.key_holder = false;
+  }
+}
+
+function stopReservationHeartbeat() {
+  if (reservationTimer) {
+    clearInterval(reservationTimer);
+    reservationTimer = null;
+  }
+  reservationHeartbeatBusy = false;
+  reservationMisses = 0;
+}
+
+async function heartbeatTick() {
+  if (!RESERVED_ID || reservationHeartbeatBusy) return;
+  reservationHeartbeatBusy = true;
+  try {
+    const res = await fetchWithAuth(API_RESERVATION_PING, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: RESERVED_ID })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'ping failed');
+    if (data.active === false) {
+      setReservationMessage('Reserved ID expired. Requesting a new ID…', 'warning');
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      const newId = await reserveNewId({ showWarning: true });
+      if (newId && CURRENT) CURRENT.id = newId;
+      return;
+    }
+    reservationMisses = 0;
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    reservationMisses += 1;
+    if (reservationMisses >= 6) {
+      setReservationMessage('Connection lost. Releasing reserved ID and trying again…', 'warning');
+      try { await releaseReservation({ keepalive: true }); } catch (e) {}
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      const newId = await reserveNewId({ showWarning: true });
+      if (newId && CURRENT) CURRENT.id = newId;
+    }
+  } finally {
+    reservationHeartbeatBusy = false;
+  }
+}
+
+function startReservationHeartbeat() {
+  stopReservationHeartbeat();
+  if (!RESERVED_ID) return;
+  reservationTimer = setInterval(heartbeatTick, 10000);
+}
+
+async function reserveNewId(options = {}) {
+  const idRow = document.getElementById('idRow');
+  const input = document.getElementById('user_id');
+  if (input) input.value = '';
+  if (idRow) idRow.style.display = 'none';
+  stopReservationHeartbeat();
+  try {
+    const res = await apiGet(API_RESERVE_ID);
+    const newId = res && res.ok && res.id ? res.id : '';
+    if (!newId) throw new Error('reserve failed');
+    RESERVED_ID = newId;
+    if (input) input.value = newId;
+    if (idRow) idRow.style.display = 'block';
+    setReservationMessage('');
+    startReservationHeartbeat();
+    return newId;
+  } catch (err) {
+    RESERVED_ID = null;
+    if (handleAuthError(err)) return '';
+    if (options.showWarning !== false) {
+      setReservationMessage('ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.', 'warning');
+    }
+    return '';
+  }
+}
+
+function renderExistingUsers(){
+  const list = document.getElementById('existingUsersList');
+  if (!list) return;
+  const searchInput = document.getElementById('userSearch');
+  const filter = (searchInput?.value || '').trim().toLowerCase();
+  const raw = Array.isArray(REGISTRY) ? REGISTRY : [];
+  const normalized = raw.map((u) => {
+    const id = String(u.id || u.UserID || u.ID || '').trim();
+    const name = u.name || u.Name || id;
+    const groups = Array.isArray(u.groups) ? u.groups : Array.isArray(u.Groups) ? u.Groups : [];
+    const last = u.last_access || u.LastAccess || '';
+    return { id, name, groups, last };
+  }).filter(u => u.id);
+
+  if (!normalized.length) {
+    list.innerHTML = '<div class="list-empty">No Home Assistant managed users yet. Create a new profile above.</div>';
+    showExistingHint('Add a new user above to get started.', 'accent');
+    return;
+  }
+
+  const filtered = normalized.filter(u => {
+    if (!filter) return true;
+    const hay = `${u.id} ${u.name} ${(u.groups || []).join(' ')}`.toLowerCase();
+    return hay.includes(filter);
+  }).sort((a,b) => a.name.localeCompare(b.name, undefined, { sensitivity:'base' }));
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="list-empty">No users match that search.</div>';
+    showExistingHint('Try a different name, ID or group.', 'warning');
+    return;
+  }
+
+  const activeId = CURRENT?.id ? String(CURRENT.id) : '';
+  list.innerHTML = filtered.map((u) => {
+    const classes = ['list-group-item', 'list-group-item-action'];
+    if (activeId && activeId === String(u.id)) classes.push('active');
+    const groupsLabel = (u.groups || []).length ? (u.groups || []).join(', ') : 'No groups assigned';
+    const lastLine = u.last ? `<small>Last access: ${escapeHtml(u.last)}</small>` : '';
+    return `
+      <button type="button" class="${classes.join(' ')}" data-user-id="${escapeHtml(u.id)}">
+        <div class="d-flex justify-content-between align-items-center w-100">
+          <span class="fw-semibold">${escapeHtml(u.name)}</span>
+          <span class="badge">${escapeHtml(u.id)}</span>
+        </div>
+        <small>${escapeHtml(groupsLabel)}</small>
+        ${lastLine}
+      </button>
+    `;
+  }).join('');
+
+  list.querySelectorAll('[data-user-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userId || '';
+      if (uid) selectExistingUser(uid);
+    });
+  });
+}
+
+function selectExistingUser(id, options = {}){
+  const targetId = String(id || '').trim();
+  if (!targetId) return;
+  const candidates = Array.isArray(REGISTRY) ? REGISTRY : [];
+  const existing = candidates.find(u => String(u.id || u.UserID || u.ID || '').trim() === targetId);
+  if (!existing) {
+    alert('Unable to find that user in Home Assistant.');
+    return;
+  }
+
+  CURRENT = {
+    ...blankProfile(existing.id || targetId),
+    ...existing,
+    groups: Array.isArray(existing.groups)
+      ? [...existing.groups]
+      : Array.isArray(existing.Groups)
+      ? [...existing.Groups]
+      : ['Default'],
+  };
+  if (!CURRENT.schedule_id && CURRENT.schedule_name) {
+    CURRENT.schedule_id = idForName(CURRENT.schedule_name);
+  }
+
+  RESERVED_ID = null;
+  stopReservationHeartbeat();
+  setReservationMessage('');
+
+  const idRow = document.getElementById('idRow');
+  if (idRow) idRow.style.display = 'block';
+  const idInput = document.getElementById('user_id');
+  if (idInput) idInput.value = CURRENT.id || targetId;
+  document.getElementById('title').textContent = 'Edit User';
+
+  fillForm();
+  fillPhones();
+  updateKeyHolderAvailability();
+  renderExistingUsers();
+  showExistingHint('Editing existing user profile.', 'accent');
+
+  if (options?.updateUrl !== false) {
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set('id', CURRENT.id || targetId);
+      url.searchParams.delete('mode');
+      history.replaceState(history.state || {}, '', url);
+    } catch (err) {}
+  }
+
+  const nameInput = document.getElementById('name');
+  if (nameInput) nameInput.focus();
+}
+
+// ---------- schedule id mapping helpers ----------
+let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access"}, ...]
+
+function blankProfile(id = ''){
+  return {
+    id,
+    name: '',
+    groups: ['Default'],
+    pin: '',
+    phone: '',
+    schedule_name: '24/7 Access',
+    schedule_id: '1001',
+    key_holder: false,
+    access_level: ''
+  };
+}
+
+function buildScheduleMap(){
+  // Built-ins first
+  const out = [
+    { id: '1001', name: '24/7 Access', label: '24/7 Access' },
+    { id: '1002', name: 'No Access',   label: 'No Access' }
+  ];
+  // Custom schedules (deterministic IDs: 1003+)
+  const customNames = Object.keys(SCHEDULES || {})
+    .filter(n => n !== '24/7 Access' && n !== 'No Access')
+    .sort((a,b) => a.localeCompare(b));
+  const base = 1003;
+  customNames.forEach((name, i) => {
+    const id = String(base + i);
+    out.push({ id, name, label: name });
+  });
+  SCHED_MAP = out;
+}
+function optionLabel(item){ return `${item.id} - ${item.label}`; }
+function nameForId(id){
+  const x = SCHED_MAP.find(s => s.id === String(id));
+  return x ? x.name : '24/7 Access';
+}
+function idForName(name){
+  const lower = String(name || '').toLowerCase();
+  if (lower === '24/7 access' || lower === '24/7') return '1001';
+  if (lower === 'no access' || lower === 'never')  return '1002';
+  const x = SCHED_MAP.find(s => s.name.toLowerCase() === lower);
+  return x ? x.id : '1001';
+}
+
+async function releaseReservation(options = {}){
+  if (!RESERVED_ID) return;
+  const id = RESERVED_ID;
+  RESERVED_ID = null;
+  stopReservationHeartbeat();
+  const payload = JSON.stringify({ id });
+  if (options.keepalive && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([payload], { type: 'application/json' });
+      const ok = navigator.sendBeacon(API_RELEASE_ID, blob);
+      if (ok) return;
+    } catch (err) {}
+  }
+  try {
+    await fetchWithAuth(API_RELEASE_ID, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: !!options.keepalive
+    });
+  } catch (err) {}
+}
+
+window.addEventListener('beforeunload', () => {
+  if (RESERVED_ID) {
+    stopReservationHeartbeat();
+    releaseReservation({ keepalive: true });
+  }
+});
+
+/* -------------------- load -------------------- */
+async function load(){
+  setBusy(true);
+  try{
+    let state;
+    try {
+      state = await apiGet(API_STATE);
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      console.warn('Failed to load Akuvox state', err);
+      alert('Failed to load Akuvox data. Default values will be used until the connection succeeds.');
+      state = { schedules: {}, registry_users: [] };
+    }
+    ANY_ALARM_CAPABLE = false;
+    if (state && typeof state === 'object'){
+      const caps = state.capabilities;
+      if (caps && typeof caps === 'object' && typeof caps.alarm_relay === 'boolean'){
+        ANY_ALARM_CAPABLE = caps.alarm_relay;
+      }
+      if (!ANY_ALARM_CAPABLE && Array.isArray(state.devices)){
+        ANY_ALARM_CAPABLE = state.devices.some(dev => {
+          if (!dev || typeof dev !== 'object') return false;
+          const roles = dev.relay_roles || {};
+          const norm = (val) => String(val ?? '').toLowerCase().replace(/[\s-]+/g, '_');
+          const a = norm(roles.relay_a);
+          const b = norm(roles.relay_b);
+          return a === 'alarm' || a === 'door_alarm' || b === 'alarm' || b === 'door_alarm';
+        });
+      }
+    }
+    updateKeyHolderAvailability();
+    SCHEDULES = state.schedules || {};
+    REGISTRY = state.registry_users || [];
+
+    // Load phones (notify services from HA mobile app)
+    try {
+      const resp = await apiGet(API_PHONES);
+      PHONES = resp.phones || [];
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      console.warn('Failed to load phone list', err);
+      PHONES = [];
+    }
+
+    const params = new URLSearchParams(location.search);
+    const id = (params.get('id') || '').trim();
+    const modeParam = (params.get('mode') || '').toLowerCase();
+    const startInEditMode = modeParam === 'edit';
+    let handledBySelect = false;
+
+    if (id) {
+      const hasMatch = (REGISTRY || []).some(u => String(u.id || u.UserID || u.ID || '') === id);
+      if (hasMatch) {
+        selectExistingUser(id, { updateUrl: false });
+        handledBySelect = true;
+      } else {
+        CURRENT = blankProfile(id);
+        RESERVED_ID = null;
+        stopReservationHeartbeat();
+        setReservationMessage('');
+        document.getElementById('title').textContent = 'Edit User';
+        document.getElementById('idRow').style.display = 'block';
+        document.getElementById('user_id').value = CURRENT.id;
+      }
+    } else if (!startInEditMode) {
+      document.getElementById('title').textContent = 'Add User';
+      RESERVED_ID = null;
+      CURRENT = blankProfile('');
+      const newId = await reserveNewId();
+      if (newId) {
+        CURRENT.id = newId;
+        CURRENT.schedule_id = '1001';
+      } else {
+        document.getElementById('idRow').style.display = 'none';
+      }
+      showExistingHint('Need to update someone? Pick them from the list below.', 'muted');
+    } else {
+      CURRENT = blankProfile('');
+      RESERVED_ID = null;
+      stopReservationHeartbeat();
+      setReservationMessage('');
+      document.getElementById('title').textContent = 'Edit User';
+      document.getElementById('idRow').style.display = 'none';
+      showExistingHint('Select a user below to start editing.', 'accent');
+    }
+
+    if (!handledBySelect) {
+      fillForm();
+      fillPhones();
+    }
+
+    renderExistingUsers();
+
+    const searchInput = document.getElementById('userSearch');
+    if (searchInput && !searchInput.dataset.bound) {
+      searchInput.addEventListener('input', () => renderExistingUsers());
+      searchInput.dataset.bound = '1';
+    }
+    if (startInEditMode && !id && searchInput) {
+      searchInput.focus();
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+function scheduleOptionsHtml(){
+  buildScheduleMap();
+  return SCHED_MAP.map(it => `<option value="${it.id}">${optionLabel(it)}</option>`).join('');
+}
+
+function fillForm(){
+  document.getElementById('name').value = CURRENT.name || '';
+  document.getElementById('pin').value = CURRENT.pin || '';
+  document.getElementById('phone').value = CURRENT.phone || '';
+
+  // Build schedule select with ids
+  document.getElementById('schedule').innerHTML = scheduleOptionsHtml();
+  const selEl = document.getElementById('schedule');
+  const ids = new Set(Array.from(selEl.options).map(opt => opt.value));
+  let selectedId = CURRENT.schedule_id ? String(CURRENT.schedule_id) : '';
+  if (!selectedId || !ids.has(selectedId)) {
+    selectedId = idForName(CURRENT.schedule_name || '24/7 Access');
+  }
+  if (!ids.has(selectedId)) {
+    selectedId = '1001';
+  }
+  selEl.value = selectedId;
+  CURRENT.schedule_id = selectedId;
+  CURRENT.schedule_name = nameForId(selectedId);
+
+  const keyInput = document.getElementById('key_holder');
+  if (keyInput){
+    keyInput.checked = ANY_ALARM_CAPABLE && !!CURRENT.key_holder;
+  }
+  updateKeyHolderAvailability();
+
+  const localHelp = document.getElementById('localHelp');
+  if (localHelp && !localHelp.innerHTML){
+    if (CURRENT.id){
+      localHelp.innerHTML = `<span class="muted">If you select a photo, it will be saved as <code>/api/AK_AC/FaceData/${CURRENT.id}.jpg</code> when you press <b>Save</b>.</span>`;
+    } else {
+      localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
+    }
+  }
+}
+
+// Populate the Remote Enrolment dropdown with HA phone notify services
+function fillPhones(){
+  const sel = document.getElementById('device');  // keeping id=device for layout compatibility
+  sel.innerHTML = '';
+  if (!PHONES.length){
+    sel.innerHTML = `<option value="" disabled selected>(no phones found)</option>`;
+    sel.disabled = true;
+  }else{
+    sel.disabled = false;
+    const sorted = [...PHONES].sort((a,b) => (a.name || a.service || '').localeCompare(b.name || b.service || ''));
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select phone…';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    sel.appendChild(placeholder);
+    sorted.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.service;            // e.g. "mobile_app_johns_iphone"
+      opt.textContent = p.name || p.service;
+      sel.appendChild(opt);
+    });
+  }
+  const resSpan = document.getElementById('remoteResult');
+  if (resSpan) resSpan.textContent = '';
+}
+
+/* -------------------- save: user core + optional face upload + optional remote enrol -------------------- */
+async function save(){
+  if (!CURRENT){
+    alert('Form not ready yet. Please reload the page.');
+    return;
+  }
+  setBusy(true);
+  try{
+    // Ensure we have or reserve an ID
+    if (!CURRENT.id){
+      try{
+        const res = await apiGet(API_RESERVE_ID);
+        if (res && res.ok && res.id) {
+          CURRENT.id = res.id;
+          RESERVED_ID = CURRENT.id;
+          document.getElementById('idRow').style.display = 'block';
+          document.getElementById('user_id').value = CURRENT.id;
+        }
+      }catch(err){
+        if (handleAuthError(err)) return;
+      }
+      if (!CURRENT.id){
+        alert('Could not reserve a user ID. Please try again.');
+        return;
+      }
+    }
+
+    const selectedScheduleId = document.getElementById('schedule').value || '1001';
+    const selectedScheduleName = nameForId(selectedScheduleId);
+
+    const payload = {
+      name: document.getElementById('name').value.trim(),
+      groups: CURRENT.groups || ['Default'],
+      pin: document.getElementById('pin').value.trim() || undefined,
+      phone: document.getElementById('phone').value.trim() || undefined,
+      schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
+      schedule_name: selectedScheduleName,      // for UI/state clarity
+      key_holder: ANY_ALARM_CAPABLE ? document.getElementById('key_holder').checked : false,
+    };
+
+    // Save/update the profile against the reserved ID
+    const saveRes = await fetchWithAuth(API_EDIT_USER, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id: CURRENT.id, ...payload })
+    });
+    if (!saveRes.ok){
+      const txt = await saveRes.text();
+      const err = buildError(saveRes, txt);
+      handleAuthError(err);
+      throw err;
+    }
+    try { await saveRes.json(); } catch {}
+
+    // If a photo is selected, upload it now
+    const fileInput = document.getElementById('facefile');
+    if (fileInput.files && fileInput.files[0]){
+      const fd = new FormData();
+      fd.append('id', CURRENT.id);
+      fd.append('file', fileInput.files[0]);
+      const r = await fetchWithAuth(API_UPLOAD_FACE, {
+        method: 'POST',
+        body: fd
+      });
+      if (!r.ok){
+        const t = await r.text();
+        const err = buildError(r, t);
+        handleAuthError(err);
+        throw err;
+      }
+      try { await r.json(); } catch {}
+    }
+
+    // If Remote panel is visible and a phone is selected, auto-send enrolment request now
+    const remoteVisible = document.getElementById('pRemote').style.display !== 'none';
+    const phoneSel = document.getElementById('device');
+    const phoneService = phoneSel && phoneSel.value ? phoneSel.value : '';
+    if (remoteVisible && phoneService){
+      try{
+        await apiPost(API_REMOTE_ENROL, {
+          id: CURRENT.id,
+          phone_service: phoneService,
+          name: document.getElementById('name').value.trim()
+        });
+        const resSpan = document.getElementById('remoteResult');
+        if (resSpan) resSpan.textContent = 'Enrolment request sent.';
+      }catch(e){
+        if (handleAuthError(e)) return;
+        const resSpan = document.getElementById('remoteResult');
+        if (resSpan) resSpan.textContent = 'Failed to send enrolment request.';
+      }
+    }
+
+    // Back to list
+    stopReservationHeartbeat();
+    RESERVED_ID = null;
+    openInApp('index', { section: 'users' }, { replaceState: true });
+  } catch (e){
+    if (handleAuthError(e)) return;
+    alert('Save failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+/* -------------------- toggle panels -------------------- */
+async function cancelEdit(evt){
+  if (evt) evt.preventDefault();
+  stopReservationHeartbeat();
+  await releaseReservation();
+  openInApp('index', { section: 'users' }, { replaceState: true });
+}
+
+function showPanel(which){
+  document.getElementById('pLocal').style.display = which === 'local' ? 'block':'none';
+  document.getElementById('pRemote').style.display = which === 'remote' ? 'block':'none';
+}
+</script>
+
+<div class="container py-3 container-narrow">
+  <div class="d-flex align-items-center gap-2">
+    <h2 id="title" class="m-0">User</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card p-3 mt-3">
+    <div id="idRow" class="mb-3" style="display:none;">
+      <label class="form-label">User ID</label>
+      <input id="user_id" class="form-control" readonly />
+      <div class="form-text muted">ID is reserved locally so your selected photo can upload when you press <b>Save</b>.</div>
+    </div>
+
+    <div class="mb-3"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
+
+    <div class="mb-3">
+      <label class="form-label">PIN</label>
+      <div class="input-group">
+        <input id="pin" class="form-control"/>
+        <button class="btn btn-outline-secondary" onclick="document.getElementById('pin').value = String(Math.floor(1000+Math.random()*9000))">Random</button>
+      </div>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Face Recognition</label>
+      <div class="face-options mb-2">
+        <button class="btn btn-outline-light btn-toggle" onclick="showPanel('local')"><i class="bi bi-upload me-1"></i>Local enrolment</button>
+        <button class="btn btn-outline-light btn-toggle" onclick="showPanel('remote')"><i class="bi bi-wifi me-1"></i>Remote enrolment</button>
+      </div>
+    </div>
+
+    <!-- Local enrolment panel -->
+    <div id="pLocal" class="mt-2" style="display:none;">
+      <div class="mb-2" id="localHelp"></div>
+      <div class="mb-2">
+        <input id="facefile" class="form-control" type="file" accept=".jpg,image/jpeg" />
+        <div class="uploader-hint mt-1">Choose a clear, front-facing JPG photo. It will be uploaded when you press <b>Save</b>.</div>
+      </div>
+    </div>
+
+    <!-- Remote enrolment panel -->
+    <div id="pRemote" class="mt-2" style="display:none;">
+      <div class="mb-2 muted">Choose a phone (Home Assistant app) to receive an enrolment prompt:</div>
+      <div class="row g-2 align-items-end">
+        <div class="col-sm-6">
+          <label class="form-label">Phone</label>
+          <select id="device" class="form-select"></select>
+        </div>
+      </div>
+      <div class="mt-2 muted" id="remoteResult"></div>
+    </div>
+
+    <div class="mb-3"><label class="form-label">Phone</label><input id="phone" class="form-control"/></div>
+
+    <div class="mb-3">
+      <label class="form-label">Access Schedule</label>
+      <select id="schedule" class="form-select"></select>
+      <div class="form-text muted">Need a new schedule? Open <b>Global Settings → Access Schedules</b> to build one, then come back and select it here.</div>
+    </div>
+
+    <div class="form-check mb-3" id="keyHolderRow">
+      <input class="form-check-input" type="checkbox" id="key_holder">
+      <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
+    </div>
+
+    <div class="action-buttons mb-3">
+      <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
+      <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+    </div>
+
+    <hr class="my-3"/>
+  </div>
+
+  <div class="card existing-card p-3">
+    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+      <div>
+        <p class="card-title">Existing users</p>
+        <div id="existingUsersHint" class="muted small">Browse Home Assistant managed profiles.</div>
+      </div>
+      <div class="existing-search">
+        <label for="userSearch" class="form-label visually-hidden">Search users</label>
+        <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search name or ID" aria-label="Search users"/>
+      </div>
+    </div>
+    <div class="list-group list-group-flush mt-3" id="existingUsersList">
+      <div class="list-empty">Loading users…</div>
+    </div>
+  </div>
+</div>
+<script>load()</script>
+</body>
+</html>

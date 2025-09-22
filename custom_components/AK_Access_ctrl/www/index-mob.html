@@ -43,31 +43,6 @@
     .footer-note{opacity:.65;font-size:.8rem;text-align:center}
     .table-center th, .table-center td { text-align:center; vertical-align:middle; }
     .table-center .chip { justify-content:center; }
-    .pin-toggle{
-      background:transparent;
-      border:0;
-      color:var(--text);
-      cursor:pointer;
-      font:inherit;
-      font-weight:600;
-      font-variant-numeric:tabular-nums;
-      letter-spacing:0.1em;
-      padding:0;
-      text-decoration:none;
-    }
-    .pin-toggle:hover,
-    .pin-toggle:focus{
-      color:#0dcaf0;
-      text-decoration:underline;
-    }
-    .pin-toggle:focus{
-      outline:2px solid rgba(13,202,240,.35);
-      outline-offset:2px;
-    }
-    .pin-toggle.revealed{
-      color:#0dcaf0;
-      letter-spacing:0.08em;
-    }
     .event-list{list-style:none; padding:0; margin:0;}
     .event-item{padding:.5rem .75rem; border-bottom:1px dashed #20324f}
     .event-title{font-weight:600}
@@ -796,11 +771,6 @@ function renderEvents(devs){
 function idMatchesFilter(id){
   return /^HA\d{3}$/.test(id) || /^User0000\d{2}$/.test(id);
 }
-const PIN_FIELDS = [
-  'pin','Pin','PIN',
-  'private_pin','PrivatePIN','privatePin','PrivatePin',
-  'password','Password'
-];
 const FACE_URL_FIELDS = ['face_url','faceUrl','FaceUrl','FaceURL'];
 const FACE_STATUS_FIELDS = [
   'face_active','faceActive','FaceActive','face','Face','face_status','FaceStatus',
@@ -846,18 +816,6 @@ function extractFaceUrl(record){
   return '';
 }
 
-function extractPin(record){
-  if (!record || typeof record !== 'object') return '';
-  for (const key of PIN_FIELDS){
-    if (!(key in record)) continue;
-    const raw = record[key];
-    if (raw === null || raw === undefined) continue;
-    const str = String(raw).trim();
-    if (str) return str;
-  }
-  return '';
-}
-
 function computeFaceActive(record){
   if (!record || typeof record !== 'object') return false;
   for (const key of FACE_STATUS_FIELDS){
@@ -874,54 +832,7 @@ function computeFaceActive(record){
   return false;
 }
 
-function renderPinCell(pin, name){
-  const raw = typeof pin === 'number' ? String(pin) : String(pin || '').trim();
-  if (!raw) return '—';
-  const safePin = escapeHtml(raw);
-  const displayName = String(name || '').trim();
-  const label = displayName ? `Show PIN for ${displayName}` : 'Show PIN';
-  const safeLabel = escapeHtml(label);
-  return `<button type="button" class="pin-toggle" data-pin="${safePin}" data-state="hidden" title="${safeLabel}" aria-label="${safeLabel}">****</button>`;
-}
-
-function attachPinRevealHandlers(container){
-  if (!container) return;
-  container.querySelectorAll('.pin-toggle').forEach(btn => {
-    const storedPin = btn.dataset.pin || '';
-    if (!storedPin) return;
-    btn.addEventListener('click', () => {
-      const pin = btn.dataset.pin || '';
-      if (!pin) return;
-      if (btn._pinTimer) {
-        clearTimeout(btn._pinTimer);
-        btn._pinTimer = null;
-      }
-      btn.textContent = pin;
-      btn.classList.add('revealed');
-      btn.dataset.state = 'shown';
-      btn._pinTimer = setTimeout(() => {
-        btn.textContent = '****';
-        btn.classList.remove('revealed');
-        btn.dataset.state = 'hidden';
-        btn._pinTimer = null;
-      }, 5000);
-    });
-    btn.addEventListener('blur', () => {
-      if (btn.dataset.state !== 'shown') return;
-      if (btn._pinTimer) {
-        clearTimeout(btn._pinTimer);
-        btn._pinTimer = null;
-      }
-      btn.textContent = '****';
-      btn.classList.remove('revealed');
-      btn.dataset.state = 'hidden';
-    });
-  });
-}
-
 function renderUsers(devs, registryUsers){
-  const tableBody = document.getElementById('tblUsers');
-  if (!tableBody) return;
   const devices = Array.isArray(devs) ? devs : [];
   const normalizedDevices = devices.map(d => {
     const entryId = String(d.entry_id || d.id || '');
@@ -940,7 +851,6 @@ function renderUsers(devs, registryUsers){
     if (!key) return;
     const groups = normalizeGroupsList(r.groups || []);
     const statusHint = extractFaceStatus(r);
-    const pin = extractPin(r);
     by.set(key, {
       id: key,
       name: r.name || key,
@@ -948,7 +858,6 @@ function renderUsers(devs, registryUsers){
       access: 'Pending',
       isCloud: false,
       last: '—',
-      pin,
       presentOnDevice: false,
       fromRegistry: true,
       status: r.status || 'active',
@@ -978,7 +887,6 @@ function renderUsers(devs, registryUsers){
       const last = u.LastAccess || u.last_access || '—';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
-      const devicePin = extractPin(u);
 
       if (!by.has(key)) {
         by.set(key, {
@@ -988,7 +896,6 @@ function renderUsers(devs, registryUsers){
           access: accessAllowed ? 'Allowed' : 'Denied',
           isCloud,
           last,
-          pin: devicePin,
           presentOnDevice: true,
           fromRegistry: false,
           face_url: deviceFaceUrl,
@@ -1012,13 +919,6 @@ function renderUsers(devs, registryUsers){
         cur._denied = true;
       } else if (!cur.fromRegistry) {
         cur.access = accessAllowed ? 'Allowed' : 'Denied';
-      }
-      if (devicePin) {
-        if (!cur.pin) {
-          cur.pin = devicePin;
-        } else if (!cur.fromRegistry) {
-          cur.pin = devicePin;
-        }
       }
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
@@ -1093,7 +993,6 @@ function renderUsers(devs, registryUsers){
       }
       faceStatusFinal = faceActiveFinal ? 'active' : '';
     }
-
     return {
       ...rest,
       access: accessText,
@@ -1108,7 +1007,13 @@ function renderUsers(devs, registryUsers){
     .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
 
   const rows = listSorted.map(u => {
-    const chips = (u.groups || []).map(g => `<span class="chip">${escapeHtml(g)}</span>`).join(' ');
+    if (u.isCloud) {
+      return `<tr>
+        <td>${u.name}</td>
+        <td colspan="5" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
+      </tr>`;
+    }
+    const chips = (u.groups || []).map(g => `<span class="chip">${g}</span>`).join(' ');
     const accessStr = String(u.access || '').trim();
     const accessLower = accessStr.toLowerCase();
     let accessBadge = '';
@@ -1126,33 +1031,24 @@ function renderUsers(devs, registryUsers){
     }
 
     const editHref = buildHref('users', { id: u.id });
-    let actions;
-    if (u.isCloud) {
-      actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
-    } else if (/^HA\d{3}$/.test(u.id)) {
-      const safeId = escapeHtml(u.id);
-      actions = `<a class="btn btn-sm btn-primary" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
-         <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
-    } else {
-      actions = '';
-    }
-
-    const pinCell = renderPinCell(u.pin, u.name);
+    const actions = /^HA\d{3}$/.test(u.id)
+      ? `<a class="btn btn-sm btn-primary" data-edit-user="${u.id}" href="${editHref}">Edit</a>
+         <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
+      : '';
 
     return `<tr>
-      <td>${escapeHtml(u.name)}</td>
-      <td>${pinCell}</td>
-      <td>${faceBadge}</td>
-      <td>${accessBadge}</td>
-      <td>${escapeHtml(u.last || '—')}</td>
+      <td>${u.name}</td>
       <td>${chips || '—'}</td>
+      <td>${accessBadge}</td>
+      <td>${faceBadge}</td>
+      <td>${u.last || '—'}</td>
       <td>${actions}</td>
     </tr>`;
   }).join('');
 
-  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
+  $('#tblUsers').innerHTML = rows || '<tr><td colspan="6" class="text-muted">No users</td></tr>';
 
-  tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
+  $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.user;
       if (!confirm(`Delete ${id}?`)) return;
@@ -1165,15 +1061,13 @@ function renderUsers(devs, registryUsers){
     });
   });
 
-  tableBody.querySelectorAll('a[data-edit-user]').forEach(link => {
+  $('#tblUsers').querySelectorAll('a[data-edit-user]').forEach(link => {
     link.addEventListener('click', (ev) => {
       ev.preventDefault();
       const uid = link.dataset.editUser || '';
       openInApp('users', uid ? { id: uid } : {});
     });
   });
-
-  attachPinRevealHandlers(tableBody);
 }
 
 /* ===== Fetch + render ===== */
@@ -1566,9 +1460,9 @@ setInterval(refresh, 5000);
         <div class="card-body">
           <table class="table table-sm table-dark mb-0 table-center">
             <thead>
-              <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Groups</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Last Access</th><th>Actions</th></tr>
             </thead>
-            <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
+            <tbody id="tblUsers"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
