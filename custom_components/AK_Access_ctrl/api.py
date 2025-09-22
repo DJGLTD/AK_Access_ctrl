@@ -627,6 +627,45 @@ class AkuvoxAPI:
             pass
         return []
 
+    async def face_upload(
+        self,
+        item: Dict[str, Any],
+        *,
+        dest_file: str = "Face",
+        index: int = 1,
+    ) -> Dict[str, Any]:
+        """Upload a face template directly to the device via the faceIntegration API."""
+
+        if not item:
+            return {}
+
+        # Some firmwares expect the classic data.item[] envelope, others accept a raw list.
+        payload_variants: List[Dict[str, Any]] = []
+        cleaned = dict(item)
+        payload_variants.append({"target": "user", "action": "add", "data": {"item": [cleaned]}})
+        payload_variants.append({"target": "user", "action": "add", "data": [cleaned]})
+
+        query = f"destFile={dest_file}&index={index}"
+        rel_paths = (
+            f"/v0/device/faceIntegration?{query}",
+            f"/device/faceIntegration?{query}",
+            f"/faceIntegration?{query}",
+            f"/api/faceIntegration?{query}",
+        )
+
+        last_exc: Exception | None = None
+        for payload in payload_variants:
+            try:
+                return await self._request_attempts("POST", rel_paths, payload)
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+        if last_exc:
+            raise last_exc
+
+        return {}
+
     async def user_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Per manual: target=user, action=add, data.item=[{UserID/ID/Name/...}].

@@ -53,6 +53,32 @@
     </div>
   </div>
 
+  <!-- Relay mapping -->
+  <div class="card mb-3" id="relayCard">
+    <div class="card-header">Device Relays</div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-sm-6 col-lg-4">
+          <label class="form-label" for="relayASelect">Relay A action</label>
+          <select class="form-select" id="relayASelect"></select>
+        </div>
+        <div class="col-sm-6 col-lg-4" id="relayBCol">
+          <label class="form-label" for="relayBSelect">Relay B action</label>
+          <select class="form-select" id="relayBSelect"></select>
+        </div>
+      </div>
+      <div class="form-text text-muted mt-2" id="relayKeypadNote"></div>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="exitDeviceToggle">
+        <label class="form-check-label" for="exitDeviceToggle">Treat as exit device (bypass user schedules)</label>
+      </div>
+      <div class="form-text text-muted mt-3" id="relayHelper">
+        Setting a relay to <b>Alarm</b> or <b>Door and Alarm</b> enables the Key Holder option when editing users.
+      </div>
+      <div class="form-text text-muted mt-2" id="relayStatus"></div>
+    </div>
+  </div>
+
   <!-- Groups editor -->
   <div class="card" id="groupsCard">
     <div class="card-header d-flex align-items-center justify-content-between">
@@ -592,12 +618,212 @@ function getSelectedGroups(){
   return out;
 }
 
+const RELAY_ROLE_LABELS = {
+  none: 'Not used',
+  door: 'Door Relay',
+  alarm: 'Alarm Relay',
+  door_alarm: 'Door and Alarm Relay'
+};
+const RELAY_ROLE_ORDER = ['none', 'door', 'alarm', 'door_alarm'];
+
+let CURRENT_DEVICE = null;
+let relayStatusTimer = null;
+let relaySaving = false;
+let exitSaving = false;
+
+function relayValueNormalized(value, fallback = 'door'){
+  const raw = (value ?? '').toString().trim().toLowerCase();
+  if (!raw) return fallback;
+  const clean = raw.replace(/[\s-]+/g, '_');
+  if (RELAY_ROLE_ORDER.includes(clean)) return clean;
+  if (clean === 'not_used' || clean === 'unused' || clean === 'none') return 'none';
+  if (clean === 'door' || clean === 'door_relay') return 'door';
+  if (clean === 'alarm' || clean === 'alarm_relay') return 'alarm';
+  if (clean === 'door_and_alarm' || clean === 'door_alarm_relay' || clean === 'doorandalarm') return 'door_alarm';
+  return fallback;
+}
+
+function populateRelaySelect(select, value, fallback = 'door'){
+  if (!select) return;
+  const normalized = relayValueNormalized(value, fallback);
+  select.innerHTML = '';
+  RELAY_ROLE_ORDER.forEach(role => {
+    const opt = document.createElement('option');
+    opt.value = role;
+    opt.textContent = RELAY_ROLE_LABELS[role] || role;
+    select.appendChild(opt);
+  });
+  select.value = RELAY_ROLE_ORDER.includes(normalized) ? normalized : fallback;
+}
+
+function computeAlarmCapable(device){
+  if (!device || typeof device !== 'object') return false;
+  if (typeof device.alarm_capable === 'boolean') return device.alarm_capable;
+  const roles = device.relay_roles && typeof device.relay_roles === 'object' ? device.relay_roles : {};
+  const a = relayValueNormalized(roles.relay_a, 'door');
+  const b = relayValueNormalized(roles.relay_b, 'none');
+  return a === 'alarm' || a === 'door_alarm' || b === 'alarm' || b === 'door_alarm';
+}
+
+function setRelayStatus(text, tone = 'muted'){
+  const status = document.getElementById('relayStatus');
+  if (!status) return;
+  if (relayStatusTimer){
+    clearTimeout(relayStatusTimer);
+    relayStatusTimer = null;
+  }
+  if (!text){
+    status.textContent = '';
+    status.className = 'form-text text-muted mt-2';
+    return;
+  }
+  let cls = 'form-text mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' text-muted';
+  status.className = cls;
+  status.textContent = text;
+  if (tone === 'success'){
+    relayStatusTimer = setTimeout(() => {
+      const el = document.getElementById('relayStatus');
+      if (el){
+        el.textContent = '';
+        el.className = 'form-text text-muted mt-2';
+      }
+      relayStatusTimer = null;
+    }, 4000);
+  }
+}
+
+function updateRelayHelper(){
+  const helper = document.getElementById('relayHelper');
+  if (!helper) return;
+  const baseClass = 'form-text mt-3';
+  const capable = computeAlarmCapable(CURRENT_DEVICE);
+  if (capable){
+    helper.className = `${baseClass} text-success`;
+    helper.innerHTML = 'Key Holder can be enabled for users because this device is alarm-capable.';
+  } else {
+    helper.className = `${baseClass} text-muted`;
+    helper.innerHTML = 'Setting a relay to <b>Alarm</b> or <b>Door and Alarm</b> enables the Key Holder option when editing users.';
+  }
+}
+
+function applyRelayUI(device){
+  const relayA = document.getElementById('relayASelect');
+  const relayB = document.getElementById('relayBSelect');
+  const relayBCol = document.getElementById('relayBCol');
+  const keypadNote = document.getElementById('relayKeypadNote');
+  const exitToggle = document.getElementById('exitDeviceToggle');
+  const roles = device && typeof device.relay_roles === 'object' ? device.relay_roles : {};
+  const isKeypad = String(device?.type || '').toLowerCase() === 'keypad';
+  populateRelaySelect(relayA, roles.relay_a, 'door');
+  populateRelaySelect(relayB, roles.relay_b, 'none');
+  if (relayBCol){
+    if (isKeypad) relayBCol.classList.add('d-none');
+    else relayBCol.classList.remove('d-none');
+  }
+  if (relayB){
+    relayB.value = isKeypad ? 'none' : relayValueNormalized(roles.relay_b, 'none');
+  }
+  if (keypadNote){
+    keypadNote.textContent = isKeypad ? 'Keypads expose Relay A only.' : '';
+  }
+  if (exitToggle){
+    exitToggle.checked = !!device?.exit_device;
+  }
+  setRelayStatus('');
+  updateRelayHelper();
+}
+
+async function saveRelayRoles(){
+  if (relaySaving || !CURRENT_DEVICE) return;
+  const relayA = document.getElementById('relayASelect');
+  const relayB = document.getElementById('relayBSelect');
+  const relayBCol = document.getElementById('relayBCol');
+  if (!relayA) return;
+  const includeRelayB = relayB && relayBCol && !relayBCol.classList.contains('d-none');
+  const payload = { relay_a: relayA.value };
+  if (includeRelayB) payload.relay_b = relayB.value;
+  const prev = {
+    relay_a: CURRENT_DEVICE.relay_roles?.relay_a,
+    relay_b: CURRENT_DEVICE.relay_roles?.relay_b
+  };
+  relaySaving = true;
+  setRelayStatus('Saving…');
+  relayA.disabled = true;
+  if (includeRelayB && relayB) relayB.disabled = true;
+  try {
+    const res = await apiPost(actionUrl, { action:'set_device_relays', entry_id: ENTRY_ID, payload });
+    const returned = res && res.relay_roles && typeof res.relay_roles === 'object' ? res.relay_roles : payload;
+    CURRENT_DEVICE.relay_roles = {
+      relay_a: relayValueNormalized(returned.relay_a, prev.relay_a || 'door'),
+      relay_b: includeRelayB ? relayValueNormalized(returned.relay_b, prev.relay_b || 'none') : 'none'
+    };
+    CURRENT_DEVICE.alarm_capable = res && 'alarm_capable' in res
+      ? !!res.alarm_capable
+      : computeAlarmCapable(CURRENT_DEVICE);
+    relayA.value = CURRENT_DEVICE.relay_roles.relay_a;
+    if (includeRelayB && relayB) relayB.value = CURRENT_DEVICE.relay_roles.relay_b;
+    updateRelayHelper();
+    setRelayStatus('Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    relayA.value = relayValueNormalized(prev.relay_a, 'door');
+    if (includeRelayB && relayB) relayB.value = relayValueNormalized(prev.relay_b, 'none');
+    CURRENT_DEVICE.relay_roles = {
+      relay_a: relayValueNormalized(prev.relay_a, 'door'),
+      relay_b: relayValueNormalized(prev.relay_b, 'none')
+    };
+    updateRelayHelper();
+    setRelayStatus('Save failed', 'error');
+    alert('Failed to update relay mapping: ' + (err && err.message ? err.message : err));
+  } finally {
+    relaySaving = false;
+    relayA.disabled = false;
+    if (includeRelayB && relayB) relayB.disabled = false;
+  }
+}
+
+async function handleExitToggleChange(){
+  if (exitSaving || !CURRENT_DEVICE) return;
+  const toggle = document.getElementById('exitDeviceToggle');
+  if (!toggle) return;
+  const desired = toggle.checked;
+  exitSaving = true;
+  toggle.disabled = true;
+  setRelayStatus('Saving…');
+  try {
+    const res = await apiPost(actionUrl, { action:'set_exit_device', entry_id: ENTRY_ID, payload: { enabled: desired } });
+    CURRENT_DEVICE.exit_device = res && 'exit_device' in res ? !!res.exit_device : desired;
+    setRelayStatus('Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    toggle.checked = !desired;
+    CURRENT_DEVICE.exit_device = toggle.checked;
+    setRelayStatus('Save failed', 'error');
+    alert('Failed to update exit device setting: ' + (err && err.message ? err.message : err));
+  } finally {
+    exitSaving = false;
+    toggle.disabled = false;
+    updateRelayHelper();
+  }
+}
+
 /* API-ish helpers built atop /state and /action */
 async function getState(){ return apiGet(stateUrl); }
 async function getDevice(){
   const st = await getState();
   const dev = (st.devices || []).find(d => (d.entry_id || d.id) === ENTRY_ID);
   if (!dev) throw new Error('Device not found');
+  const roles = dev && typeof dev.relay_roles === 'object' ? dev.relay_roles : {};
+  dev.relay_roles = {
+    relay_a: relayValueNormalized(roles.relay_a, 'door'),
+    relay_b: relayValueNormalized(roles.relay_b, 'none')
+  };
+  dev.exit_device = !!dev.exit_device;
+  if (typeof dev.alarm_capable === 'boolean') dev.alarm_capable = !!dev.alarm_capable;
+  else dev.alarm_capable = computeAlarmCapable(dev);
   // Current groups: prefer sync_groups → groups → Default
   const curGroups = dev.sync_groups || dev.groups || ['Default'];
   // All groups if present at root; fallback
@@ -626,6 +852,20 @@ async function init(){
     document.getElementById('devName').textContent = dev.name || '—';
     document.getElementById('devType').textContent = dev.type || '—';
     document.getElementById('devIP').textContent   = dev.ip || '—';
+
+    CURRENT_DEVICE = {
+      ...dev,
+      relay_roles: {
+        relay_a: dev.relay_roles?.relay_a || 'door',
+        relay_b: dev.relay_roles?.relay_b || 'none'
+      },
+      exit_device: !!dev.exit_device,
+      alarm_capable: computeAlarmCapable(dev)
+    };
+    applyRelayUI(CURRENT_DEVICE);
+    document.getElementById('relayASelect')?.addEventListener('change', saveRelayRoles);
+    document.getElementById('relayBSelect')?.addEventListener('change', saveRelayRoles);
+    document.getElementById('exitDeviceToggle')?.addEventListener('change', handleExitToggleChange);
 
     const onlyDefault = Array.isArray(allGroups) && allGroups.length <= 1;
 

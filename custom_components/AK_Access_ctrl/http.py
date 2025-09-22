@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import logging
@@ -80,6 +81,190 @@ def _face_image_exists(hass: HomeAssistant, user_id: str) -> bool:
     except Exception:
         return False
 
+
+def _normalize_boolish(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if not lowered:
+            return None
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def _stringify_device_field(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(int(value) if isinstance(value, bool) else value)
+    if isinstance(value, bytes):
+        try:
+            return value.decode()
+        except Exception:
+            return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return str(value)
+
+
+def _sanitise_device_record(record: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not isinstance(record, dict):
+        return out
+    for key, value in record.items():
+        if isinstance(value, (dict, list, tuple, set)):
+            continue
+        coerced = _stringify_device_field(value)
+        if coerced is not None:
+            out[str(key)] = coerced
+    return out
+
+
+def _record_matches_user(record: Dict[str, Any], user_id: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+    target = str(user_id or "").strip()
+    if not target:
+        return False
+    for key in ("UserID", "UserId", "userId", "UserID", "ID", "Name"):
+        candidate = record.get(key)
+        if candidate is None:
+            continue
+        if str(candidate).strip() == target:
+            return True
+    return False
+
+
+def _build_face_upload_payload(
+    profile: Dict[str, Any],
+    device_record: Optional[Dict[str, Any]],
+    user_id: str,
+    face_url: str,
+    face_data_b64: str,
+) -> Dict[str, Any]:
+    base = _sanitise_device_record(device_record)
+    payload: Dict[str, Any] = dict(base)
+
+    payload["UserID"] = str(user_id)
+    payload["Name"] = str(profile.get("name") or payload.get("Name") or user_id)
+
+    groups = profile.get("groups") if isinstance(profile.get("groups"), list) else []
+    primary_group = None
+    if isinstance(groups, list):
+        for g in groups:
+            if g not in (None, ""):
+                primary_group = str(g)
+                break
+    if not primary_group:
+        primary_group = payload.get("Group") or "Default"
+    payload["Group"] = str(primary_group)
+
+    schedule_id = str(profile.get("schedule_id") or payload.get("ScheduleID") or "").strip()
+    if schedule_id:
+        payload["ScheduleID"] = schedule_id
+    schedule_name = profile.get("schedule_name") or payload.get("Schedule") or "24/7 Access"
+    payload["Schedule"] = str(schedule_name)
+
+    pin = profile.get("pin")
+    if pin not in (None, ""):
+        payload["PrivatePIN"] = str(pin)
+
+    phone = profile.get("phone")
+    if phone in (None, ""):
+        phone = payload.get("PhoneNum") or payload.get("Phone")
+    if phone not in (None, ""):
+        payload["PhoneNum"] = str(phone)
+
+    access_level = profile.get("access_level")
+    if access_level not in (None, ""):
+        payload["Level"] = str(access_level)
+
+    key_holder_value = profile.get("key_holder")
+    parsed = _normalize_boolish(key_holder_value)
+    if parsed is None:
+        parsed = _normalize_boolish(payload.get("KeyHolder"))
+    payload["KeyHolder"] = "1" if parsed else "0"
+
+    if "WebRelay" not in payload:
+        payload["WebRelay"] = "0"
+
+    payload["FaceUrl"] = face_url
+    payload["faceInfo"] = {
+        "fileName": f"{user_id}.jpg",
+        "fileData": face_data_b64,
+    }
+
+    return payload
+
+
+async def _push_face_to_devices(
+    hass: HomeAssistant,
+    root: Dict[str, Any],
+    user_id: str,
+    face_bytes: bytes,
+    face_url_public: str,
+) -> None:
+    manager = root.get("sync_manager")
+    if not manager:
+        return
+
+    users_store = root.get("users_store")
+    profile: Dict[str, Any] = {}
+    if users_store:
+        try:
+            profile = users_store.get(user_id) or {}
+        except Exception:
+            profile = {}
+
+    try:
+        face_b64 = base64.b64encode(face_bytes).decode("ascii")
+    except Exception:
+        _LOGGER.debug("Failed to encode face bytes for %s", user_id)
+        return
+
+    for entry_id, coord, api, _opts in manager._devices():
+        device_name = getattr(coord, "device_name", entry_id)
+        record = None
+        try:
+            for candidate in list(getattr(coord, "users", []) or []):
+                if _record_matches_user(candidate, user_id):
+                    record = candidate
+                    break
+        except Exception:
+            record = None
+
+        if record is None:
+            try:
+                device_users = await api.user_list()
+            except Exception as err:
+                _LOGGER.debug("Unable to refresh users before face upload on %s: %s", device_name, err)
+                device_users = []
+            for candidate in device_users or []:
+                if _record_matches_user(candidate, user_id):
+                    record = candidate
+                    break
+
+        try:
+            payload = _build_face_upload_payload(profile, record, user_id, face_url_public, face_b64)
+        except Exception as err:
+            _LOGGER.debug("Failed to prepare face payload for %s on %s: %s", user_id, device_name, err)
+            continue
+
+        try:
+            await api.face_upload(payload)
+        except Exception as err:
+            _LOGGER.debug("Direct face upload failed for %s on %s: %s", user_id, device_name, err)
+            continue
+
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {
     "state": "/api/akuvox_ac/ui/state",
@@ -127,6 +312,12 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "device-edit-mob": "device_edit-mob",
     "device_edit-mob": "device_edit-mob",
     "device_edit-mob.html": "device_edit-mob",
+    "device-management": "device_management",
+    "device_management": "device_management",
+    "device_management.html": "device_management",
+    "device-management-mob": "device_management-mob",
+    "device_management-mob": "device_management-mob",
+    "device_management-mob.html": "device_management-mob",
     "face-rec": "face_rec",
     "face_rec": "face_rec",
     "face_rec.html": "face_rec",
@@ -137,6 +328,12 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "index.html": "index",
     "index-mob": "index-mob",
     "index-mob.html": "index-mob",
+    "event-history": "event_history",
+    "event_history": "event_history",
+    "event_history.html": "event_history",
+    "event-history-mob": "event_history-mob",
+    "event_history-mob": "event_history-mob",
+    "event_history-mob.html": "event_history-mob",
     "schedules": "schedules",
     "schedules.html": "schedules",
     "schedules-mob": "schedules-mob",
@@ -145,6 +342,12 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "users.html": "users",
     "users-mob": "users-mob",
     "users-mob.html": "users-mob",
+    "user-overview": "user_overview",
+    "user_overview": "user_overview",
+    "user_overview.html": "user_overview",
+    "user-overview-mob": "user_overview-mob",
+    "user_overview-mob": "user_overview-mob",
+    "user_overview-mob.html": "user_overview-mob",
     "settings": "settings",
     "settings.html": "settings",
     "settings-mob": "settings-mob",
@@ -2013,6 +2216,11 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 queue.mark_change(None)
             except Exception:
                 pass
+
+        try:
+            await _push_face_to_devices(hass, root, id_val, file_bytes, face_url_public)
+        except Exception as err:
+            _LOGGER.debug("Failed to push face to devices for %s: %s", id_val, err)
 
         return web.json_response({"ok": True, "face_url": face_url_public})
 

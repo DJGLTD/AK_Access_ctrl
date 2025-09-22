@@ -682,8 +682,8 @@ function renderDevices(devs){
       <td>${syncBadge}</td>
       <td>${last}</td>
       <td>${syncBtn}</td>
-      <td>${rebootBtn}</td>
       <td>${editBtn}</td>
+      <td>${rebootBtn}</td>
     </tr>`;
   }).join('');
 
@@ -1440,7 +1440,7 @@ setInterval(refresh, 5000);
             <thead>
               <tr>
                 <th>Name</th><th>Type</th><th>IP</th><th>Status</th><th>Sync</th><th>Last Sync</th>
-                <th>Sync</th><th>Reboot</th><th>Edit</th>
+                <th>Sync</th><th>Edit</th><th>Reboot</th>
               </tr>
             </thead>
             <tbody id="tblDevices"><tr><td colspan="9" class="text-muted">Loading…</td></tr></tbody>

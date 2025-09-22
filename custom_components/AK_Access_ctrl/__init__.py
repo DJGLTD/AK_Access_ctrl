@@ -1088,6 +1088,7 @@ class SyncManager:
                 "sync_manager",
                 "sync_queue",
                 "_ui_registered",
+                "_panel_registered",
                 "settings_store",
             ):
                 continue
