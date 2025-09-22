@@ -254,6 +254,11 @@
       border-color: rgba(13,202,240,.5);
       outline: none;
     }
+    @media (min-width: 721px) {
+      header.app-header {
+        display: none;
+      }
+    }
     @media (max-width: 900px) {
       header.app-header {
         padding: 0.85rem 1rem 0.65rem;
@@ -443,7 +448,7 @@
   const params = new URLSearchParams(location.search);
   const token = params.get('token');
   if (token) {
-    sessionStorage.setItem('akuvox_ll_token', token);
+    rememberToken(token);
     params.delete('token');
     const rest = params.toString();
     const cleanUrl = rest ? `${location.pathname}?${rest}` : location.pathname;
@@ -458,18 +463,57 @@ const MOBILE_BREAKPOINT = '(max-width: 720px)';
 const mobileMedia = window.matchMedia(MOBILE_BREAKPOINT);
 let isMobileMode = mobileMedia.matches;
 let mobileStage = isMobileMode ? 'nav' : 'content';
+let knownToken = null;
+let tokenRefreshScheduled = false;
+
+function scheduleTokenRefresh(){
+  if (tokenRefreshScheduled) return;
+  tokenRefreshScheduled = true;
+  const run = () => {
+    tokenRefreshScheduled = false;
+    try { handleTokenChanged(); } catch (err) {}
+  };
+  if (typeof queueMicrotask === 'function') queueMicrotask(run);
+  else setTimeout(run, 0);
+}
 
 function rememberToken(value) {
-  if (!value) return;
-  try { sessionStorage.setItem('akuvox_ll_token', value); } catch (err) {}
+  const token = typeof value === 'string' ? value.trim() : '';
+  if (!token) return null;
+  const changed = token !== knownToken;
+  knownToken = token;
+  try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  try { window.AK_AC_HA_TOKEN = token; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.AK_AC_HA_TOKEN = token; } catch (err) {}
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+    }
+  } catch (err) {}
+  if (changed) scheduleTokenRefresh();
+  return token;
 }
 
 function getToken(){
+  if (knownToken) return knownToken;
   let stored = null;
   try { stored = sessionStorage.getItem('akuvox_ll_token'); } catch (err) {
     stored = null;
   }
-  if (stored) return stored;
+  if (stored) {
+    knownToken = stored;
+    return stored;
+  }
+  try {
+    const local = localStorage.getItem('akuvox_ll_token');
+    if (local) return rememberToken(local);
+  } catch (err) {}
+  try {
+    const direct = window.AK_AC_HA_TOKEN || window.AK_AC_TOKEN || null;
+    if (typeof direct === 'string' && direct.trim()) return rememberToken(direct.trim());
+  } catch (err) {}
   let discovered = null;
   try {
     discovered = walkAuthWindows(window);
@@ -489,8 +533,14 @@ function persistTokens(access, refresh) {
   if (refresh) payload.refresh_token = refresh;
   try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
   try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  rememberToken(access);
-  return access;
+  try { window.AK_AC_HA_AUTH = payload; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.AK_AC_HA_AUTH = payload; } catch (err) {}
+      try { window.parent.localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+    }
+  } catch (err) {}
+  return rememberToken(access);
 }
 
 function extractTokenFromAuth(auth) {
@@ -528,11 +578,24 @@ function scanTokenStorage(storage) {
     }
     for (const key of Object.keys(storage)) {
       if (!/auth|token|hass/i.test(key)) continue;
+      if (/authsig/i.test(key)) continue;
+      let rawValue = null;
       try {
-        const parsed = JSON.parse(storage.getItem(key));
+        rawValue = storage.getItem(key);
+      } catch (err) {
+        rawValue = null;
+      }
+      if (!rawValue) continue;
+      try {
+        const parsed = JSON.parse(rawValue);
         const token = extractTokenFromAuth(parsed);
         if (token) return token;
-      } catch (err) {}
+      } catch (err) {
+        if (typeof rawValue === 'string' && rawValue.trim()) {
+          const token = persistTokens(rawValue.trim());
+          if (token) return token;
+        }
+      }
     }
   } catch (err) {}
   return null;
@@ -547,8 +610,17 @@ function tokenFromWindow(win) {
   token = extractTokenFromAuth(win.hassAuth)
     || extractTokenFromAuth(win.auth)
     || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH?.data)
     || null;
   if (token) return token;
+
+  try {
+    const direct = win.AK_AC_HA_TOKEN || win.AK_AC_TOKEN || null;
+    if (typeof direct === 'string' && direct.trim()) {
+      const persisted = rememberToken(direct.trim());
+      if (persisted) return persisted;
+    }
+  } catch (err) {}
 
   try {
     const conn = win.hassConnection;
@@ -758,6 +830,42 @@ function currentAuthSig() {
 
 rememberAuthSig(readAuthSigFrom());
 window.AK_AC_AUTH_SIG = currentAuthSig();
+
+if (typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (event) => {
+    if (!event) return;
+    const key = event.key || '';
+    if (!key) return;
+    if (key === 'hassTokens') {
+      const value = event.newValue;
+      if (!value) return;
+      try {
+        const parsed = JSON.parse(value);
+        extractTokenFromAuth(parsed);
+      } catch (err) {
+        if (typeof value === 'string' && value.trim()) rememberToken(value.trim());
+      }
+      return;
+    }
+    if (key === 'akuvox_ll_token') {
+      if (typeof event.newValue === 'string' && event.newValue.trim()) rememberToken(event.newValue.trim());
+      return;
+    }
+    if (key === AUTH_SIG_KEY) {
+      if (typeof event.newValue === 'string' && event.newValue.trim()) rememberAuthSig(event.newValue.trim());
+      return;
+    }
+    if (key === 'akuvox_signed_paths') {
+      if (typeof event.newValue !== 'string' || !event.newValue.trim()) return;
+      try {
+        const parsed = JSON.parse(event.newValue);
+        if (parsed && typeof parsed === 'object') {
+          Object.assign(SIGNED_PATHS, parsed);
+        }
+      } catch (err) {}
+    }
+  });
+}
 
 function collectSignedPaths(){
   const result = {};
@@ -996,6 +1104,11 @@ function reloadActiveView(options = {}){
     }
   }
   loadView(view, params, { updateHistory: options.updateHistory ?? false, replaceState: !!options.replaceState });
+}
+
+function handleTokenChanged(){
+  reloadActiveView({ updateHistory: false, replaceState: false });
+  try { fetchVersion(); } catch (err) {}
 }
 
 function paramsFromButton(btn){
