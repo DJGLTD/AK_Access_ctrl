@@ -17,20 +17,6 @@
     .btn-toggle{ width: 220px; }
     .uploader-hint { font-size: .9rem; color: var(--muted); }
     .form-text code { color: #c7dfff; }
-    .existing-card{ background:#0f1f33; border:1px solid #1b2e4b; }
-    .existing-card .card-title{ margin:0; font-size:1.05rem; font-weight:600; }
-    .existing-card .list-group-item{ background:#0d1d33; border:1px solid rgba(255,255,255,0.05); border-radius:0.75rem; margin-bottom:0.6rem; padding:1rem 1.1rem; color:var(--text); transition:transform .15s ease, border-color .15s ease; }
-    .existing-card .list-group-item:last-child{ margin-bottom:0; }
-    .existing-card .list-group-item .badge{ background:rgba(13,202,240,.18); color:var(--accent); }
-    .existing-card .list-group-item small{ color:var(--muted); }
-    .existing-card .list-group-item-action{ display:flex; flex-direction:column; align-items:flex-start; gap:0.3rem; text-align:left; }
-    .existing-card .list-group-item-action:hover{ transform:translateY(-1px); border-color:rgba(13,202,240,.4); }
-    .existing-card .list-group-item-action.active,
-    .existing-card .list-group-item-action:focus{ border-color:rgba(13,202,240,.45); box-shadow:0 0 0 0.2rem rgba(13,202,240,.18); }
-    .existing-card .list-empty{ border-radius:0.75rem; background:#0d1d33; padding:1rem; color:var(--muted); text-align:center; }
-    .existing-search{ min-width:220px; }
-    .existing-search input{ background:#0b1728; border:1px solid #1b2e4b; color:var(--text); }
-    .existing-search input:focus{ border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(13,202,240,.2); }
     .face-options{ display:flex; gap:0.5rem; flex-wrap:wrap; }
     .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
     @media (max-width: 992px){
@@ -43,8 +29,6 @@
       .face-options{ flex-direction:column; }
       .action-buttons{ flex-direction:column; }
       .action-buttons .btn, .action-buttons a{ width:100%; }
-      .existing-search{ width:100%; }
-      .existing-card .list-group-item{ margin-bottom:0.75rem; }
     }
   </style>
 </head>
@@ -500,6 +484,44 @@ let reservationTimer = null;
 let reservationMisses = 0;
 let reservationHeartbeatBusy = false;
 
+const RESERVATION_STORAGE_KEY = 'akuvox_ac_reserved_id';
+
+function rememberReservationId(id) {
+  const clean = String(id || '').trim();
+  if (!clean) {
+    forgetReservationId();
+    return;
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(RESERVATION_STORAGE_KEY, JSON.stringify({ id: clean, ts: Date.now() }));
+    }
+  } catch (err) {}
+}
+
+function forgetReservationId() {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(RESERVATION_STORAGE_KEY);
+    }
+  } catch (err) {}
+}
+
+function readStoredReservation() {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const raw = sessionStorage.getItem(RESERVATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const id = String(parsed.id || '').trim();
+    if (!id) return null;
+    return { id, ts: Number(parsed.ts || 0) };
+  } catch (err) {
+    return null;
+  }
+}
+
 function setReservationMessage(html, tone = 'muted') {
   const el = document.getElementById('localHelp');
   if (!el) return;
@@ -508,20 +530,6 @@ function setReservationMessage(html, tone = 'muted') {
     return;
   }
   const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'muted';
-  el.innerHTML = `<span class="${cls}">${html}</span>`;
-}
-
-function showExistingHint(html, tone = 'muted') {
-  const el = document.getElementById('existingUsersHint');
-  if (!el) return;
-  if (!html) {
-    el.innerHTML = '';
-    return;
-  }
-  let cls = 'muted';
-  if (tone === 'accent') cls = 'text-info';
-  else if (tone === 'warning') cls = 'text-warning';
-  else if (tone === 'error') cls = 'text-danger';
   el.innerHTML = `<span class="${cls}">${html}</span>`;
 }
 
@@ -600,88 +608,80 @@ function startReservationHeartbeat() {
   reservationTimer = setInterval(heartbeatTick, 10000);
 }
 
-async function reserveNewId(options = {}) {
+function applyReservedIdToForm(id) {
+  const clean = String(id || '').trim();
+  stopReservationHeartbeat();
+  RESERVED_ID = clean ? clean : null;
   const idRow = document.getElementById('idRow');
   const input = document.getElementById('user_id');
-  if (input) input.value = '';
-  if (idRow) idRow.style.display = 'none';
-  stopReservationHeartbeat();
+  if (input) input.value = clean;
+  if (idRow) idRow.style.display = clean ? 'block' : 'none';
+  if (clean) {
+    rememberReservationId(clean);
+    setReservationMessage('');
+    startReservationHeartbeat();
+  } else {
+    forgetReservationId();
+  }
+}
+
+async function restoreReservationFromStorage() {
+  const stored = readStoredReservation();
+  if (!stored) return '';
+  const id = String(stored.id || '').trim();
+  if (!id) return '';
+
+  let active = false;
+  try {
+    const res = await fetchWithAuth(API_RESERVATION_PING, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'ping failed');
+    active = data.active !== false;
+    if (!active) {
+      forgetReservationId();
+      try {
+        await fetchWithAuth(API_RELEASE_ID, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+      } catch (err) {
+        if (handleAuthError(err)) return '';
+      }
+      return '';
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return '';
+    console.warn('Reservation restore check failed', err);
+    active = true; // fall back to using stored id to avoid double reservations
+  }
+
+  if (!active) return '';
+  applyReservedIdToForm(id);
+  return id;
+}
+
+async function reserveNewId(options = {}) {
+  applyReservedIdToForm('');
   try {
     const res = await apiGet(API_RESERVE_ID);
     const newId = res && res.ok && res.id ? res.id : '';
     if (!newId) throw new Error('reserve failed');
-    RESERVED_ID = newId;
-    if (input) input.value = newId;
-    if (idRow) idRow.style.display = 'block';
-    setReservationMessage('');
-    startReservationHeartbeat();
+    applyReservedIdToForm(newId);
     return newId;
   } catch (err) {
-    RESERVED_ID = null;
+    applyReservedIdToForm('');
     if (handleAuthError(err)) return '';
     if (options.showWarning !== false) {
       setReservationMessage('ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.', 'warning');
     }
     return '';
   }
-}
-
-function renderExistingUsers(){
-  const list = document.getElementById('existingUsersList');
-  if (!list) return;
-  const searchInput = document.getElementById('userSearch');
-  const filter = (searchInput?.value || '').trim().toLowerCase();
-  const raw = Array.isArray(REGISTRY) ? REGISTRY : [];
-  const normalized = raw.map((u) => {
-    const id = String(u.id || u.UserID || u.ID || '').trim();
-    const name = u.name || u.Name || id;
-    const groups = Array.isArray(u.groups) ? u.groups : Array.isArray(u.Groups) ? u.Groups : [];
-    const last = u.last_access || u.LastAccess || '';
-    return { id, name, groups, last };
-  }).filter(u => u.id);
-
-  if (!normalized.length) {
-    list.innerHTML = '<div class="list-empty">No Home Assistant managed users yet. Create a new profile above.</div>';
-    showExistingHint('Add a new user above to get started.', 'accent');
-    return;
-  }
-
-  const filtered = normalized.filter(u => {
-    if (!filter) return true;
-    const hay = `${u.id} ${u.name} ${(u.groups || []).join(' ')}`.toLowerCase();
-    return hay.includes(filter);
-  }).sort((a,b) => a.name.localeCompare(b.name, undefined, { sensitivity:'base' }));
-
-  if (!filtered.length) {
-    list.innerHTML = '<div class="list-empty">No users match that search.</div>';
-    showExistingHint('Try a different name, ID or group.', 'warning');
-    return;
-  }
-
-  const activeId = CURRENT?.id ? String(CURRENT.id) : '';
-  list.innerHTML = filtered.map((u) => {
-    const classes = ['list-group-item', 'list-group-item-action'];
-    if (activeId && activeId === String(u.id)) classes.push('active');
-    const groupsLabel = (u.groups || []).length ? (u.groups || []).join(', ') : 'No groups assigned';
-    const lastLine = u.last ? `<small>Last access: ${escapeHtml(u.last)}</small>` : '';
-    return `
-      <button type="button" class="${classes.join(' ')}" data-user-id="${escapeHtml(u.id)}">
-        <div class="d-flex justify-content-between align-items-center w-100">
-          <span class="fw-semibold">${escapeHtml(u.name)}</span>
-          <span class="badge">${escapeHtml(u.id)}</span>
-        </div>
-        <small>${escapeHtml(groupsLabel)}</small>
-        ${lastLine}
-      </button>
-    `;
-  }).join('');
-
-  list.querySelectorAll('[data-user-id]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const uid = btn.dataset.userId || '';
-      if (uid) selectExistingUser(uid);
-    });
-  });
 }
 
 function selectExistingUser(id, options = {}){
@@ -710,6 +710,7 @@ function selectExistingUser(id, options = {}){
   RESERVED_ID = null;
   stopReservationHeartbeat();
   setReservationMessage('');
+  forgetReservationId();
 
   const idRow = document.getElementById('idRow');
   if (idRow) idRow.style.display = 'block';
@@ -720,8 +721,6 @@ function selectExistingUser(id, options = {}){
   fillForm();
   fillPhones();
   updateKeyHolderAvailability();
-  renderExistingUsers();
-  showExistingHint('Editing existing user profile.', 'accent');
 
   if (options?.updateUrl !== false) {
     try {
@@ -784,10 +783,17 @@ function idForName(name){
 }
 
 async function releaseReservation(options = {}){
-  if (!RESERVED_ID) return;
-  const id = RESERVED_ID;
-  RESERVED_ID = null;
-  stopReservationHeartbeat();
+  const explicit = Object.prototype.hasOwnProperty.call(options || {}, 'id')
+    ? String(options.id || '').trim()
+    : '';
+  const id = explicit || RESERVED_ID;
+  if (!id) return;
+
+  const releasingActive = !explicit || explicit === RESERVED_ID;
+  if (releasingActive) {
+    applyReservedIdToForm('');
+  }
+
   const payload = JSON.stringify({ id });
   if (options.keepalive && navigator.sendBeacon) {
     try {
@@ -873,46 +879,40 @@ async function load(){
         RESERVED_ID = null;
         stopReservationHeartbeat();
         setReservationMessage('');
+        forgetReservationId();
         document.getElementById('title').textContent = 'Edit User';
         document.getElementById('idRow').style.display = 'block';
         document.getElementById('user_id').value = CURRENT.id;
       }
     } else if (!startInEditMode) {
       document.getElementById('title').textContent = 'Add User';
-      RESERVED_ID = null;
       CURRENT = blankProfile('');
-      const newId = await reserveNewId();
-      if (newId) {
-        CURRENT.id = newId;
-        CURRENT.schedule_id = '1001';
+      const restoredId = await restoreReservationFromStorage();
+      if (restoredId) {
+        CURRENT.id = restoredId;
+        if (!CURRENT.schedule_id) CURRENT.schedule_id = '1001';
       } else {
-        document.getElementById('idRow').style.display = 'none';
+        const newId = await reserveNewId();
+        if (newId) {
+          CURRENT.id = newId;
+          CURRENT.schedule_id = '1001';
+        } else {
+          const idRow = document.getElementById('idRow');
+          if (idRow) idRow.style.display = 'none';
+        }
       }
-      showExistingHint('Need to update someone? Pick them from the list below.', 'muted');
     } else {
       CURRENT = blankProfile('');
-      RESERVED_ID = null;
-      stopReservationHeartbeat();
+      applyReservedIdToForm('');
       setReservationMessage('');
       document.getElementById('title').textContent = 'Edit User';
-      document.getElementById('idRow').style.display = 'none';
-      showExistingHint('Select a user below to start editing.', 'accent');
+      const idRow = document.getElementById('idRow');
+      if (idRow) idRow.style.display = 'none';
     }
 
     if (!handledBySelect) {
       fillForm();
       fillPhones();
-    }
-
-    renderExistingUsers();
-
-    const searchInput = document.getElementById('userSearch');
-    if (searchInput && !searchInput.dataset.bound) {
-      searchInput.addEventListener('input', () => renderExistingUsers());
-      searchInput.dataset.bound = '1';
-    }
-    if (startInEditMode && !id && searchInput) {
-      searchInput.focus();
     }
   } finally {
     setBusy(false);
@@ -1082,6 +1082,7 @@ async function save(){
 
     // Back to list
     stopReservationHeartbeat();
+    forgetReservationId();
     RESERVED_ID = null;
     openInApp('index', { section: 'users' }, { replaceState: true });
   } catch (e){
@@ -1176,23 +1177,6 @@ function showPanel(which){
       <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
-    <hr class="my-3"/>
-  </div>
-
-  <div class="card existing-card p-3">
-    <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
-      <div>
-        <p class="card-title">Existing users</p>
-        <div id="existingUsersHint" class="muted small">Browse Home Assistant managed profiles.</div>
-      </div>
-      <div class="existing-search">
-        <label for="userSearch" class="form-label visually-hidden">Search users</label>
-        <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search name or ID" aria-label="Search users"/>
-      </div>
-    </div>
-    <div class="list-group list-group-flush mt-3" id="existingUsersList">
-      <div class="list-empty">Loading users…</div>
-    </div>
   </div>
 </div>
 <script>load()</script>
