@@ -38,9 +38,16 @@ FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
 
 def _component_face_dir() -> Path:
-    """Return the canonical location for uploaded face images."""
+    """Return the canonical location for bundled face assets."""
 
     return (COMPONENT_ROOT / "www" / "FaceData").resolve()
+
+
+def face_storage_dir(hass: HomeAssistant) -> Path:
+    """Return the persistent storage location for uploaded face images."""
+
+    base = Path(hass.config.path(DOMAIN))
+    return (base / "FaceData").resolve()
 
 
 def _legacy_face_dir(hass: HomeAssistant) -> Path:
@@ -70,6 +77,12 @@ def _face_file_exists_in(base: Path, user_id: str) -> bool:
 def _face_image_exists(hass: HomeAssistant, user_id: str) -> bool:
     if not user_id:
         return False
+    try:
+        persistent_dir = face_storage_dir(hass)
+        if _face_file_exists_in(persistent_dir, user_id):
+            return True
+    except Exception:
+        pass
     try:
         if _face_file_exists_in(_component_face_dir(), user_id):
             return True
@@ -290,7 +303,7 @@ _LOGGER = logging.getLogger(__name__)
 def _persistent_face_dir(hass: HomeAssistant) -> Path:
     """Compatibility shim for callers expecting the persistent face directory."""
 
-    return _component_face_dir()
+    return face_storage_dir(hass)
 
 
 def _legacy_face_candidate(hass: HomeAssistant, relative: str) -> Optional[Path]:
@@ -2210,7 +2223,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
       - id: HA001 (required)
       - file: image/jpeg (required)
 
-    Saves to custom_components/akuvox_ac/www/FaceData/<ID>.jpg
+    Saves to config/akuvox_ac/FaceData/<ID>.jpg
     Updates users_store face_url (public URL) and marks status=pending.
     Triggers immediate sync.
     """
@@ -2268,7 +2281,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         if not file_bytes:
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
 
-        # Save under persistent FaceData folder inside the custom component
+        # Save under persistent FaceData folder inside the Home Assistant config
         dest_dir = _persistent_face_dir(hass)
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
