@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 from aiohttp import ClientSession, BasicAuth
+from urllib.parse import urlsplit
+
+from .const import (
+    DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
+    MAX_DIAGNOSTICS_HISTORY_LIMIT,
+    MIN_DIAGNOSTICS_HISTORY_LIMIT,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +62,7 @@ class AkuvoxAPI:
         use_https: bool = False,
         verify_ssl: bool = True,
         session: Optional[ClientSession] = None,
+        diagnostics_history_limit: Optional[int] = None,
     ):
         self.host = host
         self.port = port
@@ -66,7 +74,8 @@ class AkuvoxAPI:
         self._rest_ok = True
 
         # Keep a rolling window of recent requests for diagnostics
-        self._request_log = deque(maxlen=50)
+        self._history_limit = self._coerce_history_limit(diagnostics_history_limit)
+        self._request_log = deque(maxlen=self._history_limit)
 
         # Auto-detected working base; set after first successful probe
         # Tuple: (use_https: bool, port: int, verify_ssl: bool)
@@ -265,6 +274,30 @@ class AkuvoxAPI:
             rel = "/api/"
         return await _attempt(self.use_https, self.port if self.port else (443 if self.use_https else 80), self.verify_ssl, rel)
 
+    def _coerce_history_limit(self, limit: Optional[int]) -> int:
+        try:
+            value = int(limit if limit is not None else DEFAULT_DIAGNOSTICS_HISTORY_LIMIT)
+        except Exception:
+            value = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+        if value < MIN_DIAGNOSTICS_HISTORY_LIMIT:
+            return MIN_DIAGNOSTICS_HISTORY_LIMIT
+        if value > MAX_DIAGNOSTICS_HISTORY_LIMIT:
+            return MAX_DIAGNOSTICS_HISTORY_LIMIT
+        return value
+
+    def diagnostics_history_limit(self) -> int:
+        return self._history_limit
+
+    def set_diagnostics_history_limit(self, limit: Optional[int]) -> int:
+        value = self._coerce_history_limit(limit)
+        if value == self._request_log.maxlen:
+            self._history_limit = value
+            return value
+        existing = list(self._request_log)
+        self._request_log = deque(existing[:value], maxlen=value)
+        self._history_limit = value
+        return value
+
     def _remember_request(self, entry: Dict[str, Any]) -> None:
         """Persist a sanitised copy of a request diagnostic entry."""
 
@@ -279,11 +312,79 @@ class AkuvoxAPI:
                     record[key] = value
             else:
                 record[key] = _json_copy(value)
+        record["diag_type"] = self._derive_diag_type(record)
         self._request_log.appendleft(record)
 
-    def recent_requests(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def _derive_diag_type(self, record: Dict[str, Any]) -> str:
+        """Produce a consistent diagnostic type string for filtering."""
+
+        def _clean(value: Any) -> str:
+            if value is None:
+                return ""
+            return str(value).strip().lower()
+
+        payload = record.get("payload")
+        if isinstance(payload, dict):
+            target = ""
+            action = ""
+            for key in ("target", "Target"):
+                token = _clean(payload.get(key))
+                if token:
+                    target = token
+                    break
+            for key in ("action", "Action"):
+                token = _clean(payload.get(key))
+                if token:
+                    action = token
+                    break
+            if target:
+                return f"{target}:{action}" if action else target
+
+            for key in ("command", "Command"):
+                token = _clean(payload.get(key))
+                if token:
+                    return f"command:{token}"
+
+        path_candidate = record.get("path") or record.get("url") or ""
+        path_text = str(path_candidate or "")
+        extracted_path = ""
+        if path_text:
+            try:
+                parsed = urlsplit(path_text)
+                extracted_path = parsed.path or ""
+            except Exception:
+                extracted_path = ""
+        if not extracted_path and path_text:
+            if path_text.startswith("/"):
+                extracted_path = path_text
+            elif "://" in path_text:
+                try:
+                    extracted_path = "/" + path_text.split("://", 1)[1].split("/", 1)[1]
+                except Exception:
+                    extracted_path = ""
+            else:
+                extracted_path = path_text
+
+        clean_path = extracted_path.strip("/")
+        if clean_path:
+            segments = [seg for seg in clean_path.split("/") if seg]
+            while segments and segments[0].lower() in {"api", "v0"}:
+                segments.pop(0)
+            if segments:
+                base_segments = segments[:2]
+                return "/".join(seg.lower() for seg in base_segments)
+
+        method = _clean(record.get("method"))
+        if method:
+            return f"method:{method}"
+
+        return "other"
+
+    def recent_requests(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Return a copy of the most recent request diagnostics."""
 
+        if limit is None:
+            limit = self._history_limit
         if limit is None or limit <= 0:
             items = list(self._request_log)
         else:

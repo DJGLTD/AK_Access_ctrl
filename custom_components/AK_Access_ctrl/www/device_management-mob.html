@@ -58,7 +58,6 @@
 <body>
 <div class="page">
   <header class="page-header">
-    <button class="btn btn-outline-light btn-sm" id="backBtn"><i class="bi bi-chevron-left"></i> Back</button>
     <h1>Device Management</h1>
     <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
   </header>
@@ -521,11 +520,6 @@ function handleAuthError(err) {
   return true;
 }
 
-function goBack(){
-  requestParentNav('index', { section: 'devices' }, { replaceState: true, mobileStage: 'nav' });
-}
-
-document.getElementById('backBtn').addEventListener('click', (ev) => { ev.preventDefault(); goBack(); });
 document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
 
 function escapeHtml(value){

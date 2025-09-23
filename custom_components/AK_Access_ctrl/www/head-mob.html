@@ -35,6 +35,11 @@
       gap: 1rem;
       z-index: 2;
     }
+    header.app-header .brand-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
     header.app-header .brand {
       display: flex;
       align-items: center;
@@ -273,6 +278,10 @@
         flex-direction: column;
         align-items: flex-start;
       }
+      header.app-header .brand-bar {
+        width: 100%;
+        justify-content: space-between;
+      }
       header.app-header h1 { font-size: 1.25rem; }
       nav.nav-buttons { width: 100%; justify-content: flex-start; display: none; }
       .nav-quick-actions { display: none !important; }
@@ -292,14 +301,16 @@
 <body>
 <div class="head-wrap">
   <header class="app-header">
-    <div class="brand">
-      <h1 class="visually-hidden">Akuvox Access Control</h1>
-      <span class="logo-mark" aria-hidden="true"><i class="bi bi-shield-lock-fill"></i></span>
+    <div class="brand-bar">
+      <div class="brand">
+        <h1 class="visually-hidden">Akuvox Access Control</h1>
+        <span class="logo-mark" aria-hidden="true"><i class="bi bi-shield-lock-fill"></i></span>
+      </div>
+      <button class="mobile-back-btn" type="button" id="mobileBackBtn">
+        <i class="bi bi-chevron-left"></i>
+        <span>Back</span>
+      </button>
     </div>
-    <button class="mobile-back-btn" type="button" id="mobileBackBtn">
-      <i class="bi bi-chevron-left"></i>
-      <span>Back</span>
-    </button>
     <nav class="nav-buttons" aria-label="Primary navigation">
       <button class="nav-btn" type="button" data-view="index">
         <i class="bi bi-speedometer2"></i>
@@ -380,13 +391,6 @@
         <i class="bi bi-lightning-fill"></i>
       </button>
       <div class="mobile-subgrid">
-        <button class="mobile-tile sub" type="button" data-view="index" data-section="global-actions">
-          <div class="tile-text">
-            <span class="tile-title">Action dashboard</span>
-            <small>Open system-wide controls</small>
-          </div>
-          <i class="bi bi-speedometer"></i>
-        </button>
         <button class="mobile-tile sub" type="button" data-action="reboot_all">
           <div class="tile-text">
             <span class="tile-title">Reboot all</span>
@@ -899,6 +903,7 @@ function signedPath(key, fallback){
 }
 
 const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
 
 function buildUrl(view, params = {}){
   const search = new URLSearchParams();
@@ -1110,33 +1115,120 @@ function paramsFromButton(btn){
   return params;
 }
 
-function runDashboardAction(action){
+async function postJson(url, body = {}){
+  const token = getToken();
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  if (token) headers.set('Authorization', 'Bearer ' + token);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: JSON.stringify(body)
+    });
+  } catch (err) {
+    const error = new Error(err?.message || 'Network request failed');
+    error.cause = err;
+    throw error;
+  }
+  if (!response.ok) {
+    let text = '';
+    try {
+      text = await response.text();
+    } catch (err) {
+      text = '';
+    }
+    const error = new Error(text || response.statusText || 'Request failed');
+    error.status = response.status;
+    throw error;
+  }
+  try {
+    return await response.json();
+  } catch (err) {
+    return {};
+  }
+}
+
+async function callService(domain, service, data = {}){
+  const url = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  return postJson(url, data);
+}
+
+function describeAction(action){
+  const normalized = String(action || '').toLowerCase();
+  if (normalized.includes('reboot')) return 'reboot all devices';
+  if (normalized.includes('sync')) return 'force a full sync';
+  return 'run the requested action';
+}
+
+function formatActionError(err){
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  if (err.status === 401 || err.status === 403) return 'authentication required';
+  if (err.message) return err.message;
+  try { return String(err); } catch (convErr) { return ''; }
+}
+
+async function runDashboardAction(action){
   const normalized = String(action || '').toLowerCase();
   if (!normalized) return;
-  const frame = document.getElementById('viewFrame');
-  if (!frame) return;
 
-  const previousHref = frame.dataset.currentHref;
+  const frame = document.getElementById('viewFrame');
+  const previousHref = frame?.dataset.currentHref || '';
+
   if (isMobileMode) setMobileStage('content', { preserveGroups: true });
   loadView('index', { section: 'global-actions' });
-  const changed = frame.dataset.currentHref !== previousHref;
+  const changed = frame && frame.dataset.currentHref !== previousHref;
 
-  const deliver = () => {
-    try {
-      frame.contentWindow?.postMessage({ type: 'akuvox-action', action: normalized }, window.location.origin);
-    } catch (err) {
-      console.warn('Failed to deliver Akuvox action', err);
-    }
+  let success = false;
+  let lastError = '';
+  const logError = (err) => {
+    const msg = formatActionError(err);
+    if (!lastError && msg) lastError = msg;
+    console.warn('Failed to run Akuvox action', action, err);
   };
 
-  if (changed) {
-    const onLoad = () => {
-      frame.removeEventListener('load', onLoad);
-      deliver();
-    };
-    frame.addEventListener('load', onLoad, { once: true });
+  const steps = [];
+  if (normalized === 'reboot_all' || normalized === 'reboot') {
+    steps.push(() => postJson(API_ACTION, { action: 'reboot_all' }));
+    steps.push(() => callService('akuvox_ac', 'reboot_device', {}));
+  } else if (
+    normalized === 'force_full_sync'
+    || normalized === 'sync_all'
+    || normalized === 'sync_now'
+  ) {
+    steps.push(() => postJson(API_ACTION, { action: 'sync_all' }));
+    steps.push(() => postJson(API_ACTION, { action: 'force_full_sync' }));
+    steps.push(() => callService('akuvox_ac', 'force_full_sync', {}));
+    steps.push(() => callService('akuvox_ac', 'sync_now', {}));
   } else {
-    deliver();
+    if (!changed && frame) {
+      reloadActiveView({ updateHistory: false });
+    }
+    return;
+  }
+
+  for (const step of steps) {
+    if (success) break;
+    try {
+      const result = await step();
+      if (result !== false) success = true;
+    } catch (err) {
+      logError(err);
+    }
+  }
+
+  if (!success) {
+    const message = describeAction(normalized);
+    alert(`Unable to ${message}${lastError ? `: ${lastError}` : ''}`);
+    return;
+  }
+
+  if (!changed && frame) {
+    setTimeout(() => {
+      try { reloadActiveView({ updateHistory: false }); } catch (err) {}
+    }, 150);
   }
 }
 
