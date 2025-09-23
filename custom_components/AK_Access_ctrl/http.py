@@ -24,6 +24,9 @@ from .const import (
     CONF_RELAY_ROLES,
     INTEGRATION_VERSION,
     INTEGRATION_VERSION_LABEL,
+    DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
+    MIN_DIAGNOSTICS_HISTORY_LIMIT,
+    MAX_DIAGNOSTICS_HISTORY_LIMIT,
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
@@ -1920,9 +1923,49 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
     name = "api:akuvox_ac:ui_diagnostics"
     requires_auth = True
 
-    async def get(self, request: web.Request):
-        hass: HomeAssistant = request.app["hass"]
-        root = hass.data.get(DOMAIN, {}) or {}
+    def _resolve_history_limits(self, root: Dict[str, Any]) -> Tuple[int, int, int]:
+        settings = root.get("settings_store")
+        current = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+        min_limit = MIN_DIAGNOSTICS_HISTORY_LIMIT
+        max_limit = MAX_DIAGNOSTICS_HISTORY_LIMIT
+
+        if settings and hasattr(settings, "get_diagnostics_history_limit"):
+            try:
+                current = settings.get_diagnostics_history_limit()
+            except Exception:
+                current = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+            try:
+                bounds = settings.get_diagnostics_history_bounds()
+                if isinstance(bounds, (tuple, list)) and len(bounds) >= 2:
+                    min_limit = int(bounds[0])
+                    max_limit = int(bounds[1])
+            except Exception:
+                min_limit = MIN_DIAGNOSTICS_HISTORY_LIMIT
+                max_limit = MAX_DIAGNOSTICS_HISTORY_LIMIT
+
+        if min_limit > max_limit:
+            min_limit, max_limit = max_limit, min_limit
+
+        if current < min_limit:
+            current = min_limit
+        if current > max_limit:
+            current = max_limit
+
+        return current, min_limit, max_limit
+
+    async def _build_payload(
+        self, root: Dict[str, Any], limit_override: Optional[int] = None
+    ) -> Dict[str, Any]:
+        current_limit, min_limit, max_limit = self._resolve_history_limits(root)
+        limit = current_limit if limit_override is None else limit_override
+        try:
+            limit = int(limit)
+        except Exception:
+            limit = current_limit
+        if limit < min_limit:
+            limit = min_limit
+        if limit > max_limit:
+            limit = max_limit
 
         devices: List[Dict[str, Any]] = []
         manager = root.get("sync_manager")
@@ -1930,7 +1973,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             try:
                 for entry_id, coord, api, _opts in manager._devices():  # type: ignore[attr-defined]
                     try:
-                        recent = api.recent_requests(10)
+                        recent = api.recent_requests(limit)
                     except Exception:
                         recent = []
 
@@ -1954,7 +1997,62 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             except Exception as err:  # pragma: no cover - best effort
                 _LOGGER.debug("Failed to assemble diagnostics payload: %s", err)
 
-        return web.json_response({"devices": devices})
+        return {
+            "ok": True,
+            "devices": devices,
+            "history_limit": limit,
+            "min_history_limit": min_limit,
+            "max_history_limit": max_limit,
+        }
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+        payload = await self._build_payload(root)
+        return web.json_response(payload)
+
+    async def post(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        root = hass.data.get(DOMAIN, {}) or {}
+
+        settings = root.get("settings_store")
+        if not settings or not hasattr(settings, "set_diagnostics_history_limit"):
+            return web.json_response(
+                {"ok": False, "error": "settings unavailable"}, status=500
+            )
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        if "history_limit" not in data:
+            return web.json_response(
+                {"ok": False, "error": "history_limit required"}, status=400
+            )
+
+        try:
+            new_limit = await settings.set_diagnostics_history_limit(
+                data.get("history_limit")
+            )
+        except ValueError as err:
+            return web.json_response({"ok": False, "error": str(err)}, status=400)
+        except Exception as err:
+            return web.json_response({"ok": False, "error": str(err)}, status=500)
+
+        manager = root.get("sync_manager")
+        if manager:
+            try:
+                for _entry_id, _coord, api, _opts in manager._devices():  # type: ignore[attr-defined]
+                    try:
+                        api.set_diagnostics_history_limit(new_limit)
+                    except Exception:
+                        pass
+            except Exception:  # pragma: no cover - best effort
+                pass
+
+        payload = await self._build_payload(root, limit_override=new_limit)
+        return web.json_response(payload)
 
 
 # ========================= Reserve a fresh HA ID =========================
