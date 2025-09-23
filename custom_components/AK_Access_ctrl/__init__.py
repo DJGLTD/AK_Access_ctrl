@@ -59,6 +59,7 @@ from .http import (
     register_ui,
     FACE_FILE_EXTENSIONS,
 )  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
+from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
@@ -559,11 +560,11 @@ def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]
 
 
 def _ha_id_from_int(n: int) -> str:
-    return f"HA{n:03d}"  # no dash
+    return ha_id_from_int(n)
 
 
 def _is_ha_id(s: str) -> bool:
-    return isinstance(s, str) and len(s) == 5 and s.startswith("HA") and s[2:].isdigit()
+    return is_ha_id(s)
 
 
 def _mark_coordinator_rebooting(coord: AkuvoxCoordinator, *, triggered_by: str, duration: float = 300.0) -> None:
@@ -715,23 +716,58 @@ class AkuvoxUsersStore(Store):
         existing = await super().async_load()
         if existing and isinstance(existing.get("users"), dict):
             self.data = existing
+        changed = self._normalize_user_ids()
+        if changed:
+            await self.async_save()
 
     async def async_save(self):
         await super().async_save(self.data)
 
+    def _normalize_user_ids(self) -> bool:
+        users = self.data.setdefault("users", {})
+        changed = False
+        for key in list(users.keys()):
+            canonical = normalize_ha_id(key)
+            if not canonical or canonical == key:
+                continue
+            entry = users.pop(key)
+            changed = True
+            existing = users.get(canonical)
+            if isinstance(existing, dict) and isinstance(entry, dict):
+                merged = dict(existing)
+                for field, value in entry.items():
+                    if field not in merged or merged[field] in (None, "", [], {}):
+                        merged[field] = value
+                users[canonical] = merged
+            else:
+                users[canonical] = entry if entry is not None else existing
+        return changed
+
     def get(self, key: str, default=None):
-        return (self.data.get("users") or {}).get(key, default)
+        users = self.data.get("users") or {}
+        canonical = normalize_ha_id(key)
+        if canonical and canonical in users:
+            return users.get(canonical, default)
+        return users.get(key, default)
 
     def all(self) -> Dict[str, Any]:
         return dict(self.data.get("users") or {})
 
     def all_ha_ids(self) -> List[str]:
-        return [k for k in (self.data.get("users") or {}).keys() if _is_ha_id(k)]
+        seen: Dict[str, None] = {}
+        for key in (self.data.get("users") or {}).keys():
+            canonical = normalize_ha_id(key)
+            if canonical:
+                seen.setdefault(canonical, None)
+        return list(seen.keys())
 
     def next_free_ha_id(self, *, blocked: Optional[List[str]] = None) -> str:
         used: set[str] = set(self.all_ha_ids())
         if blocked:
-            used.update(str(b) for b in blocked if _is_ha_id(str(b)))
+            for candidate in blocked:
+                canonical = normalize_ha_id(candidate)
+                if canonical:
+                    used.add(canonical)
 
         n = 1
         while True:
@@ -741,7 +777,10 @@ class AkuvoxUsersStore(Store):
             n += 1
 
     def reserve_id(self, ha_id: str):
-        self.data["users"].setdefault(ha_id, {})
+        canonical = normalize_ha_id(ha_id)
+        if not canonical:
+            raise ValueError(f"Invalid HA id: {ha_id}")
+        self.data["users"].setdefault(canonical, {})
 
     async def upsert_profile(
         self,
@@ -760,7 +799,8 @@ class AkuvoxUsersStore(Store):
         access_level: Optional[str] = None,
         schedule_id: Optional[str] = None,  # allow explicit schedule ID (1001/1002/1003/…)
     ):
-        u = self.data["users"].setdefault(key, {})
+        canonical = normalize_ha_id(key) or str(key)
+        u = self.data["users"].setdefault(canonical, {})
         if name is not None:
             u["name"] = name
         if groups is not None:
@@ -795,7 +835,11 @@ class AkuvoxUsersStore(Store):
         await self.async_save()
 
     async def delete(self, key: str):
-        self.data.get("users", {}).pop(key, None)
+        users = self.data.get("users", {})
+        canonical = normalize_ha_id(key)
+        if canonical:
+            users.pop(canonical, None)
+        users.pop(key, None)
         await self.async_save()
 
 
@@ -1004,6 +1048,7 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
     target = str(ha_key or "").strip()
     if not target:
         return out
+    target_norm = normalize_ha_id(target)
 
     try:
         dev_users = await api.user_list()
@@ -1016,7 +1061,8 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
         user_id = str(u.get("UserID") or "")
         name = str(u.get("Name") or "")
         candidates = {c for c in (dev_id, user_id, name, _key_of_user(u)) if c}
-        if target not in candidates:
+        candidate_norms = {normalize_ha_id(c) for c in candidates if normalize_ha_id(c)}
+        if target not in candidates and (not target_norm or target_norm not in candidate_norms):
             continue
 
         key_tuple = (dev_id, user_id, name)
@@ -1475,7 +1521,8 @@ class SyncManager:
         rogue_keys: List[str] = []
         for u in local_users or []:
             kid = _key_of_user(u)
-            if _is_ha_id(kid) and kid not in registry_keys_set:
+            canonical_kid = normalize_ha_id(kid)
+            if canonical_kid and canonical_kid not in registry_keys_set:
                 rogue_keys.append(kid)
         if not rogue_keys:
             return
@@ -1530,8 +1577,13 @@ class SyncManager:
         device_type = device_type_raw.lower()
         is_intercom = device_type == "intercom"
 
-        registry: Dict[str, Any] = users_store.all() if users_store else {}
-        registry_keys = [k for k in registry.keys() if _is_ha_id(k)]
+        raw_registry: Dict[str, Any] = users_store.all() if users_store else {}
+        registry: Dict[str, Any] = {}
+        for key, value in (raw_registry or {}).items():
+            canonical = normalize_ha_id(key)
+            if canonical:
+                registry[canonical] = value
+        registry_keys = list(registry.keys())
         reg_key_set = set(registry_keys)
 
         await self._remove_missing_users(api, local_users, reg_key_set)
@@ -1659,8 +1711,14 @@ class SyncManager:
                 return
 
         users_store = self._users_store()
-        registry = users_store.all() if users_store else {}
-        reg_keys = [k for k in registry.keys() if _is_ha_id(k)]
+        raw_registry = users_store.all() if users_store else {}
+        registry: Dict[str, Any] = {}
+        reg_keys: List[str] = []
+        for key, value in (raw_registry or {}).items():
+            canonical = normalize_ha_id(key)
+            if canonical:
+                registry.setdefault(canonical, value)
+                reg_keys.append(canonical)
 
         schedules_store = self._schedules_store()
         schedules_all: Dict[str, Any] = {}
@@ -1688,7 +1746,11 @@ class SyncManager:
                 device_records: Dict[str, List[Dict[str, Any]]] = {}
                 for record in coord.users or []:
                     key = _key_of_user(record)
-                    device_records.setdefault(key, []).append(record)
+                    canonical_key = normalize_ha_id(key)
+                    if canonical_key:
+                        device_records.setdefault(canonical_key, []).append(record)
+                    else:
+                        device_records.setdefault(key, []).append(record)
 
                 device_groups: List[str] = list(opts.get("sync_groups") or ["Default"])
                 should_have: set[str] = set()
@@ -1729,9 +1791,10 @@ class SyncManager:
 
                 if mismatch_reason is None:
                     for key, records in device_records.items():
-                        if not _is_ha_id(key):
+                        canonical_key = normalize_ha_id(key)
+                        if not canonical_key:
                             continue
-                        if key in should_have:
+                        if canonical_key in should_have:
                             continue
                         if records:
                             mismatch_reason = f"rogue user {key}"
@@ -1908,13 +1971,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def svc_edit_user(call):
         d = call.data
-        key = str(d["id"])
+        raw_key = d.get("id")
+        canonical_key = normalize_ha_id(raw_key)
+        key = canonical_key or str(raw_key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
-        new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{key}.jpg"
+        effective_id = canonical_key or key
+        new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{effective_id}.jpg"
 
         await users_store.upsert_profile(
-            key,
+            effective_id,
             name=d.get("name"),
             groups=list(d.get("groups") or []) if "groups" in d else None,
             pin=str(d.get("pin")) if "pin" in d else None,
@@ -1935,17 +2001,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if not key:
             return
 
+        canonical = normalize_ha_id(key)
+        lookup_key = canonical or key
+        removal_keys = {key}
+        if canonical:
+            removal_keys.add(canonical)
+
         root = hass.data.get(DOMAIN, {})
         users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
         if users_store:
-            await users_store.delete(key)
+            await users_store.delete(lookup_key)
 
         # immediate cascade: delete from every device using robust lookup
         manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]
         if manager:
             for entry_id, coord, api, _ in manager._devices():
                 try:
-                    id_records = await _lookup_device_user_ids_by_ha_key(api, key)
+                    id_records = await _lookup_device_user_ids_by_ha_key(api, lookup_key)
                     if id_records:
                         for rec in id_records:
                             await _delete_user_every_way(api, rec)
@@ -1953,9 +2025,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                         await _delete_user_every_way(
                             api,
                             {
-                                "ID": key,
-                                "UserID": key,
-                                "Name": key,
+                                "ID": lookup_key,
+                                "UserID": lookup_key,
+                                "Name": lookup_key,
                             },
                         )
                     try:
@@ -1986,17 +2058,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 continue
 
             for ext in FACE_FILE_EXTENSIONS:
-                try:
-                    candidate = (resolved_base / f"{key}.{ext}").resolve()
-                    candidate.relative_to(resolved_base)
-                except Exception:
-                    continue
-
-                if candidate.exists():
+                for removal_key in removal_keys:
                     try:
-                        candidate.unlink()
+                        candidate = (resolved_base / f"{removal_key}.{ext}").resolve()
+                        candidate.relative_to(resolved_base)
                     except Exception:
                         continue
+
+                    if candidate.exists():
+                        try:
+                            candidate.unlink()
+                        except Exception:
+                            continue
 
         queue: Optional[SyncQueue] = root.get("sync_queue")  # type: ignore[assignment]
         if queue:
@@ -2008,10 +2081,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         Actual file writing/placing happens outside this service.
         """
         d = call.data
-        key = str(d["id"])
-        face_url = await _ensure_local_face_for_user(key)
+        raw_key = d.get("id")
+        canonical = normalize_ha_id(raw_key)
+        key = canonical or str(raw_key)
+        face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-        await users_store.upsert_profile(key, face_url=face_url, status="pending")
+        await users_store.upsert_profile(canonical or key, face_url=face_url, status="pending")
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
     async def svc_reboot_device(call):

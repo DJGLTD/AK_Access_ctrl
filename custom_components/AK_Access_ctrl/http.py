@@ -30,6 +30,7 @@ from .const import (
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
+from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -636,14 +637,12 @@ def _only_hhmm(v: Optional[str]) -> str:
         return str(v)
 
 
-def _is_ha_id(s: Any) -> bool:
-    if not isinstance(s, str):
-        return False
-    return len(s) == 5 and s.startswith("HA") and s[2:].isdigit()
+def _is_ha_id(value: Any) -> bool:
+    return is_ha_id(value)
 
 
 def _ha_id_from_int(n: int) -> str:
-    return f"HA{n:03d}"
+    return ha_id_from_int(n)
 
 
 _BOOLISH_TRUE = {
@@ -844,9 +843,10 @@ async def _refresh_face_statuses(
 
     profile_lookup = profiles or {}
     for entry in registry_users:
-        user_id = str(entry.get("id") or "").strip()
-        if not _is_ha_id(user_id):
+        user_id = normalize_ha_id(entry.get("id"))
+        if not user_id:
             continue
+        entry["id"] = user_id
 
         stored = profile_lookup.get(user_id) or {}
         stored_status = str(stored.get("face_status") or "").strip().lower()
@@ -1318,7 +1318,7 @@ class AkuvoxUIView(HomeAssistantView):
                 kpis["users"] = sum(
                     1
                     for key, prof in profiles.items()
-                    if _is_ha_id(key) and not _profile_is_empty_reserved(prof)
+                    if normalize_ha_id(key) and not _profile_is_empty_reserved(prof)
                 )
 
             mgr = root.get("sync_manager")
@@ -1351,22 +1351,23 @@ class AkuvoxUIView(HomeAssistantView):
                 except Exception:
                     all_users = {}
                 for key, prof in all_users.items():
-                    if not _is_ha_id(key) or _profile_is_empty_reserved(prof):
+                    canonical = normalize_ha_id(key)
+                    if not canonical or _profile_is_empty_reserved(prof):
                         continue
                     groups = _normalize_groups(prof.get("groups"))
                     face_status = str(prof.get("face_status") or "").strip().lower()
                     face_synced_at = prof.get("face_synced_at")
                     registry_users.append(
                         {
-                            "id": key,
-                            "name": (prof.get("name") or key),
+                            "id": canonical,
+                            "name": (prof.get("name") or canonical),
                             "groups": groups,
                             "pin": prof.get("pin") or "",
                             "face_url": prof.get("face_url") or "",
                             "face_status": face_status,
                             "face_synced_at": face_synced_at,
                             "face_active": face_status == "active"
-                            or _face_image_exists(hass, key),
+                            or _face_image_exists(hass, canonical),
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
                             "schedule_name": prof.get("schedule_name")
@@ -1790,12 +1791,13 @@ class AkuvoxUISettings(HomeAssistantView):
         if users_store:
             try:
                 for key, prof in (users_store.all() or {}).items():
-                    if not _is_ha_id(key):
+                    canonical = normalize_ha_id(key)
+                    if not canonical:
                         continue
                     if _profile_is_empty_reserved(prof):
                         continue
-                    name = prof.get("name") or key
-                    registry_users.append({"id": key, "name": name})
+                    name = prof.get("name") or canonical
+                    registry_users.append({"id": canonical, "name": name})
             except Exception:
                 pass
 
@@ -2096,7 +2098,11 @@ class AkuvoxUIReserveId(HomeAssistantView):
             if hasattr(users_store, "next_free_ha_id"):
                 candidate = users_store.next_free_ha_id()  # type: ignore[attr-defined]
             else:
-                existing = set(k for k in (users_store.all() or {}).keys() if _is_ha_id(k))
+                existing: set[str] = set()
+                for key in (users_store.all() or {}).keys():
+                    canonical = normalize_ha_id(key)
+                    if canonical:
+                        existing.add(canonical)
                 n = 1
                 while True:
                     candidate = _ha_id_from_int(n)
@@ -2111,7 +2117,11 @@ class AkuvoxUIReserveId(HomeAssistantView):
                     current = users_store.all()  # type: ignore[attr-defined]
                 except Exception:
                     current = {}
-                existing_keys = set(k for k in (current or {}).keys() if _is_ha_id(k))
+                existing_keys: set[str] = set()
+                for key in (current or {}).keys():
+                    canonical = normalize_ha_id(key)
+                    if canonical:
+                        existing_keys.add(canonical)
                 if candidate not in existing_keys:
                     break
                 n += 1
@@ -2157,14 +2167,22 @@ class AkuvoxUIReleaseId(HomeAssistantView):
             data = await request.json()
         except Exception:
             data = {}
-        uid = str(data.get("id") or "").strip()
-        if not _is_ha_id(uid):
+        uid = normalize_ha_id(data.get("id"))
+        if not uid:
             return web.json_response({"ok": False, "error": "valid HA id required"}, status=400)
 
         try:
-            prof = (users_store.all() or {}).get(uid) or {}
+            all_users = users_store.all() or {}
+            prof = all_users.get(uid) or {}
+            store_key = uid
+            if not prof:
+                for candidate_key in all_users.keys():
+                    if normalize_ha_id(candidate_key) == uid:
+                        prof = all_users.get(candidate_key) or {}
+                        store_key = candidate_key
+                        break
             if _profile_is_empty_reserved(prof):
-                users_store.data.get("users", {}).pop(uid, None)  # type: ignore[attr-defined]
+                users_store.data.get("users", {}).pop(store_key, None)  # type: ignore[attr-defined]
                 await users_store.async_save()  # type: ignore[attr-defined]
                 return web.json_response({"ok": True, "released": True})
             return web.json_response({"ok": True, "released": False})
@@ -2196,18 +2214,26 @@ class AkuvoxUIReservationPing(HomeAssistantView):
         except Exception:
             data = {}
 
-        uid = str(data.get("id") or "").strip()
-        if not _is_ha_id(uid):
+        uid = normalize_ha_id(data.get("id"))
+        if not uid:
             return web.json_response({"ok": False, "error": "valid HA id required"}, status=400)
 
         store_data = users_store.data.setdefault("users", {})  # type: ignore[attr-defined]
-        profile = store_data.get(uid)
+        store_key = uid
+        profile = store_data.get(store_key)
+        if not profile:
+            for candidate_key in list(store_data.keys()):
+                if normalize_ha_id(candidate_key) == uid:
+                    store_key = candidate_key
+                    profile = store_data.get(store_key)
+                    break
         if not profile:
             return web.json_response({"ok": True, "active": False})
 
         if not _profile_is_empty_reserved(profile):
             return web.json_response({"ok": True, "active": False})
 
+        profile = store_data.setdefault(store_key, {})
         profile["reserved_at"] = _now_iso()
         try:
             await users_store.async_save()  # type: ignore[attr-defined]
@@ -2235,7 +2261,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         root = hass.data.get(DOMAIN, {}) or {}
 
-        id_val: Optional[str] = None
+        id_val_raw: Optional[str] = None
         file_bytes: Optional[bytes] = None
 
         content_type = (request.content_type or "").lower()
@@ -2250,7 +2276,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 raw_id = data.get("id")
                 if isinstance(raw_id, (str, bytes, bytearray)):
                     id_val = raw_id.decode() if isinstance(raw_id, (bytes, bytearray)) else raw_id
-                    id_val = id_val.strip()
+                    id_val_raw = id_val.strip()
 
                 # File uploads arrive as aiohttp.web.FileField instances
                 candidate = data.get("file") or data.get("upload") or data.get("image")
@@ -2274,10 +2300,23 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 data = await request.json()
             except Exception:
                 data = {}
-            id_val = str(data.get("id") or "").strip()
+            candidate = data.get("id")
+            if isinstance(candidate, (str, bytes, bytearray)):
+                if isinstance(candidate, (bytes, bytearray)):
+                    try:
+                        candidate = candidate.decode()
+                    except Exception:
+                        candidate = ""
+                id_val_raw = str(candidate).strip()
+            else:
+                id_val_raw = str(candidate or "").strip()
 
-        if not id_val or not _is_ha_id(id_val):
-            return web.json_response({"ok": False, "error": "valid HA user id required (e.g. HA001)"}, status=400)
+        id_val = normalize_ha_id(id_val_raw)
+        if not id_val:
+            return web.json_response(
+                {"ok": False, "error": "valid HA user id required (e.g. HA001 or HA-001)"},
+                status=400,
+            )
         if not file_bytes:
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
 
@@ -2361,7 +2400,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
             data = await request.json()
         except Exception:
             data = {}
-        user_id = str(data.get("id") or "").strip()
+        user_id = normalize_ha_id(data.get("id"))
         phone_service = str(data.get("phone_service") or "").strip()
         raw_name = data.get("name")
         provided_name = ""
@@ -2370,7 +2409,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         elif raw_name not in (None, ""):
             provided_name = str(raw_name).strip()
 
-        if not _is_ha_id(user_id):
+        if not user_id:
             return web.json_response({"ok": False, "error": "valid HA user id required"}, status=400)
         if not phone_service:
             return web.json_response({"ok": False, "error": "phone_service required"}, status=400)

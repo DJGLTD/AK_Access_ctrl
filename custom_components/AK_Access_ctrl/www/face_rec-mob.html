@@ -221,7 +221,15 @@ function signedPath(key, fallback){
 const API_UPLOAD_FACE = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face');
 
 function qsGet(k){ return new URLSearchParams(location.search).get(k) || ''; }
-const USER_ID = qsGet('user');      // e.g. HA001
+function normalizeHaId(value){
+  if (!value) return '';
+  const match = String(value).trim().match(/^HA-?(\d{3,})$/i);
+  if (!match) return '';
+  return `HA${match[1]}`;
+}
+const RAW_USER_ID = qsGet('user');      // e.g. HA001 or HA-001
+const USER_ID = normalizeHaId(RAW_USER_ID);
+const USER_ID_DISPLAY = USER_ID || (RAW_USER_ID ? RAW_USER_ID.trim() : '');
 const USER_NAME = (qsGet('name') || '').trim();
 const DEVICE_ID = qsGet('device');  // informational for now
 
@@ -283,8 +291,8 @@ function snapToCanvas(){
 
 /* ---------- Upload helpers ---------- */
 async function uploadBlobAsJpg(blob){
-  if (!USER_ID || !/^HA\d{3}$/.test(USER_ID)){
-    setStatus('Missing or invalid user id. This page must be opened with ?user=HAxxx.', false);
+  if (!USER_ID){
+    setStatus('Missing or invalid user id. This page must be opened with ?user=HAXXX (e.g. HA123 or HA-123).', false);
     return;
   }
   const fd = new FormData();
@@ -346,8 +354,8 @@ async function uploadFromFile(){
 document.addEventListener('DOMContentLoaded', ()=>{
   const badge = document.getElementById('userBadge');
   if (badge){
-    if (USER_ID){
-      badge.textContent = USER_ID;
+    if (USER_ID_DISPLAY){
+      badge.textContent = USER_ID_DISPLAY;
     }else{
       badge.textContent = '(unknown)';
     }
