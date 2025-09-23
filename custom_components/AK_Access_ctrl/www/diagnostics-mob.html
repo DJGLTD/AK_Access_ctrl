@@ -86,11 +86,28 @@
     }
     .badge.method.get{ background:rgba(13,202,240,0.18); color:#0dcaf0; }
     .badge.method.post{ background:rgba(111,66,193,0.22); color:#d5b7ff; }
+    .badge.diag-type-badge{
+      background:rgba(13,110,253,0.18);
+      color:#9bbcff;
+      letter-spacing:0.04em;
+      text-transform:uppercase;
+      font-size:0.7rem;
+    }
     .diag-status-badge{ font-size:0.7rem; text-transform:uppercase; letter-spacing:0.04em; }
     .diag-status-ok{ background:rgba(25,135,84,0.22); color:#2ff0c4; }
     .diag-status-error{ background:rgba(220,53,69,0.25); color:#ff7d8a; }
     .diag-error-text{ color:#ff7d8a; font-weight:500; }
     .alert.d-none{ display:none !important; }
+    .diag-settings-card{ background:var(--panel); border:1px solid var(--border); border-radius:1rem; margin-top:1rem; }
+    .diag-settings-card .card-body{ padding:1.25rem; }
+    .diag-settings-card .form-control{ background:#0d1729; border:1px solid #1c2e4f; color:var(--text); }
+    .diag-settings-card .form-control:focus{ background:#0d1729; color:var(--text); border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(47,240,196,0.25); }
+    .diag-settings-card .form-select{ background:#0d1729; border:1px solid #1c2e4f; color:var(--text); }
+    .diag-settings-card .form-select:focus{ background:#0d1729; color:var(--text); border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(47,240,196,0.25); }
+    .diag-settings-card .form-text{ color:var(--muted); }
+    .diag-settings-status{ font-size:0.85rem; margin-top:0.75rem; }
+    .diag-settings-status.success{ color:#2ff0c4; }
+    .diag-settings-status.error{ color:#ff7d8a; }
     @media (max-width: 768px){
       .diag-container{ max-width:100%; padding:0 1rem; }
       .diag-toggle{ padding:0.85rem 1rem; }
@@ -455,6 +472,28 @@ function openInApp(view, params = {}, options = {}) {
   </div>
   <p class="muted mt-2">Review the most recent HTTP requests sent from Home Assistant to each Akuvox device. Entries include the request payload, status and timing so you can validate what was delivered.</p>
   <div id="statusMessage" class="alert alert-danger d-none" role="alert"></div>
+  <div class="diag-settings-card card">
+    <div class="card-body">
+      <div id="requestTypeFilterGroup" class="mb-4" hidden>
+        <label class="form-label text-uppercase small muted" for="requestTypeFilter">Request type filter</label>
+        <select id="requestTypeFilter" class="form-select">
+          <option value="__all__">All request types</option>
+        </select>
+        <div class="form-text mt-1">Choose a request type to focus the history shown below.</div>
+      </div>
+      <form id="historyLimitForm" class="row g-3 align-items-end">
+        <div class="col-12 col-md-7 col-lg-6">
+          <label class="form-label text-uppercase small muted" for="historyLimitInput">Stored request history</label>
+          <input id="historyLimitInput" class="form-control" type="number" min="10" max="200" step="1" />
+          <div id="historyLimitHelper" class="form-text mt-1">Store between 10 and 200 requests per device. Higher values preserve more history but use more memory.</div>
+        </div>
+        <div class="col-12 col-md-auto">
+          <button class="btn btn-info w-100" id="historyLimitSaveBtn" type="submit"><i class="bi bi-save me-1"></i>Save</button>
+        </div>
+      </form>
+      <div id="historyLimitStatus" class="diag-settings-status muted"></div>
+    </div>
+  </div>
   <div id="diagnosticDevices" class="mt-3"></div>
 </div>
 
@@ -463,7 +502,16 @@ const API_DIAGNOSTICS = signedPath('diagnostics', '/api/akuvox_ac/ui/diagnostics
 const busyEl = document.getElementById('busy');
 const statusEl = document.getElementById('statusMessage');
 const devicesEl = document.getElementById('diagnosticDevices');
+const typeFilterSelect = document.getElementById('requestTypeFilter');
+const typeFilterGroup = document.getElementById('requestTypeFilterGroup');
 let DIAG_DATA = [];
+let HISTORY_LIMIT = 50;
+let MIN_HISTORY_LIMIT = 10;
+let MAX_HISTORY_LIMIT = 200;
+let historyLimitSaving = false;
+const TYPE_FILTER_ALL = '__all__';
+const TYPE_FILTER_OTHER = '__other__';
+let ACTIVE_TYPE_FILTER = TYPE_FILTER_ALL;
 
 function setBusy(active){
   if (!busyEl) return;
@@ -481,6 +529,113 @@ function showStatus(message, tone = 'danger'){
   statusEl.textContent = message;
   statusEl.classList.remove('d-none', 'alert-danger', 'alert-warning', 'alert-success');
   statusEl.classList.add(tone === 'warning' ? 'alert-warning' : tone === 'success' ? 'alert-success' : 'alert-danger');
+}
+
+function setHistoryLimitStatus(message, tone = 'muted'){
+  const status = document.getElementById('historyLimitStatus');
+  if (!status) return;
+  if (!message){
+    status.textContent = '';
+    status.className = 'diag-settings-status muted';
+    return;
+  }
+  const classes = ['diag-settings-status'];
+  if (tone === 'success') classes.push('success');
+  else if (tone === 'error') classes.push('error');
+  else classes.push('muted');
+  status.className = classes.join(' ');
+  status.textContent = message;
+}
+
+function applyHistoryLimitResponse(data){
+  if (data && typeof data === 'object'){
+    const hist = Number(data.history_limit);
+    if (Number.isFinite(hist)) HISTORY_LIMIT = hist;
+    const minHist = Number(data.min_history_limit);
+    if (Number.isFinite(minHist)) MIN_HISTORY_LIMIT = minHist;
+    const maxHist = Number(data.max_history_limit);
+    if (Number.isFinite(maxHist)) MAX_HISTORY_LIMIT = maxHist;
+  }
+  if (MIN_HISTORY_LIMIT > MAX_HISTORY_LIMIT){
+    const tmp = MIN_HISTORY_LIMIT;
+    MIN_HISTORY_LIMIT = MAX_HISTORY_LIMIT;
+    MAX_HISTORY_LIMIT = tmp;
+  }
+  if (HISTORY_LIMIT < MIN_HISTORY_LIMIT) HISTORY_LIMIT = MIN_HISTORY_LIMIT;
+  if (HISTORY_LIMIT > MAX_HISTORY_LIMIT) HISTORY_LIMIT = MAX_HISTORY_LIMIT;
+  renderHistoryLimitControls();
+}
+
+function renderHistoryLimitControls(){
+  const input = document.getElementById('historyLimitInput');
+  if (input){
+    input.min = String(MIN_HISTORY_LIMIT);
+    input.max = String(MAX_HISTORY_LIMIT);
+    input.value = String(HISTORY_LIMIT);
+  }
+  const helper = document.getElementById('historyLimitHelper');
+  if (helper){
+    helper.textContent = `Store between ${MIN_HISTORY_LIMIT} and ${MAX_HISTORY_LIMIT} requests per device. Higher values preserve more history but use more memory.`;
+  }
+}
+
+async function saveHistoryLimit(){
+  if (historyLimitSaving) return;
+  const input = document.getElementById('historyLimitInput');
+  if (!input) return;
+  const raw = input.value;
+  if (raw === '' || raw === null || raw === undefined){
+    setHistoryLimitStatus('Enter a value', 'error');
+    input.focus();
+    return;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)){
+    setHistoryLimitStatus('Enter a whole number', 'error');
+    input.focus();
+    return;
+  }
+  const rounded = Math.round(parsed);
+  historyLimitSaving = true;
+  setHistoryLimitStatus('Saving…');
+  const btn = document.getElementById('historyLimitSaveBtn');
+  if (btn) btn.setAttribute('disabled', 'true');
+  try {
+    const response = await fetchWithAuth(API_DIAGNOSTICS, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ history_limit: rounded })
+    });
+    if (!response.ok){
+      const text = await response.text();
+      const err = buildError(response, text);
+      if (handleAuthError(err)) return;
+      let message = 'Save failed';
+      try {
+        const parsedBody = JSON.parse(text);
+        if (parsedBody && parsedBody.error) message = parsedBody.error;
+      } catch (parseErr) {
+        if (text) message = text;
+      }
+      setHistoryLimitStatus(message, 'error');
+      alert('Failed to update history limit: ' + message);
+      return;
+    }
+    const data = await response.json();
+    applyHistoryLimitResponse(data);
+    DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
+    refreshTypeFilterOptions(DIAG_DATA);
+    renderDevices(DIAG_DATA);
+    setHistoryLimitStatus('Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to update history limit', err);
+    setHistoryLimitStatus('Save failed', 'error');
+    alert('Failed to update history limit: ' + (err && err.message ? err.message : err));
+  } finally {
+    historyLimitSaving = false;
+    if (btn) btn.removeAttribute('disabled');
+  }
 }
 
 function escapeHtml(value){
@@ -517,8 +672,110 @@ function formatBody(data){
   }
 }
 
-function renderDevices(devices){
+function requestTypeValue(req){
+  if (!req || typeof req !== 'object') return TYPE_FILTER_OTHER;
+  const candidates = [req.diag_type, req.diagType, req.type];
+  for (const candidate of candidates){
+    if (candidate === undefined || candidate === null) continue;
+    const text = String(candidate).trim().toLowerCase();
+    if (text) return text;
+  }
+  if (req.method !== undefined && req.method !== null){
+    const methodText = String(req.method).trim().toLowerCase();
+    if (methodText) return `method:${methodText}`;
+  }
+  return TYPE_FILTER_OTHER;
+}
+
+function requestTypeLabelFromValue(value){
+  if (!value) return 'Other';
+  if (value === TYPE_FILTER_OTHER) return 'Other';
+  if (value.startsWith('method:')){
+    return value.slice(7).toUpperCase();
+  }
+  const capitalize = (segment) => segment ? segment.charAt(0).toUpperCase() + segment.slice(1) : '';
+  const prettify = (segment) => segment
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(capitalize)
+    .join(' ');
+  const colonParts = String(value)
+    .split(':')
+    .map((part) => part
+      .split('/')
+      .map(prettify)
+      .filter(Boolean)
+      .join(' / '));
+  const label = colonParts.filter(Boolean).join(': ');
+  return label || 'Other';
+}
+
+function collectTypeOptionEntries(devices){
+  const map = new Map();
+  (devices || []).forEach((device) => {
+    const requests = Array.isArray(device?.requests) ? device.requests : [];
+    requests.forEach((req) => {
+      const value = requestTypeValue(req);
+      if (!map.has(value)){
+        map.set(value, requestTypeLabelFromValue(value));
+      }
+    });
+  });
+  const entries = Array.from(map.entries()).map(([value, label]) => ({ value, label }));
+  entries.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  return entries;
+}
+
+function refreshTypeFilterOptions(devices){
+  if (!typeFilterSelect || !typeFilterGroup) return;
+  const previous = typeFilterSelect.value || ACTIVE_TYPE_FILTER;
+  const entries = collectTypeOptionEntries(devices);
+  typeFilterSelect.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = TYPE_FILTER_ALL;
+  allOpt.textContent = 'All request types';
+  typeFilterSelect.appendChild(allOpt);
+  entries.forEach(({ value, label }) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    typeFilterSelect.appendChild(opt);
+  });
+  const values = entries.map((entry) => entry.value);
+  let nextValue = TYPE_FILTER_ALL;
+  if (previous !== TYPE_FILTER_ALL && values.includes(previous)){
+    nextValue = previous;
+  } else if (previous === TYPE_FILTER_ALL) {
+    nextValue = TYPE_FILTER_ALL;
+  }
+  typeFilterSelect.value = nextValue;
+  ACTIVE_TYPE_FILTER = nextValue;
+  if (values.length){
+    typeFilterGroup.removeAttribute('hidden');
+  } else {
+    typeFilterGroup.setAttribute('hidden', 'true');
+  }
+}
+
+function matchesActiveType(req){
+  if (ACTIVE_TYPE_FILTER === TYPE_FILTER_ALL) return true;
+  return requestTypeValue(req) === ACTIVE_TYPE_FILTER;
+}
+
+function renderDevices(devices, options = {}){
   if (!devicesEl) return;
+  const preserveExpansion = options && options.preserveExpansion === true;
+  const expandedState = {};
+  if (preserveExpansion){
+    devicesEl.querySelectorAll('.diag-card').forEach((card) => {
+      const id = card?.dataset?.entryId;
+      const toggle = card.querySelector('.diag-toggle');
+      if (id && toggle && toggle.getAttribute('aria-expanded') === 'true'){
+        expandedState[id] = true;
+      }
+    });
+  }
+
   devicesEl.innerHTML = '';
   if (!devices || !devices.length){
     const empty = document.createElement('div');
@@ -530,21 +787,24 @@ function renderDevices(devices){
   devices.forEach((device, index) => {
     const card = document.createElement('div');
     card.className = 'card diag-card';
+    const entryKey = device?.entry_id || device?.mac || device?.host || device?.ip || device?.name || index;
+    card.dataset.entryId = String(entryKey);
     const lastTs = device.last_request_at || (device.requests && device.requests[0]?.timestamp);
     const metaParts = [];
     if (device.device_type) metaParts.push(device.device_type);
     if (device.ip) metaParts.push('IP ' + device.ip);
     if (device.host && device.host !== device.ip) metaParts.push('Host ' + device.host);
     if (lastTs) metaParts.push('Last request ' + formatDateTime(lastTs));
+    const startExpanded = preserveExpansion ? !!expandedState[card.dataset.entryId] : index === 0;
     card.innerHTML = `
-      <button class="diag-toggle" type="button" aria-expanded="${index === 0 ? 'true' : 'false'}">
+      <button class="diag-toggle" type="button" aria-expanded="${startExpanded ? 'true' : 'false'}">
         <div>
           <div class="diag-name">${escapeHtml(device.name || 'Device')}</div>
           <div class="diag-meta">${escapeHtml(metaParts.join(' • '))}</div>
         </div>
         <i class="bi bi-chevron-down"></i>
       </button>
-      <div class="diag-body" ${index === 0 ? '' : 'hidden'}></div>
+      <div class="diag-body" ${startExpanded ? '' : 'hidden'}></div>
     `;
     const toggle = card.querySelector('.diag-toggle');
     const body = card.querySelector('.diag-body');
@@ -554,7 +814,7 @@ function renderDevices(devices){
       renderRequestList(body, device);
       body.dataset.rendered = '1';
     };
-    if (index === 0) {
+    if (startExpanded) {
       ensureRendered();
     }
     toggle?.addEventListener('click', () => {
@@ -562,7 +822,9 @@ function renderDevices(devices){
       const expanded = toggle.getAttribute('aria-expanded') === 'true';
       toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
       body.hidden = expanded;
-      if (!expanded) ensureRendered();
+      if (!expanded){
+        ensureRendered();
+      }
     });
     devicesEl.appendChild(card);
   });
@@ -578,18 +840,29 @@ function renderRequestList(container, device){
     container.appendChild(empty);
     return;
   }
-  requests.forEach((req, idx) => {
+  const filtered = requests.filter((req) => matchesActiveType(req));
+  if (!filtered.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No requests match the current filter.';
+    container.appendChild(empty);
+    return;
+  }
+  filtered.forEach((req, idx) => {
     const details = document.createElement('details');
     details.className = 'diag-request';
     if (idx === 0) details.open = true;
     const method = String(req.method || 'GET').toUpperCase();
     const methodBadge = `<span class="badge method ${method.toLowerCase()}">${escapeHtml(method)}</span>`;
+    const typeLabel = requestTypeLabelFromValue(requestTypeValue(req));
+    const typeBadge = typeLabel ? `<span class="badge diag-type-badge">${escapeHtml(typeLabel)}</span>` : '';
     const path = req.path || '';
     const status = req.status != null ? String(req.status) : '—';
     const ok = req.ok === true;
     const summary = document.createElement('summary');
     summary.innerHTML = `
       ${methodBadge}
+      ${typeBadge}
       <code>${escapeHtml(path || (req.url || ''))}</code>
       <span class="diag-summary-meta">
         <span>Status: ${escapeHtml(status)}</span>
@@ -660,7 +933,10 @@ async function loadDiagnostics(){
       return;
     }
     const data = await response.json();
+    applyHistoryLimitResponse(data);
+    setHistoryLimitStatus('');
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
+    refreshTypeFilterOptions(DIAG_DATA);
     renderDevices(DIAG_DATA);
   } catch (err) {
     if (handleAuthError(err)) return;
@@ -680,6 +956,27 @@ document.addEventListener('DOMContentLoaded', () => {
     ev.preventDefault();
     loadDiagnostics();
   });
+  typeFilterSelect?.addEventListener('change', (ev) => {
+    const select = ev.target;
+    let next = TYPE_FILTER_ALL;
+    if (select && typeof select.value === 'string' && select.value) {
+      next = select.value;
+    }
+    if (!next) next = TYPE_FILTER_ALL;
+    if (next !== ACTIVE_TYPE_FILTER) {
+      ACTIVE_TYPE_FILTER = next;
+      renderDevices(DIAG_DATA, { preserveExpansion: true });
+    }
+  });
+  document.getElementById('historyLimitForm')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    await saveHistoryLimit();
+  });
+  document.getElementById('historyLimitInput')?.addEventListener('input', () => {
+    setHistoryLimitStatus('');
+  });
+  refreshTypeFilterOptions(DIAG_DATA);
+  renderHistoryLimitControls();
   loadDiagnostics();
 });
 </script>

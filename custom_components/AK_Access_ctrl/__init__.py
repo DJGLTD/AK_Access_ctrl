@@ -31,6 +31,9 @@ from .const import (
     DEFAULT_USE_HTTPS,
     DEFAULT_VERIFY_SSL,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
+    MIN_DIAGNOSTICS_HISTORY_LIMIT,
+    MAX_DIAGNOSTICS_HISTORY_LIMIT,
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
@@ -602,6 +605,7 @@ class AkuvoxSettingsStore(Store):
             "integrity_interval_minutes": self.DEFAULT_INTEGRITY_MINUTES,
             "auto_sync_delay_minutes": 30,
             "alerts": {"targets": {}},
+            "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
         }
 
     async def async_load(self):
@@ -636,6 +640,14 @@ class AkuvoxSettingsStore(Store):
         alerts["targets"] = self._sanitize_alert_targets(targets)
         self.data["alerts"] = alerts
 
+        try:
+            history_limit = self._normalize_diagnostics_history_limit(
+                self.data.get("diagnostics_history_limit", DEFAULT_DIAGNOSTICS_HISTORY_LIMIT)
+            )
+        except ValueError:
+            history_limit = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+        self.data["diagnostics_history_limit"] = history_limit
+
     async def async_save(self):
         await super().async_save(self.data)
 
@@ -668,6 +680,36 @@ class AkuvoxSettingsStore(Store):
         value = max(5, min(60, value))
         self.data["auto_sync_delay_minutes"] = value
         await self.async_save()
+
+    def _normalize_diagnostics_history_limit(self, limit: Any) -> int:
+        if limit is None:
+            raise ValueError("Invalid diagnostics history limit")
+        try:
+            value = int(limit)
+        except Exception as err:
+            raise ValueError("Invalid diagnostics history limit") from err
+        if value < MIN_DIAGNOSTICS_HISTORY_LIMIT:
+            return MIN_DIAGNOSTICS_HISTORY_LIMIT
+        if value > MAX_DIAGNOSTICS_HISTORY_LIMIT:
+            return MAX_DIAGNOSTICS_HISTORY_LIMIT
+        return value
+
+    def get_diagnostics_history_limit(self) -> int:
+        try:
+            return self._normalize_diagnostics_history_limit(
+                self.data.get("diagnostics_history_limit", DEFAULT_DIAGNOSTICS_HISTORY_LIMIT)
+            )
+        except ValueError:
+            return DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+
+    def get_diagnostics_history_bounds(self) -> Tuple[int, int]:
+        return (MIN_DIAGNOSTICS_HISTORY_LIMIT, MAX_DIAGNOSTICS_HISTORY_LIMIT)
+
+    async def set_diagnostics_history_limit(self, limit: Any) -> int:
+        value = self._normalize_diagnostics_history_limit(limit)
+        self.data["diagnostics_history_limit"] = value
+        await self.async_save()
+        return value
 
     def get_integrity_interval_minutes(self) -> int:
         try:
@@ -1557,6 +1599,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     cfg = {**entry.data, **entry.options}
     session = async_get_clientsession(hass)
 
+    settings_store: AkuvoxSettingsStore = root.get("settings_store")
+    try:
+        diagnostics_history_limit = (
+            settings_store.get_diagnostics_history_limit()
+            if settings_store
+            else DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+        )
+    except Exception:
+        diagnostics_history_limit = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
+
     api = AkuvoxAPI(
         host=cfg.get(CONF_HOST),
         port=cfg.get(CONF_PORT, 80),
@@ -1565,6 +1617,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         use_https=cfg.get("use_https", DEFAULT_USE_HTTPS),
         verify_ssl=cfg.get("verify_ssl", DEFAULT_VERIFY_SSL),
         session=session,
+        diagnostics_history_limit=diagnostics_history_limit,
     )
 
     storage = AkuvoxStorage(hass, entry.entry_id)
