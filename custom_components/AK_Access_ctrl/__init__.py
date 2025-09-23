@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
+from urllib.parse import urlparse
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -44,11 +45,20 @@ from .const import (
     ADMIN_DASHBOARD_URL_PATH,
 )
 
-from .relay import normalize_roles as normalize_relay_roles, relay_suffix_for_user
+from .relay import (
+    normalize_roles as normalize_relay_roles,
+    relay_suffix_for_user,
+    door_relays,
+)
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
-from .http import face_base_url, register_ui  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
+from .http import (
+    face_base_url,
+    face_storage_dir,
+    register_ui,
+    FACE_FILE_EXTENSIONS,
+)  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
@@ -222,13 +232,92 @@ def _key_holder_from_record(record: Dict[str, Any]) -> Optional[bool]:
 
 def _face_asset_exists(hass: HomeAssistant, user_id: str) -> bool:
     try:
-        face_dir = Path(__file__).parent / "www" / "FaceData"
-        if (face_dir / f"{user_id}.jpg").exists():
-            return True
-        legacy = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{user_id}.jpg"
-        return legacy.exists()
+        search_paths: List[Path] = []
+        try:
+            search_paths.append(face_storage_dir(hass))
+        except Exception:
+            pass
+
+        search_paths.append(Path(__file__).parent / "www" / "FaceData")
+
+        try:
+            search_paths.append(
+                Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData"
+            )
+        except Exception:
+            pass
+
+        for base in search_paths:
+            try:
+                for ext in FACE_FILE_EXTENSIONS:
+                    candidate = (base / f"{user_id}.{ext}").resolve()
+                    candidate.relative_to(base.resolve())
+                    if candidate.exists():
+                        return True
+            except Exception:
+                continue
     except Exception:
         return False
+
+    return False
+
+
+def _migrate_face_storage(hass: HomeAssistant) -> None:
+    """Copy face assets from legacy locations into the persistent store."""
+
+    try:
+        dest_dir = face_storage_dir(hass)
+    except Exception:
+        return
+
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+
+    sources: List[Path] = [Path(__file__).parent / "www" / "FaceData"]
+
+    try:
+        sources.append(Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData")
+    except Exception:
+        pass
+
+    for source in sources:
+        try:
+            resolved_source = source.resolve()
+        except Exception:
+            continue
+
+        if not resolved_source.exists() or not resolved_source.is_dir():
+            continue
+
+        try:
+            entries = list(resolved_source.iterdir())
+        except Exception:
+            continue
+
+        for candidate in entries:
+            if not candidate.is_file():
+                continue
+
+            suffix = candidate.suffix.lower().lstrip(".")
+            if suffix not in FACE_FILE_EXTENSIONS:
+                continue
+
+            dest = dest_dir / candidate.name
+
+            try:
+                dest.relative_to(dest_dir)
+            except Exception:
+                continue
+
+            if dest.exists():
+                continue
+
+            try:
+                dest.write_bytes(candidate.read_bytes())
+            except Exception:
+                continue
 
 
 def _desired_device_user_payload(
@@ -250,7 +339,7 @@ def _desired_device_user_payload(
     sched_map = sched_map or {}
     exit_allow_map = exit_allow_map or {}
 
-    schedule_name = (profile.get("schedule_name") or "24/7 Access").strip()
+    schedule_name = (profile.get("schedule_name") or local.get("Schedule") or "24/7 Access").strip()
     schedule_lower = schedule_name.lower()
     key_holder_flag = _key_holder_from_record(profile)
     if key_holder_flag is None:
@@ -278,26 +367,133 @@ def _desired_device_user_payload(
     except Exception:
         pass
 
+    door_digits = door_relays(relay_roles)
     relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
     schedule_relay = f"{schedule_id}-{relay_suffix};"
 
     device_type = str(device_type_raw or "").strip().lower()
     is_keypad = device_type == "keypad"
 
+    def _string_or_default(*values: Any, default: str) -> str:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text or text == "0":
+                return text
+        return default
+
+    def _first_group(*sources: Any) -> str:
+        for source in sources:
+            if isinstance(source, (list, tuple)):
+                for entry in source:
+                    text = _string_or_default(entry, default="")
+                    if text:
+                        return text
+            else:
+                text = _string_or_default(source, default="")
+                if text:
+                    return text
+        return "Default"
+
+    def _schedule_list_from_local() -> List[str]:
+        schedule_list: List[str] = []
+        local_schedule = local.get("Schedule")
+        if isinstance(local_schedule, (list, tuple, set)):
+            for entry in local_schedule:
+                text = _string_or_default(entry, default="")
+                if text:
+                    schedule_list.append(text)
+        elif local_schedule not in (None, ""):
+            text = _string_or_default(local_schedule, default="")
+            if text:
+                schedule_list.append(text)
+        local_schedule_id = _string_or_default(local.get("ScheduleID"), default="")
+        if local_schedule_id:
+            if not schedule_list:
+                schedule_list.append(local_schedule_id)
+            elif local_schedule_id not in schedule_list:
+                schedule_list.insert(0, local_schedule_id)
+        return schedule_list
+
+    def _normalise_license_plate() -> List[Dict[str, Any]]:
+        source = profile.get("license_plate")
+        if not isinstance(source, (list, tuple)):
+            source = profile.get("LicensePlate")
+        if not isinstance(source, (list, tuple)):
+            source = local.get("LicensePlate")
+        result: List[Dict[str, Any]] = []
+        if isinstance(source, (list, tuple)):
+            for entry in source:
+                result.append(entry if isinstance(entry, dict) else {})
+        while len(result) < 5:
+            result.append({})
+        if len(result) > 5:
+            result = result[:5]
+        return result
+
     name_value = profile.get("name")
-    if name_value not in (None, ""):
-        name = str(name_value)
-    else:
-        name = ha_key
+    if name_value in (None, ""):
+        name_value = local.get("Name") or ha_key
+    name = str(name_value)
+
+    group_value = _first_group(
+        profile.get("groups"),
+        local.get("Groups"),
+        local.get("Group"),
+    )
+
+    door_num = _string_or_default(
+        profile.get("door_num"),
+        profile.get("DoorNum"),
+        local.get("DoorNum"),
+        door_digits[0] if door_digits else None,
+        default="1",
+    )
+
+    lift_floor = _string_or_default(
+        profile.get("lift_floor_num"),
+        profile.get("lift_floor"),
+        local.get("LiftFloorNum"),
+        default="0",
+    )
+
+    schedule_list = _schedule_list_from_local()
+    if not schedule_list:
+        if schedule_id:
+            schedule_list = [schedule_id]
+        else:
+            schedule_list = ["1001"]
+
+    web_relay = _string_or_default(profile.get("web_relay"), local.get("WebRelay"), default="0")
+    priority_call = _string_or_default(profile.get("priority_call"), local.get("PriorityCall"), default="0")
+    dial_account = _string_or_default(profile.get("dial_account"), local.get("DialAccount"), default="0")
+    c4_event = _string_or_default(profile.get("c4_event_no"), local.get("C4EventNo"), default="0")
+    auth_mode = _string_or_default(profile.get("auth_mode"), local.get("AuthMode"), default="0")
+    card_code = _string_or_default(profile.get("card_code"), profile.get("CardCode"), local.get("CardCode"), default="")
+    ble_auth = _string_or_default(profile.get("ble_auth_code"), profile.get("BLEAuthCode"), local.get("BLEAuthCode"), default="")
 
     desired: Dict[str, Any] = {
         "UserID": ha_key,
         "Name": name,
-        "WebRelay": "0",
+        "DoorNum": door_num,
+        "LiftFloorNum": lift_floor,
+        "Schedule": schedule_list,
         "ScheduleRelay": schedule_relay,
+        "WebRelay": web_relay,
+        "Group": group_value,
+        "PriorityCall": priority_call,
+        "DialAccount": dial_account,
+        "C4EventNo": c4_event,
+        "AuthMode": auth_mode,
+        "LicensePlate": _normalise_license_plate(),
+        "CardCode": card_code,
+        "BLEAuthCode": ble_auth,
     }
 
     pin_value = profile.get("pin")
+    if pin_value in (None, ""):
+        pin_value = local.get("PrivatePIN") or local.get("Pin")
     if pin_value not in (None, ""):
         desired["PrivatePIN"] = str(pin_value)
 
@@ -312,7 +508,16 @@ def _desired_device_user_payload(
         if face_url in (None, ""):
             face_url = f"{face_root_base}/{ha_key}.jpg"
         if face_url not in (None, ""):
-            desired["FaceUrl"] = str(face_url)
+            face_url_str = str(face_url)
+            desired["FaceUrl"] = face_url_str
+            if not local.get("FaceFileName"):
+                parsed = urlparse(face_url_str)
+                candidate = Path(parsed.path).name
+            else:
+                candidate = _string_or_default(local.get("FaceFileName"), default="")
+            if not candidate:
+                candidate = f"{ha_key}.jpg"
+            desired["FaceFileName"] = candidate
 
     return desired
 
@@ -1562,6 +1767,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     root = hass.data[DOMAIN]
 
+    _migrate_face_storage(hass)
+
     if "groups_store" not in root:
         gs = AkuvoxGroupsStore(hass)
         await gs.async_load()
@@ -1665,7 +1872,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         Ensure component FaceData path exists (actual upload/capture handled elsewhere).
         Returns the canonical API URL (e.g. /api/AK_AC/FaceData/<USER>.jpg).
         """
-        face_root = Path(__file__).parent / "www" / "FaceData"
+        face_root = face_storage_dir(hass)
         face_root.mkdir(parents=True, exist_ok=True)
         filename = f"{user_id}.jpg"
         return f"/api/AK_AC/FaceData/{filename}"
@@ -1758,21 +1965,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 except Exception:
                     pass
 
-        # remove face file from the integration's asset folder
+        # remove face files from all known storage locations
+        face_dirs: List[Path] = []
         try:
-            face_path = Path(__file__).parent / "www" / "FaceData" / f"{key}.jpg"
-            if face_path.exists():
-                face_path.unlink()
+            face_dirs.append(face_storage_dir(hass))
         except Exception:
             pass
 
-        # clean up any legacy face file stored under /config/www/AK_Access_ctrl
+        face_dirs.append(Path(__file__).parent / "www" / "FaceData")
+
         try:
-            legacy_face = Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData" / f"{key}.jpg"
-            if legacy_face.exists():
-                legacy_face.unlink()
+            face_dirs.append(Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData")
         except Exception:
             pass
+
+        for base in face_dirs:
+            try:
+                resolved_base = base.resolve()
+            except Exception:
+                continue
+
+            for ext in FACE_FILE_EXTENSIONS:
+                try:
+                    candidate = (resolved_base / f"{key}.{ext}").resolve()
+                    candidate.relative_to(resolved_base)
+                except Exception:
+                    continue
+
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                    except Exception:
+                        continue
 
         queue: Optional[SyncQueue] = root.get("sync_queue")  # type: ignore[assignment]
         if queue:

@@ -5,6 +5,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
 from aiohttp import ClientSession, BasicAuth
@@ -407,44 +408,65 @@ class AkuvoxAPI:
         - "24/7 Access" / variants -> ScheduleID=1001
         - "No Access" / variants    -> ScheduleID=1002
         - Anything else by explicit name -> Schedule=<name>
-        Never send both ScheduleID and Schedule at the same time.
+        Preserve Schedule lists when provided so we can mirror the native payloads.
 
         NOTE: We pass ScheduleRelay through untouched (except light normalization below).
         """
+
         out = dict(d)
 
-        # explicit ID wins if present
-        if "ScheduleID" in out and str(out["ScheduleID"]).strip():
-            sval = str(out["ScheduleID"]).strip().lower()
+        schedule_list: Optional[List[str]] = None
+        schedule_name: Optional[str] = None
+
+        def _consume_schedule_value(value: Any) -> None:
+            nonlocal schedule_list, schedule_name
+            if isinstance(value, (list, tuple, set)):
+                cleaned: List[str] = []
+                for entry in value:
+                    text = str(entry or "").strip()
+                    if text:
+                        cleaned.append(text)
+                if cleaned:
+                    schedule_list = cleaned
+            elif value not in (None, ""):
+                text = str(value).strip()
+                if text:
+                    schedule_name = text
+
+        for key in ("Schedule", "schedule", "schedule_name"):
+            if key in out:
+                _consume_schedule_value(out.pop(key))
+
+        explicit_id = str(out.get("ScheduleID") or "").strip()
+        if explicit_id:
+            sval = explicit_id.lower()
             if sval in ("1001", "always", "24/7", "24x7", "24/7 access"):
                 out["ScheduleID"] = "1001"
             elif sval in ("1002", "never", "no access"):
                 out["ScheduleID"] = "1002"
             else:
-                out["ScheduleID"] = str(out["ScheduleID"]).strip()
-            # do not keep any name key
-            out.pop("Schedule", None)
-            out.pop("schedule", None)
-            out.pop("schedule_name", None)
-            return out
+                out["ScheduleID"] = explicit_id
+            if schedule_list is None and out["ScheduleID"].isdigit():
+                schedule_list = [out["ScheduleID"]]
+        elif schedule_name:
+            low = schedule_name.lower()
+            if low in ("24/7 access", "24/7", "24x7", "always"):
+                out["ScheduleID"] = "1001"
+                if schedule_list is None:
+                    schedule_list = ["1001"]
+            elif low in ("no access", "never"):
+                out["ScheduleID"] = "1002"
+                if schedule_list is None:
+                    schedule_list = ["1002"]
+            elif schedule_name.isdigit():
+                out["ScheduleID"] = schedule_name
+                if schedule_list is None:
+                    schedule_list = [schedule_name]
+            else:
+                out["Schedule"] = schedule_name  # custom schedule by name
 
-        # name-based mapping
-        name = None
-        for key in ("Schedule", "schedule", "schedule_name"):
-            if out.get(key):
-                name = str(out.pop(key)).strip()
-                break
-
-        if name is None:
-            return out
-
-        low = name.lower()
-        if low in ("24/7 access", "24/7", "24x7", "always"):
-            out["ScheduleID"] = "1001"
-        elif low in ("no access", "never"):
-            out["ScheduleID"] = "1002"
-        else:
-            out["Schedule"] = name  # custom schedule by name
+        if schedule_list is not None:
+            out["Schedule"] = schedule_list
 
         return out
 
@@ -505,6 +527,21 @@ class AkuvoxAPI:
 
         return ";".join(normalized) + ";"
 
+    @staticmethod
+    def _schedule_id_from_relay(val: Any) -> Optional[str]:
+        if val is None:
+            return None
+        text = str(val).strip()
+        if not text:
+            return None
+        segment = text.split(";", 1)[0]
+        if "-" in segment:
+            segment = segment.split("-", 1)[0]
+        segment = segment.strip()
+        if not segment or not segment.isdigit():
+            return None
+        return segment
+
     def _normalize_user_items_for_add_or_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
@@ -517,8 +554,16 @@ class AkuvoxAPI:
             it2 = self._map_schedule_fields(it or {})
 
             # ScheduleRelay normalization (pass-through otherwise)
+            relay_value = None
             if "ScheduleRelay" in it2:
-                it2["ScheduleRelay"] = self._normalize_schedule_relay(it2.get("ScheduleRelay"))
+                relay_value = it2.pop("ScheduleRelay")
+            if relay_value is None and "Schedule-Relay" in it2:
+                relay_value = it2.get("Schedule-Relay")
+            normalized_relay = self._normalize_schedule_relay(relay_value)
+            if normalized_relay is not None:
+                it2["Schedule-Relay"] = normalized_relay
+            else:
+                it2.pop("Schedule-Relay", None)
 
             d: Dict[str, Any] = {}
             for k, v in (it2 or {}).items():
@@ -526,11 +571,36 @@ class AkuvoxAPI:
                     continue
                 if isinstance(v, bool):
                     d[k] = "1" if v else "0"
+                    continue
+                if k == "Schedule" and isinstance(v, (list, tuple, set)):
+                    cleaned = [str(entry or "").strip() for entry in v if str(entry or "").strip()]
+                    d[k] = cleaned
+                    continue
+                if k in (
+                    "ID",
+                    "UserID",
+                    "Name",
+                    "PrivatePIN",
+                    "WebRelay",
+                    "KeyHolder",
+                    "ScheduleID",
+                    "PhoneNum",
+                    "FaceUrl",
+                    "DoorNum",
+                    "LiftFloorNum",
+                    "PriorityCall",
+                    "DialAccount",
+                    "C4EventNo",
+                    "AuthMode",
+                    "Group",
+                    "CardCode",
+                    "BLEAuthCode",
+                    "FaceFileName",
+                    "Schedule-Relay",
+                ):
+                    d[k] = str(v)
                 else:
-                    if k in ("ID", "UserID", "Name", "PrivatePIN", "WebRelay", "KeyHolder", "ScheduleID", "Schedule", "PhoneNum", "FaceUrl"):
-                        d[k] = str(v)
-                    else:
-                        d[k] = v
+                    d[k] = v
             norm.append(d)
         return norm
 
@@ -772,7 +842,85 @@ class AkuvoxAPI:
         Per manual: target=user, action=add, data.item=[{UserID/ID/Name/...}].
         We normalize booleans, schedule name/ID, and ScheduleRelay lightly.
         """
-        items = self._normalize_user_items_for_add_or_set(items)
+        # Ensure defaults for new user fields expected by newer firmwares.
+        prepared: List[Dict[str, Any]] = []
+        for original in items or []:
+            base = dict(original or {})
+
+            def _ensure_str(key: str, default: str) -> None:
+                value = base.get(key)
+                if value is None:
+                    base[key] = default
+                    return
+                text = str(value).strip()
+                if text or text == "0":
+                    base[key] = text
+                else:
+                    base[key] = default
+
+            _ensure_str("AuthMode", "0")
+            _ensure_str("C4EventNo", "0")
+            _ensure_str("DoorNum", "1")
+            _ensure_str("LiftFloorNum", "0")
+            _ensure_str("WebRelay", "0")
+            _ensure_str("PriorityCall", "0")
+            _ensure_str("DialAccount", "0")
+            _ensure_str("Group", "Default")
+            if "CardCode" in base:
+                _ensure_str("CardCode", "")
+            else:
+                base["CardCode"] = ""
+            if "BLEAuthCode" in base:
+                _ensure_str("BLEAuthCode", "")
+            else:
+                base["BLEAuthCode"] = ""
+
+            lp = base.get("LicensePlate")
+            if not isinstance(lp, list):
+                lp = []
+            cleaned_lp: List[Dict[str, Any]] = []
+            for entry in lp:
+                cleaned_lp.append(entry if isinstance(entry, dict) else {})
+            while len(cleaned_lp) < 5:
+                cleaned_lp.append({})
+            base["LicensePlate"] = cleaned_lp[:5]
+
+            raw_schedule = base.get("Schedule")
+            schedule_list: List[str] = []
+            if isinstance(raw_schedule, (list, tuple, set)):
+                for entry in raw_schedule:
+                    text = str(entry or "").strip()
+                    if text:
+                        schedule_list.append(text)
+            elif raw_schedule not in (None, ""):
+                text = str(raw_schedule).strip()
+                if text:
+                    schedule_list.append(text)
+            if not schedule_list:
+                relay_spec = base.get("Schedule-Relay") or base.get("ScheduleRelay")
+                sid = self._schedule_id_from_relay(relay_spec)
+                if sid:
+                    schedule_list = [sid]
+            if schedule_list:
+                base["Schedule"] = schedule_list
+            else:
+                base["Schedule"] = ["1001"]
+
+            if not base.get("FaceFileName"):
+                face_url = base.get("FaceUrl") or base.get("FaceURL")
+                candidate = None
+                if isinstance(face_url, str) and face_url.strip():
+                    candidate = Path(urlsplit(face_url).path).name
+                if not candidate:
+                    uid = str(base.get("UserID") or "").strip()
+                    if uid:
+                        candidate = f"{uid}.jpg"
+                if candidate:
+                    base["FaceFileName"] = candidate
+
+            prepared.append(base)
+
+        items = self._normalize_user_items_for_add_or_set(prepared)
         try:
             return await self._api_user("add", items)
         except Exception:
