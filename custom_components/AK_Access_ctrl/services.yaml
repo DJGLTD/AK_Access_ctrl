@@ -11,6 +11,14 @@ add_user:
       example: ["Front Gate", "Back Gate"]
       selector:
         object:
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
     relays:
       required: false
       example: "3"
@@ -56,6 +64,14 @@ edit_user:
       selector:
         select:
           options: ["0","1","2","3"]
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
     face_image_path:
       required: false
       selector:

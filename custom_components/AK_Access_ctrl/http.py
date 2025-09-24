@@ -99,6 +99,32 @@ def _face_image_exists(hass: HomeAssistant, user_id: str) -> bool:
         return False
 
 
+def _parse_access_date(value: Any) -> Optional[dt.date]:
+    """Normalize stored access dates to ``date`` objects."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
+        return value
+
+    if isinstance(value, dt.datetime):
+        return value.date()
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            base = text.split("T", 1)[0]
+            parsed = dt.datetime.strptime(base, "%Y-%m-%d")
+        except ValueError:
+            return None
+        return parsed.date()
+
+    return None
+
+
 def _normalize_boolish(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
@@ -1350,6 +1376,7 @@ class AkuvoxUIView(HomeAssistantView):
                     all_users = us.all() or {}
                 except Exception:
                     all_users = {}
+                today = dt.date.today()
                 for key, prof in all_users.items():
                     canonical = normalize_ha_id(key)
                     if not canonical or _profile_is_empty_reserved(prof):
@@ -1357,6 +1384,8 @@ class AkuvoxUIView(HomeAssistantView):
                     groups = _normalize_groups(prof.get("groups"))
                     face_status = str(prof.get("face_status") or "").strip().lower()
                     face_synced_at = prof.get("face_synced_at")
+                    access_start = _parse_access_date(prof.get("access_start"))
+                    access_end = _parse_access_date(prof.get("access_end"))
                     registry_users.append(
                         {
                             "id": canonical,
@@ -1375,6 +1404,10 @@ class AkuvoxUIView(HomeAssistantView):
                             "schedule_id": prof.get("schedule_id") or "",
                             "key_holder": bool(prof.get("key_holder", False)),
                             "access_level": prof.get("access_level") or "",
+                            "access_start": access_start.isoformat() if access_start else "",
+                            "access_end": access_end.isoformat() if access_end else "",
+                            "access_expired": bool(access_end and access_end <= today),
+                            "access_in_future": bool(access_start and access_start > today),
                         }
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
