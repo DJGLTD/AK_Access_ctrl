@@ -60,7 +60,7 @@ class AkuvoxAPI:
         port: int = 80,
         username: Optional[str] = None,
         password: Optional[str] = None,
-        use_https: bool = False,
+        use_https: bool = True,
         verify_ssl: bool = True,
         session: Optional[ClientSession] = None,
         diagnostics_history_limit: Optional[int] = None,
@@ -102,14 +102,13 @@ class AkuvoxAPI:
 
         # Try configured scheme/port first (both verify/no-verify for HTTPS)
         if initial_https:
-            combos.append((True, initial_port if initial_port != 80 else 443, False))
-            combos.append((True, initial_port if initial_port != 80 else 443, True))
+            https_port = initial_port if initial_port not in (0, 80) else 443
+            combos.append((True, https_port, False))
+            combos.append((True, https_port, True))
         else:
             combos.append((True, 443, False))
             combos.append((True, 443, True))
-
-        # HTTP on 80
-        combos.append((False, 80, True))
+            combos.append((False, 80, True))
 
         # If user provided custom port, test it
         if self.port not in (80, 443):
@@ -254,7 +253,9 @@ class AkuvoxAPI:
         bases: List[Tuple[bool, int, bool]] = []
         if self._detected:
             bases.append(self._detected)
-        bases.extend([(True, 443, False), (True, 443, True), (False, 80, True)])
+        bases.extend([(True, 443, False), (True, 443, True)])
+        if not self.use_https:
+            bases.append((False, 80, True))
 
         # Try all combinations
         last_exc: Optional[Exception] = None
@@ -273,7 +274,14 @@ class AkuvoxAPI:
             rel = next(iter(rel_paths))
         except StopIteration:
             rel = "/api/"
-        return await _attempt(self.use_https, self.port if self.port else (443 if self.use_https else 80), self.verify_ssl, rel)
+        fallback_port = self.port
+        if not fallback_port:
+            fallback_port = 443 if self.use_https else 80
+        elif self.use_https and fallback_port == 80:
+            fallback_port = 443
+        elif (not self.use_https) and fallback_port == 443:
+            fallback_port = 80
+        return await _attempt(self.use_https, fallback_port, self.verify_ssl, rel)
 
     def _coerce_history_limit(self, limit: Optional[int]) -> int:
         try:
@@ -727,7 +735,9 @@ class AkuvoxAPI:
             https, port, verify = self._detected
             schemes_ports.append((https, port, verify))
 
-        combos = [(True, 443, False), (True, 443, True), (False, 80, True)]
+        combos = [(True, 443, False), (True, 443, True)]
+        if not self.use_https:
+            combos.append((False, 80, True))
         if self.port not in (80, 443):
             combos.insert(0, (self.use_https, self.port, False if self.use_https else True))
             if self.use_https:
@@ -960,7 +970,9 @@ class AkuvoxAPI:
         bases: List[Tuple[bool, int, bool]] = []
         if self._detected:
             bases.append(self._detected)
-        bases.extend([(True, 443, False), (True, 443, True), (False, 80, True)])
+        bases.extend([(True, 443, False), (True, 443, True)])
+        if not self.use_https:
+            bases.append((False, 80, True))
 
         for https, port, verify in bases:
             for rel in rel_paths:
@@ -978,9 +990,16 @@ class AkuvoxAPI:
                     continue
 
         fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
+        fallback_port = self.port
+        if not fallback_port:
+            fallback_port = 443 if self.use_https else 80
+        elif self.use_https and fallback_port == 80:
+            fallback_port = 443
+        elif (not self.use_https) and fallback_port == 443:
+            fallback_port = 80
         return await _attempt(
             self.use_https,
-            self.port if self.port else (443 if self.use_https else 80),
+            fallback_port,
             self.verify_ssl,
             fallback_rel,
         )
