@@ -845,7 +845,7 @@ class AkuvoxAPI:
         *,
         filename: Optional[str] = None,
         dest_file: str = "Face",
-        index: Optional[str] = "",
+        index: Optional[str] = None,
         content_type: str = "image/jpeg",
     ) -> Dict[str, Any]:
         """Upload a face image to the device via the filetool import endpoint."""
@@ -857,9 +857,15 @@ class AkuvoxAPI:
         safe_filename = Path(safe_filename).name or "face.jpg"
         safe_dest = str(dest_file or "Face")
 
-        params: Dict[str, str] = {"destFile": safe_dest}
+        index_text: Optional[str] = None
         if index is not None:
-            params["index"] = str(index)
+            trimmed = str(index).strip()
+            if trimmed:
+                index_text = trimmed
+
+        params: Dict[str, str] = {"destFile": safe_dest}
+        if index_text is not None:
+            params["index"] = index_text
         query = urlencode(params)
 
         base_paths = (
@@ -877,8 +883,8 @@ class AkuvoxAPI:
             "filename": safe_filename,
             "size": len(file_bytes),
         }
-        if index is not None:
-            payload_info["index"] = str(index)
+        if index_text is not None:
+            payload_info["index"] = index_text
 
         await self._ensure_detected()
 
@@ -899,8 +905,8 @@ class AkuvoxAPI:
 
             form = FormData()
             form.add_field("destFile", safe_dest)
-            if index is not None:
-                form.add_field("index", str(index))
+            if index_text is not None:
+                form.add_field("index", index_text)
             form.add_field(
                 "file",
                 file_bytes,
