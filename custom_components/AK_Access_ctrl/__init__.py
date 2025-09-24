@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -138,6 +138,57 @@ def _context_user_name(hass: HomeAssistant, context) -> str:
 
 def _key_of_user(u: Dict[str, Any]) -> str:
     return str(u.get("UserID") or u.get("ID") or u.get("Name") or "")
+
+
+def _normalize_access_date(value: Any) -> Optional[str]:
+    """Normalize user access dates to ISO format or clear them."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        try:
+            normalized = datetime.strptime(text.split("T", 1)[0], "%Y-%m-%d")
+        except ValueError:
+            return ""
+        return normalized.date().isoformat()
+
+    return ""
+
+
+def _parse_access_date(value: Any) -> Optional[date]:
+    """Parse a stored access date into a ``date`` object."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, date):
+        return value
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            base = text.split("T", 1)[0]
+            parsed = datetime.strptime(base, "%Y-%m-%d")
+        except ValueError:
+            return None
+        return parsed.date()
+
+    return None
 
 
 _BOOLISH_TRUE = {
@@ -798,6 +849,8 @@ class AkuvoxUsersStore(Store):
         key_holder: Optional[bool] = None,
         access_level: Optional[str] = None,
         schedule_id: Optional[str] = None,  # allow explicit schedule ID (1001/1002/1003/…)
+        access_start: Optional[str] = None,
+        access_end: Optional[str] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -832,6 +885,18 @@ class AkuvoxUsersStore(Store):
             u["access_level"] = access_level
         if schedule_id is not None:
             u["schedule_id"] = str(schedule_id)
+        if access_start is not None:
+            normalized_start = _normalize_access_date(access_start)
+            if normalized_start:
+                u["access_start"] = normalized_start
+            else:
+                u.pop("access_start", None)
+        if access_end is not None:
+            normalized_end = _normalize_access_date(access_end)
+            if normalized_end:
+                u["access_end"] = normalized_end
+            else:
+                u.pop("access_end", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -1965,6 +2030,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             status="pending",
             # allow passing schedule_id explicitly, else resolver will map by name
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
+            access_start=d.get("access_start")
+            if "access_start" in d
+            else date.today().isoformat(),
+            access_end=d.get("access_end") if "access_end" in d else None,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -1991,6 +2060,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             face_url=new_face_url,
             status="pending",
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
+            access_start=d.get("access_start") if "access_start" in d else None,
+            access_end=d.get("access_end") if "access_end" in d else None,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)

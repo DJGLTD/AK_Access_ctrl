@@ -544,9 +544,43 @@ const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const $ = (sel) => document.querySelector(sel);
 
+function parseIsoDate(value){
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(text);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const candidate = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(candidate.getTime())
+    || candidate.getFullYear() !== year
+    || candidate.getMonth() !== month - 1
+    || candidate.getDate() !== day
+  ){
+    return null;
+  }
+  return candidate;
+}
+
+function computeAccessState(startStr, endStr){
+  const startDate = parseIsoDate(startStr);
+  const endDate = parseIsoDate(endStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return {
+    startDate,
+    endDate,
+    expired: !!(endDate && endDate <= today),
+    notStarted: !!(startDate && startDate > today)
+  };
+}
+
 function badge(text, kind, attrs = ''){
   const normalized = String(kind || '').toLowerCase();
   const k = normalized === 'online' ? 'badge-online'
+          : normalized === 'expired' ? 'badge-offline'
           : normalized === 'offline' ? 'badge-offline'
           : normalized === 'rebooting' ? 'badge-rebooting'
           : normalized === 'in_sync' ? 'badge-in-sync'
@@ -865,6 +899,10 @@ function renderUsers(devs, registryUsers){
       schedule_id: r.schedule_id || '',
       access_level: r.access_level || '',
       key_holder: !!r.key_holder,
+      access_start: r.access_start || '',
+      access_end: r.access_end || '',
+      access_expired: !!r.access_expired,
+      access_in_future: !!r.access_in_future,
       face_url: extractFaceUrl(r),
       face_status: statusHint,
       face_synced_at: r.face_synced_at || '',
@@ -960,10 +998,15 @@ function renderUsers(devs, registryUsers){
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
       : !requiredIds.length;
+    const accessState = computeAccessState(item.access_start, item.access_end);
+    const expired = item.access_expired || accessState.expired;
+    const notStarted = item.access_in_future || accessState.notStarted;
     const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
     const baseLower = String(baseLabel).toLowerCase();
     let accessText;
-    if (item._denied && baseLower !== 'no access') {
+    if (expired) {
+      accessText = 'Expired';
+    } else if (item._denied && baseLower !== 'no access') {
       accessText = 'Denied';
     } else if (String(item.status || '').toLowerCase() === 'pending') {
       accessText = 'Pending';
@@ -996,6 +1039,8 @@ function renderUsers(devs, registryUsers){
     return {
       ...rest,
       access: accessText,
+      access_expired: expired,
+      access_in_future: notStarted,
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
       face_active: !!faceActiveFinal,
       face_status: faceStatusFinal
@@ -1019,6 +1064,7 @@ function renderUsers(devs, registryUsers){
     let accessBadge = '';
     if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
+    else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
     else accessBadge = badge(accessStr, 'in_sync');
     const faceStatusLower = String(u.face_status || '').toLowerCase();
     let faceBadge;
