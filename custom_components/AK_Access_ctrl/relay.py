@@ -98,23 +98,43 @@ def alarm_relays(roles: Dict[str, str]) -> List[str]:
 
 
 def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: Any) -> str:
-    door_digits = door_relays(roles)
-    if key_holder:
-        alarm_digits = alarm_relays(roles)
-    else:
-        alarm_digits = []
-    # Ensure keypad never uses relay B
-    if str(device_type or "").strip().lower() == "keypad":
-        allowed = {"1"}
-    else:
-        allowed = {"1", "2"}
+    """Return relay digits a user should receive based on their key holder flag."""
+
+    def _digit_for_key(key: str) -> str:
+        return "1" if key == "relay_a" else "2"
+
+    requested: List[str] = []
+    blocked_door_alarm = False
+
+    for key in RELAY_KEYS:
+        digit = _digit_for_key(key)
+        role = roles.get(key)
+
+        if role == RELAY_ROLE_DOOR:
+            if digit not in requested:
+                requested.append(digit)
+        elif role == RELAY_ROLE_DOOR_ALARM:
+            if key_holder:
+                if digit not in requested:
+                    requested.append(digit)
+            else:
+                blocked_door_alarm = True
+
+        if key_holder and role in (RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM):
+            if digit not in requested:
+                requested.append(digit)
+
+    device = str(device_type or "").strip().lower()
+    allowed_digits = {"1"} if device == "keypad" else {"1", "2"}
+
     ordered: List[str] = []
     for digit in ("1", "2"):
-        if digit in door_digits or digit in alarm_digits:
-            if digit in allowed and digit not in ordered:
-                ordered.append(digit)
-    if not ordered:
+        if digit in requested and digit in allowed_digits and digit not in ordered:
+            ordered.append(digit)
+
+    if not ordered and not blocked_door_alarm and "1" in allowed_digits:
         ordered.append("1")
+
     return "".join(ordered)
 
 
