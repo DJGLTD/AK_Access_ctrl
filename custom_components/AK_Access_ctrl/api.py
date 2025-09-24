@@ -406,9 +406,22 @@ class AkuvoxAPI:
             items = list(self._request_log)[:limit]
         return [json.loads(json.dumps(item)) for item in items]
 
-    async def _post_api(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """POST to /api/ then /action as fallback."""
-        return await self._request_attempts("POST", ("/api/", "/action"), payload)
+    async def _post_api(
+        self,
+        payload: Dict[str, Any],
+        *,
+        rel_paths: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """POST to common API endpoints, allowing custom fallbacks per target."""
+
+        paths: Tuple[str, ...]
+        if rel_paths is None:
+            paths = ("/api/", "/action")
+        else:
+            paths = tuple(rel_paths)
+            if not paths:
+                paths = ("/api/", "/action")
+        return await self._request_attempts("POST", paths, payload)
 
     async def _get_api(self, primary: str, *fallbacks: str) -> Dict[str, Any]:
         """GET with fallback paths."""
@@ -661,11 +674,11 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {"target": "user", "action": action}
         if items is not None:
             payload["data"] = {"item": items}
-        return await self._post_api(payload)
+        return await self._post_api(payload, rel_paths=("/api/user/", "/api/", "/action"))
 
     async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
-        return await self._post_api(payload)
+        return await self._post_api(payload, rel_paths=("/api/contact/", "/api/", "/action"))
 
     # -------------------- diagnostics --------------------
     async def ping_info(self) -> Dict[str, Any]:
