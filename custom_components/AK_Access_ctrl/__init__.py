@@ -543,6 +543,10 @@ def _desired_device_user_payload(
         "BLEAuthCode": ble_auth,
     }
 
+    device_id = _string_or_default(profile.get("device_id"), local.get("ID"), default="")
+    if device_id:
+        desired["ID"] = device_id
+
     pin_value = profile.get("pin")
     if pin_value in (None, ""):
         pin_value = local.get("PrivatePIN") or local.get("Pin")
@@ -1673,8 +1677,16 @@ class SyncManager:
         return name_to_id
 
     async def _replace_user_on_device(self, api: AkuvoxAPI, desired: Dict[str, Any], ha_key: str):
-        """Delete the device record for ha_key (by ID/UserID/Name) then re-add with desired payload."""
-        del_key = desired.get("ID") or desired.get("UserID") or desired.get("Name") or ha_key
+        """Update the device record for ha_key, falling back to delete + re-add if needed."""
+        payload = dict(desired or {})
+
+        try:
+            await api.user_set([payload])
+            return
+        except Exception:
+            pass
+
+        del_key = payload.get("ID") or payload.get("UserID") or payload.get("Name") or ha_key
         try:
             await api.user_delete(str(del_key))
         except Exception:
@@ -1686,7 +1698,9 @@ class SyncManager:
                 pass
         await asyncio.sleep(0.25)
         try:
-            await api.user_add([desired])
+            add_payload = dict(payload)
+            add_payload.pop("ID", None)
+            await api.user_add([add_payload])
         except Exception:
             pass
 
@@ -2490,6 +2504,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except Exception:
                 pass
 
+    async def svc_refresh_events(call):
+        entry_id = call.data.get("entry_id")
+        root = hass.data[DOMAIN]
+
+        coords: List[AkuvoxCoordinator] = []
+        if entry_id:
+            data = root.get(entry_id)
+            coord = data and data.get("coordinator")
+            if coord:
+                coords.append(coord)
+        else:
+            for key, data in root.items():
+                if key in (
+                    "groups_store",
+                    "users_store",
+                    "schedules_store",
+                    "settings_store",
+                    "sync_manager",
+                    "sync_queue",
+                    "_ui_registered",
+                    "_panel_registered",
+                ):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                coord = data.get("coordinator")
+                if coord:
+                    coords.append(coord)
+
+        for coord in coords:
+            try:
+                await coord.async_refresh_access_history()
+            except Exception:
+                pass
+
     async def svc_force_full_sync(call):
         entry_id = call.data.get("entry_id")
         triggered_by = _context_user_name(hass, getattr(call, "context", None))
@@ -2570,6 +2619,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "delete_user", svc_delete_user)
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)
     hass.services.async_register(DOMAIN, "reboot_device", svc_reboot_device)
+    hass.services.async_register(DOMAIN, "refresh_events", svc_refresh_events)
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)
     hass.services.async_register(DOMAIN, "create_group", svc_create_group)

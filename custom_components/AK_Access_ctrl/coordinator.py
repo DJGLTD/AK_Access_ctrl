@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED
+from .ha_id import normalize_ha_id
 from .api import AkuvoxAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -121,6 +123,18 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self.users: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []  # newest first
         self._was_online: Optional[bool] = None
+        self.event_state: Dict[str, Any] = {
+            "last_user_name": None,
+            "last_user_id": None,
+            "last_event_type": None,
+            "last_event_summary": None,
+            "last_event_timestamp": None,
+            "last_event_key_holder": None,
+            "granted_active": False,
+            "granted_key_holder_active": False,
+            "denied_active": False,
+        }
+        self._event_reset_handles: Dict[str, Callable[[], None]] = {}
 
     # Stable accessor other code can use
     @property
@@ -516,6 +530,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         tokens = self._event_summary_tokens(event)
         summary_text = " ".join(tokens)
+        event_kind: Optional[str] = None
         if tokens and self._event_is_access_denied(tokens):
             try:
                 await self._send_alert_notification(
@@ -526,6 +541,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 )
             except Exception as err:
                 _LOGGER.debug("Failed to dispatch denied alert: %s", _safe_str(err))
+            event_kind = "denied"
         elif tokens and self._event_is_access_granted(tokens):
             try:
                 await self._send_alert_notification(
@@ -536,8 +552,168 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 )
             except Exception as err:
                 _LOGGER.debug("Failed to dispatch granted alert: %s", _safe_str(err))
+            event_kind = "granted"
+
+        if event_kind:
+            self._update_access_state(event_kind, event, user_id=user_id, summary=summary_text or None)
 
         return storage_changed
+
+    def _update_access_state(
+        self,
+        kind: str,
+        event: Dict[str, Any],
+        *,
+        user_id: Optional[str],
+        summary: Optional[str],
+    ) -> None:
+        state = self.event_state
+
+        timestamp = self._extract_event_timestamp(event) or _now_iso(self.hass)
+        if state.get("last_event_timestamp") != timestamp:
+            state["last_event_timestamp"] = timestamp
+
+        summary_text = summary or " ".join(self._event_summary_tokens(event)) or None
+        if state.get("last_event_summary") != summary_text:
+            state["last_event_summary"] = summary_text
+
+        if state.get("last_event_type") != kind:
+            state["last_event_type"] = kind
+
+        if state.get("last_user_id") != user_id:
+            state["last_user_id"] = user_id
+
+        name = self._extract_event_user_name(event) or user_id or ""
+        if not name:
+            name = "Unknown"
+        if state.get("last_user_name") != name:
+            state["last_user_name"] = name
+
+        key_holder = self._extract_event_key_holder(event, user_id=user_id)
+        if state.get("last_event_key_holder") != key_holder:
+            state["last_event_key_holder"] = key_holder
+
+        if kind == "granted":
+            self._activate_event_flag("granted_active")
+            if key_holder:
+                self._activate_event_flag("granted_key_holder_active")
+            else:
+                self._deactivate_event_flag("granted_key_holder_active")
+        elif kind == "denied":
+            self._activate_event_flag("denied_active")
+
+        # Always notify listeners so downstream sensors refresh even if the
+        # latest event reuses existing state (e.g. duplicate grant within timer).
+        self.async_update_listeners()
+
+    def _activate_event_flag(self, flag: str) -> bool:
+        prev = bool(self.event_state.get(flag))
+        self.event_state[flag] = True
+        handle = self._event_reset_handles.pop(flag, None)
+        if handle:
+            try:
+                handle()
+            except Exception:
+                pass
+
+        def _reset(_now):
+            self.event_state[flag] = False
+            self._event_reset_handles.pop(flag, None)
+            self.async_update_listeners()
+
+        self._event_reset_handles[flag] = async_call_later(self.hass, 3, _reset)
+        return not prev
+
+    def _deactivate_event_flag(self, flag: str) -> bool:
+        if not self.event_state.get(flag):
+            return False
+        self.event_state[flag] = False
+        handle = self._event_reset_handles.pop(flag, None)
+        if handle:
+            try:
+                handle()
+            except Exception:
+                pass
+        return True
+
+    def _extract_event_user_name(self, event: Dict[str, Any]) -> Optional[str]:
+        for key in (
+            "Name",
+            "UserName",
+            "User",
+            "UserID",
+            "UserId",
+            "ID",
+            "CardNo",
+            "CardNumber",
+        ):
+            val = event.get(key)
+            if val in (None, ""):
+                continue
+            text = _safe_str(val).strip()
+            if text:
+                return text
+        return None
+
+    def _extract_event_key_holder(
+        self, event: Dict[str, Any], *, user_id: Optional[str]
+    ) -> Optional[bool]:
+        for key in ("key_holder", "KeyHolder", "keyHolder"):
+            if key in event:
+                flag = event.get(key)
+                if isinstance(flag, bool):
+                    return flag
+                if isinstance(flag, (int, float)):
+                    return bool(flag)
+                if isinstance(flag, str):
+                    lower = flag.strip().lower()
+                    if lower in {"1", "true", "t", "yes", "y", "on"}:
+                        return True
+                    if lower in {"0", "false", "f", "no", "n", "off"}:
+                        return False
+
+        if not user_id:
+            return None
+
+        canonical = normalize_ha_id(user_id) or user_id
+        if not canonical:
+            return None
+
+        try:
+            root = self.hass.data.get(DOMAIN, {}) or {}
+            store = root.get("users_store")
+        except Exception:
+            store = None
+
+        if not store:
+            return None
+
+        try:
+            profile = store.get(canonical)
+        except Exception:
+            profile = None
+
+        if isinstance(profile, dict) and "key_holder" in profile:
+            try:
+                return bool(profile.get("key_holder"))
+            except Exception:
+                return None
+
+        return None
+
+    async def async_refresh_access_history(self):
+        try:
+            await self._process_door_events()
+        finally:
+            self.async_update_listeners()
+
+    async def async_refresh_inbound_call_history(self):
+        try:
+            from .http import _process_inbound_call_webhook
+
+            await _process_inbound_call_webhook(self.hass)
+        except Exception as err:
+            _LOGGER.debug("Failed to refresh inbound call history: %s", _safe_str(err))
 
     async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
         """Send notifications for a door event (best effort)."""

@@ -583,6 +583,41 @@ function groupsIntersect(a, b){
   return (a || []).some(g => set.has(String(g).toLowerCase()));
 }
 
+function canonicalString(value){
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  try {
+    return String(value).trim();
+  } catch (err) {
+    return '';
+  }
+}
+
+function deviceUserKey(record){
+  if (!record || typeof record !== 'object') return '';
+  const source = canonicalString(record.Source || record.source).toLowerCase();
+  const userId = canonicalString(record.UserID || record.user_id);
+  if (userId) return userId;
+
+  const contactId = canonicalString(record.ContactID || record.contact_id);
+  const phone = canonicalString(record.PhoneNum || record.phone || record.Phone);
+  const card = canonicalString(record.CardCode || record.card_code);
+  const name = canonicalString(record.Name || record.name);
+
+  if (source === 'cloud') {
+    if (contactId) return `cloud:${contactId}`;
+    if (phone) return `cloud:phone:${phone}`;
+    if (card) return `cloud:card:${card}`;
+    if (name) return `cloud:name:${name.toLowerCase()}`;
+  }
+
+  const deviceId = canonicalString(record.ID || record.id);
+  if (deviceId) return deviceId;
+  if (contactId) return contactId;
+  if (name) return name;
+  return '';
+}
+
 function safeDeviceName(d){
   return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
 }
@@ -700,7 +735,7 @@ function compileUsers(devices, registryUsers){
     const entryId = String(d.entry_id || d.id || '');
     const deviceGroups = normalizeGroupsList(d.sync_groups || []);
     (d._users || d.users || []).forEach(u => {
-      const key = String(u.UserID || u.ID || u.Name || '');
+      const key = deviceUserKey(u);
       if (!key) return;
       const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
       const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
@@ -791,7 +826,7 @@ function compileUsers(devices, registryUsers){
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
     const baseLower = String(baseLabel).toLowerCase();
-    let accessText;
+    let accessText = 'Pending';
     if (expired) {
       accessText = 'Expired';
     } else if (item._denied && baseLower !== 'no access') {
@@ -800,10 +835,10 @@ function compileUsers(devices, registryUsers){
       accessText = 'Pending';
     } else if (pendingDevices.length) {
       accessText = 'Pending';
-    } else if (!requiredIds.length || allVerified) {
-      accessText = baseLabel;
-    } else {
-      accessText = 'Pending';
+    } else if (!requiredIds.length) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
+    } else if (allVerified) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     }
     const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
     const statusLower = String(rest.face_status || '').trim().toLowerCase();
