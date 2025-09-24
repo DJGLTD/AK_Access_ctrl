@@ -672,9 +672,19 @@ class AkuvoxGroupsStore(Store):
 
 
 class AkuvoxSchedulesStore(Store):
-    """Named week schedules stored centrally, synced to devices during reconcile."""
+    """Named access schedules stored centrally, synced to devices during reconcile."""
 
     _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+    _API_DAY_KEYS = {
+        "mon": "Mon",
+        "tue": "Tue",
+        "wed": "Wed",
+        "thu": "Thur",
+        "fri": "Fri",
+        "sat": "Sat",
+        "sun": "Sun",
+    }
 
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, f"{DOMAIN}_schedules.json")
@@ -686,31 +696,161 @@ class AkuvoxSchedulesStore(Store):
             return val.strip().lower() in {"1", "true", "yes", "y", "on", "enable", "enabled"}
         return bool(val)
 
+    @staticmethod
+    def _time_to_minutes(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            minutes = int(value)
+            if minutes < 0:
+                minutes = 0
+            if minutes > 23 * 60 + 59:
+                minutes = 23 * 60 + 59
+            return minutes
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.isdigit() and len(text) in (3, 4):
+            if len(text) == 3:
+                text = f"0{text}"
+            try:
+                hours = int(text[:2])
+                minutes = int(text[2:])
+            except ValueError:
+                return None
+        else:
+            parts = text.split(":")
+            if len(parts) < 2:
+                return None
+            try:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+            except ValueError:
+                return None
+        if hours < 0:
+            hours = 0
+        if minutes < 0:
+            minutes = 0
+        if hours > 23:
+            hours = 23
+        if minutes > 59:
+            minutes = 59
+        return hours * 60 + minutes
+
+    @classmethod
+    def _clean_time(cls, value: Any, *, default: str) -> str:
+        minutes = cls._time_to_minutes(value)
+        if minutes is None:
+            minutes = cls._time_to_minutes(default)
+        if minutes is None:
+            minutes = 0
+        hours = minutes // 60
+        mins = minutes % 60
+        return f"{hours:02d}:{mins:02d}"
+
     def _default_exit_flag(self, name: str) -> bool:
         low = (name or "").strip().lower()
         return low in {"24/7 access", "24/7", "24x7", "always"}
 
     def _normalize_payload(self, name: str, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        normalized: Dict[str, Any] = {day: [] for day in self._DAYS}
-        normalized["always_permit_exit"] = self._default_exit_flag(name)
+        normalized: Dict[str, Any] = {
+            "start": "00:00",
+            "end": "23:59",
+            "days": list(self._DAYS),
+            "always_permit_exit": self._default_exit_flag(name),
+            "type": "2",
+            "date_start": "",
+            "date_end": "",
+        }
+
+        days_selected: set[str] = set()
+        found_start: Optional[int] = None
+        found_end: Optional[int] = None
 
         if isinstance(payload, dict):
+            raw_start = (
+                payload.get("start")
+                or payload.get("Start")
+                or payload.get("time_start")
+                or payload.get("TimeStart")
+            )
+            raw_end = (
+                payload.get("end")
+                or payload.get("End")
+                or payload.get("time_end")
+                or payload.get("TimeEnd")
+            )
+
+            if raw_start is not None:
+                normalized["start"] = self._clean_time(raw_start, default=normalized["start"])
+            if raw_end is not None:
+                normalized["end"] = self._clean_time(raw_end, default=normalized["end"])
+
+            if "type" in payload or "Type" in payload:
+                normalized["type"] = str(payload.get("type") or payload.get("Type") or "2")
+
+            if "date_start" in payload or "DateStart" in payload:
+                normalized["date_start"] = str(payload.get("date_start") or payload.get("DateStart") or "").strip()
+            if "date_end" in payload or "DateEnd" in payload:
+                normalized["date_end"] = str(payload.get("date_end") or payload.get("DateEnd") or "").strip()
+
+            raw_days = payload.get("days")
+            if isinstance(raw_days, (list, tuple, set)):
+                for entry in raw_days:
+                    key = str(entry or "").strip().lower()
+                    if key in self._DAYS:
+                        days_selected.add(key)
+                    else:
+                        short = key[:3]
+                        if short in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
+                            days_selected.add(short)
+            elif isinstance(raw_days, dict):
+                for key, value in raw_days.items():
+                    normalized_key = str(key or "").strip().lower()
+                    if normalized_key in self._DAYS and self._as_bool(value):
+                        days_selected.add(normalized_key)
+
             for day in self._DAYS:
-                spans = payload.get(day)
-                if not isinstance(spans, (list, tuple)):
-                    continue
-                cleaned: List[List[str]] = []
-                for span in spans:
-                    if not isinstance(span, (list, tuple)) or len(span) < 2:
-                        continue
-                    start = str(span[0] or "").strip()
-                    end = str(span[1] or "").strip()
-                    if start and end:
-                        cleaned.append([start, end])
-                normalized[day] = cleaned
+                api_key = self._API_DAY_KEYS[day]
+                if api_key in payload:
+                    if self._as_bool(payload.get(api_key)):
+                        days_selected.add(day)
+                elif day in payload:
+                    spans = payload.get(day)
+                    if isinstance(spans, (list, tuple)):
+                        for span in spans:
+                            if not isinstance(span, (list, tuple)) or len(span) < 2:
+                                continue
+                            start = self._time_to_minutes(span[0])
+                            end = self._time_to_minutes(span[1])
+                            if start is None or end is None:
+                                continue
+                            days_selected.add(day)
+                            found_start = start if found_start is None else min(found_start, start)
+                            found_end = end if found_end is None else max(found_end, end)
+
+            if found_start is not None:
+                normalized["start"] = self._clean_time(found_start, default=normalized["start"])
+            if found_end is not None:
+                normalized["end"] = self._clean_time(found_end, default=normalized["end"])
 
             if "always_permit_exit" in payload:
                 normalized["always_permit_exit"] = self._as_bool(payload.get("always_permit_exit"))
+
+        if not days_selected:
+            # Default built-ins preserve their expected behaviour; custom schedules default to weekdays
+            if name.strip().lower() == "no access":
+                days_selected = set()
+                normalized["start"] = "00:00"
+                normalized["end"] = "00:00"
+            elif name.strip().lower() in {"24/7 access", "24/7", "24x7", "always"}:
+                days_selected = set(self._DAYS)
+                normalized["start"] = "00:00"
+                normalized["end"] = "23:59"
+            else:
+                days_selected = {"mon", "tue", "wed", "thu", "fri"}
+
+        normalized["days"] = [day for day in self._DAYS if day in days_selected]
 
         return normalized
 
@@ -727,10 +867,25 @@ class AkuvoxSchedulesStore(Store):
         if "24/7 Access" not in existing:
             existing["24/7 Access"] = self._normalize_payload(
                 "24/7 Access",
-                {day: [["00:00", "24:00"]] for day in self._DAYS},
+                {
+                    "start": "00:00",
+                    "end": "23:59",
+                    "days": list(self._DAYS),
+                    "always_permit_exit": True,
+                    "type": "2",
+                },
             )
         if "No Access" not in existing:
-            existing["No Access"] = self._normalize_payload("No Access", {day: [] for day in self._DAYS})
+            existing["No Access"] = self._normalize_payload(
+                "No Access",
+                {
+                    "start": "00:00",
+                    "end": "00:00",
+                    "days": [],
+                    "always_permit_exit": False,
+                    "type": "2",
+                },
+            )
 
         changed = original != existing
         self.data["schedules"] = existing
@@ -1568,9 +1723,10 @@ class SyncManager:
                 continue
             sanitized: Dict[str, Any]
             if isinstance(spec, dict):
-                sanitized = {day: spec.get(day, []) for day in AkuvoxSchedulesStore._DAYS}
+                sanitized = dict(spec)
+                sanitized["days"] = list(spec.get("days") or [])
             else:
-                sanitized = {day: [] for day in AkuvoxSchedulesStore._DAYS}
+                sanitized = {}
             try:
                 await api.schedule_set(name, sanitized)
             except Exception:

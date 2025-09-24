@@ -1175,13 +1175,139 @@ class AkuvoxAPI:
 
     # ---------- Schedules ----------
     def _sched_payload_from_spec(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Translate our HA spec {mon:[["HH:MM","HH:MM"],...], ...} to API shape."""
+        """Translate our HA schedule spec into the API shape."""
+
         spec = spec or {}
-        item: Dict[str, Any] = {"Name": name}
-        for key in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
-            spans = spec.get(key) or []
-            # Device accepts array of [start, end] strings
-            item[key] = [[str(a), str(b)] for (a, b) in spans if a and b]
+
+        def _truthy(value: Any) -> bool:
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "y", "on", "enable", "enabled"}
+            return bool(value)
+
+        def _minutes(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                minutes = int(value)
+            else:
+                text = str(value).strip()
+                if not text:
+                    return None
+                if text.isdigit() and len(text) in (3, 4):
+                    if len(text) == 3:
+                        text = f"0{text}"
+                    try:
+                        hours = int(text[:2])
+                        minutes = int(text[2:])
+                    except ValueError:
+                        return None
+                else:
+                    parts = text.split(":")
+                    if len(parts) < 2:
+                        return None
+                    try:
+                        hours = int(parts[0])
+                        minutes = int(parts[1])
+                    except ValueError:
+                        return None
+            if minutes < 0:
+                minutes = 0
+            max_minutes = 23 * 60 + 59
+            if minutes > max_minutes:
+                minutes = max_minutes
+            return minutes
+
+        def _clean_time(value: Any, *, default: str) -> str:
+            minutes = _minutes(value)
+            if minutes is None:
+                minutes = _minutes(default)
+            if minutes is None:
+                minutes = 0
+            hours = minutes // 60
+            mins = minutes % 60
+            return f"{hours:02d}:{mins:02d}"
+
+        day_map = {
+            "mon": "Mon",
+            "tue": "Tue",
+            "wed": "Wed",
+            "thu": "Thur",
+            "fri": "Fri",
+            "sat": "Sat",
+            "sun": "Sun",
+        }
+
+        selected_days: set[str] = set()
+        raw_days = spec.get("days")
+        if isinstance(raw_days, (list, tuple, set)):
+            for entry in raw_days:
+                key = str(entry or "").strip().lower()
+                if key in day_map:
+                    selected_days.add(key)
+                else:
+                    short = key[:3]
+                    if short in day_map:
+                        selected_days.add(short)
+        elif isinstance(raw_days, dict):
+            for key, value in raw_days.items():
+                normalized = str(key or "").strip().lower()
+                if normalized in day_map and _truthy(value):
+                    selected_days.add(normalized)
+
+        for low_key, api_key in day_map.items():
+            if api_key in spec and _truthy(spec.get(api_key)):
+                selected_days.add(low_key)
+            elif low_key in spec and isinstance(spec.get(low_key), (list, tuple)):
+                spans = spec.get(low_key) or []
+                for span in spans:
+                    if not isinstance(span, (list, tuple)) or len(span) < 2:
+                        continue
+                    start = _minutes(span[0])
+                    end = _minutes(span[1])
+                    if start is not None and end is not None:
+                        selected_days.add(low_key)
+                        break
+
+        if not selected_days:
+            lowered = name.strip().lower()
+            if lowered in {"no access", "never"}:
+                selected_days = set()
+            elif lowered in {"24/7 access", "24/7", "24x7", "always"}:
+                selected_days = set(day_map.keys())
+            else:
+                selected_days = {"mon", "tue", "wed", "thu", "fri"}
+
+        sched_type = str(spec.get("type") or spec.get("Type") or "2")
+        date_start = str(spec.get("date_start") or spec.get("DateStart") or "").strip()
+        date_end = str(spec.get("date_end") or spec.get("DateEnd") or "").strip()
+
+        start_time = _clean_time(
+            spec.get("start")
+            or spec.get("Start")
+            or spec.get("time_start")
+            or spec.get("TimeStart"),
+            default="00:00",
+        )
+        end_time = _clean_time(
+            spec.get("end")
+            or spec.get("End")
+            or spec.get("time_end")
+            or spec.get("TimeEnd"),
+            default="23:59",
+        )
+
+        item: Dict[str, Any] = {
+            "Name": name,
+            "Type": sched_type,
+            "DateStart": date_start,
+            "DateEnd": date_end,
+            "TimeStart": start_time,
+            "TimeEnd": end_time,
+        }
+
+        for low_key, api_key in day_map.items():
+            item[api_key] = "1" if low_key in selected_days else "0"
+
         return item
 
     async def schedule_get(self) -> List[Dict[str, Any]]:

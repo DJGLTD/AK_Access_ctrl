@@ -33,24 +33,34 @@
     }
     .saved-overlay.visible{ opacity:1; }
     .schedule-card{ overflow:hidden; }
-    .schedule-day{
+    .schedule-window{
       background:#0d1729;
       border:1px solid var(--border);
-      border-radius:0.5rem;
-      padding:0.75rem;
+      border-radius:0.75rem;
+      padding:1rem;
       margin-bottom:1rem;
     }
-    .schedule-day-header{
+    .schedule-window-header{
       display:flex;
+      flex-wrap:wrap;
       align-items:center;
       justify-content:space-between;
       gap:0.75rem;
       margin-bottom:0.75rem;
     }
-    .schedule-day-empty{
+    .schedule-window-days{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.5rem;
+    }
+    .schedule-window-days .btn{
+      min-width:3rem;
+    }
+    .schedule-window-empty{
       color:var(--muted);
       font-style:italic;
       font-size:0.9rem;
+      display:none;
     }
     .schedule-time-input{ font-family:inherit; }
     .device-option{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:1rem; }
@@ -58,8 +68,8 @@
     .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
     .device-meta{ color:var(--muted); font-size:0.9rem; }
     @media (max-width: 576px){
-      .schedule-day-header{ flex-direction:column; align-items:flex-start; }
-      .schedule-day-header .btn{ width:100%; }
+      .schedule-window-header{ flex-direction:column; align-items:flex-start; }
+      .schedule-window-header .btn{ width:100%; }
     }
   </style>
 </head>
@@ -824,29 +834,156 @@ function renderAlerts(){
   });
 }
 
+const SCHEDULE_DAY_LOOKUP = (() => {
+  const map = new Map();
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    map.set(key, key);
+    map.set(label.toLowerCase(), key);
+    map.set(label.slice(0, 3).toLowerCase(), key);
+  });
+  map.set('tues', 'tue');
+  map.set('thur', 'thu');
+  map.set('thurs', 'thu');
+  map.set('weds', 'wed');
+  return map;
+})();
+
+function truthy(value){
+  if (typeof value === 'string'){
+    return ['1','true','yes','y','on','enable','enabled'].includes(value.trim().toLowerCase());
+  }
+  return !!value;
+}
+
+function normalizeScheduleDay(value){
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return null;
+  if (SCHEDULE_DAY_LOOKUP.has(text)) return SCHEDULE_DAY_LOOKUP.get(text);
+  const short = text.slice(0, 3);
+  if (SCHEDULE_DAY_LOOKUP.has(short)) return SCHEDULE_DAY_LOOKUP.get(short);
+  return null;
+}
+
+function minutesFromTime(value){
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value)){
+    let mins = Math.floor(value);
+    if (mins < 0) mins = 0;
+    if (mins > 1439) mins = 1439;
+    return mins;
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  const parts = text.split(':');
+  if (parts.length >= 2){
+    const hh = Number(parts[0]);
+    const mm = Number(parts[1]);
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, Math.floor(hh)));
+      const clampedM = Math.max(0, Math.min(59, Math.floor(mm)));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  const digits = text.replace(/[^0-9]/g, '');
+  if (digits.length === 3 || digits.length === 4){
+    const padded = digits.length === 3 ? `0${digits}` : digits;
+    const hh = Number(padded.slice(0, 2));
+    const mm = Number(padded.slice(2, 4));
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, hh));
+      const clampedM = Math.max(0, Math.min(59, mm));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  return null;
+}
+
+function formatMinutes(minutes){
+  const safe = Math.max(0, Math.min(1439, Math.floor(minutes)));
+  const hh = String(Math.floor(safe / 60)).padStart(2, '0');
+  const mm = String(safe % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 function blankScheduleSpec(){
-  const out = { always_permit_exit: false };
-  SCHEDULE_DAY_ORDER.forEach(({ key }) => { out[key] = []; });
-  return out;
+  return { start: '', end: '', days: [], always_permit_exit: false, type: '2', date_start: '', date_end: '' };
 }
 
 function cloneScheduleSpec(spec){
   const base = blankScheduleSpec();
   if (!spec || typeof spec !== 'object') return base;
+
+  if (spec.type !== undefined) base.type = String(spec.type);
+  else if (spec.Type !== undefined) base.type = String(spec.Type);
+
+  if (spec.date_start !== undefined || spec.DateStart !== undefined){
+    base.date_start = String(spec.date_start ?? spec.DateStart ?? '').trim();
+  }
+  if (spec.date_end !== undefined || spec.DateEnd !== undefined){
+    base.date_end = String(spec.date_end ?? spec.DateEnd ?? '').trim();
+  }
+
+  if ('always_permit_exit' in spec){
+    base.always_permit_exit = truthy(spec.always_permit_exit);
+  }
+
+  let explicitStart = minutesFromTime(spec.start ?? spec.Start ?? spec.time_start ?? spec.TimeStart);
+  let explicitEnd = minutesFromTime(spec.end ?? spec.End ?? spec.time_end ?? spec.TimeEnd);
+
+  let earliest = null;
+  let latest = null;
+
+  const selected = new Set();
+  const addDay = (value) => {
+    const normalized = normalizeScheduleDay(value);
+    if (normalized) selected.add(normalized);
+  };
+
+  const rawDays = spec.days;
+  if (Array.isArray(rawDays)){
+    rawDays.forEach(addDay);
+  } else if (rawDays && typeof rawDays === 'object'){
+    Object.entries(rawDays).forEach(([key, value]) => {
+      if (truthy(value)) addDay(key);
+    });
+  }
+
+  const boolDayMap = { Mon: 'mon', Tue: 'tue', Wed: 'wed', Thur: 'thu', Fri: 'fri', Sat: 'sat', Sun: 'sun' };
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    if (apiKey in spec && truthy(spec[apiKey])) selected.add(key);
+  });
+
+  const recordSpan = (start, end, key) => {
+    if (start === null || end === null) return;
+    selected.add(key);
+    earliest = earliest === null ? start : Math.min(earliest, start);
+    latest = latest === null ? end : Math.max(latest, end);
+  };
+
   SCHEDULE_DAY_ORDER.forEach(({ key }) => {
     const spans = Array.isArray(spec[key]) ? spec[key] : [];
-    base[key] = spans
-      .filter(span => Array.isArray(span) && span.length >= 2)
-      .map(span => [String(span[0] || '').trim(), String(span[1] || '').trim()]);
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
   });
-  if ('always_permit_exit' in spec){
-    const raw = spec.always_permit_exit;
-    if (typeof raw === 'string'){
-      base.always_permit_exit = ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
-    } else {
-      base.always_permit_exit = !!raw;
-    }
-  }
+
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    const spans = Array.isArray(spec[apiKey]) ? spec[apiKey] : [];
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
+  });
+
+  if (explicitStart !== null) base.start = formatMinutes(explicitStart);
+  else if (earliest !== null) base.start = formatMinutes(earliest);
+
+  if (explicitEnd !== null) base.end = formatMinutes(explicitEnd);
+  else if (latest !== null) base.end = formatMinutes(latest);
+
+  base.days = SCHEDULE_DAY_ORDER.map(({ key }) => key).filter(key => selected.has(key));
   return base;
 }
 
@@ -929,74 +1066,32 @@ function updateScheduleSelection(value){
   renderScheduleEditor();
 }
 
-function createScheduleRow(day, start = '', end = '', readOnly = false){
-  const row = document.createElement('div');
-  row.className = 'row g-2 align-items-center mb-2';
-  row.setAttribute('data-sched-row', '1');
-  row.setAttribute('data-day', day);
-
-  const startCol = document.createElement('div');
-  startCol.className = 'col-12 col-md-4 col-lg-3';
-  const startGroup = document.createElement('div');
-  startGroup.className = 'input-group input-group-sm';
-  const startLabel = document.createElement('span');
-  startLabel.className = 'input-group-text';
-  startLabel.textContent = 'Start';
-  const startInput = document.createElement('input');
-  startInput.className = 'form-control form-control-sm schedule-time-input';
-  startInput.placeholder = 'HH:MM';
-  startInput.value = start || '';
-  startInput.maxLength = 5;
-  startInput.autocomplete = 'off';
-  startInput.inputMode = 'numeric';
-  startInput.pattern = '\\d{1,2}:\\d{2}';
-  if (readOnly){ startInput.disabled = true; }
-  startGroup.append(startLabel, startInput);
-  startCol.appendChild(startGroup);
-  row.appendChild(startCol);
-
-  const endCol = document.createElement('div');
-  endCol.className = 'col-12 col-md-4 col-lg-3';
-  const endGroup = document.createElement('div');
-  endGroup.className = 'input-group input-group-sm';
-  const endLabel = document.createElement('span');
-  endLabel.className = 'input-group-text';
-  endLabel.textContent = 'End';
-  const endInput = document.createElement('input');
-  endInput.className = 'form-control form-control-sm schedule-time-input';
-  endInput.placeholder = 'HH:MM';
-  endInput.value = end || '';
-  endInput.maxLength = 5;
-  endInput.autocomplete = 'off';
-  endInput.inputMode = 'numeric';
-  endInput.pattern = '\\d{1,2}:\\d{2}';
-  if (readOnly){ endInput.disabled = true; }
-  endGroup.append(endLabel, endInput);
-  endCol.appendChild(endGroup);
-  row.appendChild(endCol);
-
-  const btnCol = document.createElement('div');
-  btnCol.className = 'col-12 col-md-4 col-lg-3';
-  if (!readOnly){
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-sm btn-outline-danger w-100';
-    btn.setAttribute('data-remove-row', '');
-    btn.setAttribute('data-day', day);
-    btn.innerHTML = '<i class="bi bi-x-lg me-1"></i>Remove';
-    btnCol.appendChild(btn);
-  }
-  row.appendChild(btnCol);
-
-  return row;
+function parseTimeValue(value){
+  const minutes = minutesFromTime(value);
+  if (minutes === null) return null;
+  return { minutes, text: formatMinutes(minutes) };
 }
 
-function updateScheduleDayEmptyState(day){
-  const list = document.querySelector(`[data-day-rows="${day}"]`);
-  const empty = document.querySelector(`[data-day-empty="${day}"]`);
-  if (!list || !empty) return;
-  const hasRows = !!list.querySelector('[data-sched-row]');
-  empty.style.display = hasRows ? 'none' : 'block';
+function renderScheduleDayButtons(selectedDays = [], disabled = false){
+  const container = document.getElementById('scheduleDayButtons');
+  if (!container) return;
+  container.innerHTML = '';
+  const selected = new Set((selectedDays || []).map(day => normalizeScheduleDay(day)).filter(Boolean));
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'btn-check';
+    input.autocomplete = 'off';
+    input.dataset.dayCheck = key;
+    input.id = `schedule-day-${key}`;
+    input.disabled = !!disabled;
+    if (selected.has(key)) input.checked = true;
+    const btn = document.createElement('label');
+    btn.className = 'btn btn-outline-light btn-sm';
+    btn.htmlFor = input.id;
+    btn.textContent = label.slice(0, 3);
+    container.append(input, btn);
+  });
 }
 
 function renderScheduleEditor(){
@@ -1011,9 +1106,9 @@ function renderScheduleEditor(){
   const helper = document.getElementById('scheduleHelper');
   if (helper){
     if (scheduleReadOnly){
-      helper.textContent = 'Built-in schedules show the default behaviour. Use "Create new schedule…" to build your own time windows.';
+      helper.textContent = 'Built-in schedules show the default behaviour. Use "Create new schedule…" to customise the time window.';
     } else {
-      helper.textContent = 'Add HH:MM windows for each day when access is allowed. Leave a day empty to block access that day.';
+      helper.textContent = 'Choose a HH:MM start and end time, then select the days the schedule permits access.';
     }
   }
   const exitToggle = document.getElementById('scheduleExitCheckbox');
@@ -1030,70 +1125,44 @@ function renderScheduleEditor(){
     deleteBtn.disabled = scheduleReadOnly || !SELECTED_SCHEDULE;
   }
 
-  const container = document.getElementById('scheduleDays');
-  if (!container) return;
-  container.innerHTML = '';
-  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
-    const block = document.createElement('div');
-    block.className = 'schedule-day';
-    block.setAttribute('data-day-container', key);
+  const startInput = document.getElementById('scheduleStartInput');
+  if (startInput){
+    startInput.value = spec.start;
+    startInput.disabled = scheduleReadOnly;
+  }
+  const endInput = document.getElementById('scheduleEndInput');
+  if (endInput){
+    endInput.value = spec.end;
+    endInput.disabled = scheduleReadOnly;
+  }
 
-    const header = document.createElement('div');
-    header.className = 'schedule-day-header';
-    const title = document.createElement('h6');
-    title.className = 'm-0';
-    title.textContent = label;
-    header.appendChild(title);
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn btn-sm btn-outline-light';
-    addBtn.setAttribute('data-add-day', key);
-    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add window';
-    if (scheduleReadOnly) addBtn.disabled = true;
-    header.appendChild(addBtn);
-    block.appendChild(header);
-
-    const list = document.createElement('div');
-    list.setAttribute('data-day-rows', key);
-    block.appendChild(list);
-
-    const empty = document.createElement('div');
-    empty.setAttribute('data-day-empty', key);
-    empty.className = 'schedule-day-empty';
-    empty.textContent = 'No time windows yet.';
-    block.appendChild(empty);
-
-    const spans = spec[key] || [];
-    spans.forEach(span => {
-      list.appendChild(createScheduleRow(key, span[0], span[1], scheduleReadOnly));
-    });
-    container.appendChild(block);
-    updateScheduleDayEmptyState(key);
-  });
-}
-
-function addScheduleRow(day){
-  if (!day || scheduleReadOnly) return;
-  const list = document.querySelector(`[data-day-rows="${day}"]`);
-  if (!list) return;
-  list.appendChild(createScheduleRow(day, '', '', false));
-  updateScheduleDayEmptyState(day);
+  renderScheduleDayButtons(spec.days, scheduleReadOnly);
 }
 
 function gatherScheduleSpec(){
-  const spec = blankScheduleSpec();
-  document.querySelectorAll('[data-sched-row]').forEach(row => {
-    const day = row.getAttribute('data-day');
-    if (!day || !(day in spec)) return;
-    const inputs = row.querySelectorAll('input');
-    if (inputs.length < 2) return;
-    const start = inputs[0].value.trim();
-    const end = inputs[1].value.trim();
-    if (start && end) spec[day].push([start, end]);
+  const base = SELECTED_SCHEDULE && SCHEDULES[SELECTED_SCHEDULE]
+    ? cloneScheduleSpec(SCHEDULES[SELECTED_SCHEDULE])
+    : blankScheduleSpec();
+  const startInput = document.getElementById('scheduleStartInput');
+  const endInput = document.getElementById('scheduleEndInput');
+  const parsedStart = parseTimeValue(startInput ? startInput.value : '');
+  const parsedEnd = parseTimeValue(endInput ? endInput.value : '');
+  base.start = parsedStart ? parsedStart.text : '';
+  base.end = parsedEnd ? parsedEnd.text : '';
+  const days = [];
+  document.querySelectorAll('#scheduleDayButtons input[data-day-check]').forEach(input => {
+    if (input.checked){
+      const day = input.getAttribute('data-day-check');
+      if (day) days.push(day);
+    }
   });
+  base.days = days;
   const exitToggle = document.getElementById('scheduleExitCheckbox');
-  spec.always_permit_exit = !!(exitToggle && exitToggle.checked);
-  return spec;
+  base.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  if (!base.type) base.type = '2';
+  if (base.date_start === undefined || base.date_start === null) base.date_start = '';
+  if (base.date_end === undefined || base.date_end === null) base.date_end = '';
+  return base;
 }
 
 async function callAction(actionName, payload){
@@ -1129,6 +1198,14 @@ async function saveSchedule(){
     return;
   }
   const spec = gatherScheduleSpec();
+  if (!spec.start || !spec.end){
+    setScheduleStatus('Enter start and end times in HH:MM.', 'error');
+    return;
+  }
+  if (!Array.isArray(spec.days) || !spec.days.length){
+    setScheduleStatus('Select at least one day.', 'error');
+    return;
+  }
   scheduleSaving = true;
   try{
     setScheduleStatus('Saving…');
@@ -1388,29 +1465,10 @@ document.addEventListener('DOMContentLoaded', () => {
     EDITING_SCHEDULE_NAME = ev.target.value;
     setScheduleStatus('');
   });
-  const scheduleDays = document.getElementById('scheduleDays');
-  scheduleDays?.addEventListener('click', (ev) => {
-    const target = ev.target;
-    if (!(target instanceof Element)) return;
-    const addBtn = target.closest('[data-add-day]');
-    if (addBtn){
-      ev.preventDefault();
-      const day = addBtn.getAttribute('data-add-day');
-      if (day) addScheduleRow(day);
-      return;
-    }
-    const removeBtn = target.closest('[data-remove-row]');
-    if (removeBtn){
-      ev.preventDefault();
-      if (scheduleReadOnly) return;
-      const day = removeBtn.getAttribute('data-day');
-      const row = removeBtn.closest('[data-sched-row]');
-      if (row) row.remove();
-      if (day) updateScheduleDayEmptyState(day);
-      setScheduleStatus('');
-    }
-  });
-  scheduleDays?.addEventListener('input', () => { setScheduleStatus(''); });
+  document.getElementById('scheduleStartInput')?.addEventListener('input', () => { setScheduleStatus(''); });
+  document.getElementById('scheduleEndInput')?.addEventListener('input', () => { setScheduleStatus(''); });
+  const scheduleDayButtons = document.getElementById('scheduleDayButtons');
+  scheduleDayButtons?.addEventListener('change', () => { if (!scheduleReadOnly) setScheduleStatus(''); });
   document.getElementById('scheduleExitCheckbox')?.addEventListener('change', () => {
     if (!scheduleReadOnly) setScheduleStatus('');
   });
@@ -1483,8 +1541,22 @@ document.addEventListener('DOMContentLoaded', () => {
         <label class="form-check-label" for="scheduleExitCheckbox">Always permit exit devices</label>
         <div class="form-text muted">When enabled, users assigned to this schedule receive 24/7 access on any device flagged as an exit device.</div>
       </div>
-      <p class="muted small">Add one or more HH:MM ranges for each day to control when credentials are valid. Leave a day empty to block access on that day.</p>
-      <div id="scheduleDays" class="mt-3"></div>
+      <div class="schedule-window mt-3" id="scheduleEditor">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-md-4 col-lg-3">
+            <label class="form-label small text-uppercase muted" for="scheduleStartInput">Start time</label>
+            <input id="scheduleStartInput" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+          </div>
+          <div class="col-12 col-md-4 col-lg-3">
+            <label class="form-label small text-uppercase muted" for="scheduleEndInput">End time</label>
+            <input id="scheduleEndInput" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+          </div>
+        </div>
+        <div class="mt-3">
+          <div class="muted small mb-1">Applies on days</div>
+          <div class="schedule-window-days" id="scheduleDayButtons"></div>
+        </div>
+      </div>
       <div class="d-flex flex-wrap gap-2 mt-3">
         <button class="btn btn-success" id="scheduleSaveBtn"><i class="bi bi-check2 me-1"></i>Save schedule</button>
         <button class="btn btn-outline-danger" id="scheduleDeleteBtn"><i class="bi bi-trash3 me-1"></i>Delete</button>
