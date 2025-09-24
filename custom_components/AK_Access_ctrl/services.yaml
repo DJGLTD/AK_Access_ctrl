@@ -99,6 +99,11 @@ upload_face:
 
 refresh_events:
   name: Refresh device events
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
 
 reboot_device:
   name: Reboot device

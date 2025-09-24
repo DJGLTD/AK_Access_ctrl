@@ -18,6 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         AkuvoxLastSyncSensor(coord, entry),
         AkuvoxUsersCountSensor(coord, entry),
         AkuvoxEventsCountSensor(coord, entry),
+        AkuvoxLastAccessUserSensor(coord, entry),
     ]
     async_add_entities(entities, update_before_add=True)
 
@@ -113,3 +114,29 @@ class AkuvoxEventsCountSensor(_Base, SensorEntity):
     @property
     def native_value(self):
         return len(self._coord.events or [])
+
+
+class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Last Access User"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_last_access_user"
+
+    @property
+    def native_value(self):
+        state = getattr(self._coord, "event_state", {}) or {}
+        return state.get("last_user_name")
+
+    @property
+    def extra_state_attributes(self):
+        state = getattr(self._coord, "event_state", {}) or {}
+        return {
+            "user_id": state.get("last_user_id"),
+            "event_type": state.get("last_event_type"),
+            "event_summary": state.get("last_event_summary"),
+            "event_timestamp": state.get("last_event_timestamp"),
+            "key_holder": state.get("last_event_key_holder"),
+        }
