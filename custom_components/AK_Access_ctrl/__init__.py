@@ -2158,6 +2158,93 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         filename = f"{user_id}.jpg"
         return f"/api/AK_AC/FaceData/{filename}"
 
+    def _normalise_face_filename(reference: Any, user_id: str) -> str:
+        """Return a safe face filename derived from *reference* or fallback to <user_id>.jpg."""
+
+        try:
+            candidate = face_filename_from_reference(str(reference or ""), user_id)
+        except Exception:
+            candidate = ""
+
+        cleaned = str(candidate or "").strip()
+        if not cleaned:
+            cleaned = f"{user_id}.jpg"
+
+        suffix = Path(cleaned).suffix.lower().lstrip(".")
+        if suffix and suffix not in FACE_FILE_EXTENSIONS:
+            stem = Path(cleaned).stem or str(user_id or "face")
+            cleaned = f"{stem}.jpg"
+        elif not suffix:
+            stem = Path(cleaned).stem or str(user_id or "face")
+            cleaned = f"{stem}.jpg"
+
+        return cleaned
+
+    def _resolve_face_source_path(raw: Any) -> Optional[Path]:
+        """Resolve a face image path relative to the HA config directory."""
+
+        text = str(raw or "").strip()
+        if not text:
+            return None
+
+        config_root = Path(hass.config.path(""))
+        try:
+            config_root = config_root.resolve()
+        except Exception:
+            pass
+
+        candidate = Path(text)
+        if text.startswith("/config/"):
+            candidate = config_root / text[len("/config/") :]
+        elif not candidate.is_absolute():
+            candidate = Path(hass.config.path(text))
+
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return None
+
+        try:
+            resolved.relative_to(config_root)
+        except Exception:
+            return None
+
+        return resolved
+
+    def _store_face_bytes(filename: str, data: Optional[bytes], *, source: Optional[Path] = None) -> None:
+        """Persist *data* to the integration's FaceData directory under *filename*."""
+
+        if not filename or not data:
+            return
+
+        try:
+            dest_dir = face_storage_dir(hass)
+        except Exception:
+            return
+
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+
+        try:
+            dest_path = (dest_dir / filename).resolve()
+            dest_path.relative_to(dest_dir)
+        except Exception:
+            return
+
+        if source is not None:
+            try:
+                if dest_path == source:
+                    return
+            except Exception:
+                pass
+
+        try:
+            dest_path.write_bytes(data)
+        except Exception:
+            return
+
     async def svc_add_user(call):
         d = call.data
         name: str = d["name"].strip()
@@ -2167,19 +2254,73 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         users_store.reserve_id(ha_id)
         await users_store.async_save()
 
+        raw_groups = d.get("groups")
+        if raw_groups is None:
+            raw_groups = d.get("sync_groups")
+        if isinstance(raw_groups, (list, tuple, set)):
+            groups = [str(g) for g in raw_groups if str(g or "").strip()]
+        elif raw_groups in (None, ""):
+            groups = []
+        else:
+            groups = [str(raw_groups)]
+
+        face_reference: Optional[str] = None
+        face_reference_supplied = False
+        for key in (
+            "face_file_name",
+            "face_filename",
+            "FaceFileName",
+            "faceFileName",
+            "face_url",
+            "FaceUrl",
+            "FaceURL",
+        ):
+            if key not in d:
+                continue
+            candidate = d.get(key)
+            if candidate in (None, ""):
+                continue
+            text = str(candidate).strip()
+            if not text:
+                continue
+            face_reference = text
+            face_reference_supplied = True
+            break
+
+        face_image_path_raw = d.get("face_image_path")
+        face_image_path = str(face_image_path_raw).strip() if face_image_path_raw not in (None, "") else ""
+        face_source_path: Optional[Path] = None
+        face_bytes: Optional[bytes] = None
+        if face_image_path:
+            face_source_path = _resolve_face_source_path(face_image_path)
+            if face_source_path and face_source_path.is_file():
+                try:
+                    face_bytes = face_source_path.read_bytes()
+                except Exception:
+                    face_bytes = None
+            if not face_reference and face_image_path:
+                face_reference = face_image_path
+                face_reference_supplied = True
+
+        face_filename = _normalise_face_filename(face_reference or f"{ha_id}.jpg", ha_id)
+        if face_bytes:
+            _store_face_bytes(face_filename, face_bytes, source=face_source_path)
+
         # Canonical FaceUrl that the device will fetch
-        face_url = f"{face_base_url(hass)}/{ha_id}.jpg"
+        face_url = f"{face_base_url(hass)}/{face_filename}"
 
         await users_store.upsert_profile(
             ha_id,
             name=name,
-            groups=list(d.get("groups") or []),
+            groups=groups,
             pin=str(d.get("pin")) if d.get("pin") else None,
             phone=str(d.get("phone")) if d.get("phone") else None,
             schedule_name=d.get("schedule_name") or "24/7 Access",
             key_holder=bool(d.get("key_holder", False)),
             access_level=d.get("access_level") or None,
             face_url=face_url,
+            face_status="pending" if face_reference_supplied else None,
+            face_synced_at="" if face_reference_supplied else None,
             status="pending",
             # allow passing schedule_id explicitly, else resolver will map by name
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
