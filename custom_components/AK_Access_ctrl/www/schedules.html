@@ -5,7 +5,32 @@
   <title>Access Schedules</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
-  <style>:root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; } body{ background:var(--bg); color:var(--text);} .card{background:#111a2b;border:1px solid #1b2942}</style>
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    .muted{ color:var(--muted); }
+    .schedule-window{
+      background:#0d1729;
+      border:1px solid var(--border);
+      border-radius:0.75rem;
+      padding:1rem;
+      margin-bottom:1rem;
+    }
+    .schedule-window-days{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.5rem;
+    }
+    .schedule-window-days .btn{ min-width:3rem; }
+    .schedule-window-empty{
+      color:var(--muted);
+      font-style:italic;
+      font-size:0.9rem;
+      display:none;
+    }
+    .schedule-time-input{ font-family:inherit; }
+  </style>
 </head>
 <body>
 <script>
@@ -413,74 +438,260 @@ async function action(act, payload){
 
 let SCHEDS = {};
 
+const DAY_ORDER = [
+  { key: 'mon', label: 'Monday', short: 'Mon' },
+  { key: 'tue', label: 'Tuesday', short: 'Tue' },
+  { key: 'wed', label: 'Wednesday', short: 'Wed' },
+  { key: 'thu', label: 'Thursday', short: 'Thu' },
+  { key: 'fri', label: 'Friday', short: 'Fri' },
+  { key: 'sat', label: 'Saturday', short: 'Sat' },
+  { key: 'sun', label: 'Sunday', short: 'Sun' }
+];
+
+const DAY_KEY_LOOKUP = (() => {
+  const map = new Map();
+  DAY_ORDER.forEach(({ key, label }) => {
+    map.set(key, key);
+    map.set(label.toLowerCase(), key);
+    map.set(label.slice(0, 3).toLowerCase(), key);
+  });
+  map.set('tues', 'tue');
+  map.set('thur', 'thu');
+  map.set('thurs', 'thu');
+  map.set('weds', 'wed');
+  return map;
+})();
+
+function truthy(value){
+  if (typeof value === 'string'){
+    return ['1','true','yes','y','on','enable','enabled'].includes(value.trim().toLowerCase());
+  }
+  return !!value;
+}
+
+function normalizeDayKey(value){
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return null;
+  if (DAY_KEY_LOOKUP.has(text)) return DAY_KEY_LOOKUP.get(text);
+  const short = text.slice(0, 3);
+  if (DAY_KEY_LOOKUP.has(short)) return DAY_KEY_LOOKUP.get(short);
+  return null;
+}
+
+function minutesFromTime(value){
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value)){
+    let mins = Math.floor(value);
+    if (mins < 0) mins = 0;
+    if (mins > 1439) mins = 1439;
+    return mins;
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  const parts = text.split(':');
+  if (parts.length >= 2){
+    const hh = Number(parts[0]);
+    const mm = Number(parts[1]);
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, Math.floor(hh)));
+      const clampedM = Math.max(0, Math.min(59, Math.floor(mm)));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  const digits = text.replace(/[^0-9]/g, '');
+  if (digits.length === 3 || digits.length === 4){
+    const padded = digits.length === 3 ? `0${digits}` : digits;
+    const hh = Number(padded.slice(0, 2));
+    const mm = Number(padded.slice(2, 4));
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, hh));
+      const clampedM = Math.max(0, Math.min(59, mm));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  return null;
+}
+
+function formatMinutes(minutes){
+  const safe = Math.max(0, Math.min(1439, Math.floor(minutes)));
+  const hh = String(Math.floor(safe / 60)).padStart(2, '0');
+  const mm = String(safe % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function blankScheduleSpec(){
+  return { start: '', end: '', days: [], always_permit_exit: false, type: '2', date_start: '', date_end: '' };
+}
+
+function cloneScheduleSpec(spec){
+  const base = blankScheduleSpec();
+  if (!spec || typeof spec !== 'object') return base;
+
+  if (spec.type !== undefined) base.type = String(spec.type);
+  else if (spec.Type !== undefined) base.type = String(spec.Type);
+
+  if (spec.date_start !== undefined || spec.DateStart !== undefined){
+    base.date_start = String(spec.date_start ?? spec.DateStart ?? '').trim();
+  }
+  if (spec.date_end !== undefined || spec.DateEnd !== undefined){
+    base.date_end = String(spec.date_end ?? spec.DateEnd ?? '').trim();
+  }
+
+  if ('always_permit_exit' in spec){
+    base.always_permit_exit = truthy(spec.always_permit_exit);
+  }
+
+  let explicitStart = minutesFromTime(spec.start ?? spec.Start ?? spec.time_start ?? spec.TimeStart);
+  let explicitEnd = minutesFromTime(spec.end ?? spec.End ?? spec.time_end ?? spec.TimeEnd);
+
+  let earliest = null;
+  let latest = null;
+
+  const selected = new Set();
+  const addDay = (value) => {
+    const normalized = normalizeDayKey(value);
+    if (normalized) selected.add(normalized);
+  };
+
+  const rawDays = spec.days;
+  if (Array.isArray(rawDays)){
+    rawDays.forEach(addDay);
+  } else if (rawDays && typeof rawDays === 'object'){
+    Object.entries(rawDays).forEach(([key, value]) => {
+      if (truthy(value)) addDay(key);
+    });
+  }
+
+  const boolDayMap = { Mon: 'mon', Tue: 'tue', Wed: 'wed', Thur: 'thu', Fri: 'fri', Sat: 'sat', Sun: 'sun' };
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    if (apiKey in spec && truthy(spec[apiKey])) selected.add(key);
+  });
+
+  const recordSpan = (start, end, key) => {
+    if (start === null || end === null) return;
+    selected.add(key);
+    earliest = earliest === null ? start : Math.min(earliest, start);
+    latest = latest === null ? end : Math.max(latest, end);
+  };
+
+  DAY_ORDER.forEach(({ key }) => {
+    const spans = Array.isArray(spec[key]) ? spec[key] : [];
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
+  });
+
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    const spans = Array.isArray(spec[apiKey]) ? spec[apiKey] : [];
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
+  });
+
+  if (explicitStart !== null) base.start = formatMinutes(explicitStart);
+  else if (earliest !== null) base.start = formatMinutes(earliest);
+
+  if (explicitEnd !== null) base.end = formatMinutes(explicitEnd);
+  else if (latest !== null) base.end = formatMinutes(latest);
+
+  base.days = DAY_ORDER.map(({ key }) => key).filter(key => selected.has(key));
+  return base;
+}
+
 function scheduleExitFlag(spec){
   if (!spec || typeof spec !== 'object') return false;
-  const raw = spec.always_permit_exit;
-  if (typeof raw === 'string'){
-    return ['1','true','yes','y','on','enable','enabled'].includes(raw.trim().toLowerCase());
-  }
-  return !!raw;
+  if ('always_permit_exit' in spec) return truthy(spec.always_permit_exit);
+  return false;
 }
 
-function row(day, idx, start = '', end = ''){
-  return `<div class="row g-2 align-items-center mb-1" data-day="${day}" data-idx="${idx}">
-    <div class="col-2 text-capitalize">${day}</div>
-    <div class="col-4"><input class="form-control form-control-sm" placeholder="HH:MM" value="${start}"/></div>
-    <div class="col-4"><input class="form-control form-control-sm" placeholder="HH:MM" value="${end}"/></div>
-    <div class="col-2"><button class="btn btn-sm btn-outline-danger" onclick="removeRow('${day}',${idx})">Remove</button></div>
-  </div>`;
-}
-
-function render(name){
-  const container = document.getElementById('editor');
+function renderDayButtons(selectedDays = [], disabled = false){
+  const container = document.getElementById('schedDayButtons');
+  if (!container) return;
   container.innerHTML = '';
-  const exitToggle = document.getElementById('schedExit');
-  if (exitToggle){
-    exitToggle.checked = scheduleExitFlag(SCHEDS[name] || {});
-    exitToggle.disabled = name === '24/7 Access' || name === 'No Access';
-  }
-  const days = ['mon','tue','wed','thu','fri','sat','sun'];
-  days.forEach(day => {
-    const spans = (SCHEDS[name] && SCHEDS[name][day]) || [];
-    if (!spans.length) {
-      container.insertAdjacentHTML('beforeend', row(day, 0, '', ''));
-    } else {
-      spans.forEach((span, idx) => container.insertAdjacentHTML('beforeend', row(day, idx, span[0], span[1])));
-    }
+  const selected = new Set((selectedDays || []).map(day => normalizeDayKey(day)).filter(Boolean));
+  DAY_ORDER.forEach(({ key, short }) => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'btn-check';
+    input.autocomplete = 'off';
+    input.dataset.dayCheck = key;
+    input.id = `sched-day-${key}`;
+    input.disabled = !!disabled;
+    if (selected.has(key)) input.checked = true;
+    const label = document.createElement('label');
+    label.className = 'btn btn-outline-light btn-sm';
+    label.htmlFor = input.id;
+    label.textContent = short;
+    container.append(input, label);
   });
 }
 
-function removeRow(day, idx){
-  const rows = [...document.querySelectorAll(`[data-day="${day}"]`)];
-  const rowEl = rows[idx];
-  if (rowEl) rowEl.remove();
+function render(name){
+  const spec = name && SCHEDS[name] ? cloneScheduleSpec(SCHEDS[name]) : blankScheduleSpec();
+  const isBuiltin = name === '24/7 Access' || name === 'No Access';
+  const startInput = document.getElementById('schedStart');
+  const endInput = document.getElementById('schedEnd');
+  const exitToggle = document.getElementById('schedExit');
+
+  if (startInput){
+    startInput.value = spec.start;
+    startInput.disabled = isBuiltin;
+  }
+  if (endInput){
+    endInput.value = spec.end;
+    endInput.disabled = isBuiltin;
+  }
+  if (exitToggle){
+    exitToggle.checked = scheduleExitFlag(spec);
+    exitToggle.disabled = isBuiltin;
+  }
+
+  renderDayButtons(spec.days, isBuiltin);
 }
 
-function addRow(day){
-  const rows = [...document.querySelectorAll(`[data-day="${day}"]`)];
-  const idx = rows.length;
-  document.getElementById('editor').insertAdjacentHTML('beforeend', row(day, idx, '', ''));
+function parseTimeValue(value){
+  const minutes = minutesFromTime(value);
+  if (minutes === null) return null;
+  return { minutes, text: formatMinutes(minutes) };
 }
 
 async function save(){
   const name = document.getElementById('schedName').value.trim();
   if (!name){ alert('Enter a schedule name'); return; }
   if (name === '24/7 Access' || name === 'No Access'){ alert('Built-in schedules are fixed. Create a custom schedule.'); return; }
-  const out = {};
-  const days = ['mon','tue','wed','thu','fri','sat','sun'];
-  days.forEach(day => {
-    out[day] = [];
-    document.querySelectorAll(`[data-day="${day}"]`).forEach(div => {
-      const inputs = div.querySelectorAll('input');
-      const start = inputs[0].value.trim();
-      const end = inputs[1].value.trim();
-      if (start && end) out[day].push([start, end]);
-    });
+
+  const startInput = document.getElementById('schedStart');
+  const endInput = document.getElementById('schedEnd');
+  const parsedStart = parseTimeValue(startInput ? startInput.value : '');
+  const parsedEnd = parseTimeValue(endInput ? endInput.value : '');
+  if (!parsedStart){ alert('Enter a start time in HH:MM.'); return; }
+  if (!parsedEnd){ alert('Enter an end time in HH:MM.'); return; }
+
+  const days = [];
+  document.querySelectorAll('#schedDayButtons input[data-day-check]').forEach(input => {
+    if (input.checked){
+      const day = input.getAttribute('data-day-check');
+      if (day) days.push(day);
+    }
   });
+  if (!days.length){ alert('Select at least one day.'); return; }
+
+  const existing = SCHEDS[name] || {};
+  const spec = cloneScheduleSpec(existing);
+  spec.start = parsedStart.text;
+  spec.end = parsedEnd.text;
+  spec.days = days;
   const exitToggle = document.getElementById('schedExit');
-  out.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  spec.always_permit_exit = !!(exitToggle && exitToggle.checked);
+  if (!spec.type) spec.type = '2';
+  if (spec.date_start === undefined || spec.date_start === null) spec.date_start = '';
+  if (spec.date_end === undefined || spec.date_end === null) spec.date_end = '';
+
   try {
-    await action('upsert_schedule', { name, spec: out });
+    await action('upsert_schedule', { name, spec });
     location.reload();
   } catch (err) {
     if (handleAuthError(err)) return;
@@ -518,7 +729,7 @@ async function load(){
       render(sel.value);
     } else {
       document.getElementById('schedName').value = '';
-      document.getElementById('editor').innerHTML = '';
+      render('');
     }
   } catch (err) {
     if (handleAuthError(err)) return;
@@ -539,7 +750,22 @@ async function load(){
       <label class="form-check-label" for="schedExit">Always permit exit devices</label>
       <div class="form-text">Exit devices treat this schedule as 24/7 when enabled.</div>
     </div>
-    <div id="editor"></div>
+    <div class="schedule-window" id="scheduleEditor">
+      <div class="row g-2 align-items-end">
+        <div class="col-12 col-md-4 col-lg-3">
+          <label class="form-label small text-uppercase muted" for="schedStart">Start time</label>
+          <input id="schedStart" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+        </div>
+        <div class="col-12 col-md-4 col-lg-3">
+          <label class="form-label small text-uppercase muted" for="schedEnd">End time</label>
+          <input id="schedEnd" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+        </div>
+      </div>
+      <div class="mt-3">
+        <div class="muted small mb-1">Applies on days</div>
+        <div class="schedule-window-days" id="schedDayButtons"></div>
+      </div>
+    </div>
     <div class="mt-3 d-flex gap-2">
       <button class="btn btn-success" onclick="save()">Save</button>
       <button class="btn btn-danger" onclick="del()">Delete</button>
