@@ -862,7 +862,12 @@ class AkuvoxAPI:
             base = stem if dot else safe_filename
             base = (base[:allowed] or "face").strip() or "face"
             safe_filename = f"{base}{suffix}" if suffix else base
-        safe_dest = str(dest_file or "Face")
+        safe_dest_raw = str(dest_file or "Face")
+        safe_dest = safe_dest_raw or "Face"
+        if safe_dest.lower() == "face":
+            # Devices expect capital "Face" in the query string; lowercase can trigger
+            # handler errors (see firmware guidance).
+            safe_dest = "Face"
 
         index_text: Optional[str] = None
         if index is not None:
@@ -874,10 +879,10 @@ class AkuvoxAPI:
         query = urlencode(params)
 
         base_paths = (
-            "/api/web/filetool/import",
-            "/web/filetool/import",
             "/api/filetool/import",
             "/filetool/import",
+            "/api/web/filetool/import",
+            "/web/filetool/import",
         )
         rel_paths = tuple(f"{path}?{query}" if query else path for path in base_paths)
 
