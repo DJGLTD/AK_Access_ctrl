@@ -855,6 +855,13 @@ class AkuvoxAPI:
 
         safe_filename = str(filename or "face.jpg")
         safe_filename = Path(safe_filename).name or "face.jpg"
+        if len(safe_filename) > 120:
+            stem, dot, ext = safe_filename.rpartition(".")
+            suffix = f".{ext}" if dot else ""
+            allowed = max(1, 120 - len(suffix))
+            base = stem if dot else safe_filename
+            base = (base[:allowed] or "face").strip() or "face"
+            safe_filename = f"{base}{suffix}" if suffix else base
         safe_dest = str(dest_file or "Face")
 
         index_text: Optional[str] = None
@@ -863,9 +870,7 @@ class AkuvoxAPI:
             if trimmed:
                 index_text = trimmed
 
-        params: Dict[str, str] = {"destFile": safe_dest}
-        if index_text is not None:
-            params["index"] = index_text
+        params: Dict[str, str] = {"destFile": safe_dest, "index": index_text or ""}
         query = urlencode(params)
 
         base_paths = (
@@ -885,6 +890,8 @@ class AkuvoxAPI:
         }
         if index_text is not None:
             payload_info["index"] = index_text
+        else:
+            payload_info["index"] = ""
 
         await self._ensure_detected()
 
@@ -904,9 +911,6 @@ class AkuvoxAPI:
             start = time.perf_counter()
 
             form = FormData()
-            form.add_field("destFile", safe_dest)
-            if index_text is not None:
-                form.add_field("index", index_text)
             form.add_field(
                 "file",
                 file_bytes,
