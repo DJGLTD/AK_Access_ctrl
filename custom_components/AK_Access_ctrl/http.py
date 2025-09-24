@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import base64
 import datetime as dt
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Mapping
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, unquote
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
@@ -27,6 +27,10 @@ from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
     MIN_DIAGNOSTICS_HISTORY_LIMIT,
     MAX_DIAGNOSTICS_HISTORY_LIMIT,
+    EVENT_INBOUND_CALL,
+    INBOUND_CALL_RESULT_APPROVED,
+    INBOUND_CALL_RESULT_APPROVED_KEY_HOLDER,
+    INBOUND_CALL_RESULT_DENIED,
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
@@ -191,8 +195,7 @@ def _build_face_upload_payload(
     profile: Dict[str, Any],
     device_record: Optional[Dict[str, Any]],
     user_id: str,
-    face_url: str,
-    face_data_b64: str,
+    face_reference: str,
 ) -> Dict[str, Any]:
     base = _sanitise_device_record(device_record)
     payload: Dict[str, Any] = dict(base)
@@ -240,11 +243,10 @@ def _build_face_upload_payload(
     if "WebRelay" not in payload:
         payload["WebRelay"] = "0"
 
-    payload["FaceUrl"] = face_url
-    payload["faceInfo"] = {
-        "fileName": f"{user_id}.jpg",
-        "fileData": face_data_b64,
-    }
+    face_filename = face_filename_from_reference(face_reference, user_id)
+    payload["FaceUrl"] = face_filename
+    payload["FaceFileName"] = face_filename
+    payload.pop("faceInfo", None)
 
     return payload
 
@@ -268,12 +270,6 @@ async def _push_face_to_devices(
         except Exception:
             profile = {}
 
-    try:
-        face_b64 = base64.b64encode(face_bytes).decode("ascii")
-    except Exception:
-        _LOGGER.debug("Failed to encode face bytes for %s", user_id)
-        return
-
     for entry_id, coord, api, _opts in manager._devices():
         device_name = getattr(coord, "device_name", entry_id)
         record = None
@@ -296,16 +292,35 @@ async def _push_face_to_devices(
                     record = candidate
                     break
 
+        record_face_source: Optional[str] = None
+        if isinstance(record, dict):
+            for key in ("FaceFileName", "faceFileName", "FaceUrl", "FaceURL"):
+                candidate = record.get(key)
+                if candidate in (None, ""):
+                    continue
+                record_face_source = str(candidate)
+                break
+
+        profile_face_source = profile.get("face_url") if isinstance(profile, dict) else None
+        reference = record_face_source or profile_face_source or face_url_public
+        face_filename = face_filename_from_reference(reference, user_id)
+
         try:
-            payload = _build_face_upload_payload(profile, record, user_id, face_url_public, face_b64)
+            await api.face_upload(face_bytes, filename=face_filename)
+        except Exception as err:
+            _LOGGER.debug("Direct face upload failed for %s on %s: %s", user_id, device_name, err)
+            continue
+
+        try:
+            payload = _build_face_upload_payload(profile, record, user_id, face_filename)
         except Exception as err:
             _LOGGER.debug("Failed to prepare face payload for %s on %s: %s", user_id, device_name, err)
             continue
 
         try:
-            await api.face_upload(payload)
+            await api.user_add([payload])
         except Exception as err:
-            _LOGGER.debug("Direct face upload failed for %s on %s: %s", user_id, device_name, err)
+            _LOGGER.debug("Failed to update face metadata for %s on %s: %s", user_id, device_name, err)
             continue
 
 RESERVATION_TTL_MINUTES = 2
@@ -325,6 +340,619 @@ SIGNED_API_PATHS: Dict[str, str] = {
 }
 
 _LOGGER = logging.getLogger(__name__)
+
+
+CALL_LOG_LOOKBACK_SECONDS_DEFAULT = 60
+CALL_LOG_LOOKBACK_MIN_SECONDS = 5
+CALL_LOG_LOOKBACK_MAX_SECONDS = 600
+
+_CALL_TYPE_MAP = {
+    "0": "all",
+    "1": "dialed",
+    "2": "received",
+    "3": "missed",
+    "4": "forwarded",
+    "5": "unknown",
+    "all": "all",
+    "dialed": "dialed",
+    "dialled": "dialed",
+    "received": "received",
+    "incoming": "received",
+    "incoming call": "received",
+    "received call": "received",
+    "missed": "missed",
+    "missed call": "missed",
+    "forwarded": "forwarded",
+    "unknown": "unknown",
+}
+
+_PHONE_SPLIT_RE = re.compile(r"[,;/\\|\n\r]+")
+
+INBOUND_CALL_LABEL_APPROVED_KEY_HOLDER = "Inbound call - access approved (key holder)"
+INBOUND_CALL_LABEL_APPROVED = "Inbound call - access approved"
+INBOUND_CALL_LABEL_DENIED_TEMPLATE = "Inbound call - access Denied ({number})"
+
+
+def _json_clone(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value))
+    except Exception:
+        return value
+
+
+def _normalize_call_number(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    for prefix in ("sip:", "tel:", "callto:"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):]
+            break
+
+    if "@" in text:
+        text = text.split("@", 1)[0]
+
+    # Remove separators that commonly appear in numbers
+    cleaned = text.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    cleaned = cleaned.replace(".", "")
+
+    if cleaned.startswith("+"):
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+        return f"+{digits}" if digits else ""
+
+    digits = "".join(ch for ch in cleaned if ch.isdigit())
+    if not digits:
+        return ""
+
+    if cleaned.startswith("00") and digits.startswith("00"):
+        digits = digits[2:]
+        return f"+{digits}" if digits else ""
+
+    return digits
+
+
+def _digits_only(value: str) -> str:
+    return "".join(ch for ch in value if ch.isdigit())
+
+
+def _numbers_equal(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+
+    stripped_a = a.lstrip("0")
+    stripped_b = b.lstrip("0")
+    if stripped_a and stripped_a == stripped_b:
+        return True
+
+    if len(a) >= 7 and len(b) >= 7:
+        if a.endswith(b) or b.endswith(a):
+            return True
+
+    return False
+
+
+def _profile_phone_values(profile: Dict[str, Any]) -> List[str]:
+    raw = profile.get("phone")
+    values: List[str] = []
+
+    if isinstance(raw, str):
+        parts = [part.strip() for part in _PHONE_SPLIT_RE.split(raw) if part and part.strip()]
+        if parts:
+            values.extend(parts)
+        else:
+            cleaned = raw.strip()
+            if cleaned:
+                values.append(cleaned)
+    elif isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if item in (None, ""):
+                continue
+            values.append(str(item).strip())
+    elif raw not in (None, ""):
+        values.append(str(raw).strip())
+
+    return values
+
+
+def _build_phone_index(root: Dict[str, Any]) -> List[Dict[str, Any]]:
+    store = root.get("users_store")
+    if not store:
+        return []
+
+    try:
+        users = store.all()
+    except Exception:
+        users = {}
+
+    index: List[Dict[str, Any]] = []
+    for ha_id, profile in (users or {}).items():
+        if not isinstance(profile, dict):
+            continue
+
+        numbers: List[Dict[str, str]] = []
+        for candidate in _profile_phone_values(profile):
+            normalized = _normalize_call_number(candidate)
+            digits = _digits_only(normalized)
+            if not digits:
+                continue
+            numbers.append({
+                "raw": candidate,
+                "normalized": normalized,
+                "digits": digits,
+            })
+
+        if not numbers:
+            continue
+
+        entry = {
+            "ha_id": ha_id,
+            "name": str(profile.get("name") or ha_id),
+            "key_holder": bool(profile.get("key_holder")),
+            "numbers": numbers,
+            "profile": _json_clone(profile),
+        }
+        index.append(entry)
+
+    return index
+
+
+def _call_entry_id(entry: Dict[str, Any]) -> str:
+    for key in ("ID", "Id", "id"):
+        value = entry.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _call_entry_number(entry: Dict[str, Any]) -> str:
+    for key in (
+        "Number",
+        "number",
+        "Num",
+        "num",
+        "CallNum",
+        "Callnum",
+        "CallNumber",
+        "Phone",
+        "RemoteNumber",
+        "RemoteNum",
+    ):
+        value = entry.get(key)
+        if value not in (None, ""):
+            return str(value)
+
+    fallback = entry.get("Name") or entry.get("RemoteDisplayName")
+    if fallback:
+        text = str(fallback)
+        if any(ch.isdigit() for ch in text):
+            return text
+
+    return ""
+
+
+def _call_entry_type(entry: Dict[str, Any]) -> str:
+    for key in ("Type", "type", "CallType", "callType"):
+        raw = entry.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, (int, float)):
+            lowered = str(int(raw))
+        else:
+            lowered = str(raw).strip().lower()
+        if not lowered:
+            continue
+        mapped = _CALL_TYPE_MAP.get(lowered)
+        if mapped:
+            return mapped
+        if "receive" in lowered or "incoming" in lowered or "inbound" in lowered:
+            return "received"
+        if "miss" in lowered:
+            return "missed"
+        if "dial" in lowered:
+            return "dialed"
+    return ""
+
+
+def _call_entry_is_received(call_type: str) -> bool:
+    if not call_type:
+        return False
+    lowered = call_type.lower()
+    if lowered in ("received", "incoming"):
+        return True
+    return any(token in lowered for token in ("receive", "incoming", "inbound"))
+
+
+def _parse_datetime_value(value: Any) -> Optional[dt.datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return dt.datetime.fromtimestamp(float(value))
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        cleaned = text.replace("Z", "+00:00")
+        return dt.datetime.fromisoformat(cleaned)
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+    ):
+        try:
+            return dt.datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _parse_date_value(value: Any) -> Optional[dt.date]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.datetime):
+        return value.date()
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"):
+        try:
+            return dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _parse_time_value(value: Any) -> Optional[dt.time]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.time):
+        return value
+    if isinstance(value, dt.datetime):
+        return value.time()
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return dt.datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _call_entry_timestamp(entry: Dict[str, Any]) -> Optional[dt.datetime]:
+    date_raw = entry.get("Date") or entry.get("date")
+    time_raw = entry.get("Time") or entry.get("time")
+
+    if date_raw and time_raw:
+        combined = _parse_datetime_value(f"{date_raw} {time_raw}")
+        if combined:
+            return combined
+
+    for key in ("DateTime", "datetime", "DateTimeStr", "dateTime"):
+        candidate = _parse_datetime_value(entry.get(key))
+        if candidate:
+            return candidate
+
+    for key in ("Timestamp", "timestamp", "Ts", "ts"):
+        candidate = _parse_datetime_value(entry.get(key))
+        if candidate:
+            return candidate
+
+    if date_raw and time_raw:
+        date_part = _parse_date_value(date_raw)
+        time_part = _parse_time_value(time_raw)
+        if date_part and time_part:
+            return dt.datetime.combine(date_part, time_part)
+
+    if date_raw:
+        date_part = _parse_date_value(date_raw)
+        if date_part:
+            return dt.datetime.combine(date_part, dt.time.min)
+
+    return None
+
+
+def _match_user_by_number(digits: str, phone_index: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not digits:
+        return None
+
+    best: Optional[Dict[str, Any]] = None
+
+    for entry in phone_index:
+        numbers = entry.get("numbers") or []
+        for candidate in numbers:
+            candidate_digits = candidate.get("digits")
+            if not candidate_digits:
+                continue
+            if _numbers_equal(digits, candidate_digits):
+                result = {
+                    "ha_id": entry.get("ha_id"),
+                    "name": entry.get("name"),
+                    "key_holder": bool(entry.get("key_holder")),
+                    "number": candidate.get("normalized") or candidate_digits,
+                    "profile": entry.get("profile"),
+                }
+                if result["key_holder"]:
+                    return result
+                if best is None:
+                    best = result
+
+    return best
+
+
+async def _process_inbound_call_webhook(
+    hass: HomeAssistant,
+    *,
+    number_hint: Optional[str] = None,
+    lookback_seconds: Optional[Any] = None,
+) -> Dict[str, Any]:
+    root = hass.data.get(DOMAIN, {}) or {}
+
+    try:
+        lookback = int(lookback_seconds) if lookback_seconds is not None else CALL_LOG_LOOKBACK_SECONDS_DEFAULT
+    except Exception:
+        lookback = CALL_LOG_LOOKBACK_SECONDS_DEFAULT
+
+    if lookback < CALL_LOG_LOOKBACK_MIN_SECONDS:
+        lookback = CALL_LOG_LOOKBACK_MIN_SECONDS
+    elif lookback > CALL_LOG_LOOKBACK_MAX_SECONDS:
+        lookback = CALL_LOG_LOOKBACK_MAX_SECONDS
+
+    phone_index = _build_phone_index(root)
+
+    normalized_hint = _normalize_call_number(number_hint) if number_hint else ""
+    hint_digits = _digits_only(normalized_hint)
+
+    now_local = dt.datetime.now()
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    candidates: List[Dict[str, Any]] = []
+
+    for entry_id, data in root.items():
+        if not isinstance(data, dict):
+            continue
+
+        api = data.get("api")
+        coord = data.get("coordinator")
+        if not api or not coord:
+            continue
+
+        device_type = str((getattr(coord, "health", {}) or {}).get("device_type") or "").strip().lower()
+        if device_type and device_type != "intercom":
+            continue
+
+        try:
+            log_items = await api.call_log()
+        except Exception as err:
+            _LOGGER.debug("Failed to fetch call log for %s: %s", entry_id, err)
+            continue
+
+        if isinstance(log_items, dict):
+            log_items = [log_items]
+        if not isinstance(log_items, list):
+            continue
+
+        device_name = getattr(coord, "device_name", entry_id)
+
+        for raw in log_items:
+            if not isinstance(raw, dict):
+                continue
+
+            call_type = _call_entry_type(raw)
+            if not _call_entry_is_received(call_type or ""):
+                continue
+
+            timestamp = _call_entry_timestamp(raw)
+            if not timestamp:
+                continue
+
+            if timestamp.tzinfo is None:
+                age_seconds = (now_local - timestamp).total_seconds()
+            else:
+                age_seconds = (now_utc - timestamp.astimezone(dt.timezone.utc)).total_seconds()
+
+            if age_seconds < 0 or age_seconds > lookback:
+                continue
+
+            raw_number = _call_entry_number(raw)
+            normalized_number = _normalize_call_number(raw_number)
+            digits = _digits_only(normalized_number)
+
+            candidate = {
+                "entry_id": entry_id,
+                "device_name": device_name,
+                "call_id": _call_entry_id(raw),
+                "timestamp": timestamp,
+                "age_seconds": round(age_seconds, 2),
+                "raw": _json_clone(raw),
+                "call_type": call_type or "received",
+                "raw_number": raw_number or "",
+                "number": normalized_number,
+                "digits": digits,
+            }
+            candidates.append(candidate)
+
+    if not candidates:
+        error = "no recent received calls"
+        if number_hint:
+            error = f"no recent received calls for {number_hint}"
+        return {"ok": False, "error": error, "lookback_seconds": lookback}
+
+    if hint_digits:
+        filtered = [c for c in candidates if _numbers_equal(c.get("digits", ""), hint_digits)]
+        if filtered:
+            candidates = filtered
+        else:
+            return {
+                "ok": False,
+                "error": f"no recent received calls matching {normalized_hint or number_hint}",
+                "lookback_seconds": lookback,
+            }
+
+    candidates.sort(key=lambda item: item.get("timestamp"), reverse=True)
+    best = candidates[0]
+
+    match = _match_user_by_number(best.get("digits", ""), phone_index)
+
+    base_number = best.get("number") or best.get("raw_number") or normalized_hint or number_hint
+    display_number = match.get("number") if match and match.get("number") else base_number
+
+    if match and match.get("key_holder"):
+        result = INBOUND_CALL_RESULT_APPROVED_KEY_HOLDER
+        status_label = INBOUND_CALL_LABEL_APPROVED_KEY_HOLDER
+    elif match:
+        result = INBOUND_CALL_RESULT_APPROVED
+        status_label = INBOUND_CALL_LABEL_APPROVED
+    else:
+        result = INBOUND_CALL_RESULT_DENIED
+        denied_display = display_number or "Unknown"
+        status_label = INBOUND_CALL_LABEL_DENIED_TEMPLATE.format(number=denied_display)
+        display_number = denied_display
+
+    event_payload: Dict[str, Any] = {
+        "entry_id": best.get("entry_id"),
+        "device_name": best.get("device_name"),
+        "call_id": best.get("call_id"),
+        "timestamp": best.get("timestamp").isoformat() if best.get("timestamp") else None,
+        "call_type": best.get("call_type"),
+        "number": display_number or "",
+        "raw_number": best.get("raw_number"),
+        "digits": best.get("digits"),
+        "status": result,
+        "status_label": status_label,
+        "lookback_seconds": lookback,
+        "call": best.get("raw"),
+    }
+
+    if match:
+        event_payload.update(
+            {
+                "user_id": match.get("ha_id"),
+                "user_name": match.get("name"),
+                "key_holder": bool(match.get("key_holder")),
+                "user_number": match.get("number"),
+                "user_profile": match.get("profile"),
+            }
+        )
+    else:
+        event_payload.update({"user_id": None, "user_name": None, "key_holder": False})
+
+    hass.bus.async_fire(EVENT_INBOUND_CALL, event_payload)
+
+    _LOGGER.debug(
+        "Inbound call webhook result=%s device=%s number=%s user=%s key_holder=%s",
+        result,
+        best.get("device_name"),
+        display_number or "",
+        event_payload.get("user_id"),
+        event_payload.get("key_holder"),
+    )
+
+    response: Dict[str, Any] = {
+        "ok": True,
+        "result": result,
+        "status_label": status_label,
+        "entry_id": best.get("entry_id"),
+        "device_name": best.get("device_name"),
+        "call_id": best.get("call_id"),
+        "timestamp": event_payload.get("timestamp"),
+        "call_type": best.get("call_type"),
+        "number": display_number or "",
+        "raw_number": best.get("raw_number"),
+        "digits": best.get("digits"),
+        "age_seconds": best.get("age_seconds"),
+        "lookback_seconds": lookback,
+        "call": best.get("raw"),
+        "event": event_payload,
+    }
+
+    if match:
+        response["user"] = {
+            "id": match.get("ha_id"),
+            "name": match.get("name"),
+            "key_holder": bool(match.get("key_holder")),
+            "number": match.get("number"),
+        }
+    else:
+        response["user"] = None
+
+    return response
+
+
+class AkuvoxInboundCallWebhook(HomeAssistantView):
+    url = "/api/akuvox_ac/webhook/inbound_call"
+    name = "api:akuvox_ac:webhook_inbound_call"
+    requires_auth = False
+
+    async def _handle(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+
+        payload: Dict[str, Any] = {}
+        if request.can_read_body:
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {}
+
+        number_hint = request.query.get("number") or request.query.get("phone")
+        if not number_hint and isinstance(payload, dict):
+            number_hint = payload.get("number") or payload.get("phone")
+
+        lookback = (
+            request.query.get("within")
+            or request.query.get("lookback")
+            or request.query.get("within_seconds")
+        )
+        if lookback is None and isinstance(payload, dict):
+            lookback = (
+                payload.get("within")
+                or payload.get("lookback")
+                or payload.get("within_seconds")
+            )
+
+        result = await _process_inbound_call_webhook(
+            hass,
+            number_hint=number_hint,
+            lookback_seconds=lookback,
+        )
+
+        status = 200 if result.get("ok") else 200
+        return web.json_response(result, status=status)
+
+    async def get(self, request: web.Request):
+        return await self._handle(request)
+
+    async def post(self, request: web.Request):
+        return await self._handle(request)
 
 
 def _persistent_face_dir(hass: HomeAssistant) -> Path:
@@ -569,6 +1197,36 @@ def face_base_url(hass: HomeAssistant, request: Optional[web.Request] = None) ->
             return f"{cleaned}{FACE_DATA_PATH}"
 
     return FACE_DATA_PATH
+
+
+def face_filename_from_reference(reference: str, user_id: str, default_ext: str = "jpg") -> str:
+    """Return a sanitised filename for a face image reference or fallback to <user_id>.ext."""
+
+    candidate = str(reference or "").strip()
+    if candidate:
+        try:
+            parsed = urlsplit(candidate)
+            extracted = parsed.path or candidate
+        except Exception:
+            extracted = candidate
+        extracted = unquote(extracted)
+        try:
+            name = Path(extracted).name
+        except Exception:
+            name = ""
+        cleaned = str(name or "").strip()
+        if cleaned:
+            suffix = Path(cleaned).suffix
+            if not suffix and default_ext:
+                cleaned = f"{cleaned}.{default_ext}"
+            return cleaned
+
+    fallback = str(user_id or "").strip() or "face"
+    if default_ext:
+        suffix = Path(fallback).suffix
+        if not suffix:
+            return f"{fallback}.{default_ext}"
+    return fallback
 
 
 def _static_asset(path: str) -> Path:
@@ -2539,4 +3197,5 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxUIReleaseId())   # <-- new
     hass.http.register_view(AkuvoxUIReservationPing())
     hass.http.register_view(AkuvoxUIUploadFace())
+    hass.http.register_view(AkuvoxInboundCallWebhook())
     hass.http.register_view(AkuvoxUIRemoteEnrol())

@@ -656,15 +656,7 @@ function renderKPIs(k){
   }
   const footer = document.querySelector('.footer-note');
   if (footer) {
-    const versionLabel = k.version || '';
-    const raw = k.version_raw || '';
-    if (versionLabel || raw) {
-      footer.textContent = raw && raw !== versionLabel
-        ? `Integration version ${versionLabel || raw} (${raw})`
-        : `Integration version ${versionLabel || raw}`;
-    } else {
-      footer.textContent = '';
-    }
+    footer.textContent = '';
   }
 }
 

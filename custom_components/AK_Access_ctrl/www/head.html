@@ -1166,11 +1166,10 @@ async function fetchVersion(){
     const data = await res.json();
     const label = data?.kpis?.version || '—';
     if (badge) badge.textContent = label;
-    const raw = data?.kpis?.version_raw || '';
-    if (footer) footer.textContent = raw ? `Integration version ${label} (${raw})` : `Integration version ${label}`;
+    if (footer) footer.textContent = '';
   } catch (err) {
     if (badge) badge.textContent = 'Version unavailable';
-    if (footer) footer.textContent = 'Unable to load version information';
+    if (footer) footer.textContent = '';
   }
 }
 

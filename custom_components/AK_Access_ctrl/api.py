@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 
-from aiohttp import ClientSession, BasicAuth
-from urllib.parse import urlsplit
+from aiohttp import ClientSession, BasicAuth, FormData
+from urllib.parse import urlsplit, urlencode
 
 from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
@@ -313,7 +313,13 @@ class AkuvoxAPI:
                     record[key] = value
             else:
                 record[key] = _json_copy(value)
-        record["diag_type"] = self._derive_diag_type(record)
+        diag_type = base.get("diag_type")
+        if isinstance(diag_type, str) and diag_type.strip():
+            record["diag_type"] = diag_type.strip()
+        elif diag_type not in (None, ""):
+            record["diag_type"] = str(diag_type)
+        else:
+            record["diag_type"] = self._derive_diag_type(record)
         self._request_log.appendleft(record)
 
     def _derive_diag_type(self, record: Dict[str, Any]) -> str:
@@ -500,27 +506,32 @@ class AkuvoxAPI:
             if not seg:
                 continue
 
+            had_separator = False
             if "," in seg:
                 sched_part, relay_part = seg.split(",", 1)
+                had_separator = True
             elif "-" in seg:
                 sched_part, relay_part = seg.split("-", 1)
+                had_separator = True
             else:
                 sched_part, relay_part = seg, ""
 
             sched = "".join(ch for ch in sched_part.strip() if ch.isalnum())
-            relays = "".join(ch for ch in relay_part.strip() if ch.isdigit())
+            relay_raw = relay_part.strip()
+            relays = "".join(ch for ch in relay_raw if ch.isdigit())
 
             if not sched:
                 continue
 
-            if not relays:
-                relays = "1"
-
             # Limit relays to the supported flags ("1" for relay A, "2" for B)
             relays_unique = "".join(dict.fromkeys(ch for ch in relays if ch in ("1", "2")))
-            relays = relays_unique or "1"
 
-            normalized.append(f"{sched}-{relays}")
+            if relays_unique:
+                normalized.append(f"{sched}-{relays_unique}")
+            elif had_separator and not relay_raw:
+                normalized.append(f"{sched}-")
+            else:
+                normalized.append(f"{sched}-1")
 
         if not normalized:
             return ""
@@ -772,8 +783,38 @@ class AkuvoxAPI:
             items = r.get("data", {}).get("item")
             if isinstance(items, list):
                 return items
+            if isinstance(items, dict):
+                return [items]
         except Exception:
             pass
+        return []
+
+    async def call_log(self) -> List[Dict[str, Any]]:
+        """Return recent call log entries (best effort)."""
+
+        for payload in (
+            {"target": "calllog", "action": "get"},
+        ):
+            try:
+                r = await self._post_api(payload)
+                items = r.get("data", {}).get("item")
+                if isinstance(items, list):
+                    return items
+                if isinstance(items, dict):
+                    return [items]
+            except Exception:
+                pass
+
+        try:
+            r = await self._get_api("/api/calllog/get")
+            items = r.get("data", {}).get("item")
+            if isinstance(items, list):
+                return items
+            if isinstance(items, dict):
+                return [items]
+        except Exception:
+            pass
+
         return []
 
     async def user_list(self) -> List[Dict[str, Any]]:
@@ -800,42 +841,134 @@ class AkuvoxAPI:
 
     async def face_upload(
         self,
-        item: Dict[str, Any],
+        file_bytes: bytes,
         *,
+        filename: Optional[str] = None,
         dest_file: str = "Face",
-        index: int = 1,
+        index: Optional[str] = "",
+        content_type: str = "image/jpeg",
     ) -> Dict[str, Any]:
-        """Upload a face template directly to the device via the faceIntegration API."""
+        """Upload a face image to the device via the filetool import endpoint."""
 
-        if not item:
+        if not file_bytes:
             return {}
 
-        # Some firmwares expect the classic data.item[] envelope, others accept a raw list.
-        payload_variants: List[Dict[str, Any]] = []
-        cleaned = dict(item)
-        payload_variants.append({"target": "user", "action": "add", "data": {"item": [cleaned]}})
-        payload_variants.append({"target": "user", "action": "add", "data": [cleaned]})
+        safe_filename = str(filename or "face.jpg")
+        safe_filename = Path(safe_filename).name or "face.jpg"
+        safe_dest = str(dest_file or "Face")
 
-        query = f"destFile={dest_file}&index={index}"
-        rel_paths = (
-            f"/v0/device/faceIntegration?{query}",
-            f"/device/faceIntegration?{query}",
-            f"/faceIntegration?{query}",
-            f"/api/faceIntegration?{query}",
+        params: Dict[str, str] = {"destFile": safe_dest}
+        if index is not None:
+            params["index"] = str(index)
+        query = urlencode(params)
+
+        base_paths = (
+            "/api/web/filetool/import",
+            "/web/filetool/import",
+            "/api/filetool/import",
+            "/filetool/import",
         )
+        rel_paths = tuple(f"{path}?{query}" if query else path for path in base_paths)
 
-        last_exc: Exception | None = None
-        for payload in payload_variants:
+        payload_info: Dict[str, Any] = {
+            "target": "upload",
+            "action": "face",
+            "destFile": safe_dest,
+            "filename": safe_filename,
+            "size": len(file_bytes),
+        }
+        if index is not None:
+            payload_info["index"] = str(index)
+
+        await self._ensure_detected()
+
+        async def _attempt(use_https: bool, port: int, verify: bool, rel: str) -> Dict[str, Any]:
+            url = f"{'https' if use_https else 'http'}://{self.host}:{port}{rel}"
+            entry: Dict[str, Any] = {
+                "timestamp": _utc_now_iso(),
+                "method": "POST",
+                "url": url,
+                "path": rel,
+                "scheme": "https" if use_https else "http",
+                "port": port,
+                "verify_ssl": bool(verify if use_https else True),
+                "payload": payload_info,
+                "diag_type": "upload:face",
+            }
+            start = time.perf_counter()
+
+            form = FormData()
+            form.add_field("destFile", safe_dest)
+            if index is not None:
+                form.add_field("index", str(index))
+            form.add_field(
+                "file",
+                file_bytes,
+                filename=safe_filename,
+                content_type=content_type or "application/octet-stream",
+            )
+
             try:
-                return await self._request_attempts("POST", rel_paths, payload)
-            except Exception as exc:
-                last_exc = exc
-                continue
+                _LOGGER.debug(
+                    "POST %s (face upload) filename=%s size=%s", url, safe_filename, len(file_bytes)
+                )
+                async with self._session.post(
+                    url,
+                    data=form,
+                    headers={"Accept": "application/json, text/plain, */*"},
+                    ssl=(verify if use_https else None),
+                    timeout=30,
+                    auth=self._auth,
+                ) as r:
+                    txt = None
+                    try:
+                        data = await r.json(content_type=None)
+                    except Exception:
+                        txt = await r.text()
+                        data = {"_raw": txt}
+                    entry["status"] = r.status
+                    entry["ok"] = 200 <= r.status < 400
+                    if txt is not None:
+                        entry["response_excerpt"] = _truncate_string(txt)
+                    else:
+                        entry["response_excerpt"] = _json_copy(data)
+                    r.raise_for_status()
+                    return data
+            except Exception as err:
+                entry.setdefault("status", getattr(err, "status", None))
+                entry["error"] = _truncate_string(str(err), 400)
+                raise
+            finally:
+                entry["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
+                self._remember_request(entry)
 
-        if last_exc:
-            raise last_exc
+        bases: List[Tuple[bool, int, bool]] = []
+        if self._detected:
+            bases.append(self._detected)
+        bases.extend([(True, 443, False), (True, 443, True), (False, 80, True)])
 
-        return {}
+        for https, port, verify in bases:
+            for rel in rel_paths:
+                try:
+                    return await _attempt(https, port, verify, rel)
+                except Exception as exc:
+                    _LOGGER.debug(
+                        "Face upload attempt failed for %s://%s:%s%s -> %s",
+                        "https" if https else "http",
+                        self.host,
+                        port,
+                        rel,
+                        exc,
+                    )
+                    continue
+
+        fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
+        return await _attempt(
+            self.use_https,
+            self.port if self.port else (443 if self.use_https else 80),
+            self.verify_ssl,
+            fallback_rel,
+        )
 
     async def user_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

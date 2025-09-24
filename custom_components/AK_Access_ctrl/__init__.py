@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
-from urllib.parse import urlparse
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -55,6 +54,7 @@ from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
 from .http import (
     face_base_url,
+    face_filename_from_reference,
     face_storage_dir,
     register_ui,
     FACE_FILE_EXTENSIONS,
@@ -561,15 +561,12 @@ def _desired_device_user_payload(
             face_url = f"{face_root_base}/{ha_key}.jpg"
         if face_url not in (None, ""):
             face_url_str = str(face_url)
-            desired["FaceUrl"] = face_url_str
-            if not local.get("FaceFileName"):
-                parsed = urlparse(face_url_str)
-                candidate = Path(parsed.path).name
-            else:
-                candidate = _string_or_default(local.get("FaceFileName"), default="")
-            if not candidate:
-                candidate = f"{ha_key}.jpg"
-            desired["FaceFileName"] = candidate
+            filename_source = _string_or_default(local.get("FaceFileName"), default="")
+            if not filename_source:
+                filename_source = face_url_str
+            face_filename = face_filename_from_reference(filename_source, ha_key)
+            desired["FaceUrl"] = face_filename
+            desired["FaceFileName"] = face_filename
 
     return desired
 
