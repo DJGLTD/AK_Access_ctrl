@@ -636,6 +636,27 @@ class AkuvoxAPI:
             norm.append(d)
         return norm
 
+    @staticmethod
+    def _prune_user_items_for_set(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove keys that firmwares reject from user.set payloads."""
+
+        unsupported = {
+            "DoorNum",
+            "Group",
+            "PriorityCall",
+            "DialAccount",
+            "C4EventNo",
+            "AuthMode",
+            "LicensePlate",
+        }
+
+        trimmed: List[Dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            trimmed.append({k: v for k, v in item.items() if k not in unsupported})
+        return trimmed
+
     async def _ensure_ids_for_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         'user set' expects the device 'ID'. If caller provided only UserID/Name,
@@ -674,7 +695,7 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {"target": "user", "action": action}
         if items is not None:
             payload["data"] = {"item": items}
-        return await self._post_api(payload, rel_paths=("/api/user/", "/api/", "/action"))
+        return await self._post_api(payload, rel_paths=("/api/", "/action"))
 
     async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
@@ -1115,6 +1136,7 @@ class AkuvoxAPI:
         - Normalizes booleans and ScheduleRelay
         """
         items = await self._ensure_ids_for_set(items)
+        items = self._prune_user_items_for_set(items)
         items = self._normalize_user_items_for_add_or_set(items)
         try:
             return await self._api_user("set", items)
