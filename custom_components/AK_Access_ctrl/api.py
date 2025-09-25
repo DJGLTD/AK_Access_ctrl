@@ -6,7 +6,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Iterable
+from typing import Any, Dict, List, Optional, Tuple, Iterable, Set
 
 from aiohttp import ClientSession, BasicAuth, FormData
 from urllib.parse import urlsplit, urlencode
@@ -757,25 +757,44 @@ class AkuvoxAPI:
                 return item
 
         schemes_ports: List[Tuple[bool, int, bool]] = []
+
+        def _add_https(port: Optional[int], verify: bool) -> None:
+            port_val = int(port or 443)
+            combo = (True, port_val, bool(verify))
+            if combo not in schemes_ports:
+                schemes_ports.append(combo)
+
+        def _add_http(port: Optional[int]) -> None:
+            port_val = int(port or 80)
+            combo = (False, port_val, True)
+            if combo not in schemes_ports:
+                schemes_ports.append(combo)
+
         if self._detected:
             https, port, verify = self._detected
-            schemes_ports.append((https, port, verify))
+            if https:
+                _add_https(port, verify)
+            else:
+                _add_http(port)
 
-        combos = [(True, 443, False), (True, 443, True)]
-        if not self.use_https:
-            combos.append((False, 80, True))
-        if self.port not in (80, 443):
-            combos.insert(0, (self.use_https, self.port, False if self.use_https else True))
-            if self.use_https:
-                combos.insert(1, (self.use_https, self.port, True))
-        if self.use_https and self.port == 80:
-            combos.insert(0, (True, 443, False))
-        if (not self.use_https) and self.port == 443:
-            combos.insert(0, (False, 80, True))
+        configured_port = int(self.port or (443 if self.use_https else 80))
 
-        for c in combos:
-            if c not in schemes_ports:
-                schemes_ports.append(c)
+        if self.use_https:
+            _add_https(configured_port, False)
+            _add_https(configured_port, True)
+        else:
+            _add_http(configured_port)
+            if configured_port not in (80, 443):
+                _add_https(configured_port, False)
+                _add_https(configured_port, True)
+
+        # Always try HTTP on the configured port in case HTTPS is misconfigured.
+        _add_http(configured_port)
+
+        # Standard fallbacks cover common Akuvox defaults.
+        _add_https(443, False)
+        _add_https(443, True)
+        _add_http(80)
 
         paths = [
             ("GET", "/api/system/status", None),
@@ -1029,6 +1048,30 @@ class AkuvoxAPI:
             fallback_rel,
         )
 
+    async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
+        """Delete face images associated with the provided UserID values."""
+
+        ids = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+        if not ids:
+            return
+
+        paths = (
+            "/api/web/face/del",
+            "/web/face/del",
+            "/api/face/del",
+            "/face/del",
+        )
+
+        for uid in ids:
+            payload = {"target": "face", "action": "del", "data": {"UserID": uid}}
+            try:
+                await self._post_api(payload, rel_paths=paths)
+            except Exception as err:
+                _LOGGER.debug("Face delete failed for %s: %s", uid, err)
+
+    async def face_delete(self, user_id: str) -> None:
+        await self.face_delete_bulk([user_id])
+
     async def user_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Per manual: target=user, action=add, data.item=[{UserID/ID/Name/...}].
@@ -1144,14 +1187,14 @@ class AkuvoxAPI:
 
     async def user_delete(self, identifier: str) -> None:
         """Delete by device ID or resolve by (ID/UserID/Name) first."""
-        if not identifier:
+        if identifier is None:
             return
-        if str(identifier).isdigit():
-            try:
-                await self.user_del([str(identifier)])
-                return
-            except Exception:
-                pass
+
+        text = str(identifier).strip()
+        if not text:
+            return
+
+        face_ids: Set[str] = set()
 
         try:
             users = await self.user_list()
@@ -1160,34 +1203,69 @@ class AkuvoxAPI:
 
         target_ids: List[str] = []
         for u in users or []:
-            dev_id = str(u.get("ID") or "")
-            user_id = str(u.get("UserID") or "")
-            name = str(u.get("Name") or "")
-            if identifier in (dev_id, user_id, name):
+            dev_id = str(u.get("ID") or "").strip()
+            user_id = str(u.get("UserID") or "").strip()
+            name = str(u.get("Name") or "").strip()
+            if text in (dev_id, user_id, name):
                 if dev_id:
                     target_ids.append(dev_id)
+                if user_id:
+                    face_ids.add(user_id)
 
-        if not target_ids:
-            # Some firmwares accept deleting by UserID as item[]
+        if target_ids:
             try:
-                await self._api_user("del", [{"UserID": str(identifier)}])
+                await self.user_del(target_ids)
             except Exception:
-                pass
-            return
-
-        try:
-            await self.user_del(target_ids)
-        except Exception:
-            for did in target_ids:
+                for did in target_ids:
+                    try:
+                        await self.user_del([did])
+                    except Exception:
+                        pass
+        else:
+            deletion_attempted = False
+            if text.isdigit():
                 try:
-                    await self.user_del([did])
+                    await self.user_del([text])
+                    deletion_attempted = True
                 except Exception:
                     pass
+            if not deletion_attempted:
+                try:
+                    await self._api_user("del", [{"UserID": text}])
+                    deletion_attempted = True
+                except Exception:
+                    pass
+            if deletion_attempted and text:
+                face_ids.add(text)
 
-    async def user_delete_bulk(self, device_ids: List[str]) -> None:
-        ids = [str(i) for i in (device_ids or []) if str(i)]
+        if face_ids:
+            await self.face_delete_bulk(face_ids)
+
+    async def user_delete_bulk(
+        self,
+        device_ids: List[str],
+        *,
+        face_user_ids: Optional[Iterable[str]] = None,
+    ) -> None:
+        ids = [str(i).strip() for i in (device_ids or []) if str(i).strip()]
         if not ids:
             return
+
+        face_targets: Set[str] = {
+            str(uid).strip() for uid in (face_user_ids or []) if str(uid).strip()
+        }
+        if not face_targets:
+            try:
+                users = await self.user_list()
+            except Exception:
+                users = []
+            wanted_ids = set(ids)
+            for u in users or []:
+                dev_id = str(u.get("ID") or "").strip()
+                user_id = str(u.get("UserID") or "").strip()
+                if dev_id and dev_id in wanted_ids and user_id:
+                    face_targets.add(user_id)
+
         try:
             await self.user_del(ids)
         except Exception:
@@ -1196,6 +1274,9 @@ class AkuvoxAPI:
                     await self.user_del([did])
                 except Exception:
                     pass
+
+        if face_targets:
+            await self.face_delete_bulk(face_targets)
 
     async def user_delete_by_key(self, key: str) -> None:
         await self.user_delete(key)
@@ -1211,6 +1292,7 @@ class AkuvoxAPI:
             users = []
 
         dev_ids: List[str] = []
+        face_ids: Set[str] = set()
         for u in users or []:
             dev_id = str(u.get("ID") or "")
             user_id = str(u.get("UserID") or "")
@@ -1218,11 +1300,20 @@ class AkuvoxAPI:
             if user_id in wanted or name in wanted or dev_id in wanted:
                 if dev_id:
                     dev_ids.append(dev_id)
+                if user_id:
+                    face_ids.add(str(user_id))
 
         if not dev_ids:
+            if face_ids:
+                for uid in face_ids:
+                    try:
+                        await self._api_user("del", [{"UserID": uid}])
+                    except Exception:
+                        pass
+                await self.face_delete_bulk(face_ids)
             return
 
-        await self.user_delete_bulk(dev_ids)
+        await self.user_delete_bulk(dev_ids, face_user_ids=face_ids)
 
     async def contact_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return await self._api_contact("add", items)
