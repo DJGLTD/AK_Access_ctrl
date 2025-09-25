@@ -36,6 +36,13 @@ class _Base(AkuvoxOnlineSensor := object):
         }
         coord.async_add_listener(self._coord_updated)
 
+    def _base_state_attributes(self) -> Dict[str, Any]:
+        return {
+            "akuvox_entry_id": self._entry.entry_id,
+            "akuvox_device_name": self._coord.device_name,
+            "akuvox_device_type": (self._coord.health.get("device_type") or ""),
+        }
+
     @property
     def available(self) -> bool:
         return True
@@ -45,6 +52,10 @@ class _Base(AkuvoxOnlineSensor := object):
 
     def _coord_updated(self) -> None:
         self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        return dict(self._base_state_attributes())
 
 class AkuvoxOnlineSensor(_Base, SensorEntity):
     @property
@@ -58,6 +69,12 @@ class AkuvoxOnlineSensor(_Base, SensorEntity):
     @property
     def native_value(self):
         return "Online" if self._coord.health.get("online") else "Offline"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "online"
+        return attrs
 
 class AkuvoxSyncStatusSensor(_Base, SensorEntity):
     @property
@@ -74,6 +91,12 @@ class AkuvoxSyncStatusSensor(_Base, SensorEntity):
             return "Offline"
         return self._coord.health.get("sync_status") or "pending"
 
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "sync_status"
+        return attrs
+
 class AkuvoxLastSyncSensor(_Base, SensorEntity):
     @property
     def name(self) -> str:
@@ -89,6 +112,12 @@ class AkuvoxLastSyncSensor(_Base, SensorEntity):
             return None
         return self._coord.health.get("last_sync")
 
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "last_sync"
+        return attrs
+
 class AkuvoxUsersCountSensor(_Base, SensorEntity):
     @property
     def name(self) -> str:
@@ -102,6 +131,12 @@ class AkuvoxUsersCountSensor(_Base, SensorEntity):
     def native_value(self):
         return len(self._coord.users or [])
 
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "users_count"
+        return attrs
+
 class AkuvoxEventsCountSensor(_Base, SensorEntity):
     @property
     def name(self) -> str:
@@ -114,6 +149,12 @@ class AkuvoxEventsCountSensor(_Base, SensorEntity):
     @property
     def native_value(self):
         return len(self._coord.events or [])
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "events_count"
+        return attrs
 
 
 class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
@@ -133,10 +174,15 @@ class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
     @property
     def extra_state_attributes(self):
         state = getattr(self._coord, "event_state", {}) or {}
-        return {
-            "user_id": state.get("last_user_id"),
-            "event_type": state.get("last_event_type"),
-            "event_summary": state.get("last_event_summary"),
-            "event_timestamp": state.get("last_event_timestamp"),
-            "key_holder": state.get("last_event_key_holder"),
-        }
+        attrs = super().extra_state_attributes
+        attrs.update(
+            {
+                "akuvox_metric": "last_access_user",
+                "user_id": state.get("last_user_id"),
+                "event_type": state.get("last_event_type"),
+                "event_summary": state.get("last_event_summary"),
+                "event_timestamp": state.get("last_event_timestamp"),
+                "key_holder": state.get("last_event_key_holder"),
+            }
+        )
+        return attrs

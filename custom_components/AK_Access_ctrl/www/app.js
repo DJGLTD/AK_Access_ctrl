@@ -32,30 +32,46 @@ function esc(s) { return (""+s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;
 
 async function loadDevices() {
   // We read entity states and infer per-device health from your integration's sensors.
-  // Expected keys (customize to your actual entities if they differ):
-  //  - binary_sensor.akuvox_*_online (true/false)
-  //  - sensor.akuvox_*_sync_status  (in_sync|pending)
-  //  - sensor.akuvox_*_last_sync    (timestamp)
+  // Any entity exposing akuvox_entry_id + akuvox_metric attributes will be grouped together.
   const states = await haGet("/api/states");
   const devs = {};
   for (const s of states) {
-    if (!s.entity_id.startsWith("binary_sensor.akuvox_") && !s.entity_id.startsWith("sensor.akuvox_")) continue;
-    const base = s.entity_id.replace(/^binary_sensor\.|^sensor\./, "");
-    const key = base.split("_online")[0].split("_sync_status")[0].split("_last_sync")[0];
-    devs[key] ||= { name: s.attributes.friendly_name || key, entities: {} };
+    const attrs = s.attributes || {};
+    const key = String(attrs.akuvox_entry_id || "").trim();
+    if (!key) continue;
+    if (!devs[key]) {
+      devs[key] = {
+        key,
+        name: attrs.akuvox_device_name || attrs.friendly_name || key,
+        type: attrs.akuvox_device_type || "",
+        entities: {},
+        metrics: {},
+      };
+    }
     devs[key].entities[s.entity_id] = s;
+    const metric = String(attrs.akuvox_metric || "").trim();
+    if (metric) {
+      devs[key].metrics[metric] = s;
+    }
   }
 
   const holder = document.getElementById("devices");
   holder.innerHTML = "";
-  const keys = Object.keys(devs).sort();
-  for (const k of keys) {
-    const d = devs[k];
-    const onlineEntity = Object.values(d.entities).find(x => x.entity_id.includes("_online"));
-    const syncEntity = Object.values(d.entities).find(x => x.entity_id.includes("_sync_status"));
-    const lastEntity = Object.values(d.entities).find(x => x.entity_id.includes("_last_sync"));
+  const items = Object.values(devs).sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  for (const d of items) {
+    let onlineEntity = d.metrics.online;
+    let syncEntity = d.metrics.sync_status;
+    let lastEntity = d.metrics.last_sync;
 
-    const online = onlineEntity?.state === "on";
+    if (!onlineEntity || !syncEntity || !lastEntity) {
+      const allEntities = Object.values(d.entities);
+      onlineEntity ||= allEntities.find(x => x.entity_id.includes("_online"));
+      syncEntity ||= allEntities.find(x => x.entity_id.includes("_sync_status"));
+      lastEntity ||= allEntities.find(x => x.entity_id.includes("_last_sync"));
+    }
+
+    const onlineState = String(onlineEntity?.state || "").toLowerCase();
+    const online = ["online", "on", "true"].includes(onlineState);
     const syncState = syncEntity?.state || "unknown";
     const lastSync = lastEntity?.state || "";
 
@@ -78,9 +94,9 @@ async function loadDevices() {
             <div class="mt-1">${onlineBadge} ${syncBadge}</div>
           </div>
           <div class="text-end">
-            <button class="btn btn-sm btn-outline-light me-1" data-act="syncNowOne" data-key="${esc(k)}">Sync Now</button>
-            <button class="btn btn-sm btn-outline-light me-1" data-act="forceOne" data-key="${esc(k)}">Force Sync</button>
-            <button class="btn btn-sm btn-outline-light" data-act="rebootOne" data-key="${esc(k)}">Reboot</button>
+            <button class="btn btn-sm btn-outline-light me-1" data-act="syncNowOne" data-key="${esc(d.key)}">Sync Now</button>
+            <button class="btn btn-sm btn-outline-light me-1" data-act="forceOne" data-key="${esc(d.key)}">Force Sync</button>
+            <button class="btn btn-sm btn-outline-light" data-act="rebootOne" data-key="${esc(d.key)}">Reboot</button>
           </div>
         </div>
         <div class="small-mono mt-2">Last sync: ${esc(lastSync || "—")}</div>

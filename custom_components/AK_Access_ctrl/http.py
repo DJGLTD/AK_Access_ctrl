@@ -244,7 +244,6 @@ def _build_face_upload_payload(
         payload["WebRelay"] = "0"
 
     face_filename = face_filename_from_reference(face_reference, user_id)
-    payload["FaceUrl"] = face_filename
     payload["FaceFileName"] = face_filename
     payload.pop("faceInfo", None)
 
@@ -272,6 +271,10 @@ async def _push_face_to_devices(
 
     for entry_id, coord, api, _opts in manager._devices():
         device_name = getattr(coord, "device_name", entry_id)
+        device_type = str((getattr(coord, "health", {}) or {}).get("device_type") or "").strip().lower()
+        if device_type == "keypad":
+            _LOGGER.debug("Skipping face upload for keypad %s", device_name)
+            continue
         record = None
         try:
             for candidate in list(getattr(coord, "users", []) or []):

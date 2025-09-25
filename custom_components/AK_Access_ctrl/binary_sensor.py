@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
@@ -28,6 +28,7 @@ async def async_setup_entry(
 
 class _Base(BinarySensorEntity):
     _attr_should_poll = False
+    _metric: Optional[str] = None
 
     def __init__(self, coord, entry: ConfigEntry):
         self._coord = coord
@@ -40,6 +41,13 @@ class _Base(BinarySensorEntity):
         }
         coord.async_add_listener(self._coord_updated)
 
+    def _base_state_attributes(self) -> Dict[str, Any]:
+        return {
+            "akuvox_entry_id": self._entry.entry_id,
+            "akuvox_device_name": self._coord.device_name,
+            "akuvox_device_type": (self._coord.health.get("device_type") or ""),
+        }
+
     def _coord_updated(self) -> None:
         self.async_write_ha_state()
 
@@ -50,7 +58,7 @@ class _Base(BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         state = getattr(self._coord, "event_state", {}) or {}
-        return {
+        attrs: Dict[str, Any] = {
             "last_user": state.get("last_user_name"),
             "last_user_id": state.get("last_user_id"),
             "last_event_type": state.get("last_event_type"),
@@ -58,9 +66,14 @@ class _Base(BinarySensorEntity):
             "last_event_timestamp": state.get("last_event_timestamp"),
             "last_event_key_holder": state.get("last_event_key_holder"),
         }
+        attrs.update(self._base_state_attributes())
+        if self._metric:
+            attrs["akuvox_metric"] = self._metric
+        return attrs
 
 
 class AkuvoxGrantedAccessBinarySensor(_Base):
+    _metric = "granted_access"
     @property
     def name(self) -> str:
         return f"{self._coord.device_name} Granted Access"
@@ -76,6 +89,7 @@ class AkuvoxGrantedAccessBinarySensor(_Base):
 
 
 class AkuvoxGrantedAccessKeyHolderBinarySensor(_Base):
+    _metric = "granted_access_key_holder"
     @property
     def name(self) -> str:
         return f"{self._coord.device_name} Granted Access Key Holder"
@@ -91,6 +105,7 @@ class AkuvoxGrantedAccessKeyHolderBinarySensor(_Base):
 
 
 class AkuvoxDeniedAccessBinarySensor(_Base):
+    _metric = "denied_access"
     @property
     def name(self) -> str:
         return f"{self._coord.device_name} Denied Access"

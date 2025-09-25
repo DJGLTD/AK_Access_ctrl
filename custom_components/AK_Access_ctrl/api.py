@@ -585,6 +585,9 @@ class AkuvoxAPI:
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
 
+            it2.pop("FaceUrl", None)
+            it2.pop("FaceURL", None)
+
             # ScheduleRelay normalization (pass-through otherwise)
             relay_value = None
             if "ScheduleRelay" in it2:
@@ -617,7 +620,6 @@ class AkuvoxAPI:
                     "KeyHolder",
                     "ScheduleID",
                     "PhoneNum",
-                    "FaceUrl",
                     "DoorNum",
                     "LiftFloorNum",
                     "PriorityCall",
@@ -1107,6 +1109,9 @@ class AkuvoxAPI:
                         candidate = f"{uid}.jpg"
                 if candidate:
                     base["FaceFileName"] = candidate
+
+            base.pop("FaceUrl", None)
+            base.pop("FaceURL", None)
 
             prepared.append(base)
 
