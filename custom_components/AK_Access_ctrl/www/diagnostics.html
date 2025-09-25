@@ -474,13 +474,6 @@ function openInApp(view, params = {}, options = {}) {
   <div id="statusMessage" class="alert alert-danger d-none" role="alert"></div>
   <div class="diag-settings-card card">
     <div class="card-body">
-      <div id="requestTypeFilterGroup" class="mb-4" hidden>
-        <label class="form-label text-uppercase small muted" for="requestTypeFilter">Request type filter</label>
-        <select id="requestTypeFilter" class="form-select">
-          <option value="__all__">All request types</option>
-        </select>
-        <div class="form-text mt-1">Choose a request type to focus the history shown below.</div>
-      </div>
       <form id="historyLimitForm" class="row g-3 align-items-end">
         <div class="col-12 col-md-7 col-lg-6">
           <label class="form-label text-uppercase small muted" for="historyLimitInput">Stored request history</label>
@@ -502,16 +495,12 @@ const API_DIAGNOSTICS = signedPath('diagnostics', '/api/akuvox_ac/ui/diagnostics
 const busyEl = document.getElementById('busy');
 const statusEl = document.getElementById('statusMessage');
 const devicesEl = document.getElementById('diagnosticDevices');
-const typeFilterSelect = document.getElementById('requestTypeFilter');
-const typeFilterGroup = document.getElementById('requestTypeFilterGroup');
 let DIAG_DATA = [];
 let HISTORY_LIMIT = 50;
 let MIN_HISTORY_LIMIT = 10;
 let MAX_HISTORY_LIMIT = 200;
 let historyLimitSaving = false;
-const TYPE_FILTER_ALL = '__all__';
 const TYPE_FILTER_OTHER = '__other__';
-let ACTIVE_TYPE_FILTER = TYPE_FILTER_ALL;
 
 function setBusy(active){
   if (!busyEl) return;
@@ -710,58 +699,6 @@ function requestTypeLabelFromValue(value){
   return label || 'Other';
 }
 
-function collectTypeOptionEntries(devices){
-  const map = new Map();
-  (devices || []).forEach((device) => {
-    const requests = Array.isArray(device?.requests) ? device.requests : [];
-    requests.forEach((req) => {
-      const value = requestTypeValue(req);
-      if (!map.has(value)){
-        map.set(value, requestTypeLabelFromValue(value));
-      }
-    });
-  });
-  const entries = Array.from(map.entries()).map(([value, label]) => ({ value, label }));
-  entries.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
-  return entries;
-}
-
-function refreshTypeFilterOptions(devices){
-  if (!typeFilterSelect || !typeFilterGroup) return;
-  const previous = typeFilterSelect.value || ACTIVE_TYPE_FILTER;
-  const entries = collectTypeOptionEntries(devices);
-  typeFilterSelect.innerHTML = '';
-  const allOpt = document.createElement('option');
-  allOpt.value = TYPE_FILTER_ALL;
-  allOpt.textContent = 'All request types';
-  typeFilterSelect.appendChild(allOpt);
-  entries.forEach(({ value, label }) => {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    typeFilterSelect.appendChild(opt);
-  });
-  const values = entries.map((entry) => entry.value);
-  let nextValue = TYPE_FILTER_ALL;
-  if (previous !== TYPE_FILTER_ALL && values.includes(previous)){
-    nextValue = previous;
-  } else if (previous === TYPE_FILTER_ALL) {
-    nextValue = TYPE_FILTER_ALL;
-  }
-  typeFilterSelect.value = nextValue;
-  ACTIVE_TYPE_FILTER = nextValue;
-  if (values.length){
-    typeFilterGroup.removeAttribute('hidden');
-  } else {
-    typeFilterGroup.setAttribute('hidden', 'true');
-  }
-}
-
-function matchesActiveType(req){
-  if (ACTIVE_TYPE_FILTER === TYPE_FILTER_ALL) return true;
-  return requestTypeValue(req) === ACTIVE_TYPE_FILTER;
-}
-
 function renderDevices(devices, options = {}){
   if (!devicesEl) return;
   const preserveExpansion = options && options.preserveExpansion === true;
@@ -840,15 +777,7 @@ function renderRequestList(container, device){
     container.appendChild(empty);
     return;
   }
-  const filtered = requests.filter((req) => matchesActiveType(req));
-  if (!filtered.length){
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = 'No requests match the current filter.';
-    container.appendChild(empty);
-    return;
-  }
-  filtered.forEach((req, idx) => {
+  requests.forEach((req, idx) => {
     const details = document.createElement('details');
     details.className = 'diag-request';
     if (idx === 0) details.open = true;
@@ -936,7 +865,6 @@ async function loadDiagnostics(){
     applyHistoryLimitResponse(data);
     setHistoryLimitStatus('');
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
-    refreshTypeFilterOptions(DIAG_DATA);
     renderDevices(DIAG_DATA);
   } catch (err) {
     if (handleAuthError(err)) return;
@@ -956,18 +884,6 @@ document.addEventListener('DOMContentLoaded', () => {
     ev.preventDefault();
     loadDiagnostics();
   });
-  typeFilterSelect?.addEventListener('change', (ev) => {
-    const select = ev.target;
-    let next = TYPE_FILTER_ALL;
-    if (select && typeof select.value === 'string' && select.value) {
-      next = select.value;
-    }
-    if (!next) next = TYPE_FILTER_ALL;
-    if (next !== ACTIVE_TYPE_FILTER) {
-      ACTIVE_TYPE_FILTER = next;
-      renderDevices(DIAG_DATA, { preserveExpansion: true });
-    }
-  });
   document.getElementById('historyLimitForm')?.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     await saveHistoryLimit();
@@ -975,7 +891,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('historyLimitInput')?.addEventListener('input', () => {
     setHistoryLimitStatus('');
   });
-  refreshTypeFilterOptions(DIAG_DATA);
   renderHistoryLimitControls();
   loadDiagnostics();
 });
