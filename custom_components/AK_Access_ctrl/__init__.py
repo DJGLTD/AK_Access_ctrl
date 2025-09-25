@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta
+import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -62,6 +63,9 @@ from .http import (
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _register_admin_dashboard(hass: HomeAssistant) -> bool:
@@ -1676,33 +1680,38 @@ class SyncManager:
             pass
         return name_to_id
 
-    async def _replace_user_on_device(self, api: AkuvoxAPI, desired: Dict[str, Any], ha_key: str):
-        """Update the device record for ha_key, falling back to delete + re-add if needed."""
-        payload = dict(desired or {})
+    async def _replace_user_on_device(
+        self,
+        api: AkuvoxAPI,
+        desired: Dict[str, Any],
+        ha_key: str,
+        existing: Optional[Dict[str, Any]] = None,
+    ):
+        """Update the device record for ha_key using user.set with a merged payload."""
+
+        base_payload: Dict[str, Any] = {}
+        if isinstance(existing, dict):
+            base_payload = {k: v for k, v in existing.items() if v is not None}
+
+        payload: Dict[str, Any] = {**base_payload, **(desired or {})}
+
+        if not payload.get("ID"):
+            # ensure device ID is present when available
+            lookup_id = None
+            try:
+                records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+                if records:
+                    lookup_id = str(records[0].get("ID") or records[0].get("id") or "")
+            except Exception:
+                lookup_id = None
+            if lookup_id:
+                payload["ID"] = lookup_id
 
         try:
             await api.user_set([payload])
-            return
-        except Exception:
-            pass
-
-        del_key = payload.get("ID") or payload.get("UserID") or payload.get("Name") or ha_key
-        try:
-            await api.user_delete(str(del_key))
-        except Exception:
-            try:
-                recs = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-                for rec in recs:
-                    await _delete_user_every_way(api, rec)
-            except Exception:
-                pass
-        await asyncio.sleep(0.25)
-        try:
-            add_payload = dict(payload)
-            add_payload.pop("ID", None)
-            await api.user_add([add_payload])
-        except Exception:
-            pass
+        except Exception as err:
+            _LOGGER.warning("Failed to update user %s via user.set: %s", ha_key, err)
+            raise
 
     async def reconcile(self, full: bool = True):
         for entry_id, *_ in self._devices():
@@ -1844,7 +1853,7 @@ class SyncManager:
             return None
 
         add_batch: List[Dict[str, Any]] = []
-        replace_list: List[Tuple[str, Dict[str, Any]]] = []  # (ha_key, desired_payload)
+        replace_list: List[Tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]] = []
         delete_only_keys: List[str] = []
         face_root_base = face_base_url(self.hass)
 
@@ -1874,7 +1883,7 @@ class SyncManager:
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
                     if replace:
-                        replace_list.append((ha_key, desired_base))
+                        replace_list.append((ha_key, desired_base, local))
             else:
                 if local:
                     delete_only_keys.append(ha_key)
@@ -1902,10 +1911,10 @@ class SyncManager:
             except Exception:
                 pass
 
-        # 3) Replace changed users (delete + re-add)
-        for ha_key, desired in replace_list:
+        # 3) Replace changed users (update in place)
+        for ha_key, desired, existing in replace_list:
             try:
-                await self._replace_user_on_device(api, desired, ha_key)
+                await self._replace_user_on_device(api, desired, ha_key, existing)
             except Exception:
                 pass
 
