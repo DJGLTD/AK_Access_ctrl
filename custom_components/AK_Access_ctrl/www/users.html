@@ -485,6 +485,20 @@ let reservationMisses = 0;
 let reservationHeartbeatBusy = false;
 
 const RESERVATION_STORAGE_KEY = 'akuvox_ac_reserved_id';
+const RESERVATION_STALE_AFTER = 15 * 60 * 1000; // 15 minutes
+
+function parseReservationRecord(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const id = String(parsed.id || '').trim();
+    if (!id) return null;
+    const ts = Number(parsed.ts || 0);
+    return { id, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() };
+  } catch (err) {
+    return null;
+  }
+}
 
 function rememberReservationId(id) {
   const clean = String(id || '').trim();
@@ -497,6 +511,11 @@ function rememberReservationId(id) {
       sessionStorage.setItem(RESERVATION_STORAGE_KEY, JSON.stringify({ id: clean, ts: Date.now() }));
     }
   } catch (err) {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(RESERVATION_STORAGE_KEY, JSON.stringify({ id: clean, ts: Date.now() }));
+    }
+  } catch (err) {}
 }
 
 function forgetReservationId() {
@@ -505,21 +524,49 @@ function forgetReservationId() {
       sessionStorage.removeItem(RESERVATION_STORAGE_KEY);
     }
   } catch (err) {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(RESERVATION_STORAGE_KEY);
+    }
+  } catch (err) {}
 }
 
 function readStoredReservation() {
+  const fromSession = (() => {
+    try {
+      if (typeof sessionStorage === 'undefined') return null;
+      return parseReservationRecord(sessionStorage.getItem(RESERVATION_STORAGE_KEY));
+    } catch (err) {
+      return null;
+    }
+  })();
+  if (fromSession) return fromSession;
+
+  const fromLocal = (() => {
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      return parseReservationRecord(localStorage.getItem(RESERVATION_STORAGE_KEY));
+    } catch (err) {
+      return null;
+    }
+  })();
+  if (!fromLocal) return null;
+
   try {
-    if (typeof sessionStorage === 'undefined') return null;
-    const raw = sessionStorage.getItem(RESERVATION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const id = String(parsed.id || '').trim();
-    if (!id) return null;
-    return { id, ts: Number(parsed.ts || 0) };
+    if (typeof sessionStorage !== 'undefined') {
+      const payload = JSON.stringify({ id: fromLocal.id, ts: fromLocal.ts || Date.now() });
+      sessionStorage.setItem(RESERVATION_STORAGE_KEY, payload);
+    }
+  } catch (err) {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const payload = JSON.stringify({ id: fromLocal.id, ts: fromLocal.ts || Date.now() });
+      localStorage.setItem(RESERVATION_STORAGE_KEY, payload);
+    }
   } catch (err) {
-    return null;
+    /* ignore */
   }
+  return fromLocal;
 }
 
 function setReservationMessage(html, tone = 'muted') {
@@ -631,37 +678,15 @@ async function restoreReservationFromStorage() {
   const id = String(stored.id || '').trim();
   if (!id) return '';
 
-  let active = false;
-  try {
-    const res = await fetchWithAuth(API_RESERVATION_PING, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id })
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'ping failed');
-    active = data.active !== false;
-    if (!active) {
+  const ts = Number(stored.ts || 0);
+  if (Number.isFinite(ts) && ts > 0) {
+    const age = Date.now() - ts;
+    if (age > RESERVATION_STALE_AFTER) {
       forgetReservationId();
-      try {
-        await fetchWithAuth(API_RELEASE_ID, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id })
-        });
-      } catch (err) {
-        if (handleAuthError(err)) return '';
-      }
       return '';
     }
-  } catch (err) {
-    if (handleAuthError(err)) return '';
-    console.warn('Reservation restore check failed', err);
-    active = true; // fall back to using stored id to avoid double reservations
   }
 
-  if (!active) return '';
   applyReservedIdToForm(id);
   return id;
 }

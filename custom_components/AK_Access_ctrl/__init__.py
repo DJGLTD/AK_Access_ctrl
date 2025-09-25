@@ -242,6 +242,9 @@ _FACE_FLAG_KEYS = (
     "has_face",
     "hasFace",
     "HasFace",
+    "FaceRegister",
+    "faceRegister",
+    "face_register",
 )
 
 
@@ -574,6 +577,17 @@ def _desired_device_user_payload(
                 filename_source = face_url_str
             face_filename = face_filename_from_reference(filename_source, ha_key)
             desired["FaceFileName"] = face_filename
+
+            face_active: Optional[bool] = _face_flag_from_record(profile)
+            if face_active is None:
+                face_active = _face_flag_from_record(local)
+            if face_active is None:
+                try:
+                    face_active = _face_asset_exists(hass, ha_key)
+                except Exception:
+                    face_active = None
+            if face_active:
+                desired["FaceRegister"] = "1"
 
     return desired
 
