@@ -75,6 +75,8 @@
     .event-title.bad{color:var(--bad)}
     .event-title.dim{color:var(--dim)}
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
+    .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
+    .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
     .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
     @media (max-width: 1200px){
       .workspace{ width:95vw; }
@@ -569,6 +571,19 @@ const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const $ = (sel) => document.querySelector(sel);
 
+let eventFilterMode = 'all';
+let cachedEvents = [];
+
+window.addEventListener('DOMContentLoaded', () => {
+  const select = document.getElementById('eventFilter');
+  if (!select) return;
+  select.value = eventFilterMode;
+  select.addEventListener('change', (ev) => {
+    eventFilterMode = ev.target?.value || 'all';
+    applyEventFilter();
+  });
+});
+
 function parseIsoDate(value){
   const text = String(value || '').trim();
   if (!text) return null;
@@ -809,6 +824,69 @@ function renderDevices(devs){
 }
 
 /* ===== Events ===== */
+function hasMeaningfulValue(obj, key) {
+  if (!obj) return false;
+  const value = obj[key];
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+function categorizeEvent(event, device) {
+  const evt = event || {};
+  const textParts = [];
+  const typeKeys = [
+    'EventType','Type','EventCategory','Category','LogType','LogTypeName','CallType','SubType',
+    'Event','Result','action','Message','Description','Detail',
+  ];
+  typeKeys.forEach((key) => {
+    const value = evt[key];
+    if (value === undefined || value === null) return;
+    const text = String(value).trim();
+    if (text) textParts.push(text);
+  });
+  const deviceText = device ? [device.device_type, device.deviceModel, device.device_model, device.model] : [];
+  deviceText.forEach((value) => {
+    if (value === undefined || value === null) return;
+    const text = String(value).trim();
+    if (text) textParts.push(text);
+  });
+  const combined = textParts.join(' ').toLowerCase();
+
+  const callKeys = [
+    'CallNo','CallNum','CallNumber','CallType','CallMode','CallStatus','PriorityCall',
+    'RoomNumber','RoomNo','Terminal','Intercom','SipAccount','SipNumber',
+  ];
+  const accessKeys = [
+    'AccessMode','Method','AccessType','AccessPoint','Door','DoorName','Reader','OpenType',
+    'User','UserID','UserName','Name','CardNo','CardNumber','Credential','CredentialType',
+    'Pin','PIN','Passcode','Password','AccessResult','AccessStatus','OpenResult',
+  ];
+
+  const callDetected = callKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (callDetected || /\bcall\b|doorbell|ringback|\bsip\b|intercom|monitor/i.test(combined)) {
+    return 'call';
+  }
+
+  const accessDetected = accessKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (accessDetected || /\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger/i.test(combined)) {
+    return 'access';
+  }
+
+  if (/system|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
+    return 'system';
+  }
+
+  return 'system';
+}
+
+const EVENT_EMPTY_MESSAGES = {
+  all: 'No recent events',
+  system: 'No system events',
+  access: 'No access events',
+  call: 'No call events',
+};
+
 function classifyEvent(txt){
   const s = String(txt || '').toLowerCase();
   if (s.includes('came online') || s.includes('sync succeeded') || s.includes('user created')) return 'ok';
@@ -829,6 +907,26 @@ function formatWhen(ts){
   const HH = pad(d.getHours()), mm = pad(d.getMinutes()), SS = pad(d.getSeconds());
   return `${HH}:${mm}:${SS} ${DD}-${MM}-${YYYY}`;
 }
+function applyEventFilter(){
+  const list = eventFilterMode === 'all'
+    ? cachedEvents
+    : cachedEvents.filter(evt => evt._category === eventFilterMode);
+  const listEl = $('#eventList');
+  if (!listEl) return;
+  const html = list.map(e => {
+    const when = formatWhen(e.timestamp || e.Time || '');
+    const msg  = e.Event || e.Result || e.action || 'event';
+    const cls  = classifyEvent(msg);
+    const dev  = e._device || '';
+    return `<li class="event-item" data-category="${e._category}">
+      <span class="event-title ${cls}">${msg} - ${dev}</span>
+      <div class="event-time">${when}</div>
+    </li>`;
+  }).join('');
+  const emptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
+  listEl.innerHTML = html || `<li class="event-item"><span class="event-title dim">${emptyMessage}</span></li>`;
+}
+
 function renderEvents(devs){
   const events = [];
   (devs || []).forEach(d => (d.events || []).forEach(e => {
@@ -837,20 +935,16 @@ function renderEvents(devs){
     if (isNaN(dObj.getTime()) && ts) {
       try { ts = String(ts).split('.')[0] + 'Z'; dObj = new Date(ts); } catch {}
     }
-    events.push({ ...e, _device: safeDeviceName(d), _t: dObj.getTime() || 0 });
+    events.push({
+      ...e,
+      _device: safeDeviceName(d),
+      _t: dObj.getTime() || 0,
+      _category: categorizeEvent(e, d),
+    });
   }));
   events.sort((a,b)=> (b._t||0) - (a._t||0));
-  const html = events.map(e => {
-    const when = formatWhen(e.timestamp || e.Time || '');
-    const msg  = e.Event || e.Result || e.action || 'event';
-    const cls  = classifyEvent(msg);
-    const dev  = e._device || '';
-    return `<li class="event-item">
-      <span class="event-title ${cls}">${msg} - ${dev}</span>
-      <div class="event-time">${when}</div>
-    </li>`;
-  }).join('');
-  $('#eventList').innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
+  cachedEvents = events;
+  applyEventFilter();
 }
 
 /* ===== Users ===== */
@@ -1605,7 +1699,15 @@ setInterval(refresh, 5000);
 
     <div class="section-33">
       <div class="card flex-fill" id="sectionEvents">
-        <div class="card-header">Event History</div>
+        <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
+          <span>Event History</span>
+          <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
+            <option value="all">All events</option>
+            <option value="system">System events</option>
+            <option value="access">Access events</option>
+            <option value="call">Call events</option>
+          </select>
+        </div>
         <div class="card-body">
           <ul id="eventList" class="event-list">
             <li class="event-item"><span class="event-title dim">Loading…</span></li>
