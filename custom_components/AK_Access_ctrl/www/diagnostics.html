@@ -487,6 +487,17 @@ function openInApp(view, params = {}, options = {}) {
       <div id="historyLimitStatus" class="diag-settings-status muted"></div>
     </div>
   </div>
+  <div class="diag-settings-card card">
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        <div class="col-12 col-md-7 col-lg-6">
+          <label class="form-label text-uppercase small muted" for="typeFilterSelect">Filter events</label>
+          <select id="typeFilterSelect" class="form-select"></select>
+          <div id="typeFilterHelper" class="form-text mt-1">Limit the visible events by request type.</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="diagnosticDevices" class="mt-3"></div>
 </div>
 
@@ -501,6 +512,77 @@ let MIN_HISTORY_LIMIT = 10;
 let MAX_HISTORY_LIMIT = 200;
 let historyLimitSaving = false;
 const TYPE_FILTER_OTHER = '__other__';
+const TYPE_FILTER_ALL = '__all__';
+let activeTypeFilter = TYPE_FILTER_ALL;
+
+function getTypeFilterSelect(){
+  return document.getElementById('typeFilterSelect');
+}
+
+function setTypeFilter(value, options = {}){
+  const select = getTypeFilterSelect();
+  activeTypeFilter = value && value !== TYPE_FILTER_ALL ? value : TYPE_FILTER_ALL;
+  if (select && select.value !== activeTypeFilter){
+    select.value = activeTypeFilter;
+  }
+  refreshTypeFilterOptions(DIAG_DATA, { skipOptions: true });
+  if (!options.skipRender){
+    renderDevices(DIAG_DATA, { preserveExpansion: true });
+  }
+}
+
+function refreshTypeFilterOptions(devices, opts = {}){
+  const select = getTypeFilterSelect();
+  const helper = document.getElementById('typeFilterHelper');
+  if (!select){
+    activeTypeFilter = TYPE_FILTER_ALL;
+    if (helper){
+      helper.textContent = 'Limit the visible events by request type.';
+    }
+    return;
+  }
+  const counts = new Map();
+  (devices || []).forEach((device) => {
+    (device?.requests || []).forEach((req) => {
+      const value = requestTypeValue(req);
+      const prev = counts.get(value) || 0;
+      counts.set(value, prev + 1);
+    });
+  });
+  if (activeTypeFilter !== TYPE_FILTER_ALL && !counts.has(activeTypeFilter)){
+    activeTypeFilter = TYPE_FILTER_ALL;
+  }
+  if (!opts.skipOptions){
+    const selectOptions = [{ value: TYPE_FILTER_ALL, label: 'All request types' }];
+    const sortable = Array.from(counts.keys()).map((value) => ({
+      value,
+      label: requestTypeLabelFromValue(value),
+      count: counts.get(value)
+    }));
+    sortable.sort((a, b) => {
+      if (a.value === TYPE_FILTER_OTHER) return 1;
+      if (b.value === TYPE_FILTER_OTHER) return -1;
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    });
+    sortable.forEach(({ value, label }) => {
+      selectOptions.push({ value, label });
+    });
+    select.innerHTML = selectOptions.map((opt) => `<option value="${opt.value}">${escapeHtml(opt.label)}</option>`).join('');
+  }
+  select.value = activeTypeFilter;
+  if (helper){
+    const totalRequests = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
+    if (!totalRequests){
+      helper.textContent = 'Limit the visible events by request type.';
+    } else if (activeTypeFilter === TYPE_FILTER_ALL){
+      helper.textContent = `Showing all ${totalRequests} recorded events.`;
+    } else {
+      const label = requestTypeLabelFromValue(activeTypeFilter);
+      const count = counts.get(activeTypeFilter) || 0;
+      helper.textContent = `Showing ${count} events matching ${label}.`;
+    }
+  }
+}
 
 function setBusy(active){
   if (!busyEl) return;
@@ -770,14 +852,25 @@ function renderDevices(devices, options = {}){
 function renderRequestList(container, device){
   container.innerHTML = '';
   const requests = Array.isArray(device.requests) ? device.requests : [];
-  if (!requests.length){
+  const filtered = activeTypeFilter === TYPE_FILTER_ALL
+    ? requests
+    : requests.filter((req) => {
+      const value = requestTypeValue(req);
+      if (activeTypeFilter === TYPE_FILTER_OTHER){
+        return value === TYPE_FILTER_OTHER;
+      }
+      return value === activeTypeFilter;
+    });
+  if (!filtered.length){
     const empty = document.createElement('div');
     empty.className = 'muted';
-    empty.textContent = 'No requests have been recorded for this device yet.';
+    empty.textContent = requests.length
+      ? 'No requests match the current filter.'
+      : 'No requests have been recorded for this device yet.';
     container.appendChild(empty);
     return;
   }
-  requests.forEach((req, idx) => {
+  filtered.forEach((req, idx) => {
     const details = document.createElement('details');
     details.className = 'diag-request';
     if (idx === 0) details.open = true;
@@ -865,6 +958,7 @@ async function loadDiagnostics(){
     applyHistoryLimitResponse(data);
     setHistoryLimitStatus('');
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
+    refreshTypeFilterOptions(DIAG_DATA);
     renderDevices(DIAG_DATA);
   } catch (err) {
     if (handleAuthError(err)) return;
@@ -884,6 +978,9 @@ document.addEventListener('DOMContentLoaded', () => {
     ev.preventDefault();
     loadDiagnostics();
   });
+  getTypeFilterSelect()?.addEventListener('change', (ev) => {
+    setTypeFilter(ev.target.value);
+  });
   document.getElementById('historyLimitForm')?.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     await saveHistoryLimit();
@@ -892,6 +989,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setHistoryLimitStatus('');
   });
   renderHistoryLimitControls();
+  refreshTypeFilterOptions(DIAG_DATA);
   loadDiagnostics();
 });
 </script>
