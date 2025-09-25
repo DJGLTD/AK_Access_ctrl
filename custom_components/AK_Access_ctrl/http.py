@@ -246,6 +246,7 @@ def _build_face_upload_payload(
     face_filename = face_filename_from_reference(face_reference, user_id)
     payload["FaceFileName"] = face_filename
     payload.pop("faceInfo", None)
+    payload["FaceRegister"] = "1"
 
     return payload
 
@@ -1456,6 +1457,9 @@ _FACE_FLAG_KEYS = (
     "has_face",
     "hasFace",
     "HasFace",
+    "FaceRegister",
+    "faceRegister",
+    "face_register",
 )
 
 

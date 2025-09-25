@@ -10,6 +10,7 @@
     :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
     body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     .card{ background:#111a2b; border:1px solid #1b2942; }
+    .card-header{ background:#0d1729; border-color:var(--border); color:var(--text); }
     label{ color:#fff; }
     .muted{ color:var(--muted); }
     .small-mono{ font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
@@ -740,7 +741,7 @@ function renderAlerts(){
 
   if (!targets.length){
     const empty = document.createElement('div');
-    empty.className = 'text-muted';
+    empty.className = 'text-white';
     empty.textContent = PHONES.length ? 'No alert targets configured yet.' : 'No Home Assistant mobile app notify targets were found.';
     wrap.appendChild(empty);
     return;
@@ -1487,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="card mt-3">
     <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
       <div>
-        <div class="fw-semibold">Device diagnostics</div>
+        <div class="fw-semibold text-white">Device diagnostics</div>
         <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
       </div>
       <button class="btn btn-outline-info" id="openDiagnosticsBtn"><i class="bi bi-activity me-1"></i>Open diagnostics</button>
@@ -1521,7 +1522,7 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="card mt-3 schedule-card" id="access-schedules">
     <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
       <div>
-        <div class="fw-semibold">Access Schedules</div>
+        <div class="fw-semibold text-white">Access Schedules</div>
         <div class="muted small">Create custom access windows that you can assign to users. Built-in schedules remain available for quick selection.</div>
       </div>
       <div class="d-flex flex-wrap gap-2 align-items-center">
