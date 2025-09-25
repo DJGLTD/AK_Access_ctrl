@@ -250,6 +250,69 @@ def _build_face_upload_payload(
     return payload
 
 
+async def _ensure_face_register_flag(api, user_id: str, device_name: str) -> None:
+    """Ensure the FaceRegister flag is marked as "1" for the provided user."""
+
+    target = str(user_id or "").strip()
+    if not target:
+        return
+
+    try:
+        refreshed = await api.user_list()
+    except Exception as err:
+        _LOGGER.debug(
+            "Unable to refresh users after face upload for %s on %s: %s",
+            target,
+            device_name,
+            err,
+        )
+        return
+
+    record: Optional[Dict[str, Any]] = None
+    for candidate in refreshed or []:
+        try:
+            if _record_matches_user(candidate, target):
+                record = candidate if isinstance(candidate, dict) else None
+                if record is not None:
+                    break
+        except Exception:
+            continue
+
+    if not isinstance(record, dict):
+        _LOGGER.debug(
+            "User %s not found on %s after face upload when updating FaceRegister",
+            target,
+            device_name,
+        )
+        return
+
+    current = None
+    for key in ("FaceRegister", "faceRegister", "face_register"):
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        current = str(value).strip()
+        break
+
+    if current == "1":
+        return
+
+    payload: Dict[str, Any] = {"FaceRegister": "1", "UserID": target}
+    dev_id = record.get("ID")
+    if dev_id not in (None, ""):
+        payload["ID"] = str(dev_id)
+
+    try:
+        await api.user_set([payload])
+    except Exception as err:
+        _LOGGER.debug(
+            "Failed to update FaceRegister for %s on %s: %s",
+            target,
+            device_name,
+            err,
+        )
+
+
 async def _push_face_to_devices(
     hass: HomeAssistant,
     root: Dict[str, Any],
@@ -311,20 +374,34 @@ async def _push_face_to_devices(
         try:
             await api.face_upload(face_bytes, filename=face_filename)
         except Exception as err:
-            _LOGGER.debug("Direct face upload failed for %s on %s: %s", user_id, device_name, err)
+            _LOGGER.debug(
+                "Direct face upload failed for %s on %s: %s", user_id, device_name, err
+            )
             continue
 
         try:
             payload = _build_face_upload_payload(profile, record, user_id, face_filename)
         except Exception as err:
-            _LOGGER.debug("Failed to prepare face payload for %s on %s: %s", user_id, device_name, err)
+            _LOGGER.debug(
+                "Failed to prepare face payload for %s on %s: %s", user_id, device_name, err
+            )
+            try:
+                await _ensure_face_register_flag(api, user_id, device_name)
+            except Exception:
+                pass
             continue
 
         try:
             await api.user_add([payload])
         except Exception as err:
-            _LOGGER.debug("Failed to update face metadata for %s on %s: %s", user_id, device_name, err)
-            continue
+            _LOGGER.debug(
+                "Failed to update face metadata for %s on %s: %s", user_id, device_name, err
+            )
+        finally:
+            try:
+                await _ensure_face_register_flag(api, user_id, device_name)
+            except Exception:
+                pass
 
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {
