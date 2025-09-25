@@ -640,21 +640,11 @@ class AkuvoxAPI:
     def _prune_user_items_for_set(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove keys that firmwares reject from user.set payloads."""
 
-        unsupported = {
-            "DoorNum",
-            "Group",
-            "PriorityCall",
-            "DialAccount",
-            "C4EventNo",
-            "AuthMode",
-            "LicensePlate",
-        }
-
         trimmed: List[Dict[str, Any]] = []
         for item in items or []:
             if not isinstance(item, dict):
                 continue
-            trimmed.append({k: v for k, v in item.items() if k not in unsupported})
+            trimmed.append(dict(item))
         return trimmed
 
     async def _ensure_ids_for_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -865,10 +855,9 @@ class AkuvoxAPI:
         # Try POST get/list then GET fallback
         for payload in (
             {"target": "user", "action": "get"},
-            {"target": "user", "action": "list"},
         ):
             try:
-                r = await self._post_api(payload)
+                r = await self._post_api(payload, rel_paths=("/api/",))
                 items = r.get("data", {}).get("item")
                 if isinstance(items, list):
                     return items
