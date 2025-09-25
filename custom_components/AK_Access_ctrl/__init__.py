@@ -573,7 +573,6 @@ def _desired_device_user_payload(
             if not filename_source:
                 filename_source = face_url_str
             face_filename = face_filename_from_reference(filename_source, ha_key)
-            desired["FaceUrl"] = face_filename
             desired["FaceFileName"] = face_filename
 
     return desired
