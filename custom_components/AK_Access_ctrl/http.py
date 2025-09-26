@@ -372,37 +372,124 @@ async def _push_face_to_devices(
         reference = record_face_source or profile_face_source or face_url_public
         face_filename = face_filename_from_reference(reference, user_id)
 
+        device_record_id = ""
+        if isinstance(record, dict):
+            device_record_id = str(record.get("ID") or "").strip()
+
+        if not device_record_id:
+            lookup_values: List[str] = []
+            if isinstance(record, dict):
+                for key in ("UserID", "Name"):
+                    candidate = str(record.get(key) or "").strip()
+                    if candidate:
+                        lookup_values.append(candidate)
+            lookup_values.append(user_id)
+
+            seen_lookup: set[str] = set()
+            for lookup in lookup_values:
+                clean_lookup = lookup.strip()
+                if not clean_lookup or clean_lookup in seen_lookup:
+                    continue
+                seen_lookup.add(clean_lookup)
+                try:
+                    matches = await api.user_get(clean_lookup)
+                except Exception as err:
+                    _LOGGER.debug(
+                        "Unable to fetch user.get for %s on %s while resolving numeric ID: %s",
+                        clean_lookup,
+                        device_name,
+                        err,
+                    )
+                    continue
+                for candidate in matches or []:
+                    try:
+                        candidate_id = str(candidate.get("ID") or "").strip()
+                    except Exception:
+                        candidate_id = ""
+                    if not candidate_id:
+                        continue
+                    try:
+                        if _record_matches_user(candidate, user_id):
+                            device_record_id = candidate_id
+                            record = candidate
+                            break
+                    except Exception:
+                        continue
+                if device_record_id:
+                    break
+
         try:
-            await api.face_upload(face_bytes, filename=face_filename)
+            upload_result = await api.face_upload(
+                face_bytes,
+                filename=face_filename,
+                index=device_record_id or None,
+            )
         except Exception as err:
             _LOGGER.debug(
                 "Direct face upload failed for %s on %s: %s", user_id, device_name, err
             )
             continue
 
-        try:
-            payload = _build_face_upload_payload(profile, record, user_id, face_filename)
-        except Exception as err:
-            _LOGGER.debug(
-                "Failed to prepare face payload for %s on %s: %s", user_id, device_name, err
-            )
+        face_import_path = ""
+        if isinstance(upload_result, dict):
+            raw_path = upload_result.get("path")
+            if isinstance(raw_path, str):
+                face_import_path = raw_path.strip()
+            if not face_import_path:
+                raw_field = upload_result.get("raw")
+                if isinstance(raw_field, str) and raw_field.strip():
+                    face_import_path = raw_field.strip()
+        elif isinstance(upload_result, str):
+            face_import_path = upload_result.strip()
+
+        linked = False
+        if face_import_path:
+            payload: Dict[str, Any] = {"FaceUrl": face_import_path}
+            if device_record_id:
+                payload["ID"] = device_record_id
+            else:
+                payload["UserID"] = user_id
             try:
-                await _ensure_face_register_flag(api, user_id, device_name)
-            except Exception:
-                pass
-            continue
+                await api.user_set([payload])
+                linked = True
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to link face import path for %s on %s: %s",
+                    user_id,
+                    device_name,
+                    err,
+                )
+
+        if not linked:
+            try:
+                payload = _build_face_upload_payload(profile, record, user_id, face_filename)
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to prepare fallback face payload for %s on %s: %s",
+                    user_id,
+                    device_name,
+                    err,
+                )
+                try:
+                    await _ensure_face_register_flag(api, user_id, device_name)
+                except Exception:
+                    pass
+                continue
+
+            try:
+                await api.user_add([payload])
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to update face metadata for %s on %s using legacy flow: %s",
+                    user_id,
+                    device_name,
+                    err,
+                )
 
         try:
-            await api.user_add([payload])
-        except Exception as err:
-            _LOGGER.debug(
-                "Failed to update face metadata for %s on %s: %s", user_id, device_name, err
-            )
-        finally:
-            try:
-                await _ensure_face_register_flag(api, user_id, device_name)
-            except Exception:
-                pass
+            await _ensure_face_register_flag(api, user_id, device_name)
+        except Exception:
+            pass
 
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {

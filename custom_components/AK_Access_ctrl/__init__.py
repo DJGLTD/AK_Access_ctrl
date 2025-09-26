@@ -1024,6 +1024,7 @@ class AkuvoxUsersStore(Store):
         schedule_id: Optional[str] = None,  # allow explicit schedule ID (1001/1002/1003/…)
         access_start: Optional[str] = None,
         access_end: Optional[str] = None,
+        source: Optional[str] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1070,6 +1071,12 @@ class AkuvoxUsersStore(Store):
                 u["access_end"] = normalized_end
             else:
                 u.pop("access_end", None)
+        if source is not None:
+            normalized_source = str(source).strip()
+            if normalized_source:
+                u["Source"] = normalized_source
+            else:
+                u.pop("Source", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -2364,6 +2371,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             if "access_start" in d
             else date.today().isoformat(),
             access_end=d.get("access_end") if "access_end" in d else None,
+            source="Local",
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -2392,6 +2400,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
             access_start=d.get("access_start") if "access_start" in d else None,
             access_end=d.get("access_end") if "access_end" in d else None,
+            source="Local",
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
