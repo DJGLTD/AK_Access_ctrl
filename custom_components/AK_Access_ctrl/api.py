@@ -625,7 +625,12 @@ class AkuvoxAPI:
         # such a filename is present we should ensure the register flag stays set.
         return bool(re.fullmatch(r"HA\d+\.jpg", name, flags=re.IGNORECASE))
 
-    def _normalize_user_items_for_add_or_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _normalize_user_items_for_add_or_set(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        allow_face_url: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
         - Convert bools -> "1"/"0"
@@ -636,8 +641,9 @@ class AkuvoxAPI:
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
 
-            it2.pop("FaceUrl", None)
-            it2.pop("FaceURL", None)
+            if not allow_face_url:
+                it2.pop("FaceUrl", None)
+                it2.pop("FaceURL", None)
 
             # ScheduleRelay normalization (pass-through otherwise)
             relay_value = None
@@ -687,6 +693,10 @@ class AkuvoxAPI:
                     d[k] = str(v)
                 else:
                     d[k] = v
+            if allow_face_url:
+                for key in ("FaceUrl", "FaceURL"):
+                    if key in d and d[key] is not None:
+                        d[key] = str(d[key])
             face_name = d.get("FaceFileName")
             if self._should_force_face_register(face_name):
                 if str(d.get("FaceRegister") or "").strip() != "1":
@@ -762,6 +772,8 @@ class AkuvoxAPI:
         ):
             item: Dict[str, Any] = {
                 "base": f"https://{self.host}:{port}",
+                "scheme": "https",
+                "port": port,
                 "verify_ssl": bool(verify),
                 "method": method,
                 "path": path,
@@ -770,6 +782,7 @@ class AkuvoxAPI:
                 "error": None,
             }
             url = f"{item['base']}{path}"
+            item["url"] = url
             try:
                 if method == "GET":
                     async with self._session.get(
@@ -934,6 +947,25 @@ class AkuvoxAPI:
             pass
         return []
 
+    async def user_get(self, name_or_per_id: str) -> List[Dict[str, Any]]:
+        query = str(name_or_per_id or "").strip()
+        if not query:
+            return []
+
+        params = urlencode({"NameOrPerID": query})
+        rel = f"/api/user/get?{params}" if params else "/api/user/get"
+        try:
+            result = await self._get_api(rel)
+        except Exception:
+            return []
+
+        items = result.get("data", {}).get("item") if isinstance(result, dict) else None
+        if isinstance(items, list):
+            return items
+        if isinstance(items, dict):
+            return [items]
+        return []
+
     async def face_upload(
         self,
         file_bytes: bytes,
@@ -1087,7 +1119,8 @@ class AkuvoxAPI:
         for port, verify in bases:
             for rel in rel_paths:
                 try:
-                    return await _attempt(port, verify, rel)
+                    data = await _attempt(port, verify, rel)
+                    return self._coerce_face_upload_result(data)
                 except Exception as exc:
                     _LOGGER.debug(
                         "Face upload attempt failed for https://%s:%s%s -> %s",
@@ -1100,7 +1133,41 @@ class AkuvoxAPI:
 
         fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
         fallback_port = preferred_port or 443
-        return await _attempt(fallback_port, bool(self.verify_ssl), fallback_rel)
+        data = await _attempt(fallback_port, bool(self.verify_ssl), fallback_rel)
+        return self._coerce_face_upload_result(data)
+
+    @staticmethod
+    def _coerce_face_upload_result(data: Any) -> Dict[str, Any]:
+        path: Optional[str] = None
+
+        def _extract(candidate: Any) -> Optional[str]:
+            if isinstance(candidate, dict):
+                for key in ("path", "Path", "facePath", "FacePath", "face", "Face", "url", "URL"):
+                    value = candidate.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            if isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    extracted = _extract(entry)
+                    if extracted:
+                        return extracted
+            if isinstance(candidate, bytes):
+                try:
+                    candidate = candidate.decode()
+                except Exception:
+                    candidate = ""
+            if isinstance(candidate, str):
+                text = candidate.strip()
+                if text and len(text) < 1024 and "/" in text:
+                    return text.strip('"')
+            return None
+
+        path = _extract(data)
+
+        result: Dict[str, Any] = {"raw": data}
+        if path:
+            result["path"] = path
+        return result
 
     async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
         """Delete face images associated with the provided UserID values."""
@@ -1228,7 +1295,7 @@ class AkuvoxAPI:
         """
         items = await self._ensure_ids_for_set(items)
         items = self._prune_user_items_for_set(items)
-        items = self._normalize_user_items_for_add_or_set(items)
+        items = self._normalize_user_items_for_add_or_set(items, allow_face_url=True)
         try:
             return await self._api_user("set", items)
         except Exception:
