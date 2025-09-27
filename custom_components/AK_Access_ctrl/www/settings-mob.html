@@ -503,7 +503,16 @@ const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 
-let SETTINGS_DATA = { integrity_interval_minutes: null, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [], capabilities: { alarm_relay: false } };
+let SETTINGS_DATA = {
+  integrity_interval_minutes: null,
+  auto_sync_delay_minutes: 30,
+  health_check_interval_seconds: 30,
+  alerts: { targets: {} },
+  registry_users: [],
+  capabilities: { alarm_relay: false },
+  min_health_check_interval_seconds: 10,
+  max_health_check_interval_seconds: 300,
+};
 let PHONES = [];
 let USERS = [];
 let ALERT_TARGETS = {};
@@ -512,6 +521,8 @@ let integritySaving = false;
 let integritySavedTimer = null;
 let autoSyncSaving = false;
 let autoSyncSavedTimer = null;
+let healthSaving = false;
+let healthSavedTimer = null;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const SCHEDULE_DAY_ORDER = [
   { key: 'mon', label: 'Monday' },
@@ -575,6 +586,28 @@ function showAutoSyncSavedOverlay(message = 'Saved'){
     autoSyncSavedTimer = null;
   }, 5000);
 }
+function hideHealthSavedOverlay(){
+  const overlay = document.getElementById('healthSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (healthSavedTimer){
+    clearTimeout(healthSavedTimer);
+    healthSavedTimer = null;
+  }
+}
+function showHealthSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('healthSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (healthSavedTimer){
+    clearTimeout(healthSavedTimer);
+  }
+  healthSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    healthSavedTimer = null;
+  }, 5000);
+}
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
   if (!el) return;
@@ -615,6 +648,26 @@ function setAutoSyncStatus(text, tone = 'muted') {
   if (tone === 'error') el.classList.add('text-danger');
   else el.classList.add('muted');
 }
+function setHealthStatus(text, tone = 'muted') {
+  const el = document.getElementById('healthStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showHealthSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideHealthSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
 function setAlertsStatus(text, tone = 'muted') {
   const el = document.getElementById('alertsStatus');
   if (!el) return;
@@ -633,6 +686,15 @@ function autoSyncRange(){
   return { min, max };
 }
 
+function healthRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_health_check_interval_seconds);
+  const maxRaw = Number(SETTINGS_DATA?.max_health_check_interval_seconds);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 10;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 300;
+  if (max < min) max = min;
+  return { min, max };
+}
+
 function renderAutoSyncDelay(){
   const input = document.getElementById('autoSyncDelayInput');
   if (!input) return;
@@ -647,6 +709,22 @@ function renderAutoSyncDelay(){
   input.max = String(max);
   input.value = String(minutes);
   setAutoSyncStatus('');
+}
+
+function renderHealthInterval(){
+  const input = document.getElementById('healthIntervalInput');
+  if (!input) return;
+  const { min, max } = healthRange();
+  let seconds = Number(SETTINGS_DATA.health_check_interval_seconds);
+  if (!Number.isFinite(seconds)) seconds = 30;
+  seconds = Math.round(seconds);
+  if (seconds < min) seconds = min;
+  if (seconds > max) seconds = max;
+  SETTINGS_DATA.health_check_interval_seconds = seconds;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(seconds);
+  setHealthStatus('');
 }
 
 function minutesToHHMM(minutes){
@@ -1309,6 +1387,30 @@ async function saveAutoSyncDelay(minutes){
   }
 }
 
+async function saveHealthInterval(seconds){
+  if (healthSaving) return;
+  healthSaving = true;
+  try{
+    setHealthStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { health_check_interval_seconds: seconds });
+    const returned = Number(res.health_check_interval_seconds);
+    if (Number.isFinite(returned)){
+      const { min, max } = healthRange();
+      const normalized = Math.min(max, Math.max(min, Math.round(returned)));
+      SETTINGS_DATA.health_check_interval_seconds = normalized;
+      const input = document.getElementById('healthIntervalInput');
+      if (input) input.value = String(normalized);
+    }
+    setHealthStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setHealthStatus('Save failed', 'error');
+    alert('Failed to update health check interval: ' + (err && err.message ? err.message : err));
+  }finally{
+    healthSaving = false;
+  }
+}
+
 async function saveAlerts(){
   if (alertsSaving) return;
   alertsSaving = true;
@@ -1340,7 +1442,14 @@ async function loadData(){
         return { phones: [] };
       })
     ]);
-    SETTINGS_DATA = settingsResp || { integrity_interval_minutes: 15, auto_sync_delay_minutes: 30, alerts: { targets: {} }, registry_users: [] };
+    SETTINGS_DATA = settingsResp || {
+      integrity_interval_minutes: 15,
+      auto_sync_delay_minutes: 30,
+      health_check_interval_seconds: 30,
+      alerts: { targets: {} },
+      registry_users: [],
+    };
+
     const minDelay = Number(settingsResp?.min_auto_sync_delay_minutes);
     const maxDelay = Number(settingsResp?.max_auto_sync_delay_minutes);
     const safeMinDelay = Number.isFinite(minDelay) ? Math.max(1, Math.round(minDelay)) : 5;
@@ -1354,14 +1463,38 @@ async function loadData(){
     if (delayValue < safeMinDelay) delayValue = safeMinDelay;
     if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;
     SETTINGS_DATA.auto_sync_delay_minutes = delayValue;
-      PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
-      USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
-      ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
-      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
-      SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
-        ? { ...settingsResp.capabilities }
-        : { alarm_relay: false };
-      const rawSchedules = settingsResp?.schedules;
+
+    const minHealth = Number(settingsResp?.min_health_check_interval_seconds);
+    const maxHealth = Number(settingsResp?.max_health_check_interval_seconds);
+    const safeMinHealth = Number.isFinite(minHealth) ? Math.max(1, Math.round(minHealth)) : 10;
+    const safeMaxHealth = Number.isFinite(maxHealth)
+      ? Math.max(safeMinHealth, Math.round(maxHealth))
+      : Math.max(safeMinHealth, 300);
+    SETTINGS_DATA.min_health_check_interval_seconds = safeMinHealth;
+    SETTINGS_DATA.max_health_check_interval_seconds = safeMaxHealth;
+    const rawHealthValue = SETTINGS_DATA.health_check_interval_seconds;
+    let healthValue = Number(rawHealthValue);
+    if (
+      !Number.isFinite(healthValue) ||
+      rawHealthValue === null ||
+      rawHealthValue === undefined ||
+      rawHealthValue === ''
+    ) {
+      healthValue = 30;
+    }
+    healthValue = Math.round(healthValue);
+    if (healthValue < safeMinHealth) healthValue = safeMinHealth;
+    if (healthValue > safeMaxHealth) healthValue = safeMaxHealth;
+    SETTINGS_DATA.health_check_interval_seconds = healthValue;
+
+    PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
+    USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+    ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
+    Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
+      ? { ...settingsResp.capabilities }
+      : { alarm_relay: false };
+    const rawSchedules = settingsResp?.schedules;
     if (rawSchedules && typeof rawSchedules === 'object'){
       SCHEDULES = {};
       Object.entries(rawSchedules).forEach(([name, spec]) => {
@@ -1373,6 +1506,7 @@ async function loadData(){
     const nextSchedule = populateScheduleSelect(SELECTED_SCHEDULE);
     updateScheduleSelection(nextSchedule);
     renderAutoSyncDelay();
+    renderHealthInterval();
     renderIntegrity();
     renderAlerts();
   } catch (err){
@@ -1419,6 +1553,33 @@ document.addEventListener('DOMContentLoaded', () => {
     SETTINGS_DATA.auto_sync_delay_minutes = val;
     autoSyncInput.value = String(val);
     await saveAutoSyncDelay(val);
+  });
+
+  const healthInput = document.getElementById('healthIntervalInput');
+  healthInput?.addEventListener('input', () => {
+    hideHealthSavedOverlay();
+    setHealthStatus('');
+  });
+  healthInput?.addEventListener('change', async () => {
+    const { min, max } = healthRange();
+    const rawStr = (healthInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    SETTINGS_DATA.health_check_interval_seconds = val;
+    healthInput.value = String(val);
+    await saveHealthInterval(val);
   });
 
   const integrityInput = document.getElementById('integrityInput');
@@ -1503,6 +1664,18 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="autoSyncSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="autoSyncStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Health Check Interval</div>
+    <div class="card-body">
+      <p class="muted">Control how often the integration pings each device to confirm it is online. Shorter intervals detect offline devices faster but increase network traffic. Choose between 10 and 300 seconds.</p>
+      <div class="saved-input-wrap">
+        <input id="healthIntervalInput" class="form-control" type="number" min="10" max="300" step="1" />
+        <div id="healthSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="healthStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 

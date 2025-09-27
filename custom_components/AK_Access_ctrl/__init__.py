@@ -35,6 +35,8 @@ from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
     MIN_DIAGNOSTICS_HISTORY_LIMIT,
     MAX_DIAGNOSTICS_HISTORY_LIMIT,
+    MIN_HEALTH_CHECK_INTERVAL,
+    MAX_HEALTH_CHECK_INTERVAL,
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
@@ -1089,6 +1091,10 @@ class AkuvoxUsersStore(Store):
 
 
 class AkuvoxSettingsStore(Store):
+    DEFAULT_HEALTH_SECONDS = DEFAULT_POLL_INTERVAL
+    MIN_HEALTH_SECONDS = MIN_HEALTH_CHECK_INTERVAL
+    MAX_HEALTH_SECONDS = MAX_HEALTH_CHECK_INTERVAL
+
     DEFAULT_INTEGRITY_MINUTES = 15
 
     def __init__(self, hass: HomeAssistant):
@@ -1100,6 +1106,7 @@ class AkuvoxSettingsStore(Store):
             "auto_sync_delay_minutes": 30,
             "alerts": {"targets": {}},
             "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
+            "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
         }
 
     async def async_load(self):
@@ -1141,6 +1148,14 @@ class AkuvoxSettingsStore(Store):
         except ValueError:
             history_limit = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
         self.data["diagnostics_history_limit"] = history_limit
+
+        try:
+            health_interval = self._normalize_health_interval(
+                self.data.get("health_check_interval_seconds", self.DEFAULT_HEALTH_SECONDS)
+            )
+        except ValueError:
+            health_interval = self.DEFAULT_HEALTH_SECONDS
+        self.data["health_check_interval_seconds"] = health_interval
 
     async def async_save(self):
         await super().async_save(self.data)
@@ -1202,6 +1217,34 @@ class AkuvoxSettingsStore(Store):
     async def set_diagnostics_history_limit(self, limit: Any) -> int:
         value = self._normalize_diagnostics_history_limit(limit)
         self.data["diagnostics_history_limit"] = value
+        await self.async_save()
+        return value
+
+    def _normalize_health_interval(self, seconds: Any) -> int:
+        try:
+            value = int(seconds)
+        except Exception as err:
+            raise ValueError("Invalid health check interval") from err
+        if value < self.MIN_HEALTH_SECONDS:
+            return self.MIN_HEALTH_SECONDS
+        if value > self.MAX_HEALTH_SECONDS:
+            return self.MAX_HEALTH_SECONDS
+        return value
+
+    def get_health_check_interval_seconds(self) -> int:
+        try:
+            return self._normalize_health_interval(
+                self.data.get("health_check_interval_seconds", self.DEFAULT_HEALTH_SECONDS)
+            )
+        except ValueError:
+            return self.DEFAULT_HEALTH_SECONDS
+
+    def get_health_check_interval_bounds(self) -> Tuple[int, int]:
+        return (self.MIN_HEALTH_SECONDS, self.MAX_HEALTH_SECONDS)
+
+    async def set_health_check_interval_seconds(self, seconds: Any) -> int:
+        value = self._normalize_health_interval(seconds)
+        self.data["health_check_interval_seconds"] = value
         await self.async_save()
         return value
 
@@ -2140,6 +2183,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     except Exception:
         diagnostics_history_limit = DEFAULT_DIAGNOSTICS_HISTORY_LIMIT
 
+    try:
+        health_interval_override = (
+            settings_store.get_health_check_interval_seconds()
+            if settings_store and hasattr(settings_store, "get_health_check_interval_seconds")
+            else None
+        )
+    except Exception:
+        health_interval_override = None
+
     api = AkuvoxAPI(
         host=cfg.get(CONF_HOST),
         port=cfg.get(CONF_PORT, 80),
@@ -2170,6 +2222,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     coord.health["ip"] = cfg.get(CONF_HOST)
 
     interval = int(cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
+    if health_interval_override:
+        try:
+            interval = int(health_interval_override)
+        except Exception:
+            interval = int(cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
     coord.update_interval = timedelta(seconds=max(10, interval))
 
     initial_groups = list(cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
