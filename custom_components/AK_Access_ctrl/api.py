@@ -97,47 +97,57 @@ class AkuvoxAPI:
         if self._detected:
             return
 
-        combos: List[Tuple[int, bool]] = []
+        combos: List[Tuple[bool, int, bool]] = []
 
-        def _add_combo(port: Optional[int], verify: bool) -> None:
+        def _normalize_port(port: Optional[int], use_https: bool) -> int:
             try:
-                port_val = int(port or 0)
+                value = int(port or 0)
             except Exception:
-                port_val = 0
-            if port_val in (0, 80):
-                port_val = 443
-            combo = (port_val, bool(verify))
+                value = 0
+            if value <= 0:
+                return 443 if use_https else 80
+            if use_https and value == 80:
+                return 443
+            if not use_https and value == 443:
+                return 80
+            return value
+
+        def _add_combo(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
+            normalized_port = _normalize_port(port, use_https)
+            verify_flag = bool(verify) if use_https else True
+            combo = (use_https, normalized_port, verify_flag)
             if combo not in combos:
                 combos.append(combo)
 
         configured_port: Optional[int] = self.port
-        preferred_port = configured_port
-        try:
-            preferred_port = int(preferred_port or 0)
-        except Exception:
-            preferred_port = 0
-        if preferred_port in (0, 80):
-            preferred_port = 443
-
-        # Prefer the configured verification setting first, then the opposite.
         verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
-        for verify in verify_order:
-            _add_combo(preferred_port, verify)
 
-        # Always fall back to the standard HTTPS port with both verification modes.
-        _add_combo(443, False)
-        _add_combo(443, True)
+        if self.use_https:
+            for verify in verify_order:
+                _add_combo(True, configured_port, verify)
+            _add_combo(True, 443, False)
+            _add_combo(True, 443, True)
+            _add_combo(False, configured_port, True)
+            _add_combo(False, 80, True)
+        else:
+            _add_combo(False, configured_port, True)
+            _add_combo(False, 80, True)
+            for verify in verify_order:
+                _add_combo(True, configured_port, verify)
+            _add_combo(True, 443, False)
+            _add_combo(True, 443, True)
 
         # Deduplicate preserving order
         seen = set()
-        ordered: List[Tuple[int, bool]] = []
+        ordered: List[Tuple[bool, int, bool]] = []
         for c in combos:
             if c not in seen:
                 seen.add(c)
                 ordered.append(c)
 
-        async def _probe(port: int, verify: bool) -> bool:
-            base = f"https://{self.host}:{port}"
+        async def _probe(use_https: bool, port: int, verify: bool) -> bool:
+            scheme = "https" if use_https else "http"
+            base = f"{scheme}://{self.host}:{port}"
             # try a few typical API endpoints
             for path in ("/api/system/status", "/api/"):
                 url = f"{base}{path}"
@@ -145,21 +155,21 @@ class AkuvoxAPI:
                     async with self._session.get(
                         url,
                         headers=self._headers(),
-                        ssl=verify,
+                        ssl=(verify if use_https else None),
                         timeout=5,
                         auth=self._auth,
                     ) as r:
                         _LOGGER.debug("Akuvox probe %s -> %s %s", url, r.status, r.reason)
                         if 200 <= r.status < 500:
-                            self._detected = (True, port, verify)
+                            self._detected = (use_https, port, verify if use_https else True)
                             return True
                 except Exception as e:
                     _LOGGER.debug("Akuvox probe failed: %s -> %s", url, e)
                     pass
             return False
 
-        for port, verify in ordered:
-            ok = await _probe(port, verify)
+        for use_https, port, verify in ordered:
+            ok = await _probe(use_https, port, verify)
             if ok:
                 return
 
@@ -262,50 +272,63 @@ class AkuvoxAPI:
                 self._remember_request(entry)
 
         # Compose bases to try (detected first, then common fallbacks)
-        bases: List[Tuple[int, bool]] = []
+        bases: List[Tuple[bool, int, bool]] = []
 
-        def _add_base(port: Optional[int], verify: bool) -> None:
+        def _normalize_port(port: Optional[int], use_https: bool) -> int:
             try:
-                port_val = int(port or 0)
+                value = int(port or 0)
             except Exception:
-                port_val = 0
-            if port_val in (0, 80):
-                port_val = 443
-            combo = (port_val, bool(verify))
+                value = 0
+            if value <= 0:
+                return 443 if use_https else 80
+            if use_https and value == 80:
+                return 443
+            if not use_https and value == 443:
+                return 80
+            return value
+
+        def _add_base(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
+            normalized_port = _normalize_port(port, use_https)
+            verify_flag = bool(verify) if use_https else True
+            combo = (use_https, normalized_port, verify_flag)
             if combo not in bases:
                 bases.append(combo)
 
         if self._detected:
-            _, detected_port, detected_verify = self._detected
-            _add_base(detected_port, detected_verify)
+            detected_https, detected_port, detected_verify = self._detected
+            _add_base(detected_https, detected_port, detected_verify)
 
         configured_port: Optional[int] = self.port
-        preferred_port = configured_port
-        try:
-            preferred_port = int(preferred_port or 0)
-        except Exception:
-            preferred_port = 0
-        if preferred_port in (0, 80):
-            preferred_port = 443
+        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        for verify in (bool(self.verify_ssl), not bool(self.verify_ssl)):
-            _add_base(preferred_port, verify)
-
-        _add_base(443, False)
-        _add_base(443, True)
+        if self.use_https:
+            for verify in verify_order:
+                _add_base(True, configured_port, verify)
+            _add_base(True, 443, False)
+            _add_base(True, 443, True)
+            _add_base(False, configured_port, True)
+            _add_base(False, 80, True)
+        else:
+            _add_base(False, configured_port, True)
+            _add_base(False, 80, True)
+            for verify in verify_order:
+                _add_base(True, configured_port, verify)
+            _add_base(True, 443, False)
+            _add_base(True, 443, True)
 
         # Try all combinations
         last_exc: Optional[Exception] = None
-        for port, verify in bases:
+        for use_https, port, verify in bases:
             for rel in rel_paths:
                 try:
-                    return await _attempt(True, port, verify, rel)
+                    return await _attempt(use_https, port, verify, rel)
                 except Exception as e:
                     last_exc = e
                     _LOGGER.debug(
-                        "%s attempt failed for https://%s:%s%s -> %s",
+                        "%s attempt failed for %s://%s:%s%s -> %s",
                         method,
                         self.host,
+                        "https" if use_https else "http",
                         port,
                         rel,
                         e,
@@ -318,8 +341,10 @@ class AkuvoxAPI:
         except StopIteration:
             rel = "/api/"
 
-        fallback_port = preferred_port or 443
-        return await _attempt(True, fallback_port, bool(self.verify_ssl), rel)
+        fallback_use_https = bool(self.use_https)
+        fallback_port = _normalize_port(configured_port, fallback_use_https)
+        fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
+        return await _attempt(fallback_use_https, fallback_port, fallback_verify, rel)
 
     def _coerce_history_limit(self, limit: Optional[int]) -> int:
         try:
@@ -764,17 +789,19 @@ class AkuvoxAPI:
         attempts: List[Dict[str, Any]] = []
 
         async def _try(
+            use_https: bool,
             port: int,
             path: str,
             method: str = "GET",
             payload: Optional[Dict[str, Any]] = None,
             verify: bool = True,
         ):
+            scheme = "https" if use_https else "http"
             item: Dict[str, Any] = {
-                "base": f"https://{self.host}:{port}",
-                "scheme": "https",
+                "base": f"{scheme}://{self.host}:{port}",
+                "scheme": scheme,
                 "port": port,
-                "verify_ssl": bool(verify),
+                "verify_ssl": bool(verify if use_https else True),
                 "method": method,
                 "path": path,
                 "ok": False,
@@ -786,7 +813,11 @@ class AkuvoxAPI:
             try:
                 if method == "GET":
                     async with self._session.get(
-                        url, headers=self._headers(), ssl=verify, timeout=5, auth=self._auth
+                        url,
+                        headers=self._headers(),
+                        ssl=(verify if use_https else None),
+                        timeout=5,
+                        auth=self._auth,
                     ) as r:
                         item["status"] = r.status
                         item["ok"] = 200 <= r.status < 500
@@ -800,7 +831,7 @@ class AkuvoxAPI:
                         url,
                         json=payload or {},
                         headers=self._headers(),
-                        ssl=verify,
+                        ssl=(verify if use_https else None),
                         timeout=5,
                         auth=self._auth,
                     ) as r:
@@ -813,7 +844,11 @@ class AkuvoxAPI:
                                 pass
                 elif method == "HEAD":
                     async with self._session.head(
-                        url, headers=self._headers(), ssl=verify, timeout=5, auth=self._auth
+                        url,
+                        headers=self._headers(),
+                        ssl=(verify if use_https else None),
+                        timeout=5,
+                        auth=self._auth,
                     ) as r:
                         item["status"] = r.status
                         item["ok"] = 200 <= r.status < 500
@@ -824,33 +859,49 @@ class AkuvoxAPI:
                 item["error"] = str(e)
                 return item
 
-        schemes_ports: List[Tuple[int, bool]] = []
+        schemes_ports: List[Tuple[bool, int, bool]] = []
 
-        def _normalize_port(port: Optional[int]) -> int:
+        def _normalize_port(port: Optional[int], use_https: bool) -> int:
             try:
                 value = int(port or 0)
             except Exception:
                 value = 0
-            if value in (0, 80):
+            if value <= 0:
+                return 443 if use_https else 80
+            if use_https and value == 80:
                 return 443
-            return value or 443
+            if not use_https and value == 443:
+                return 80
+            return value
 
-        def _add_https(port: Optional[int], verify: bool) -> None:
-            combo = (_normalize_port(port), bool(verify))
+        def _add_combo(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
+            normalized_port = _normalize_port(port, use_https)
+            verify_flag = bool(verify) if use_https else True
+            combo = (use_https, normalized_port, verify_flag)
             if combo not in schemes_ports:
                 schemes_ports.append(combo)
 
         if self._detected:
-            _, detected_port, detected_verify = self._detected
-            _add_https(detected_port, detected_verify)
+            detected_https, detected_port, detected_verify = self._detected
+            _add_combo(detected_https, detected_port, detected_verify)
 
-        configured_port = _normalize_port(self.port)
+        configured_port = self.port
+        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        for verify in (bool(self.verify_ssl), not bool(self.verify_ssl)):
-            _add_https(configured_port, verify)
-
-        _add_https(443, False)
-        _add_https(443, True)
+        if self.use_https:
+            for verify in verify_order:
+                _add_combo(True, configured_port, verify)
+            _add_combo(True, 443, False)
+            _add_combo(True, 443, True)
+            _add_combo(False, configured_port, True)
+            _add_combo(False, 80, True)
+        else:
+            _add_combo(False, configured_port, True)
+            _add_combo(False, 80, True)
+            for verify in verify_order:
+                _add_combo(True, configured_port, verify)
+            _add_combo(True, 443, False)
+            _add_combo(True, 443, True)
 
         paths = [
             ("GET", "/api/system/status", None),
@@ -860,23 +911,40 @@ class AkuvoxAPI:
             ("GET", "/api/", None),
             ("HEAD", "/", None),
         ]
-        for port, verify in schemes_ports:
+        for use_https, port, verify in schemes_ports:
             for m, p, pl in paths:
-                attempts.append(await _try(port, p, m, pl, verify))
+                attempts.append(await _try(use_https, port, p, m, pl, verify))
 
         ok = any(a.get("ok") for a in attempts)
 
-        if ok and (not self._detected or not self._detected[0]):
-            for a in attempts:
-                if a.get("ok"):
-                    base = a.get("base", "")
-                    try:
-                        port = int(base.rsplit(":", 1)[1].split("/", 1)[0])
-                    except Exception:
-                        port = 443
-                    verify = bool(a.get("verify_ssl", True))
+        if ok:
+            https_attempt = next(
+                (a for a in attempts if a.get("ok") and str(a.get("scheme", "https")).lower() == "https"),
+                None,
+            )
+            any_attempt = next((a for a in attempts if a.get("ok")), None)
+
+            should_update = False
+            chosen = None
+            if not self._detected:
+                chosen = https_attempt or any_attempt
+                should_update = chosen is not None
+            elif not self._detected[0] and https_attempt:
+                chosen = https_attempt
+                should_update = True
+
+            if should_update and chosen:
+                base = chosen.get("base", "")
+                try:
+                    port = int(base.rsplit(":", 1)[1].split("/", 1)[0])
+                except Exception:
+                    port = 443 if str(chosen.get("scheme", "https")).lower() == "https" else 80
+                verify = bool(chosen.get("verify_ssl", True))
+                scheme = str(chosen.get("scheme", "https")).lower()
+                if scheme == "https":
                     self._detected = (True, port, verify)
-                    break
+                else:
+                    self._detected = (False, port, True)
 
         return {"ok": ok, "attempts": attempts}
 
@@ -991,7 +1059,8 @@ class AkuvoxAPI:
             safe_filename = f"{base}{suffix}" if suffix else base
         safe_dest_raw = str(dest_file or "Face")
         safe_dest = safe_dest_raw or "Face"
-        if safe_dest.lower() == "face":
+        dest_lower = safe_dest.lower()
+        if dest_lower == "face":
             # Devices expect capital "Face" in the query string; lowercase can trigger
             # handler errors (see firmware guidance).
             safe_dest = "Face"
@@ -1001,6 +1070,12 @@ class AkuvoxAPI:
             trimmed = str(index).strip()
             if trimmed:
                 index_text = trimmed
+
+        if dest_lower == "face":
+            # Firmware expects the index query parameter to be present but blank for
+            # face uploads. Supplying a numeric value causes the uploaded file to be
+            # stored under a different slot that is not linked to users automatically.
+            index_text = None
 
         params: Dict[str, str] = {"destFile": safe_dest, "index": index_text or ""}
         query = urlencode(params)
@@ -1027,16 +1102,17 @@ class AkuvoxAPI:
 
         await self._ensure_detected()
 
-        async def _attempt(port: int, verify: bool, rel: str) -> Dict[str, Any]:
-            url = f"https://{self.host}:{port}{rel}"
+        async def _attempt(use_https: bool, port: int, verify: bool, rel: str) -> Dict[str, Any]:
+            scheme = "https" if use_https else "http"
+            url = f"{scheme}://{self.host}:{port}{rel}"
             entry: Dict[str, Any] = {
                 "timestamp": _utc_now_iso(),
                 "method": "POST",
                 "url": url,
                 "path": rel,
-                "scheme": "https",
+                "scheme": scheme,
                 "port": port,
-                "verify_ssl": bool(verify),
+                "verify_ssl": bool(verify if use_https else True),
                 "payload": payload_info,
                 "diag_type": "upload:face",
             }
@@ -1058,7 +1134,7 @@ class AkuvoxAPI:
                     url,
                     data=form,
                     headers={"Accept": "application/json, text/plain, */*"},
-                    ssl=verify,
+                    ssl=(verify if use_https else None),
                     timeout=30,
                     auth=self._auth,
                 ) as r:
@@ -1084,47 +1160,60 @@ class AkuvoxAPI:
                 entry["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
                 self._remember_request(entry)
 
-        bases: List[Tuple[int, bool]] = []
+        bases: List[Tuple[bool, int, bool]] = []
 
-        def _add_base(port: Optional[int], verify: bool) -> None:
+        def _normalize_port(port: Optional[int], use_https: bool) -> int:
             try:
-                port_val = int(port or 0)
+                value = int(port or 0)
             except Exception:
-                port_val = 0
-            if port_val in (0, 80):
-                port_val = 443
-            combo = (port_val, bool(verify))
+                value = 0
+            if value <= 0:
+                return 443 if use_https else 80
+            if use_https and value == 80:
+                return 443
+            if not use_https and value == 443:
+                return 80
+            return value
+
+        def _add_base(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
+            normalized_port = _normalize_port(port, use_https)
+            verify_flag = bool(verify) if use_https else True
+            combo = (use_https, normalized_port, verify_flag)
             if combo not in bases:
                 bases.append(combo)
 
         if self._detected:
-            _, detected_port, detected_verify = self._detected
-            _add_base(detected_port, detected_verify)
+            detected_https, detected_port, detected_verify = self._detected
+            _add_base(detected_https, detected_port, detected_verify)
 
         configured_port: Optional[int] = self.port
-        preferred_port = configured_port
-        try:
-            preferred_port = int(preferred_port or 0)
-        except Exception:
-            preferred_port = 0
-        if preferred_port in (0, 80):
-            preferred_port = 443
+        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        for verify in (bool(self.verify_ssl), not bool(self.verify_ssl)):
-            _add_base(preferred_port, verify)
+        if self.use_https:
+            for verify in verify_order:
+                _add_base(True, configured_port, verify)
+            _add_base(True, 443, False)
+            _add_base(True, 443, True)
+            _add_base(False, configured_port, True)
+            _add_base(False, 80, True)
+        else:
+            _add_base(False, configured_port, True)
+            _add_base(False, 80, True)
+            for verify in verify_order:
+                _add_base(True, configured_port, verify)
+            _add_base(True, 443, False)
+            _add_base(True, 443, True)
 
-        _add_base(443, False)
-        _add_base(443, True)
-
-        for port, verify in bases:
+        for use_https, port, verify in bases:
             for rel in rel_paths:
                 try:
-                    data = await _attempt(port, verify, rel)
+                    data = await _attempt(use_https, port, verify, rel)
                     return self._coerce_face_upload_result(data)
                 except Exception as exc:
                     _LOGGER.debug(
-                        "Face upload attempt failed for https://%s:%s%s -> %s",
+                        "Face upload attempt failed for %s://%s:%s%s -> %s",
                         self.host,
+                        "https" if use_https else "http",
                         port,
                         rel,
                         exc,
@@ -1132,8 +1221,10 @@ class AkuvoxAPI:
                     continue
 
         fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
-        fallback_port = preferred_port or 443
-        data = await _attempt(fallback_port, bool(self.verify_ssl), fallback_rel)
+        fallback_use_https = bool(self.use_https)
+        fallback_port = _normalize_port(configured_port, fallback_use_https)
+        fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
+        data = await _attempt(fallback_use_https, fallback_port, fallback_verify, fallback_rel)
         return self._coerce_face_upload_result(data)
 
     @staticmethod

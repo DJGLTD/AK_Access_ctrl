@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Mapping
 from urllib.parse import urlencode, urlsplit, unquote
@@ -27,6 +28,8 @@ from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
     MIN_DIAGNOSTICS_HISTORY_LIMIT,
     MAX_DIAGNOSTICS_HISTORY_LIMIT,
+    MIN_HEALTH_CHECK_INTERVAL,
+    MAX_HEALTH_CHECK_INTERVAL,
     EVENT_INBOUND_CALL,
     INBOUND_CALL_RESULT_APPROVED,
     INBOUND_CALL_RESULT_APPROVED_KEY_HOLDER,
@@ -422,7 +425,6 @@ async def _push_face_to_devices(
             upload_result = await api.face_upload(
                 face_bytes,
                 filename=face_filename,
-                index=device_record_id or None,
             )
         except Exception as err:
             _LOGGER.debug(
@@ -443,18 +445,22 @@ async def _push_face_to_devices(
             face_import_path = upload_result.strip()
 
         linked = False
-        if face_import_path:
-            payload: Dict[str, Any] = {"FaceUrl": face_import_path}
-            if device_record_id:
-                payload["ID"] = device_record_id
-            else:
-                payload["UserID"] = user_id
+        identifier_key = "ID" if device_record_id else "UserID"
+        identifier_value = device_record_id or user_id
+        if identifier_value:
+            payload: Dict[str, Any] = {
+                identifier_key: identifier_value,
+                "FaceFileName": face_filename,
+                "FaceRegister": "1",
+            }
+            if face_import_path:
+                payload["FaceUrl"] = face_import_path
             try:
                 await api.user_set([payload])
                 linked = True
             except Exception as err:
                 _LOGGER.debug(
-                    "Failed to link face import path for %s on %s: %s",
+                    "Failed to link face data for %s on %s: %s",
                     user_id,
                     device_name,
                     err,
@@ -462,7 +468,9 @@ async def _push_face_to_devices(
 
         if not linked:
             try:
-                payload = _build_face_upload_payload(profile, record, user_id, face_filename)
+                payload = _build_face_upload_payload(
+                    profile, record, user_id, face_filename
+                )
             except Exception as err:
                 _LOGGER.debug(
                     "Failed to prepare fallback face payload for %s on %s: %s",
@@ -2630,6 +2638,8 @@ class AkuvoxUISettings(HomeAssistantView):
 
         interval = None
         delay = None
+        health_interval = None
+        health_bounds = (MIN_HEALTH_CHECK_INTERVAL, MAX_HEALTH_CHECK_INTERVAL)
         alerts = {"targets": {}}
         if settings:
             try:
@@ -2640,6 +2650,16 @@ class AkuvoxUISettings(HomeAssistantView):
                 delay = settings.get_auto_sync_delay_minutes()
             except Exception:
                 delay = None
+            try:
+                health_interval = settings.get_health_check_interval_seconds()
+            except Exception:
+                health_interval = None
+            try:
+                hb = settings.get_health_check_interval_bounds()
+                if isinstance(hb, (tuple, list)) and len(hb) >= 2:
+                    health_bounds = (int(hb[0]), int(hb[1]))
+            except Exception:
+                health_bounds = (MIN_HEALTH_CHECK_INTERVAL, MAX_HEALTH_CHECK_INTERVAL)
             try:
                 alerts = {"targets": settings.get_alert_targets()}
             except Exception:
@@ -2678,6 +2698,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 "ok": True,
                 "integrity_interval_minutes": interval,
                 "auto_sync_delay_minutes": delay,
+                "health_check_interval_seconds": health_interval,
                 "alerts": alerts,
                 "registry_users": registry_users,
                 "schedules": schedules,
@@ -2687,6 +2708,8 @@ class AkuvoxUISettings(HomeAssistantView):
                 "max_minutes": 24 * 60,
                 "min_auto_sync_delay_minutes": 5,
                 "max_auto_sync_delay_minutes": 60,
+                "min_health_check_interval_seconds": health_bounds[0],
+                "max_health_check_interval_seconds": health_bounds[1],
             }
         )
 
@@ -2747,6 +2770,28 @@ class AkuvoxUISettings(HomeAssistantView):
                     queue.refresh_default_delay()
                 except Exception:
                     pass
+
+        if "health_check_interval_seconds" in payload:
+            if not settings or not hasattr(settings, "set_health_check_interval_seconds"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+
+            seconds_raw = payload.get("health_check_interval_seconds")
+            try:
+                seconds = await settings.set_health_check_interval_seconds(seconds_raw)
+            except ValueError as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+            response["health_check_interval_seconds"] = seconds
+
+            interval_td = timedelta(seconds=max(MIN_HEALTH_CHECK_INTERVAL, min(MAX_HEALTH_CHECK_INTERVAL, seconds)))
+            for key, data in list(root.items()):
+                if not isinstance(data, dict):
+                    continue
+                coord = data.get("coordinator")
+                if coord and hasattr(coord, "update_interval"):
+                    coord.update_interval = interval_td
 
         if "alerts" in payload and settings and hasattr(settings, "set_alert_targets"):
             alerts_payload = payload.get("alerts") or {}
