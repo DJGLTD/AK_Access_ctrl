@@ -1162,11 +1162,26 @@ class AkuvoxUsersStore(Store):
         await self.async_save()
 
     async def delete(self, key: str):
-        users = self.data.get("users", {})
-        canonical = normalize_ha_id(key)
+        raw = str(key or "").strip()
+        if not raw:
+            return
+
+        users = self.data.get("users")
+        if not isinstance(users, dict):
+            users = {}
+            self.data["users"] = users
+
+        canonical = normalize_ha_id(raw)
+        removal_keys = {raw}
         if canonical:
-            users.pop(canonical, None)
-        users.pop(key, None)
+            removal_keys.add(canonical)
+
+        for stored_key in list(users.keys()):
+            if stored_key in removal_keys:
+                users.pop(stored_key, None)
+                continue
+            if canonical and normalize_ha_id(stored_key) == canonical:
+                users.pop(stored_key, None)
         await self.async_save()
 
 
