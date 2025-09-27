@@ -323,6 +323,86 @@ def _face_asset_exists(hass: HomeAssistant, user_id: str) -> bool:
     return False
 
 
+_FACE_FILENAME_KEYS = (
+    "FaceFileName",
+    "faceFileName",
+    "face_filename",
+    "face_file_name",
+)
+
+
+_FACE_URL_KEYS = (
+    "FaceUrl",
+    "FaceURL",
+    "faceUrl",
+    "faceURL",
+)
+
+
+_FACE_REGISTER_KEYS = (
+    "FaceRegister",
+    "faceRegister",
+    "face_register",
+)
+
+
+def _ensure_face_payload_fields(
+    payload: Dict[str, Any],
+    *,
+    ha_key: str,
+    sources: Tuple[Optional[Dict[str, Any]], ...],
+) -> None:
+    """Ensure FaceFileName/FaceRegister fields are canonically present in payload."""
+
+    def _extract_first(keys: Tuple[str, ...]) -> Optional[str]:
+        for source in (payload, *sources):
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if value in (None, ""):
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    face_filename = _extract_first(_FACE_FILENAME_KEYS)
+    if not face_filename:
+        reference = _extract_first(_FACE_URL_KEYS)
+        if reference:
+            face_filename = face_filename_from_reference(reference, ha_key)
+
+    if face_filename:
+        payload["FaceFileName"] = face_filename
+    for key in _FACE_FILENAME_KEYS:
+        if key != "FaceFileName":
+            payload.pop(key, None)
+
+    register_value = _extract_first(_FACE_REGISTER_KEYS)
+    if register_value:
+        register_value = str(register_value).strip()
+
+    face_flag = None
+    for source in (payload, *sources):
+        if not isinstance(source, dict):
+            continue
+        flag = _face_flag_from_record(source)
+        if flag is not None:
+            face_flag = flag
+            break
+
+    if face_filename and register_value != "1":
+        payload["FaceRegister"] = "1"
+    elif face_flag:
+        payload["FaceRegister"] = "1"
+    elif register_value:
+        payload["FaceRegister"] = register_value
+
+    for key in _FACE_REGISTER_KEYS:
+        if key != "FaceRegister":
+            payload.pop(key, None)
+
 def _migrate_face_storage(hass: HomeAssistant) -> None:
     """Copy face assets from legacy locations into the persistent store."""
 
@@ -1769,6 +1849,8 @@ class SyncManager:
                 lookup_id = None
             if lookup_id:
                 payload["ID"] = lookup_id
+
+        _ensure_face_payload_fields(payload, ha_key=ha_key, sources=(desired, existing))
 
         try:
             await api.user_set([payload])
