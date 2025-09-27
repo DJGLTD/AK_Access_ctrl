@@ -778,7 +778,15 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {"target": "user", "action": action}
         if items is not None:
             payload["data"] = {"item": items}
-        return await self._post_api(payload, rel_paths=("/api/",))
+
+        rel_paths = (
+            f"/api/web/user/{action}",
+            "/api/web/user",
+            f"/api/user/{action}",
+            "/api/user",
+            "/api/",
+        )
+        return await self._post_api(payload, rel_paths=rel_paths)
 
     async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
@@ -996,11 +1004,19 @@ class AkuvoxAPI:
 
     async def user_list(self) -> List[Dict[str, Any]]:
         # Try POST get/list then GET fallback
+        rel_paths = (
+            "/api/web/user/get",
+            "/api/web/user",
+            "/api/user/get",
+            "/api/user",
+            "/api/",
+        )
+
         for payload in (
             {"target": "user", "action": "get"},
         ):
             try:
-                r = await self._post_api(payload, rel_paths=("/api/",))
+                r = await self._post_api(payload, rel_paths=rel_paths)
                 items = r.get("data", {}).get("item")
                 if isinstance(items, list):
                     return items
@@ -1020,6 +1036,49 @@ class AkuvoxAPI:
         if not query:
             return []
 
+        rel_paths = (
+            "/api/web/user/get",
+            "/api/web/user",
+            "/api/user/get",
+            "/api/user",
+            "/api/",
+        )
+
+        def _matches(item: Dict[str, Any]) -> bool:
+            text = str(query)
+            lowered = text.lower()
+            for key in ("ID", "UserID", "UserId", "Name", "PerID"):
+                candidate = item.get(key)
+                if candidate is None:
+                    continue
+                value = str(candidate).strip()
+                if not value:
+                    continue
+                if key == "Name":
+                    if value.lower() == lowered:
+                        return True
+                else:
+                    if value == text:
+                        return True
+            return False
+
+        for payload in (
+            {"target": "user", "action": "get", "data": {"page": -1}},
+            {"target": "user", "action": "get"},
+        ):
+            try:
+                result = await self._post_api(payload, rel_paths=rel_paths)
+            except Exception:
+                result = None
+            if not isinstance(result, dict):
+                continue
+            items = result.get("data", {}).get("item")
+            if isinstance(items, list):
+                matches = [item for item in items if isinstance(item, dict) and _matches(item)]
+                if matches:
+                    return matches
+                continue
+
         params = urlencode({"NameOrPerID": query})
         rel = f"/api/user/get?{params}" if params else "/api/user/get"
         try:
@@ -1029,9 +1088,12 @@ class AkuvoxAPI:
 
         items = result.get("data", {}).get("item") if isinstance(result, dict) else None
         if isinstance(items, list):
-            return items
+            matches = [item for item in items if isinstance(item, dict) and _matches(item)]
+            if matches:
+                return matches
+            return []
         if isinstance(items, dict):
-            return [items]
+            return [items] if _matches(items) else []
         return []
 
     async def face_upload(
