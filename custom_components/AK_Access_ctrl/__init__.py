@@ -1877,8 +1877,48 @@ class SyncManager:
             raise
 
     async def reconcile(self, full: bool = True):
-        for entry_id, *_ in self._devices():
+        active_device_keys: set[str] = set()
+
+        for entry_id, coord, *_ in self._devices():
             await self.reconcile_device(entry_id, full=full)
+
+            try:
+                current_users = list(getattr(coord, "users", []) or [])
+            except Exception:
+                current_users = []
+
+            for record in current_users:
+                candidates = {
+                    str(record.get("ID") or ""),
+                    str(record.get("UserID") or ""),
+                    str(record.get("Name") or ""),
+                    _key_of_user(record),
+                }
+                for candidate in candidates:
+                    canonical = normalize_ha_id(candidate)
+                    if canonical:
+                        active_device_keys.add(canonical)
+
+        users_store = self._users_store()
+        if not users_store:
+            return
+
+        try:
+            registry_all = users_store.all()
+        except Exception:
+            registry_all = {}
+
+        for key, profile in (registry_all or {}).items():
+            status_raw = str((profile or {}).get("status") or "").strip().lower()
+            if status_raw != "deleted":
+                continue
+
+            canonical = normalize_ha_id(key) or str(key)
+            if canonical and canonical not in active_device_keys:
+                try:
+                    await users_store.delete(canonical)
+                except Exception:
+                    continue
 
     async def _sync_contacts_for_intercom(self, api: AkuvoxAPI, registry_items: List[Dict[str, Any]]):
         to_set = []
@@ -2454,15 +2494,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         users_store.reserve_id(ha_id)
         await users_store.async_save()
 
-        raw_groups = d.get("groups")
-        if raw_groups is None:
-            raw_groups = d.get("sync_groups")
+        raw_groups = d.get("groups") if d.get("groups") is not None else d.get("sync_groups")
         if isinstance(raw_groups, (list, tuple, set)):
-            groups = [str(g) for g in raw_groups if str(g or "").strip()]
+            groups = [str(g).strip() for g in raw_groups if str(g or "").strip()]
         elif raw_groups in (None, ""):
             groups = []
         else:
-            groups = [str(raw_groups)]
+            groups = [str(raw_groups).strip()]
 
         face_reference: Optional[str] = None
         face_reference_supplied = False
@@ -2477,10 +2515,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         ):
             if key not in d:
                 continue
-            candidate = d.get(key)
-            if candidate in (None, ""):
-                continue
-            text = str(candidate).strip()
+            text = str(d.get(key) or "").strip()
             if not text:
                 continue
             face_reference = text
@@ -2488,7 +2523,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             break
 
         face_image_path_raw = d.get("face_image_path")
-        face_image_path = str(face_image_path_raw).strip() if face_image_path_raw not in (None, "") else ""
+        face_image_path = str(face_image_path_raw or "").strip()
         face_source_path: Optional[Path] = None
         face_bytes: Optional[bytes] = None
         if face_image_path:
@@ -2498,7 +2533,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     face_bytes = face_source_path.read_bytes()
                 except Exception:
                     face_bytes = None
-            if not face_reference and face_image_path:
+            if not face_reference:
                 face_reference = face_image_path
                 face_reference_supplied = True
 
@@ -2506,7 +2541,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if face_bytes:
             _store_face_bytes(face_filename, face_bytes, source=face_source_path)
 
-        # Canonical FaceUrl that the device will fetch
         face_url = f"{face_base_url(hass)}/{face_filename}"
 
         await users_store.upsert_profile(
@@ -2522,11 +2556,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             face_status="pending" if face_reference_supplied else None,
             face_synced_at="" if face_reference_supplied else None,
             status="pending",
-            # allow passing schedule_id explicitly, else resolver will map by name
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
-            access_start=d.get("access_start")
-            if "access_start" in d
-            else date.today().isoformat(),
+            access_start=d.get("access_start") if "access_start" in d else date.today().isoformat(),
             access_end=d.get("access_end") if "access_end" in d else None,
             source="Local",
         )
@@ -2577,7 +2608,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         root = hass.data.get(DOMAIN, {})
         users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
         if users_store:
-            await users_store.delete(lookup_key)
+            try:
+                await users_store.upsert_profile(
+                    lookup_key,
+                    status="deleted",
+                    groups=["No Access"],
+                    schedule_name="No Access",
+                    schedule_id="1002",
+                )
+            except Exception:
+                pass
 
         # immediate cascade: delete from every device using robust lookup
         manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]

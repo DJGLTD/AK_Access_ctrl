@@ -1563,6 +1563,65 @@ class AkuvoxAPI:
         """
         # Ensure defaults for new user fields expected by newer firmwares.
         prepared: List[Dict[str, Any]] = []
+        def _prune_empty_fields_for_add(payload: Dict[str, Any]) -> Dict[str, Any]:
+            """Strip keys the firmware rejects when values are effectively blank."""
+
+            cleaned: Dict[str, Any] = {}
+
+            for key, value in (payload or {}).items():
+                if value is None:
+                    continue
+
+                if isinstance(value, str):
+                    text = value.strip()
+                    if not text and text != "0":
+                        continue
+                    cleaned[key] = text if text else value
+                    continue
+
+                if isinstance(value, (list, tuple, set)):
+                    entries: List[Any] = []
+                    if key == "LicensePlate":
+                        for item in value:
+                            if not isinstance(item, dict):
+                                continue
+                            filtered = {
+                                k: v
+                                for k, v in item.items()
+                                if v not in (None, "")
+                                and (not isinstance(v, str) or v.strip())
+                            }
+                            if filtered:
+                                entries.append(filtered)
+                    else:
+                        for item in value:
+                            if item in (None, ""):
+                                continue
+                            if isinstance(item, str):
+                                text = item.strip()
+                                if text:
+                                    entries.append(text)
+                            else:
+                                entries.append(item)
+                    if entries:
+                        cleaned[key] = list(entries)
+                    continue
+
+                if isinstance(value, dict):
+                    filtered = {
+                        k: v
+                        for k, v in value.items()
+                        if v not in (None, "")
+                        and (not isinstance(v, str) or v.strip())
+                    }
+                    if filtered:
+                        cleaned[key] = filtered
+                    continue
+
+                cleaned[key] = value
+
+            return cleaned
+
         for original in items or []:
             base = dict(original or {})
 
@@ -1644,7 +1703,7 @@ class AkuvoxAPI:
             base.pop("FaceUrl", None)
             base.pop("FaceURL", None)
 
-            prepared.append(base)
+            prepared.append(_prune_empty_fields_for_add(base))
 
         normalized_items = self._normalize_user_items_for_add_or_set(prepared)
 
