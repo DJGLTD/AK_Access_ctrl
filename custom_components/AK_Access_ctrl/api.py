@@ -767,6 +767,11 @@ class AkuvoxAPI:
                 for key in ("FaceUrl", "FaceURL"):
                     if key in d and d[key] is not None:
                         d[key] = str(d[key])
+            user_id_value = d.get("UserID") or d.get("UserId")
+            if user_id_value not in (None, ""):
+                text = str(user_id_value)
+                d["UserID"] = text
+                d.setdefault("UserId", text)
             face_name = d.get("FaceFileName")
             if self._should_force_face_register(face_name):
                 current = d.get("FaceRegister")
@@ -791,7 +796,11 @@ class AkuvoxAPI:
         'user set' expects the device 'ID'. If caller provided only UserID/Name,
         resolve to the device 'ID' from the current list first.
         """
-        need_lookup = [it for it in (items or []) if not it.get("ID") and (it.get("UserID") or it.get("Name"))]
+        need_lookup = [
+            it
+            for it in (items or [])
+            if not it.get("ID") and (it.get("UserID") or it.get("UserId") or it.get("Name"))
+        ]
         if not need_lookup:
             return items
 
@@ -801,10 +810,10 @@ class AkuvoxAPI:
             dev_users = []
 
         def _find_id(rec: Dict[str, Any]) -> Optional[str]:
-            uid = str(rec.get("UserID") or "")
+            uid = str(rec.get("UserID") or rec.get("UserId") or "")
             name = str(rec.get("Name") or "")
             for u in dev_users or []:
-                if uid and str(u.get("UserID") or "") == uid:
+                if uid and str(u.get("UserID") or u.get("UserId") or "") == uid:
                     return str(u.get("ID") or "")
                 if name and str(u.get("Name") or "") == name:
                     return str(u.get("ID") or "")
@@ -1518,6 +1527,7 @@ class AkuvoxAPI:
 
         if user_id:
             payload["UserID"] = user_id
+            payload["UserId"] = user_id
 
         return payload
 
@@ -1547,7 +1557,11 @@ class AkuvoxAPI:
         )
 
         for uid in ids:
-            payload = {"target": "face", "action": "del", "data": {"UserID": uid}}
+            payload = {
+                "target": "face",
+                "action": "del",
+                "data": {"UserID": uid, "UserId": uid},
+            }
             try:
                 await self._post_api(payload, rel_paths=paths)
             except Exception as err:
@@ -1781,7 +1795,7 @@ class AkuvoxAPI:
         target_ids: List[str] = []
         for u in users or []:
             dev_id = str(u.get("ID") or "").strip()
-            user_id = str(u.get("UserID") or "").strip()
+            user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
             name = str(u.get("Name") or "").strip()
             if text in (dev_id, user_id, name):
                 if dev_id:
@@ -1808,7 +1822,7 @@ class AkuvoxAPI:
                     pass
             if not deletion_attempted:
                 try:
-                    await self._api_user("del", [{"UserID": text}])
+                    await self._api_user("del", [{"UserID": text, "UserId": text}])
                     deletion_attempted = True
                 except Exception:
                     pass
@@ -1839,7 +1853,7 @@ class AkuvoxAPI:
             wanted_ids = set(ids)
             for u in users or []:
                 dev_id = str(u.get("ID") or "").strip()
-                user_id = str(u.get("UserID") or "").strip()
+                user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
                 if dev_id and dev_id in wanted_ids and user_id:
                     face_targets.add(user_id)
 
@@ -1872,7 +1886,7 @@ class AkuvoxAPI:
         face_ids: Set[str] = set()
         for u in users or []:
             dev_id = str(u.get("ID") or "")
-            user_id = str(u.get("UserID") or "")
+            user_id = str(u.get("UserID") or u.get("UserId") or "")
             name = str(u.get("Name") or "")
             if user_id in wanted or name in wanted or dev_id in wanted:
                 if dev_id:
@@ -1884,7 +1898,7 @@ class AkuvoxAPI:
             if face_ids:
                 for uid in face_ids:
                     try:
-                        await self._api_user("del", [{"UserID": uid}])
+                        await self._api_user("del", [{"UserID": uid, "UserId": uid}])
                     except Exception:
                         pass
                 await self.face_delete_bulk(face_ids)
