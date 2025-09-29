@@ -249,13 +249,13 @@ def _build_face_upload_payload(
     face_filename = face_filename_from_reference(face_reference, user_id)
     payload["FaceFileName"] = face_filename
     payload.pop("faceInfo", None)
-    payload["FaceRegister"] = "1"
+    payload["FaceRegister"] = 1
 
     return payload
 
 
 async def _ensure_face_register_flag(api, user_id: str, device_name: str) -> None:
-    """Ensure the FaceRegister flag is marked as "1" for the provided user."""
+    """Ensure the FaceRegister flag is marked as ``1`` for the provided user."""
 
     target = str(user_id or "").strip()
     if not target:
@@ -301,7 +301,7 @@ async def _ensure_face_register_flag(api, user_id: str, device_name: str) -> Non
     if current == "1":
         return
 
-    payload: Dict[str, Any] = {"FaceRegister": "1", "UserID": target}
+    payload: Dict[str, Any] = {"FaceRegister": 1, "UserID": target}
     dev_id = record.get("ID")
     if dev_id not in (None, ""):
         payload["ID"] = str(dev_id)
@@ -451,7 +451,7 @@ async def _push_face_to_devices(
             payload: Dict[str, Any] = {
                 identifier_key: identifier_value,
                 "FaceFileName": face_filename,
-                "FaceRegister": "1",
+                "FaceRegister": 1,
             }
             if face_import_path:
                 payload["FaceUrl"] = face_import_path
