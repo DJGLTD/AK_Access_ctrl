@@ -1270,7 +1270,9 @@ class AkuvoxAPI:
             for rel in rel_paths:
                 try:
                     data = await _attempt(use_https, port, verify, rel)
-                    return self._coerce_face_upload_result(data)
+                    result = self._coerce_face_upload_result(data)
+                    self._validate_face_upload_result(result)
+                    return result
                 except Exception as exc:
                     _LOGGER.debug(
                         "Face upload attempt failed for %s://%s:%s%s -> %s",
@@ -1287,7 +1289,9 @@ class AkuvoxAPI:
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
         data = await _attempt(fallback_use_https, fallback_port, fallback_verify, fallback_rel)
-        return self._coerce_face_upload_result(data)
+        result = self._coerce_face_upload_result(data)
+        self._validate_face_upload_result(result)
+        return result
 
     @staticmethod
     def _coerce_face_upload_result(data: Any) -> Dict[str, Any]:
@@ -1317,10 +1321,84 @@ class AkuvoxAPI:
 
         path = _extract(data)
 
+        def _extract_retcode(candidate: Any) -> Optional[Any]:
+            if isinstance(candidate, dict):
+                for key in (
+                    "retcode",
+                    "retCode",
+                    "RetCode",
+                    "ret_code",
+                    "code",
+                ):
+                    if key in candidate:
+                        return candidate.get(key)
+                for nested_key in ("data", "result"):
+                    nested = candidate.get(nested_key)
+                    extracted = _extract_retcode(nested)
+                    if extracted is not None:
+                        return extracted
+                return None
+            if isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    extracted = _extract_retcode(entry)
+                    if extracted is not None:
+                        return extracted
+            return None
+
+        def _extract_message(candidate: Any) -> Optional[str]:
+            if isinstance(candidate, dict):
+                for key in ("msg", "message", "error", "detail", "reason"):
+                    value = candidate.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                for nested_key in ("data", "result"):
+                    nested = candidate.get(nested_key)
+                    message = _extract_message(nested)
+                    if message:
+                        return message
+                return None
+            if isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    message = _extract_message(entry)
+                    if message:
+                        return message
+            return None
+
         result: Dict[str, Any] = {"raw": data}
+
+        retcode_value = _extract_retcode(data)
+        if retcode_value is not None:
+            result["retcode_raw"] = retcode_value
+            try:
+                retcode_int = int(str(retcode_value).strip())
+            except Exception:
+                retcode_int = None
+            if retcode_int is not None:
+                result["retcode"] = retcode_int
+
+        message_value = _extract_message(data)
+        if message_value:
+            result["message"] = message_value
+
         if path:
             result["path"] = path
         return result
+
+    @staticmethod
+    def _validate_face_upload_result(result: Dict[str, Any]) -> None:
+        retcode = result.get("retcode")
+        if retcode is None:
+            raw = result.get("retcode_raw")
+            if raw is None:
+                return
+            try:
+                retcode = int(str(raw).strip())
+            except Exception:
+                return
+        if retcode != 0:
+            message = str(result.get("message") or "").strip()
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox face upload returned retcode {retcode}{detail}")
 
     async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
         """Delete face images associated with the provided UserID values."""
