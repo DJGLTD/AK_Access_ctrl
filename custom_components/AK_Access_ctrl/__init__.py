@@ -393,11 +393,14 @@ def _ensure_face_payload_fields(
             break
 
     if face_filename and register_value != "1":
-        payload["FaceRegister"] = "1"
+        payload["FaceRegister"] = 1
     elif face_flag:
-        payload["FaceRegister"] = "1"
+        payload["FaceRegister"] = 1
     elif register_value:
-        payload["FaceRegister"] = register_value
+        try:
+            payload["FaceRegister"] = int(register_value)
+        except Exception:
+            payload["FaceRegister"] = register_value
 
     for key in _FACE_REGISTER_KEYS:
         if key != "FaceRegister":
@@ -669,7 +672,7 @@ def _desired_device_user_payload(
                 except Exception:
                     face_active = None
             if face_active:
-                desired["FaceRegister"] = "1"
+                desired["FaceRegister"] = 1
 
     return desired
 

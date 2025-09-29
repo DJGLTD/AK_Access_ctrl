@@ -638,6 +638,30 @@ class AkuvoxAPI:
         return segment
 
     @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        """Best-effort conversion to ``int`` preserving ``None`` for invalid inputs."""
+
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, (int, float)):
+            try:
+                return int(value)
+            except Exception:
+                return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+                try:
+                    return int(text, 10)
+                except Exception:
+                    return None
+        return None
+
+    @staticmethod
     def _should_force_face_register(face_filename: Any) -> bool:
         """Return True when a managed HA face filename should enable FaceRegister."""
 
@@ -658,10 +682,21 @@ class AkuvoxAPI:
     ) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
-        - Convert bools -> "1"/"0"
+        - Convert boolean fields to integers when the firmware expects numeric flags
         - Ensure core stringy fields are strings
         - Normalize ScheduleRelay if provided
         """
+        numeric_fields = {
+            "DialAccount",
+            "DoorNum",
+            "LiftFloorNum",
+            "PriorityCall",
+            "C4EventNo",
+            "AuthMode",
+            "FaceRegister",
+            "KeyHolder",
+        }
+
         norm: List[Dict[str, Any]] = []
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
@@ -687,7 +722,10 @@ class AkuvoxAPI:
                 if v is None:
                     continue
                 if isinstance(v, bool):
-                    d[k] = "1" if v else "0"
+                    if k in numeric_fields:
+                        d[k] = 1 if v else 0
+                    else:
+                        d[k] = "1" if v else "0"
                     continue
                 if k == "Schedule" and isinstance(v, (list, tuple, set)):
                     cleaned = [str(entry or "").strip() for entry in v if str(entry or "").strip()]
@@ -699,7 +737,6 @@ class AkuvoxAPI:
                     "Name",
                     "PrivatePIN",
                     "WebRelay",
-                    "KeyHolder",
                     "ScheduleID",
                     "PhoneNum",
                     "DoorNum",
@@ -712,10 +749,18 @@ class AkuvoxAPI:
                     "CardCode",
                     "BLEAuthCode",
                     "FaceFileName",
-                    "FaceRegister",
                     "Schedule-Relay",
                 ):
-                    d[k] = str(v)
+                    if k in numeric_fields:
+                        coerced = self._coerce_int(v)
+                        if coerced is not None:
+                            d[k] = coerced
+                        else:
+                            text = str(v).strip()
+                            if text:
+                                d[k] = text
+                    else:
+                        d[k] = str(v)
                 else:
                     d[k] = v
             if allow_face_url:
@@ -724,8 +769,9 @@ class AkuvoxAPI:
                         d[key] = str(d[key])
             face_name = d.get("FaceFileName")
             if self._should_force_face_register(face_name):
-                if str(d.get("FaceRegister") or "").strip() != "1":
-                    d["FaceRegister"] = "1"
+                current = d.get("FaceRegister")
+                if self._coerce_int(current) != 1:
+                    d["FaceRegister"] = 1
             norm.append(d)
         return norm
 
@@ -1385,20 +1431,106 @@ class AkuvoxAPI:
         return result
 
     @staticmethod
-    def _validate_face_upload_result(result: Dict[str, Any]) -> None:
-        retcode = result.get("retcode")
-        if retcode is None:
-            raw = result.get("retcode_raw")
-            if raw is None:
-                return
+    def _parse_result_status(result: Any) -> Tuple[Optional[int], Optional[str]]:
+        """Extract (retcode, message) pairs from Akuvox API responses."""
+
+        def _extract_retcode(candidate: Any) -> Optional[Any]:
+            if isinstance(candidate, dict):
+                for key in ("retcode", "retCode", "RetCode", "ret_code", "code"):
+                    if key in candidate:
+                        return candidate.get(key)
+                for nested_key in ("data", "result"):
+                    nested = candidate.get(nested_key)
+                    extracted = _extract_retcode(nested)
+                    if extracted is not None:
+                        return extracted
+                return None
+            if isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    extracted = _extract_retcode(entry)
+                    if extracted is not None:
+                        return extracted
+            return None
+
+        def _extract_message(candidate: Any) -> Optional[str]:
+            if isinstance(candidate, dict):
+                for key in ("msg", "message", "error", "detail", "reason"):
+                    value = candidate.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                for nested_key in ("data", "result"):
+                    nested = candidate.get(nested_key)
+                    message = _extract_message(nested)
+                    if message:
+                        return message
+                return None
+            if isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    message = _extract_message(entry)
+                    if message:
+                        return message
+            return None
+
+        raw_retcode = _extract_retcode(result)
+        retcode: Optional[int] = None
+        if raw_retcode is not None:
             try:
-                retcode = int(str(raw).strip())
+                retcode = int(str(raw_retcode).strip())
             except Exception:
-                return
-        if retcode != 0:
-            message = str(result.get("message") or "").strip()
-            detail = f" (message: {message})" if message else ""
-            raise RuntimeError(f"Akuvox face upload returned retcode {retcode}{detail}")
+                retcode = None
+
+        return retcode, _extract_message(result)
+
+    @staticmethod
+    def _validate_face_upload_result(result: Dict[str, Any]) -> None:
+        retcode, message = AkuvoxAPI._parse_result_status(result)
+        if retcode in (None, 0):
+            return
+        detail = f" (message: {message})" if message else ""
+        raise RuntimeError(f"Akuvox face upload returned retcode {retcode}{detail}")
+
+    @staticmethod
+    def _minimal_user_payload(item: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the minimal payload required for ``user.add`` on strict firmwares."""
+
+        def _string(value: Any, default: str = "") -> str:
+            if value in (None, ""):
+                return default
+            text = str(value).strip()
+            return text if text else default
+
+        user_id = _string(item.get("UserID") or item.get("user_id") or item.get("UserId"))
+        name = _string(item.get("Name") or item.get("name"), default=user_id or "HA User")
+        raw_groups = item.get("groups")
+        if isinstance(raw_groups, (list, tuple)) and raw_groups:
+            first_group = raw_groups[0]
+        else:
+            first_group = None
+        group = _string(item.get("Group") or first_group, default="Default")
+
+        payload: Dict[str, Any] = {
+            "Name": name or (user_id or "HA User"),
+            "Group": group or "Default",
+            "Source": _string(item.get("Source"), default="Local") or "Local",
+            "SourceType": AkuvoxAPI._coerce_int(item.get("SourceType")) or 1,
+            "Type": AkuvoxAPI._coerce_int(item.get("Type")) or -1,
+        }
+
+        if user_id:
+            payload["UserID"] = user_id
+
+        return payload
+
+    async def _apply_user_set_after_add(self, items: List[Dict[str, Any]]) -> None:
+        """Reapply the desired fields using ``user.set`` after minimal creation."""
+
+        follow_up: List[Dict[str, Any]] = []
+        for item in items or []:
+            if isinstance(item, dict):
+                follow_up.append(dict(item))
+        if not follow_up:
+            return
+        await self.user_set(follow_up)
 
     async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
         """Delete face images associated with the provided UserID values."""
@@ -1434,6 +1566,10 @@ class AkuvoxAPI:
         for original in items or []:
             base = dict(original or {})
 
+            def _ensure_int(key: str, default: int) -> None:
+                coerced = self._coerce_int(base.get(key))
+                base[key] = coerced if coerced is not None else default
+
             def _ensure_str(key: str, default: str) -> None:
                 value = base.get(key)
                 if value is None:
@@ -1445,13 +1581,13 @@ class AkuvoxAPI:
                 else:
                     base[key] = default
 
-            _ensure_str("AuthMode", "0")
-            _ensure_str("C4EventNo", "0")
-            _ensure_str("DoorNum", "1")
-            _ensure_str("LiftFloorNum", "0")
+            _ensure_int("AuthMode", 0)
+            _ensure_int("C4EventNo", 0)
+            _ensure_int("DoorNum", 1)
+            _ensure_int("LiftFloorNum", 0)
             _ensure_str("WebRelay", "0")
-            _ensure_str("PriorityCall", "0")
-            _ensure_str("DialAccount", "0")
+            _ensure_int("PriorityCall", 0)
+            _ensure_int("DialAccount", 0)
             _ensure_str("Group", "Default")
             if "CardCode" in base:
                 _ensure_str("CardCode", "")
@@ -1510,12 +1646,35 @@ class AkuvoxAPI:
 
             prepared.append(base)
 
-        items = self._normalize_user_items_for_add_or_set(prepared)
+        normalized_items = self._normalize_user_items_for_add_or_set(prepared)
+
         try:
-            return await self._api_user("add", items)
+            result = await self._api_user("add", normalized_items)
         except Exception:
-            # small retry in case endpoint flip helps
-            return await self._api_user("add", items)
+            # small retry in case the device expects the alternate endpoint first
+            result = await self._api_user("add", normalized_items)
+        retcode, message = self._parse_result_status(result)
+        if retcode not in (None, 0):
+            if retcode == -100 and prepared:
+                _LOGGER.debug("user.add returned -100; retrying with minimal payload")
+                minimal_payload = [self._minimal_user_payload(p) for p in prepared]
+                result = await self._api_user("add", minimal_payload)
+                retry_retcode, retry_message = self._parse_result_status(result)
+                if retry_retcode not in (None, 0):
+                    detail = f" (message: {retry_message})" if retry_message else ""
+                    raise RuntimeError(
+                        f"Akuvox user.add fallback returned retcode {retry_retcode}{detail}"
+                    )
+                try:
+                    await self._apply_user_set_after_add(prepared)
+                except Exception as err:
+                    _LOGGER.debug("user.set follow-up after minimal user.add failed: %s", err)
+                return result
+
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
+
+        return result
 
     async def user_set(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -1528,9 +1687,16 @@ class AkuvoxAPI:
         items = self._prune_user_items_for_set(items)
         items = self._normalize_user_items_for_add_or_set(items, allow_face_url=True)
         try:
-            return await self._api_user("set", items)
+            result = await self._api_user("set", items)
         except Exception:
-            return await self._api_user("set", items)
+            result = await self._api_user("set", items)
+
+        retcode, message = self._parse_result_status(result)
+        if retcode not in (None, 0):
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox user.set returned retcode {retcode}{detail}")
+
+        return result
 
     async def user_del(self, ids: List[str]) -> Dict[str, Any]:
         """Low-level: delete by device 'ID' list (what most firmwares expect)."""

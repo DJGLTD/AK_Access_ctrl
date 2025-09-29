@@ -712,11 +712,25 @@ function canonicalString(value){
   }
 }
 
+function normalizeHaUserId(value){
+  if (!value) return '';
+  const text = String(value).trim();
+  if (text.length < 3) return '';
+  const prefix = text.slice(0, 2).toUpperCase();
+  if (prefix !== 'HA') return '';
+  let suffix = text.slice(2);
+  if (suffix.startsWith('-')) suffix = suffix.slice(1);
+  if (!suffix || !/^\d+$/.test(suffix)) return '';
+  return `HA${suffix}`;
+}
+
 function deviceUserKey(record){
   if (!record || typeof record !== 'object') return '';
   const source = canonicalString(record.Source || record.source).toLowerCase();
-  const userId = canonicalString(record.UserID || record.user_id);
-  if (userId) return userId;
+  const userIdRaw = canonicalString(record.UserID || record.user_id);
+  const normalizedUserId = normalizeHaUserId(userIdRaw);
+  if (normalizedUserId) return normalizedUserId;
+  if (userIdRaw) return userIdRaw;
 
   const contactId = canonicalString(record.ContactID || record.contact_id);
   const phone = canonicalString(record.PhoneNum || record.phone || record.Phone);
@@ -731,6 +745,8 @@ function deviceUserKey(record){
   }
 
   const deviceId = canonicalString(record.ID || record.id);
+  const normalizedDeviceId = normalizeHaUserId(deviceId);
+  if (normalizedDeviceId) return normalizedDeviceId;
   if (deviceId) return deviceId;
   if (contactId) return contactId;
   if (name) return name;
@@ -1133,7 +1149,12 @@ function renderUsers(devs, registryUsers){
       const key = deviceUserKey(u);
       if (!key) return;
       const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
-      const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
+      const accessEnabled = u.AccessEnabled !== false;
+      const userGroups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
+      const hasGroupAccess = userGroups.some(g => String(g).trim().toLowerCase() !== 'no access');
+      const relayValue = canonicalString(u.WebRelay || u.web_relay);
+      const hasRelayAccess = !!relayValue && relayValue !== '0';
+      const accessAllowed = accessEnabled && (hasRelayAccess || hasGroupAccess);
       const last = u.LastAccess || u.last_access || '—';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
@@ -1143,7 +1164,7 @@ function renderUsers(devs, registryUsers){
         by.set(key, {
           id: key,
           name: u.Name || key,
-          groups: normalizeGroupsList(u.Groups || u.groups || deviceGroups),
+          groups: userGroups,
           access: accessAllowed ? 'Allowed' : 'Denied',
           isCloud,
           last,
@@ -1161,7 +1182,7 @@ function renderUsers(devs, registryUsers){
       cur.isCloud = cur.isCloud || isCloud;
       cur.presentOnDevice = true;
       if (!cur.groups || cur.groups.length === 0) {
-        cur.groups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
+        cur.groups = userGroups;
       }
       cur.last = last || cur.last;
       if (cur.fromRegistry && cur._seenOn instanceof Set && entryId) {
