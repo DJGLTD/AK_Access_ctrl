@@ -204,6 +204,7 @@ def _build_face_upload_payload(
     payload: Dict[str, Any] = dict(base)
 
     payload["UserID"] = str(user_id)
+    payload["UserId"] = str(user_id)
     payload["Name"] = str(profile.get("name") or payload.get("Name") or user_id)
 
     groups = profile.get("groups") if isinstance(profile.get("groups"), list) else []
@@ -1589,6 +1590,7 @@ def _face_flag_from_record(record: Mapping[str, Any]) -> Optional[bool]:
 def _user_key(record: Mapping[str, Any]) -> str:
     return str(
         record.get("UserID")
+        or record.get("UserId")
         or record.get("ID")
         or record.get("Name")
         or record.get("user_id")

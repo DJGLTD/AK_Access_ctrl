@@ -143,7 +143,13 @@ def _context_user_name(hass: HomeAssistant, context) -> str:
 
 
 def _key_of_user(u: Dict[str, Any]) -> str:
-    return str(u.get("UserID") or u.get("ID") or u.get("Name") or "")
+    return str(
+        u.get("UserID")
+        or u.get("UserId")
+        or u.get("ID")
+        or u.get("Name")
+        or ""
+    )
 
 
 def _normalize_access_date(value: Any) -> Optional[str]:
@@ -693,7 +699,10 @@ def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]
         if _norm(local.get("ID")) != expected_id:
             diffs.append("device id")
 
-    if _norm(local.get("UserID")) != _norm(expected.get("UserID")):
+    def _norm_user_id(record: Dict[str, Any]) -> str:
+        return _norm(record.get("UserID") or record.get("UserId"))
+
+    if _norm_user_id(local) != _norm_user_id(expected):
         diffs.append("user id")
 
     if _norm(local.get("PrivatePIN") or local.get("Pin") or local.get("PIN")) != _norm(expected.get("PrivatePIN")):
@@ -1444,18 +1453,21 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
     seen: set[Tuple[str, str, str]] = set()
     for u in dev_users or []:
         dev_id = str(u.get("ID") or "")
-        user_id = str(u.get("UserID") or "")
+        user_id = str(u.get("UserID") or u.get("UserId") or "")
         name = str(u.get("Name") or "")
-        candidates = {c for c in (dev_id, user_id, name, _key_of_user(u)) if c}
+        user_id_alt = str(u.get("UserId") or "")
+        candidates = {
+            c for c in (dev_id, user_id, user_id_alt, name, _key_of_user(u)) if c
+        }
         candidate_norms = {normalize_ha_id(c) for c in candidates if normalize_ha_id(c)}
         if target not in candidates and (not target_norm or target_norm not in candidate_norms):
             continue
 
-        key_tuple = (dev_id, user_id, name)
+        key_tuple = (dev_id, user_id or user_id_alt, name)
         if key_tuple in seen:
             continue
         seen.add(key_tuple)
-        out.append({"ID": dev_id, "UserID": user_id, "Name": name})
+        out.append({"ID": dev_id, "UserID": user_id or user_id_alt, "Name": name})
 
     return out
 
@@ -1474,6 +1486,7 @@ async def _delete_user_every_way(api: AkuvoxAPI, rec: Dict[str, str]):
 
     await try_one(rec.get("ID", ""))
     await try_one(rec.get("UserID", ""))
+    await try_one(rec.get("UserId", ""))
     await try_one(rec.get("Name", ""))
 
 
@@ -1890,7 +1903,7 @@ class SyncManager:
             for record in current_users:
                 candidates = {
                     str(record.get("ID") or ""),
-                    str(record.get("UserID") or ""),
+                    str(record.get("UserID") or record.get("UserId") or ""),
                     str(record.get("Name") or ""),
                     _key_of_user(record),
                 }
@@ -2634,6 +2647,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                             {
                                 "ID": lookup_key,
                                 "UserID": lookup_key,
+                                "UserId": lookup_key,
                                 "Name": lookup_key,
                             },
                         )

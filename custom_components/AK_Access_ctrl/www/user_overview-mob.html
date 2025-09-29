@@ -596,7 +596,7 @@ function canonicalString(value){
 function deviceUserKey(record){
   if (!record || typeof record !== 'object') return '';
   const source = canonicalString(record.Source || record.source).toLowerCase();
-  const userId = canonicalString(record.UserID || record.user_id);
+  const userId = canonicalString(record.UserID || record.UserId || record.user_id);
   if (userId) return userId;
 
   const contactId = canonicalString(record.ContactID || record.contact_id);
@@ -698,7 +698,7 @@ function compileUsers(devices, registryUsers){
   const by = new Map();
 
   (registryUsers || []).forEach(r => {
-    const key = String(r.id || r.UserID || r.ID || '');
+    const key = String(r.id || r.UserID || r.UserId || r.ID || '');
     if (!key) return;
     const groups = normalizeGroupsList(r.groups || []);
     const statusHint = extractFaceStatus(r);

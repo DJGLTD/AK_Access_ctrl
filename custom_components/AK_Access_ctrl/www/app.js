@@ -157,7 +157,7 @@ async function loadUsers() {
   const cloudUsers = [];
   for (const s of states) {
     if (!s.entity_id.startsWith("sensor.akuvox_user_")) continue;
-    const id = s.attributes?.user_id || s.attributes?.UserID || s.entity_id.replace("sensor.akuvox_user_", "");
+    const id = s.attributes?.user_id || s.attributes?.UserID || s.attributes?.UserId || s.entity_id.replace("sensor.akuvox_user_", "");
     const name = s.attributes?.name || s.attributes?.Name || s.state || id;
     const source = (s.attributes?.source || "").toLowerCase();
     const groups = s.attributes?.groups || [];

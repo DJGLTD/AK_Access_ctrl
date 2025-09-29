@@ -713,7 +713,7 @@ function selectExistingUser(id, options = {}){
   const targetId = String(id || '').trim();
   if (!targetId) return;
   const candidates = Array.isArray(REGISTRY) ? REGISTRY : [];
-  const existing = candidates.find(u => String(u.id || u.UserID || u.ID || '').trim() === targetId);
+  const existing = candidates.find(u => String(u.id || u.UserID || u.UserId || u.ID || '').trim() === targetId);
   if (!existing) {
     alert('Unable to find that user in Home Assistant.');
     return;
@@ -939,7 +939,7 @@ async function load(){
     let handledBySelect = false;
 
     if (id) {
-      const hasMatch = (REGISTRY || []).some(u => String(u.id || u.UserID || u.ID || '') === id);
+      const hasMatch = (REGISTRY || []).some(u => String(u.id || u.UserID || u.UserId || u.ID || '') === id);
       if (hasMatch) {
         selectExistingUser(id, { updateUrl: false });
         handledBySelect = true;
