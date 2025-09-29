@@ -1250,6 +1250,8 @@ function renderUsers(devs, registryUsers){
       accessText = 'Expired';
     } else if (item._denied && baseLower !== 'no access') {
       accessText = 'Denied';
+    } else if (String(item.status || '').toLowerCase() === 'deleted') {
+      accessText = 'Deleted';
     } else if (String(item.status || '').toLowerCase() === 'pending') {
       accessText = 'Pending';
     } else if (pendingDevices.length) {
