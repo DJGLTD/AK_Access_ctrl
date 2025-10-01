@@ -7,7 +7,7 @@ import re
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Optional, Mapping, Set
 from urllib.parse import urlencode, urlsplit, unquote
 
 from aiohttp import web
@@ -130,6 +130,46 @@ def _parse_access_date(value: Any) -> Optional[dt.date]:
         return parsed.date()
 
     return None
+
+
+def _extract_license_plates(record: Mapping[str, Any]) -> List[str]:
+    if not isinstance(record, Mapping):
+        return []
+
+    raw = record.get("license_plate")
+    if not isinstance(raw, (list, tuple)):
+        raw = record.get("LicensePlate")
+
+    result: List[str] = []
+    if not isinstance(raw, (list, tuple)):
+        return result
+
+    seen: Set[str] = set()
+    for entry in raw:
+        text = ""
+        if isinstance(entry, str):
+            text = entry.strip()
+        elif isinstance(entry, Mapping):
+            candidate = (
+                entry.get("Plate")
+                or entry.get("plate")
+                or entry.get("value")
+                or entry.get("Value")
+            )
+            if candidate is not None:
+                text = str(candidate).strip()
+        if not text:
+            continue
+        text = text.upper()
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        result.append(text)
+        if len(result) >= 5:
+            break
+
+    return result
 
 
 def _normalize_boolish(value: Any) -> Optional[bool]:
@@ -2152,6 +2192,12 @@ class AkuvoxUIView(HomeAssistantView):
             "groups": [],
             "all_groups": [],
             "capabilities": {"alarm_relay": False},
+            "credential_prompts": {
+                "code": True,
+                "token": True,
+                "anpr": False,
+                "face": True,
+            },
         }
 
         kpis: Dict[str, Any] = response["kpis"]
@@ -2207,6 +2253,10 @@ class AkuvoxUIView(HomeAssistantView):
                     kpis["auto_reboot"] = settings.get_auto_reboot()
                 except Exception:
                     pass
+                try:
+                    response["credential_prompts"] = settings.get_credential_prompts()
+                except Exception:
+                    pass
 
             registry_users: List[Dict[str, Any]] = []
             all_users: Dict[str, Any] = {}
@@ -2247,6 +2297,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "access_end": access_end.isoformat() if access_end else "",
                             "access_expired": bool(access_end and access_end <= today),
                             "access_in_future": bool(access_start and access_start > today),
+                            "license_plate": _extract_license_plates(prof),
                         }
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
@@ -2695,6 +2746,17 @@ class AkuvoxUISettings(HomeAssistantView):
             except Exception:
                 schedules = {}
 
+        credential_prompts = (
+            settings.get_credential_prompts()
+            if settings and hasattr(settings, "get_credential_prompts")
+            else {
+                "code": True,
+                "token": True,
+                "anpr": False,
+                "face": True,
+            }
+        )
+
         return web.json_response(
             {
                 "ok": True,
@@ -2712,6 +2774,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 "max_auto_sync_delay_minutes": 60,
                 "min_health_check_interval_seconds": health_bounds[0],
                 "max_health_check_interval_seconds": health_bounds[1],
+                "credential_prompts": credential_prompts,
             }
         )
 
@@ -2801,6 +2864,15 @@ class AkuvoxUISettings(HomeAssistantView):
             try:
                 await settings.set_alert_targets(targets)
                 response["alerts"] = {"targets": settings.get_alert_targets()}
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "credential_prompts" in payload:
+            if not settings or not hasattr(settings, "set_credential_prompts"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                updated = await settings.set_credential_prompts(payload.get("credential_prompts"))
+                response["credential_prompts"] = updated
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
 

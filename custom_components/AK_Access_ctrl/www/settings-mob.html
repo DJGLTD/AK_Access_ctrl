@@ -503,6 +503,8 @@ const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true };
+
 let SETTINGS_DATA = {
   integrity_interval_minutes: null,
   auto_sync_delay_minutes: 30,
@@ -512,12 +514,15 @@ let SETTINGS_DATA = {
   capabilities: { alarm_relay: false },
   min_health_check_interval_seconds: 10,
   max_health_check_interval_seconds: 300,
+  credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
 };
 let PHONES = [];
 let USERS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let integritySaving = false;
+let credentialSaving = false;
+let credentialQueued = null;
 let integritySavedTimer = null;
 let autoSyncSaving = false;
 let autoSyncSavedTimer = null;
@@ -910,6 +915,72 @@ function renderAlerts(){
       await saveAlerts();
     });
   });
+}
+
+function sanitizeCredentialPrompts(raw){
+  const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
+  if (!raw || typeof raw !== 'object') return base;
+  ['code','token','anpr','face'].forEach((key) => {
+    if (typeof raw[key] === 'boolean') base[key] = raw[key];
+  });
+  return base;
+}
+
+function renderCredentialPrompts(){
+  const data = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+  SETTINGS_DATA.credential_prompts = data;
+  ['code','token','anpr','face'].forEach((key) => {
+    const input = document.querySelector(`input[data-credential="${key}"]`);
+    if (input) input.checked = !!data[key];
+  });
+}
+
+function setCredentialStatus(message, tone = ''){
+  const status = document.getElementById('credentialStatus');
+  if (!status) return;
+  if (!message){
+    status.textContent = '';
+    status.className = 'visually-hidden small mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' text-info';
+  status.className = cls;
+  status.textContent = message;
+}
+
+async function saveCredentialPrompts(){
+  const latest = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+  SETTINGS_DATA.credential_prompts = latest;
+  if (credentialSaving){
+    credentialQueued = { ...latest };
+    return;
+  }
+  credentialSaving = true;
+  credentialQueued = null;
+  setCredentialStatus('Saving…');
+  try {
+    const res = await apiPost(API_SETTINGS, { credential_prompts: latest });
+    if (res && res.credential_prompts){
+      SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(res.credential_prompts);
+      renderCredentialPrompts();
+    }
+    setCredentialStatus('Saved', 'success');
+  } catch (err){
+    console.error('Failed to save credential prompts', err);
+    const msg = err && err.message ? err.message : 'Failed to save credential prompts';
+    setCredentialStatus(msg, 'error');
+  } finally {
+    credentialSaving = false;
+    if (credentialQueued){
+      SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(credentialQueued);
+      credentialQueued = null;
+      renderCredentialPrompts();
+      await saveCredentialPrompts();
+    }
+  }
 }
 
 const SCHEDULE_DAY_LOOKUP = (() => {
@@ -1494,6 +1565,7 @@ async function loadData(){
     SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
       ? { ...settingsResp.capabilities }
       : { alarm_relay: false };
+    SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(settingsResp?.credential_prompts);
     const rawSchedules = settingsResp?.schedules;
     if (rawSchedules && typeof rawSchedules === 'object'){
       SCHEDULES = {};
@@ -1508,6 +1580,7 @@ async function loadData(){
     renderAutoSyncDelay();
     renderHealthInterval();
     renderIntegrity();
+    renderCredentialPrompts();
     renderAlerts();
   } catch (err){
     if (handleAuthError(err)) return;
@@ -1634,6 +1707,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!scheduleReadOnly) setScheduleStatus('');
   });
 
+  document.getElementById('credentialOptions')?.addEventListener('change', (ev) => {
+    const target = ev.target;
+    if (!target || target.type !== 'checkbox') return;
+    const key = target.dataset.credential;
+    if (!key) return;
+    const current = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+    current[key] = !!target.checked;
+    SETTINGS_DATA.credential_prompts = current;
+    renderCredentialPrompts();
+    setCredentialStatus('');
+    saveCredentialPrompts();
+  });
+
+  renderCredentialPrompts();
   loadData();
 });
 </script>
@@ -1688,6 +1775,32 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="integrityStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">User Credential Prompts</div>
+    <div class="card-body">
+      <p class="muted">Toggle which credential types are shown during user setup. Turn off any you do not need.</p>
+      <div id="credentialOptions" class="d-flex flex-column gap-2">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialCode" data-credential="code">
+          <label class="form-check-label" for="credentialCode">Code (PIN)</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialToken" data-credential="token">
+          <label class="form-check-label" for="credentialToken">Token</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialAnpr" data-credential="anpr">
+          <label class="form-check-label" for="credentialAnpr">ANPR (License plate recognition)</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialFace" data-credential="face">
+          <label class="form-check-label" for="credentialFace">Face</label>
+        </div>
+      </div>
+      <div id="credentialStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 
