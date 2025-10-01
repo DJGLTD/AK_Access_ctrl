@@ -1520,8 +1520,6 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
             "Group": group or "Default",
-            "Source": _string(item.get("Source"), default="Local") or "Local",
-            "SourceType": AkuvoxAPI._coerce_int(item.get("SourceType")) or 1,
             "Type": AkuvoxAPI._coerce_int(item.get("Type")) or -1,
         }
 
