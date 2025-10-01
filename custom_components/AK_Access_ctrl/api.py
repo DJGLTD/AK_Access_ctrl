@@ -771,11 +771,27 @@ class AkuvoxAPI:
                 for key in ("FaceUrl", "FaceURL"):
                     if key in d and d[key] is not None:
                         d[key] = str(d[key])
-            user_id_value = d.get("UserID") or d.get("UserId")
+            had_user_id_alias = "UserId" in (it2 or {})
+            user_id_value = d.get("UserID")
+            alias_value = d.get("UserId")
             if user_id_value not in (None, ""):
                 text = str(user_id_value)
                 d["UserID"] = text
-                d.setdefault("UserId", text)
+                if had_user_id_alias:
+                    d["UserId"] = text
+                else:
+                    d.pop("UserId", None)
+            elif alias_value not in (None, ""):
+                text = str(alias_value)
+                d["UserID"] = text
+                if had_user_id_alias:
+                    d["UserId"] = text
+                else:
+                    d.pop("UserId", None)
+            else:
+                d.pop("UserID", None)
+                if not had_user_id_alias:
+                    d.pop("UserId", None)
             face_name = d.get("FaceFileName")
             if self._should_force_face_register(face_name):
                 current = d.get("FaceRegister")
@@ -1517,12 +1533,14 @@ class AkuvoxAPI:
             first_group = raw_groups[0]
         else:
             first_group = None
-        group = _string(item.get("Group") or first_group, default="Default")
+        group = _string(item.get("Group") or first_group)
 
         base: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
-            "Group": group or "Default",
         }
+
+        if group:
+            base["Group"] = group
 
         if user_id:
             base["UserID"] = user_id
