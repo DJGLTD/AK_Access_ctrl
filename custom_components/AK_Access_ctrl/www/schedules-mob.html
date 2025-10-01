@@ -652,6 +652,34 @@ function render(name){
   renderDayButtons(spec.days, isBuiltin);
 }
 
+function applyAutoColonFormatting(input){
+  if (!input || input.dataset.autoColonApplied === '1') return;
+  const enforceFormat = () => {
+    const digits = String(input.value || '').replace(/[^0-9]/g, '').slice(0, 4);
+    if (digits.length <= 2) return;
+    const hours = digits.slice(0, 2);
+    const minutes = digits.slice(2);
+    const formatted = minutes ? `${hours}:${minutes}` : `${hours}:`;
+    if (input.value !== formatted) {
+      input.value = formatted;
+    }
+  };
+  const handleBlur = () => {
+    const parsed = parseTimeValue(input.value);
+    if (parsed) {
+      input.value = parsed.text;
+    }
+  };
+  input.addEventListener('input', enforceFormat);
+  input.addEventListener('blur', handleBlur);
+  input.dataset.autoColonApplied = '1';
+}
+
+function initTimeInputFormatting(){
+  applyAutoColonFormatting(document.getElementById('schedStart'));
+  applyAutoColonFormatting(document.getElementById('schedEnd'));
+}
+
 function parseTimeValue(value){
   const minutes = minutesFromTime(value);
   if (minutes === null) return null;
@@ -774,6 +802,7 @@ async function load(){
   </div>
 </div>
 <script>
+initTimeInputFormatting();
 load();
 (function initBackButton(){
   try {
