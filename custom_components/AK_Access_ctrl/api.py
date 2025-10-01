@@ -189,7 +189,7 @@ class AkuvoxAPI:
                 if isinstance(obj, dict):
                     out = {}
                     for k, v in obj.items():
-                        if str(k).lower() in ("privatepin", "password"):
+                        if str(k).lower() == "password":
                             out[k] = "***"
                         else:
                             out[k] = _redact(v)

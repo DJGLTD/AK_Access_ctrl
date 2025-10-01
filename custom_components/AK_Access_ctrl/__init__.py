@@ -1114,7 +1114,19 @@ class AkuvoxUsersStore(Store):
         return list(seen.keys())
 
     def next_free_ha_id(self, *, blocked: Optional[List[str]] = None) -> str:
-        used: set[str] = set(self.all_ha_ids())
+        used: set[str] = set()
+        users = self.data.get("users") or {}
+        if isinstance(users, dict):
+            for key, profile in users.items():
+                canonical = normalize_ha_id(key)
+                if not canonical:
+                    continue
+                if isinstance(profile, dict):
+                    status = str(profile.get("status") or "").strip().lower()
+                    if status == "deleted":
+                        # Profiles marked as deleted have already been freed for reuse.
+                        continue
+                used.add(canonical)
         if blocked:
             for candidate in blocked:
                 canonical = normalize_ha_id(candidate)
