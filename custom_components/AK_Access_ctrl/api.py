@@ -1501,9 +1501,8 @@ class AkuvoxAPI:
         detail = f" (message: {message})" if message else ""
         raise RuntimeError(f"Akuvox face upload returned retcode {retcode}{detail}")
 
-    @staticmethod
-    def _minimal_user_payload(item: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the minimal payload required for ``user.add`` on strict firmwares."""
+    def _initial_user_add_payload(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a firmware-friendly payload for ``user.add`` without face data."""
 
         def _string(value: Any, default: str = "") -> str:
             if value in (None, ""):
@@ -1520,24 +1519,13 @@ class AkuvoxAPI:
             first_group = None
         group = _string(item.get("Group") or first_group, default="Default")
 
-        payload: Dict[str, Any] = {
+        base: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
             "Group": group or "Default",
         }
 
-        provided_type = AkuvoxAPI._coerce_int(item.get("Type"))
-        if provided_type is not None:
-            payload["Type"] = provided_type
-
         if user_id:
-            payload["UserID"] = user_id
-
-        return payload
-
-    def _initial_user_add_payload(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Build a firmware-friendly payload for ``user.add`` without face data."""
-
-        base = self._minimal_user_payload(item)
+            base["UserID"] = user_id
 
         def _first(*keys: str) -> Any:
             for key in keys:
@@ -1561,51 +1549,11 @@ class AkuvoxAPI:
         _int_field("PriorityCall", 0, "priority_call")
         _int_field("AuthMode", 0, "auth_mode")
         _int_field("C4EventNo", 0, "c4_event_no")
-        _int_field("SourceType", 1, "source_type")
-
-        source = _first("Source", "source")
-        source_text = str(source).strip() if isinstance(source, str) else ""
-        base["Source"] = source_text or "Local"
-
-        type_value = self._coerce_int(_first("Type", "type"))
-        if type_value is not None:
-            base["Type"] = type_value
-
-        phone_value = _first("PhoneNum", "phone", "Phone", "phone_num")
-        if phone_value not in (None, ""):
-            phone_text = str(phone_value).strip()
-            if phone_text:
-                base["PhoneNum"] = phone_text
-
         pin_value = _first("PrivatePIN", "pin", "Pin", "private_pin")
         if pin_value not in (None, ""):
             pin_text = str(pin_value).strip()
-            if pin_text.isdigit():
+            if pin_text:
                 base["PrivatePIN"] = pin_text
-
-        license_plate = _first("LicensePlate", "license_plate", "Licenseplate")
-        cleaned_lp: List[Dict[str, Any]] = []
-        if isinstance(license_plate, (list, tuple)):
-            for entry in license_plate:
-                if isinstance(entry, dict):
-                    filtered = {
-                        k: v
-                        for k, v in entry.items()
-                        if v not in (None, "")
-                        and (not isinstance(v, str) or v.strip())
-                    }
-                    if filtered:
-                        cleaned_lp.append(filtered)
-                elif entry not in (None, ""):
-                    text = str(entry).strip().upper()
-                    if text:
-                        cleaned_lp.append({"Plate": text})
-                if len(cleaned_lp) >= 5:
-                    break
-        base["LicensePlate"] = cleaned_lp if cleaned_lp else []
-
-        for key in ("FaceFileName", "FaceRegister", "FaceUrl", "FaceURL"):
-            base.pop(key, None)
 
         return base
 
@@ -1662,7 +1610,7 @@ class AkuvoxAPI:
         items: List[Dict[str, Any]],
         created_ids: Optional[List[str]] = None,
     ) -> None:
-        """Reapply the desired fields using ``user.set`` after minimal creation."""
+        """Reapply the desired fields using ``user.set`` after the initial creation."""
 
         follow_up: List[Dict[str, Any]] = []
         for idx, item in enumerate(items or []):
@@ -1729,23 +1677,6 @@ class AkuvoxAPI:
             result = await self._api_user("add", normalized_items)
         retcode, message = self._parse_result_status(result)
         if retcode not in (None, 0):
-            if retcode == -100 and prepared:
-                _LOGGER.debug("user.add returned -100; retrying with minimal payload")
-                minimal_payload = [self._minimal_user_payload(p) for p in prepared]
-                result = await self._api_user("add", minimal_payload)
-                retry_retcode, retry_message = self._parse_result_status(result)
-                if retry_retcode not in (None, 0):
-                    detail = f" (message: {retry_message})" if retry_message else ""
-                    raise RuntimeError(
-                        f"Akuvox user.add fallback returned retcode {retry_retcode}{detail}"
-                    )
-                try:
-                    created_ids = self._extract_created_ids(result)
-                    await self._apply_user_set_after_add(follow_up, created_ids)
-                except Exception as err:
-                    _LOGGER.debug("user.set follow-up after minimal user.add failed: %s", err)
-                return result
-
             detail = f" (message: {message})" if message else ""
             raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
 
