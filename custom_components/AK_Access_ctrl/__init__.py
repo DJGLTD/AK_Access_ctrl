@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Set
 
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -573,9 +573,43 @@ def _desired_device_user_payload(
         if not isinstance(source, (list, tuple)):
             source = local.get("LicensePlate")
         result: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
         if isinstance(source, (list, tuple)):
             for entry in source:
-                result.append(entry if isinstance(entry, dict) else {})
+                normalized = ""
+                cleaned: Dict[str, Any] = {}
+                if isinstance(entry, dict):
+                    for key, value in entry.items():
+                        if value in (None, ""):
+                            continue
+                        if isinstance(value, str):
+                            value = value.strip()
+                            if not value:
+                                continue
+                        cleaned[key] = value
+                    candidate = (
+                        entry.get("Plate")
+                        or entry.get("plate")
+                        or entry.get("value")
+                        or entry.get("Value")
+                    )
+                    if candidate not in (None, ""):
+                        normalized = str(candidate).strip().upper()
+                else:
+                    normalized = str(entry or "").strip().upper()
+
+                if normalized:
+                    lowered = normalized.lower()
+                    if lowered in seen:
+                        continue
+                    seen.add(lowered)
+                    cleaned["Plate"] = normalized
+                    result.append(cleaned)
+                elif cleaned:
+                    result.append(cleaned)
+
+                if len(result) >= 5:
+                    break
         while len(result) < 5:
             result.append({})
         if len(result) > 5:
@@ -1119,6 +1153,7 @@ class AkuvoxUsersStore(Store):
         access_start: Optional[str] = None,
         access_end: Optional[str] = None,
         source: Optional[str] = None,
+        license_plate: Optional[List[Any]] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1171,6 +1206,36 @@ class AkuvoxUsersStore(Store):
                 u["Source"] = normalized_source
             else:
                 u.pop("Source", None)
+        if license_plate is not None:
+            cleaned: List[str] = []
+            seen: Set[str] = set()
+            iterable = license_plate if isinstance(license_plate, (list, tuple)) else []
+            for entry in iterable:
+                text = ""
+                if isinstance(entry, str):
+                    text = entry.strip().upper()
+                elif isinstance(entry, dict):
+                    candidate = (
+                        entry.get("Plate")
+                        or entry.get("plate")
+                        or entry.get("value")
+                        or entry.get("Value")
+                    )
+                    if candidate is not None:
+                        text = str(candidate).strip().upper()
+                if not text:
+                    continue
+                lowered = text.lower()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                cleaned.append(text)
+                if len(cleaned) >= 5:
+                    break
+            if cleaned:
+                u["license_plate"] = cleaned
+            else:
+                u.pop("license_plate", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -1203,6 +1268,12 @@ class AkuvoxSettingsStore(Store):
     MAX_HEALTH_SECONDS = MAX_HEALTH_CHECK_INTERVAL
 
     DEFAULT_INTEGRITY_MINUTES = 15
+    DEFAULT_CREDENTIAL_PROMPTS = {
+        "code": True,
+        "token": True,
+        "anpr": False,
+        "face": True,
+    }
 
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, f"{DOMAIN}_settings.json")
@@ -1214,6 +1285,7 @@ class AkuvoxSettingsStore(Store):
             "alerts": {"targets": {}},
             "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
             "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
+            "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
         }
 
     async def async_load(self):
@@ -1264,8 +1336,30 @@ class AkuvoxSettingsStore(Store):
             health_interval = self.DEFAULT_HEALTH_SECONDS
         self.data["health_check_interval_seconds"] = health_interval
 
+        self.data["credential_prompts"] = self._sanitize_credential_prompts(
+            self.data.get("credential_prompts")
+        )
+
     async def async_save(self):
         await super().async_save(self.data)
+
+    def _sanitize_credential_prompts(self, raw: Any) -> Dict[str, bool]:
+        defaults = dict(self.DEFAULT_CREDENTIAL_PROMPTS)
+        if not isinstance(raw, dict):
+            return defaults
+        for key in defaults.keys():
+            if isinstance(raw.get(key), bool):
+                defaults[key] = raw[key]
+        return defaults
+
+    def get_credential_prompts(self) -> Dict[str, bool]:
+        return self._sanitize_credential_prompts(self.data.get("credential_prompts"))
+
+    async def set_credential_prompts(self, prompts: Any) -> Dict[str, bool]:
+        sanitized = self._sanitize_credential_prompts(prompts)
+        self.data["credential_prompts"] = sanitized
+        await self.async_save()
+        return sanitized
 
     def get_auto_sync_time(self) -> Optional[str]:
         return self.data.get("auto_sync_time")
@@ -2587,6 +2681,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         effective_id = canonical_key or key
         new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{effective_id}.jpg"
 
+        lp_payload = d.get("license_plate") if "license_plate" in d else None
+
         await users_store.upsert_profile(
             effective_id,
             name=d.get("name"),
@@ -2602,6 +2698,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             access_start=d.get("access_start") if "access_start" in d else None,
             access_end=d.get("access_end") if "access_end" in d else None,
             source="Local",
+            license_plate=lp_payload,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)

@@ -1287,9 +1287,16 @@ function renderUsers(devs, registryUsers){
       access_expired: expired,
       access_in_future: notStarted,
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
+      pendingDevices: pendingDevices.length,
       face_active: !!faceActiveFinal,
       face_status: faceStatusFinal
     };
+  }).filter(u => {
+    const statusLower = String(u.status || '').toLowerCase();
+    if (statusLower !== 'deleted') return true;
+    if (u.presentOnDevice) return true;
+    const pendingCount = Number(u.pendingDevices || 0);
+    return pendingCount > 0;
   });
 
   const listSorted = list
@@ -1304,6 +1311,7 @@ function renderUsers(devs, registryUsers){
     if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
     else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
+    else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
     else accessBadge = badge(accessStr, 'in_sync');
     const faceStatusLower = String(u.face_status || '').toLowerCase();
     let faceBadge;

@@ -880,7 +880,15 @@ function compileUsers(devices, registryUsers){
     };
   });
 
-  return list
+  const cleaned = list.filter(u => {
+    const statusLower = String(u.status || '').toLowerCase();
+    if (statusLower !== 'deleted') return true;
+    if (u.presentOnDevice) return true;
+    const pendingCount = Number(u.deviceSummary?.pending || 0);
+    return pendingCount > 0;
+  });
+
+  return cleaned
     .filter(u => u.isCloud || idMatchesFilter(u.id))
     .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, { sensitivity: 'base' }));
 }
@@ -912,6 +920,7 @@ function renderUsers(list){
     if (!u.access || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
     else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
+    else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
     else accessBadge = badge(u.access, 'in_sync');
 
     const faceStatusLower = String(u.face_status || '').toLowerCase();

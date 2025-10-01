@@ -19,6 +19,8 @@
     .form-text code { color: #c7dfff; }
     .face-options{ display:flex; gap:0.5rem; flex-wrap:wrap; }
     .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    .license-plate-row .btn{ min-width:3rem; }
+    .license-plate-input{text-transform:uppercase; }
     @media (max-width: 992px){
       .container-narrow{ max-width:100%; }
     }
@@ -407,6 +409,10 @@ const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_
 const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
 const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
 
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true };
+let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+const MAX_LICENSE_PLATES = 5;
+
 async function apiGet(url){
   const r = await fetchWithAuth(url);
   if (!r.ok){
@@ -728,6 +734,7 @@ function selectExistingUser(id, options = {}){
       ? [...existing.Groups]
       : ['Default'],
   };
+  CURRENT.license_plate = sanitizeLicensePlateList(existing.license_plate || existing.LicensePlate || CURRENT.license_plate);
   if (!CURRENT.schedule_id && CURRENT.schedule_name) {
     CURRENT.schedule_id = idForName(CURRENT.schedule_name);
   }
@@ -810,6 +817,7 @@ function blankProfile(id = ''){
     groups: ['Default'],
     pin: '',
     phone: '',
+    license_plate: [],
     schedule_name: '24/7 Access',
     schedule_id: '1001',
     key_holder: false,
@@ -819,6 +827,134 @@ function blankProfile(id = ''){
     access_expired: false,
     access_in_future: false,
   };
+}
+
+function sanitizeCredentialPrompts(raw){
+  const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
+  if (!raw || typeof raw !== 'object') return base;
+  ['code','token','anpr','face'].forEach((key) => {
+    if (typeof raw[key] === 'boolean') base[key] = raw[key];
+  });
+  return base;
+}
+
+function sanitizeLicensePlateList(raw){
+  const array = Array.isArray(raw) ? raw : [];
+  const cleaned = [];
+  const seen = new Set();
+  for (const entry of array){
+    let text = '';
+    if (typeof entry === 'string'){ text = entry.trim(); }
+    else if (entry && typeof entry === 'object'){
+      text = String(entry.Plate || entry.plate || entry.value || entry.Value || '').trim();
+    }
+    if (!text) continue;
+    const normalized = text.toUpperCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    cleaned.push(normalized);
+    if (cleaned.length >= MAX_LICENSE_PLATES) break;
+  }
+  return cleaned;
+}
+
+function collectLicensePlates(){
+  const container = document.getElementById('licensePlateList');
+  const values = [];
+  if (container){
+    container.querySelectorAll('input[data-plate-index]').forEach(input => {
+      values.push((input.value || '').trim());
+    });
+  } else if (Array.isArray(CURRENT?.license_plate)){
+    values.push(...CURRENT.license_plate);
+  }
+  return sanitizeLicensePlateList(values);
+}
+
+function renderLicensePlateInputs(focusIndex){
+  const container = document.getElementById('licensePlateList');
+  if (!container || !CURRENT) return;
+  if (!Array.isArray(CURRENT.license_plate)) CURRENT.license_plate = [];
+  CURRENT.license_plate = CURRENT.license_plate.slice(0, MAX_LICENSE_PLATES);
+  container.innerHTML = '';
+  const plates = CURRENT.license_plate;
+  if (!plates.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted small';
+    empty.textContent = 'No license plates assigned.';
+    container.appendChild(empty);
+  } else {
+    plates.forEach((value, index) => {
+      const row = document.createElement('div');
+      row.className = 'input-group mb-2 license-plate-row';
+      const input = document.createElement('input');
+      input.className = 'form-control license-plate-input';
+      input.placeholder = 'e.g. ABC123';
+      input.value = value || '';
+      input.setAttribute('data-plate-index', index);
+      input.addEventListener('input', (ev) => {
+        CURRENT.license_plate[index] = ev.target.value;
+      });
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-outline-danger';
+      btn.innerHTML = '<i class="bi bi-trash"></i>';
+      btn.addEventListener('click', () => {
+        CURRENT.license_plate.splice(index, 1);
+        renderLicensePlateInputs();
+      });
+      row.appendChild(input);
+      row.appendChild(btn);
+      container.appendChild(row);
+    });
+  }
+  const addBtn = document.getElementById('addLicensePlateBtn');
+  if (addBtn){
+    addBtn.disabled = !CREDENTIAL_PROMPTS.anpr || CURRENT.license_plate.length >= MAX_LICENSE_PLATES;
+    addBtn.onclick = () => {
+      if (!CREDENTIAL_PROMPTS.anpr) return;
+      if (!Array.isArray(CURRENT.license_plate)) CURRENT.license_plate = [];
+      if (CURRENT.license_plate.length >= MAX_LICENSE_PLATES) return;
+      CURRENT.license_plate.push('');
+      renderLicensePlateInputs(CURRENT.license_plate.length - 1);
+    };
+  }
+  if (typeof focusIndex === 'number'){
+    requestAnimationFrame(() => {
+      const focusInput = container.querySelector(`input[data-plate-index="${focusIndex}"]`);
+      if (focusInput){
+        focusInput.focus();
+        focusInput.select();
+      }
+    });
+  }
+}
+
+function applyCredentialPrompts(){
+  CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
+  const pinRow = document.getElementById('pinRow');
+  if (pinRow){
+    pinRow.style.display = CREDENTIAL_PROMPTS.code ? '' : 'none';
+  }
+  const phoneRow = document.getElementById('phoneRow');
+  if (phoneRow){
+    phoneRow.style.display = CREDENTIAL_PROMPTS.token ? '' : 'none';
+  }
+  const faceSection = document.getElementById('faceSection');
+  if (faceSection){
+    faceSection.style.display = CREDENTIAL_PROMPTS.face ? '' : 'none';
+  }
+  if (!CREDENTIAL_PROMPTS.face){
+    const local = document.getElementById('pLocal');
+    const remote = document.getElementById('pRemote');
+    if (local) local.style.display = 'none';
+    if (remote) remote.style.display = 'none';
+  }
+  const anprSection = document.getElementById('anprSection');
+  if (anprSection){
+    anprSection.style.display = CREDENTIAL_PROMPTS.anpr ? '' : 'none';
+    renderLicensePlateInputs();
+  }
 }
 
 function buildScheduleMap(){
@@ -919,6 +1055,7 @@ async function load(){
       }
     }
     updateKeyHolderAvailability();
+    CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     SCHEDULES = state.schedules || {};
     REGISTRY = state.registry_users || [];
 
@@ -997,6 +1134,8 @@ function fillForm(){
   document.getElementById('name').value = CURRENT.name || '';
   document.getElementById('pin').value = CURRENT.pin || '';
   document.getElementById('phone').value = CURRENT.phone || '';
+  CURRENT.license_plate = Array.isArray(CURRENT.license_plate) ? [...CURRENT.license_plate] : [];
+  renderLicensePlateInputs();
 
   // Build schedule select with ids
   document.getElementById('schedule').innerHTML = scheduleOptionsHtml();
@@ -1059,6 +1198,7 @@ function fillForm(){
       localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
     }
   }
+  applyCredentialPrompts();
 }
 
 function updateAccessExpirationUI(){
@@ -1186,15 +1326,32 @@ async function save(){
     const selectedScheduleId = document.getElementById('schedule').value || '1001';
     const selectedScheduleName = nameForId(selectedScheduleId);
 
+    const prompts = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
     const payload = {
       name: document.getElementById('name').value.trim(),
       groups: CURRENT.groups || ['Default'],
-      pin: document.getElementById('pin').value.trim() || undefined,
-      phone: document.getElementById('phone').value.trim() || undefined,
       schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
       schedule_name: selectedScheduleName,      // for UI/state clarity
       key_holder: ANY_ALARM_CAPABLE ? document.getElementById('key_holder').checked : false,
     };
+
+    if (prompts.code){
+      const pinValue = document.getElementById('pin').value.trim();
+      payload.pin = pinValue || undefined;
+      CURRENT.pin = pinValue;
+    }
+
+    if (prompts.token){
+      const phoneValue = document.getElementById('phone').value.trim();
+      payload.phone = phoneValue || undefined;
+      CURRENT.phone = phoneValue;
+    }
+
+    if (prompts.anpr){
+      const plates = collectLicensePlates();
+      payload.license_plate = plates;
+      CURRENT.license_plate = [...plates];
+    }
 
     const accessStartInput = document.getElementById('access_start');
     const accessEndInput = document.getElementById('access_end');
@@ -1300,7 +1457,7 @@ function showPanel(which){
 
     <div class="mb-3"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
 
-    <div class="mb-3">
+    <div class="mb-3" id="pinRow">
       <label class="form-label">PIN</label>
       <div class="input-group">
         <input id="pin" class="form-control"/>
@@ -1308,7 +1465,7 @@ function showPanel(which){
       </div>
     </div>
 
-    <div class="mb-3">
+    <div class="mb-3" id="faceSection">
       <label class="form-label">Face Recognition</label>
       <div class="face-options mb-2">
         <button class="btn btn-outline-light btn-toggle" onclick="showPanel('local')"><i class="bi bi-upload me-1"></i>Local enrolment</button>
@@ -1337,7 +1494,14 @@ function showPanel(which){
       <div class="mt-2 muted" id="remoteResult"></div>
     </div>
 
-    <div class="mb-3"><label class="form-label">Phone</label><input id="phone" class="form-control"/></div>
+    <div class="mb-3" id="phoneRow"><label class="form-label">Token</label><input id="phone" class="form-control"/></div>
+
+    <div class="mb-3" id="anprSection">
+      <label class="form-label">License Plates (ANPR)</label>
+      <div id="licensePlateList"></div>
+      <button type="button" class="btn btn-outline-light btn-sm mt-2" id="addLicensePlateBtn"><i class="bi bi-plus-lg me-1"></i>Add plate</button>
+      <div class="form-text muted">Enter up to five vehicle plates.</div>
+    </div>
 
     <div class="mb-3">
       <label class="form-label">Access Schedule</label>
