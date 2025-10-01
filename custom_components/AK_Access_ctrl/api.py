@@ -90,7 +90,10 @@ class AkuvoxAPI:
 
     # -------------------- base helpers --------------------
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json"}
+        return {
+            "Content-Type": "application/json; charset=UTF-8",
+            "Accept": "application/json",
+        }
 
     async def _ensure_detected(self):
         """Find a working (scheme, port, verify_ssl) combo; cache it."""
@@ -695,6 +698,7 @@ class AkuvoxAPI:
             "AuthMode",
             "FaceRegister",
             "KeyHolder",
+            "SourceType",
         }
 
         norm: List[Dict[str, Any]] = []
@@ -839,7 +843,6 @@ class AkuvoxAPI:
             "/api/web/user",
             f"/api/user/{action}",
             "/api/user",
-            "/api/",
         )
         return await self._post_api(payload, rel_paths=rel_paths)
 
@@ -1529,13 +1532,145 @@ class AkuvoxAPI:
 
         return payload
 
-    async def _apply_user_set_after_add(self, items: List[Dict[str, Any]]) -> None:
+    def _initial_user_add_payload(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a firmware-friendly payload for ``user.add`` without face data."""
+
+        base = self._minimal_user_payload(item)
+
+        def _first(*keys: str) -> Any:
+            for key in keys:
+                if key in item:
+                    return item.get(key)
+            return None
+
+        def _int_field(target: str, default: int, *aliases: str) -> None:
+            value = None
+            for key in (target, *aliases):
+                value = self._coerce_int(_first(key))
+                if value is not None:
+                    break
+            if value is None:
+                value = default
+            base[target] = value
+
+        _int_field("DialAccount", 0, "dial_account")
+        _int_field("DoorNum", 1, "door_num")
+        _int_field("LiftFloorNum", 0, "lift_floor_num", "lift_floor")
+        _int_field("PriorityCall", 0, "priority_call")
+        _int_field("AuthMode", 0, "auth_mode")
+        _int_field("C4EventNo", 0, "c4_event_no")
+        _int_field("SourceType", 1, "source_type")
+
+        source = _first("Source", "source")
+        source_text = str(source).strip() if isinstance(source, str) else ""
+        base["Source"] = source_text or "Local"
+
+        type_value = self._coerce_int(_first("Type", "type"))
+        base["Type"] = type_value if type_value is not None else -1
+
+        phone_value = _first("PhoneNum", "phone", "Phone", "phone_num")
+        if phone_value not in (None, ""):
+            phone_text = str(phone_value).strip()
+            if phone_text:
+                base["PhoneNum"] = phone_text
+
+        pin_value = _first("PrivatePIN", "pin", "Pin", "private_pin")
+        if pin_value not in (None, ""):
+            pin_text = str(pin_value).strip()
+            if pin_text.isdigit():
+                base["PrivatePIN"] = pin_text
+
+        license_plate = _first("LicensePlate", "license_plate", "Licenseplate")
+        cleaned_lp: List[Dict[str, Any]] = []
+        if isinstance(license_plate, (list, tuple)):
+            for entry in license_plate:
+                if isinstance(entry, dict):
+                    filtered = {
+                        k: v
+                        for k, v in entry.items()
+                        if v not in (None, "")
+                        and (not isinstance(v, str) or v.strip())
+                    }
+                    if filtered:
+                        cleaned_lp.append(filtered)
+                elif entry not in (None, ""):
+                    text = str(entry).strip().upper()
+                    if text:
+                        cleaned_lp.append({"Plate": text})
+                if len(cleaned_lp) >= 5:
+                    break
+        base["LicensePlate"] = cleaned_lp if cleaned_lp else []
+
+        for key in ("FaceFileName", "FaceRegister", "FaceUrl", "FaceURL"):
+            base.pop(key, None)
+
+        return base
+
+    @staticmethod
+    def _extract_created_ids(result: Any) -> List[str]:
+        """Extract device numeric IDs from a ``user.add`` response."""
+
+        ids: List[str] = []
+
+        def _append(value: Any) -> None:
+            if value in (None, ""):
+                return
+            text = str(value).strip()
+            if not text:
+                return
+            ids.append(text)
+
+        def _walk(candidate: Any) -> None:
+            if isinstance(candidate, dict):
+                if "ID" in candidate:
+                    _append(candidate.get("ID"))
+                elif "Id" in candidate:
+                    _append(candidate.get("Id"))
+                elif "id" in candidate:
+                    _append(candidate.get("id"))
+                for value in candidate.values():
+                    _walk(value)
+            elif isinstance(candidate, (list, tuple)):
+                for entry in candidate:
+                    _walk(entry)
+
+        if isinstance(result, dict):
+            data = result.get("data")
+            if isinstance(data, dict):
+                items = data.get("item")
+                if isinstance(items, list):
+                    for entry in items:
+                        if isinstance(entry, dict) and "ID" in entry:
+                            _append(entry.get("ID"))
+                    if ids:
+                        return ids
+                elif isinstance(items, dict):
+                    if "ID" in items:
+                        _append(items.get("ID"))
+                        return ids
+            result_section = result.get("result")
+            if isinstance(result_section, dict) and not ids:
+                _walk(result_section)
+        _walk(result)
+        return ids
+
+    async def _apply_user_set_after_add(
+        self,
+        items: List[Dict[str, Any]],
+        created_ids: Optional[List[str]] = None,
+    ) -> None:
         """Reapply the desired fields using ``user.set`` after minimal creation."""
 
         follow_up: List[Dict[str, Any]] = []
-        for item in items or []:
-            if isinstance(item, dict):
-                follow_up.append(dict(item))
+        for idx, item in enumerate(items or []):
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item)
+            if created_ids and idx < len(created_ids):
+                device_id = created_ids[idx]
+                if device_id not in (None, ""):
+                    payload.setdefault("ID", str(device_id))
+            follow_up.append(payload)
         if not follow_up:
             return
         await self.user_set(follow_up)
@@ -1573,149 +1708,14 @@ class AkuvoxAPI:
         Per manual: target=user, action=add, data.item=[{UserID/ID/Name/...}].
         We normalize booleans, schedule name/ID, and ScheduleRelay lightly.
         """
-        # Ensure defaults for new user fields expected by newer firmwares.
         prepared: List[Dict[str, Any]] = []
-        def _prune_empty_fields_for_add(payload: Dict[str, Any]) -> Dict[str, Any]:
-            """Strip keys the firmware rejects when values are effectively blank."""
-
-            cleaned: Dict[str, Any] = {}
-
-            for key, value in (payload or {}).items():
-                if value is None:
-                    continue
-
-                if isinstance(value, str):
-                    text = value.strip()
-                    if not text and text != "0":
-                        continue
-                    cleaned[key] = text if text else value
-                    continue
-
-                if isinstance(value, (list, tuple, set)):
-                    entries: List[Any] = []
-                    if key == "LicensePlate":
-                        for item in value:
-                            if not isinstance(item, dict):
-                                continue
-                            filtered = {
-                                k: v
-                                for k, v in item.items()
-                                if v not in (None, "")
-                                and (not isinstance(v, str) or v.strip())
-                            }
-                            if filtered:
-                                entries.append(filtered)
-                    else:
-                        for item in value:
-                            if item in (None, ""):
-                                continue
-                            if isinstance(item, str):
-                                text = item.strip()
-                                if text:
-                                    entries.append(text)
-                            else:
-                                entries.append(item)
-                    if entries:
-                        cleaned[key] = list(entries)
-                    continue
-
-                if isinstance(value, dict):
-                    filtered = {
-                        k: v
-                        for k, v in value.items()
-                        if v not in (None, "")
-                        and (not isinstance(v, str) or v.strip())
-                    }
-                    if filtered:
-                        cleaned[key] = filtered
-                    continue
-
-                cleaned[key] = value
-
-            return cleaned
+        follow_up: List[Dict[str, Any]] = []
 
         for original in items or []:
-            base = dict(original or {})
-
-            def _ensure_int(key: str, default: int) -> None:
-                coerced = self._coerce_int(base.get(key))
-                base[key] = coerced if coerced is not None else default
-
-            def _ensure_str(key: str, default: str) -> None:
-                value = base.get(key)
-                if value is None:
-                    base[key] = default
-                    return
-                text = str(value).strip()
-                if text or text == "0":
-                    base[key] = text
-                else:
-                    base[key] = default
-
-            _ensure_int("AuthMode", 0)
-            _ensure_int("C4EventNo", 0)
-            _ensure_int("DoorNum", 1)
-            _ensure_int("LiftFloorNum", 0)
-            _ensure_str("WebRelay", "0")
-            _ensure_int("PriorityCall", 0)
-            _ensure_int("DialAccount", 0)
-            _ensure_str("Group", "Default")
-            if "CardCode" in base:
-                _ensure_str("CardCode", "")
-            else:
-                base["CardCode"] = ""
-            if "BLEAuthCode" in base:
-                _ensure_str("BLEAuthCode", "")
-            else:
-                base["BLEAuthCode"] = ""
-
-            lp = base.get("LicensePlate")
-            if not isinstance(lp, list):
-                lp = []
-            cleaned_lp: List[Dict[str, Any]] = []
-            for entry in lp:
-                cleaned_lp.append(entry if isinstance(entry, dict) else {})
-            while len(cleaned_lp) < 5:
-                cleaned_lp.append({})
-            base["LicensePlate"] = cleaned_lp[:5]
-
-            raw_schedule = base.get("Schedule")
-            schedule_list: List[str] = []
-            if isinstance(raw_schedule, (list, tuple, set)):
-                for entry in raw_schedule:
-                    text = str(entry or "").strip()
-                    if text:
-                        schedule_list.append(text)
-            elif raw_schedule not in (None, ""):
-                text = str(raw_schedule).strip()
-                if text:
-                    schedule_list.append(text)
-            if not schedule_list:
-                relay_spec = base.get("Schedule-Relay") or base.get("ScheduleRelay")
-                sid = self._schedule_id_from_relay(relay_spec)
-                if sid:
-                    schedule_list = [sid]
-            if schedule_list:
-                base["Schedule"] = schedule_list
-            else:
-                base["Schedule"] = ["1001"]
-
-            if not base.get("FaceFileName"):
-                face_url = base.get("FaceUrl") or base.get("FaceURL")
-                candidate = None
-                if isinstance(face_url, str) and face_url.strip():
-                    candidate = Path(urlsplit(face_url).path).name
-                if not candidate:
-                    uid = str(base.get("UserID") or "").strip()
-                    if uid:
-                        candidate = f"{uid}.jpg"
-                if candidate:
-                    base["FaceFileName"] = candidate
-
-            base.pop("FaceUrl", None)
-            base.pop("FaceURL", None)
-
-            prepared.append(_prune_empty_fields_for_add(base))
+            if not isinstance(original, dict):
+                continue
+            follow_up.append(dict(original))
+            prepared.append(self._initial_user_add_payload(original))
 
         normalized_items = self._normalize_user_items_for_add_or_set(prepared)
 
@@ -1737,13 +1737,20 @@ class AkuvoxAPI:
                         f"Akuvox user.add fallback returned retcode {retry_retcode}{detail}"
                     )
                 try:
-                    await self._apply_user_set_after_add(prepared)
+                    created_ids = self._extract_created_ids(result)
+                    await self._apply_user_set_after_add(follow_up, created_ids)
                 except Exception as err:
                     _LOGGER.debug("user.set follow-up after minimal user.add failed: %s", err)
                 return result
 
             detail = f" (message: {message})" if message else ""
             raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
+
+        try:
+            created_ids = self._extract_created_ids(result)
+            await self._apply_user_set_after_add(follow_up, created_ids)
+        except Exception as err:
+            _LOGGER.debug("user.set follow-up after user.add failed: %s", err)
 
         return result
 
