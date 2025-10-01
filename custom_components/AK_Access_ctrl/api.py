@@ -1523,12 +1523,14 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
             "Group": group or "Default",
-            "Type": AkuvoxAPI._coerce_int(item.get("Type")) or -1,
         }
+
+        provided_type = AkuvoxAPI._coerce_int(item.get("Type"))
+        if provided_type is not None:
+            payload["Type"] = provided_type
 
         if user_id:
             payload["UserID"] = user_id
-            payload["UserId"] = user_id
 
         return payload
 
@@ -1566,7 +1568,8 @@ class AkuvoxAPI:
         base["Source"] = source_text or "Local"
 
         type_value = self._coerce_int(_first("Type", "type"))
-        base["Type"] = type_value if type_value is not None else -1
+        if type_value is not None:
+            base["Type"] = type_value
 
         phone_value = _first("PhoneNum", "phone", "Phone", "phone_num")
         if phone_value not in (None, ""):

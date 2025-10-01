@@ -1173,7 +1173,10 @@ function renderUsers(devs, registryUsers){
           fromRegistry: false,
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
-          face_active: deviceFaceActive
+          face_active: deviceFaceActive,
+          schedule_name: u.ScheduleName || u.schedule_name || '',
+          schedule_id: u.ScheduleId || u.schedule_id || '',
+          access_level: u.AccessLevel || u.access_level || ''
         });
         return;
       }
@@ -1200,6 +1203,18 @@ function renderUsers(devs, registryUsers){
           cur.pin = devicePin;
         }
       }
+      const deviceScheduleName = u.ScheduleName || u.schedule_name || '';
+      const deviceScheduleId = u.ScheduleId || u.schedule_id || '';
+      const deviceAccessLevel = u.AccessLevel || u.access_level || '';
+      if (deviceScheduleName && !cur.schedule_name) {
+        cur.schedule_name = deviceScheduleName;
+      }
+      if (deviceScheduleId && !cur.schedule_id) {
+        cur.schedule_id = deviceScheduleId;
+      }
+      if (deviceAccessLevel) {
+        cur.access_level = deviceAccessLevel;
+      }
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
       }
@@ -1225,8 +1240,9 @@ function renderUsers(devs, registryUsers){
   });
 
   const list = Array.from(by.values()).map(item => {
+    const scheduleLabel = item.access_level || item.schedule_name || '24/7 Access';
     if (!item.fromRegistry) {
-      return item;
+      return { ...item, access_schedule: scheduleLabel };
     }
     const seenIds = Array.from(item._seenOn instanceof Set ? item._seenOn : []);
     const shouldHost = normalizedDevices.filter(dev =>
@@ -1243,8 +1259,7 @@ function renderUsers(devs, registryUsers){
     const accessState = computeAccessState(item.access_start, item.access_end);
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
-    const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
-    const baseLower = String(baseLabel).toLowerCase();
+    const baseLower = String(scheduleLabel).toLowerCase();
     let accessText = 'Pending';
     if (expired) {
       accessText = 'Expired';
@@ -1289,7 +1304,8 @@ function renderUsers(devs, registryUsers){
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
       pendingDevices: pendingDevices.length,
       face_active: !!faceActiveFinal,
-      face_status: faceStatusFinal
+      face_status: faceStatusFinal,
+      access_schedule: scheduleLabel
     };
   }).filter(u => {
     const statusLower = String(u.status || '').toLowerCase();
@@ -1304,7 +1320,10 @@ function renderUsers(devs, registryUsers){
     .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
 
   const rows = listSorted.map(u => {
-    const chips = (u.groups || []).map(g => `<span class="chip">${escapeHtml(g)}</span>`).join(' ');
+    const scheduleLabel = String(u.access_schedule || u.access_level || u.schedule_name || '').trim();
+    const scheduleChip = scheduleLabel
+      ? `<span class="chip">${escapeHtml(scheduleLabel)}</span>`
+      : '—';
     const accessStr = String(u.access || '').trim();
     const accessLower = accessStr.toLowerCase();
     let accessBadge = '';
@@ -1343,7 +1362,7 @@ function renderUsers(devs, registryUsers){
       <td>${faceBadge}</td>
       <td>${accessBadge}</td>
       <td>${escapeHtml(u.last || '—')}</td>
-      <td>${chips || '—'}</td>
+      <td>${scheduleChip}</td>
       <td>${actions}</td>
     </tr>`;
   }).join('');
@@ -1772,7 +1791,7 @@ setInterval(refresh, 5000);
         <div class="card-body">
           <table class="table table-sm table-dark mb-0 table-center">
             <thead>
-              <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Groups</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
             </thead>
             <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
           </table>

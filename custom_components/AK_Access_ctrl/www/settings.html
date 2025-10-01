@@ -1218,6 +1218,29 @@ function updateScheduleSelection(value){
   renderScheduleEditor();
 }
 
+function applyAutoColonFormatting(input){
+  if (!input || input.dataset.autoColonApplied === '1') return;
+  const enforceFormat = () => {
+    const digits = String(input.value || '').replace(/[^0-9]/g, '').slice(0, 4);
+    if (digits.length <= 2) return;
+    const hours = digits.slice(0, 2);
+    const minutes = digits.slice(2);
+    const formatted = minutes ? `${hours}:${minutes}` : `${hours}:`;
+    if (input.value !== formatted) {
+      input.value = formatted;
+    }
+  };
+  const handleBlur = () => {
+    const parsed = parseTimeValue(input.value);
+    if (parsed) {
+      input.value = parsed.text;
+    }
+  };
+  input.addEventListener('input', enforceFormat);
+  input.addEventListener('blur', handleBlur);
+  input.dataset.autoColonApplied = '1';
+}
+
 function parseTimeValue(value){
   const minutes = minutesFromTime(value);
   if (minutes === null) return null;
@@ -1281,11 +1304,13 @@ function renderScheduleEditor(){
   if (startInput){
     startInput.value = spec.start;
     startInput.disabled = scheduleReadOnly;
+    applyAutoColonFormatting(startInput);
   }
   const endInput = document.getElementById('scheduleEndInput');
   if (endInput){
     endInput.value = spec.end;
     endInput.disabled = scheduleReadOnly;
+    applyAutoColonFormatting(endInput);
   }
 
   renderScheduleDayButtons(spec.days, scheduleReadOnly);
@@ -1702,8 +1727,12 @@ document.addEventListener('DOMContentLoaded', () => {
     EDITING_SCHEDULE_NAME = ev.target.value;
     setScheduleStatus('');
   });
-  document.getElementById('scheduleStartInput')?.addEventListener('input', () => { setScheduleStatus(''); });
-  document.getElementById('scheduleEndInput')?.addEventListener('input', () => { setScheduleStatus(''); });
+  const scheduleStartInput = document.getElementById('scheduleStartInput');
+  applyAutoColonFormatting(scheduleStartInput);
+  scheduleStartInput?.addEventListener('input', () => { setScheduleStatus(''); });
+  const scheduleEndInput = document.getElementById('scheduleEndInput');
+  applyAutoColonFormatting(scheduleEndInput);
+  scheduleEndInput?.addEventListener('input', () => { setScheduleStatus(''); });
   const scheduleDayButtons = document.getElementById('scheduleDayButtons');
   scheduleDayButtons?.addEventListener('change', () => { if (!scheduleReadOnly) setScheduleStatus(''); });
   document.getElementById('scheduleExitCheckbox')?.addEventListener('change', () => {
