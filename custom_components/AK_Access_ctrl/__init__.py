@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 import logging
 import time
@@ -1663,8 +1664,11 @@ class SyncQueue:
                     "sync_manager",
                     "sync_queue",
                     "_ui_registered",
+                    "_panel_registered",
                     "settings_store",
                 ):
+                    continue
+                if not isinstance(data, Mapping):
                     continue
                 pending_targets.add(key)
 
@@ -1741,8 +1745,11 @@ class SyncQueue:
                 targets: List[Tuple[str, AkuvoxCoordinator, AkuvoxAPI]] = []
                 if only_entry:
                     data = root.get(only_entry)
-                    if data and data.get("coordinator") and data.get("api"):
-                        targets.append((only_entry, data["coordinator"], data["api"]))
+                    if isinstance(data, Mapping):
+                        coord = data.get("coordinator")
+                        api = data.get("api")
+                        if coord and api:
+                            targets.append((only_entry, coord, api))
                 else:
                     for k, data in root.items():
                         if k in (
@@ -1752,8 +1759,11 @@ class SyncQueue:
                             "sync_manager",
                             "sync_queue",
                             "_ui_registered",
+                            "_panel_registered",
                             "settings_store",
                         ):
+                            continue
+                        if not isinstance(data, Mapping):
                             continue
                         coord = data.get("coordinator")
                         api = data.get("api")
@@ -2891,7 +2901,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 pass
 
     async def svc_force_full_sync(call):
-        entry_id = call.data.get("entry_id")
+        data = call.data if isinstance(call.data, Mapping) else {}
+        entry_id = data.get("entry_id")
         triggered_by = _context_user_name(hass, getattr(call, "context", None))
 
         root = hass.data[DOMAIN]
@@ -2920,7 +2931,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             pass
 
     async def svc_sync_now(call):
-        entry_id = call.data.get("entry_id")
+        data = call.data if isinstance(call.data, Mapping) else {}
+        entry_id = data.get("entry_id")
         await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id)
 
     async def svc_create_group(call):
