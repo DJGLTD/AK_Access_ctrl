@@ -359,7 +359,7 @@ def _ensure_face_payload_fields(
     ha_key: str,
     sources: Tuple[Optional[Dict[str, Any]], ...],
 ) -> None:
-    """Ensure FaceFileName/FaceRegister fields are canonically present in payload."""
+    """Ensure FaceUrl/FaceRegister fields are canonically present in payload."""
 
     def _extract_first(keys: Tuple[str, ...]) -> Optional[str]:
         for source in (payload, *sources):
@@ -374,16 +374,17 @@ def _ensure_face_payload_fields(
                     return text
         return None
 
-    face_filename = _extract_first(_FACE_FILENAME_KEYS)
-    if not face_filename:
-        reference = _extract_first(_FACE_URL_KEYS)
-        if reference:
-            face_filename = face_filename_from_reference(reference, ha_key)
+    face_url = _extract_first(_FACE_URL_KEYS)
+    if not face_url:
+        face_url = _extract_first(_FACE_FILENAME_KEYS)
 
-    if face_filename:
-        payload["FaceFileName"] = face_filename
+    if face_url:
+        payload["FaceUrl"] = str(face_url)
+
     for key in _FACE_FILENAME_KEYS:
-        if key != "FaceFileName":
+        payload.pop(key, None)
+    for key in _FACE_URL_KEYS:
+        if key != "FaceUrl":
             payload.pop(key, None)
 
     register_value = _extract_first(_FACE_REGISTER_KEYS)
@@ -399,7 +400,7 @@ def _ensure_face_payload_fields(
             face_flag = flag
             break
 
-    if face_filename and register_value != "1":
+    if face_url and register_value != "1":
         payload["FaceRegister"] = 1
     elif face_flag:
         payload["FaceRegister"] = 1
@@ -412,6 +413,8 @@ def _ensure_face_payload_fields(
     for key in _FACE_REGISTER_KEYS:
         if key != "FaceRegister":
             payload.pop(key, None)
+
+    payload.setdefault("Type", "0")
 
 def _migrate_face_storage(hass: HomeAssistant) -> None:
     """Copy face assets from legacy locations into the persistent store."""
@@ -674,6 +677,7 @@ def _desired_device_user_payload(
         "LicensePlate": _normalise_license_plate(),
         "CardCode": card_code,
         "BLEAuthCode": ble_auth,
+        "Type": "0",
     }
 
     device_id = _string_or_default(profile.get("device_id"), local.get("ID"), default="")
@@ -698,11 +702,7 @@ def _desired_device_user_payload(
             face_url = f"{face_root_base}/{ha_key}.jpg"
         if face_url not in (None, ""):
             face_url_str = str(face_url)
-            filename_source = _string_or_default(local.get("FaceFileName"), default="")
-            if not filename_source:
-                filename_source = face_url_str
-            face_filename = face_filename_from_reference(filename_source, ha_key)
-            desired["FaceFileName"] = face_filename
+            desired["FaceUrl"] = face_url_str
 
             face_active: Optional[bool] = _face_flag_from_record(profile)
             if face_active is None:

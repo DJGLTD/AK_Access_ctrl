@@ -714,12 +714,12 @@ class AkuvoxAPI:
             if "ScheduleRelay" in it2:
                 relay_value = it2.pop("ScheduleRelay")
             if relay_value is None and "Schedule-Relay" in it2:
-                relay_value = it2.get("Schedule-Relay")
+                relay_value = it2.pop("Schedule-Relay")
             normalized_relay = self._normalize_schedule_relay(relay_value)
             if normalized_relay is not None:
-                it2["Schedule-Relay"] = normalized_relay
+                it2["ScheduleRelay"] = normalized_relay
             else:
-                it2.pop("Schedule-Relay", None)
+                it2.pop("ScheduleRelay", None)
 
             d: Dict[str, Any] = {}
             for k, v in (it2 or {}).items():
@@ -752,8 +752,7 @@ class AkuvoxAPI:
                     "Group",
                     "CardCode",
                     "BLEAuthCode",
-                    "FaceFileName",
-                    "Schedule-Relay",
+                    "ScheduleRelay",
                 ):
                     if k in numeric_fields:
                         coerced = self._coerce_int(v)
@@ -792,11 +791,25 @@ class AkuvoxAPI:
                 d.pop("UserID", None)
                 if not had_user_id_alias:
                     d.pop("UserId", None)
-            face_name = d.get("FaceFileName")
-            if self._should_force_face_register(face_name):
+            face_source = d.pop("FaceFileName", None)
+            if not face_source and isinstance(d.get("FaceUrl"), str):
+                try:
+                    face_source = Path(str(d["FaceUrl"])).name
+                    if not face_source:
+                        face_source = str(d["FaceUrl"])
+                except Exception:
+                    face_source = d.get("FaceUrl")
+
+            if self._should_force_face_register(face_source):
                 current = d.get("FaceRegister")
                 if self._coerce_int(current) != 1:
                     d["FaceRegister"] = 1
+
+            type_value = d.get("Type")
+            if type_value in (None, ""):
+                d["Type"] = "0"
+            else:
+                d["Type"] = str(type_value)
             norm.append(d)
         return norm
 
@@ -1537,6 +1550,7 @@ class AkuvoxAPI:
 
         base: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
+            "Type": str(item.get("Type") or item.get("type") or "0"),
         }
 
         if group:
@@ -1560,7 +1574,7 @@ class AkuvoxAPI:
             relay_value = item.get("Schedule-Relay")
         normalized_relay = self._normalize_schedule_relay(relay_value)
         if normalized_relay:
-            base["Schedule-Relay"] = normalized_relay
+            base["ScheduleRelay"] = normalized_relay
 
         def _first(*keys: str) -> Any:
             for key in keys:

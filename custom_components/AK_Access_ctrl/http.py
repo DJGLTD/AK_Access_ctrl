@@ -287,10 +287,14 @@ def _build_face_upload_payload(
     if "WebRelay" not in payload:
         payload["WebRelay"] = "0"
 
-    face_filename = face_filename_from_reference(face_reference, user_id)
-    payload["FaceFileName"] = face_filename
+    if face_reference not in (None, ""):
+        payload["FaceUrl"] = str(face_reference)
+
+    for key in ("FaceFileName", "faceFileName"):
+        payload.pop(key, None)
     payload.pop("faceInfo", None)
     payload["FaceRegister"] = 1
+    payload.setdefault("Type", "0")
 
     return payload
 
@@ -488,14 +492,15 @@ async def _push_face_to_devices(
         linked = False
         identifier_key = "ID" if device_record_id else "UserID"
         identifier_value = device_record_id or user_id
+        face_link_reference = face_import_path or reference
         if identifier_value:
             payload: Dict[str, Any] = {
                 identifier_key: identifier_value,
-                "FaceFileName": face_filename,
                 "FaceRegister": 1,
             }
-            if face_import_path:
-                payload["FaceUrl"] = face_import_path
+            if face_link_reference:
+                payload["FaceUrl"] = face_link_reference
+            payload.setdefault("Type", "0")
             try:
                 await api.user_set([payload])
                 linked = True
@@ -510,7 +515,7 @@ async def _push_face_to_devices(
         if not linked:
             try:
                 payload = _build_face_upload_payload(
-                    profile, record, user_id, face_filename
+                    profile, record, user_id, face_link_reference
                 )
             except Exception as err:
                 _LOGGER.debug(
