@@ -281,11 +281,18 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         except Exception as e:
             last_error = _safe_str(e)
+            prev = self._was_online
+            self._was_online = False
             self.health["online"] = False
             if reboot_active:
                 self.health["status"] = "rebooting"
             else:
                 self.health["status"] = "offline"
+                if prev is True or prev is None:
+                    try:
+                        self._append_event("Device went offline")
+                    except Exception:
+                        pass
                 if not alerts_state.get("offline_since"):
                     alerts_state["offline_since"] = now_ts
                     alerts_state["offline_notified"] = False

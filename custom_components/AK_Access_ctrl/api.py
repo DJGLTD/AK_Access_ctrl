@@ -1545,6 +1545,23 @@ class AkuvoxAPI:
         if user_id:
             base["UserID"] = user_id
 
+        # Mirror key schedule metadata in the initial payload so the firmware
+        # doesn't reject the add request due to missing parameters.
+        sched_fields = self._map_schedule_fields(item)
+        schedule_id = sched_fields.get("ScheduleID")
+        if schedule_id not in (None, ""):
+            base["ScheduleID"] = schedule_id
+        schedule_value = sched_fields.get("Schedule")
+        if schedule_value not in (None, ""):
+            base["Schedule"] = schedule_value
+
+        relay_value = item.get("ScheduleRelay")
+        if relay_value is None:
+            relay_value = item.get("Schedule-Relay")
+        normalized_relay = self._normalize_schedule_relay(relay_value)
+        if normalized_relay:
+            base["Schedule-Relay"] = normalized_relay
+
         def _first(*keys: str) -> Any:
             for key in keys:
                 if key in item:
@@ -1567,6 +1584,27 @@ class AkuvoxAPI:
         _int_field("PriorityCall", 0, "priority_call")
         _int_field("AuthMode", 0, "auth_mode")
         _int_field("C4EventNo", 0, "c4_event_no")
+
+        def _string_field(target: str, default: Optional[str] = None, *aliases: str) -> None:
+            value = None
+            for key in (target, *aliases):
+                if key in item:
+                    value = item.get(key)
+                    break
+            if value in (None, ""):
+                if default is not None:
+                    base[target] = default
+                return
+            text = str(value).strip()
+            if text or (default is not None and text == ""):
+                base[target] = text
+            elif default is not None:
+                base[target] = default
+
+        _string_field("WebRelay", "0", "web_relay")
+        _string_field("CardCode", "", "card_code")
+        _string_field("Building", None)
+        _string_field("Room", None)
         pin_value = _first("PrivatePIN", "pin", "Pin", "private_pin")
         if pin_value not in (None, ""):
             pin_text = str(pin_value).strip()
