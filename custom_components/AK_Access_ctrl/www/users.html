@@ -409,8 +409,9 @@ const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_
 const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
 const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
 
-const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true };
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let CONTACT_MODE = false;
 const MAX_LICENSE_PLATES = 5;
 
 async function apiGet(url){
@@ -600,7 +601,7 @@ function updateKeyHolderAvailability(){
   const row = document.getElementById('keyHolderRow');
   const input = document.getElementById('key_holder');
   if (!row || !input) return;
-  if (ANY_ALARM_CAPABLE){
+  if (ANY_ALARM_CAPABLE && !CONTACT_MODE){
     row.style.display = '';
   } else {
     row.style.display = 'none';
@@ -748,7 +749,7 @@ function selectExistingUser(id, options = {}){
   if (idRow) idRow.style.display = 'block';
   const idInput = document.getElementById('user_id');
   if (idInput) idInput.value = CURRENT.id || targetId;
-  document.getElementById('title').textContent = 'Edit User';
+  document.getElementById('title').textContent = CONTACT_MODE ? 'Edit Contact' : 'Edit User';
 
   fillForm();
   fillPhones();
@@ -758,7 +759,8 @@ function selectExistingUser(id, options = {}){
     try {
       const url = new URL(location.href);
       url.searchParams.set('id', CURRENT.id || targetId);
-      url.searchParams.delete('mode');
+      if (CONTACT_MODE) url.searchParams.set('mode', 'contact');
+      else url.searchParams.delete('mode');
       history.replaceState(history.state || {}, '', url);
     } catch (err) {}
   }
@@ -832,9 +834,12 @@ function blankProfile(id = ''){
 function sanitizeCredentialPrompts(raw){
   const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
   if (!raw || typeof raw !== 'object') return base;
-  ['code','token','anpr','face'].forEach((key) => {
+  Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
     if (typeof raw[key] === 'boolean') base[key] = raw[key];
   });
+  if (typeof raw.phone !== 'boolean' && typeof raw.token === 'boolean') {
+    base.phone = raw.token;
+  }
   return base;
 }
 
@@ -874,6 +879,10 @@ function collectLicensePlates(){
 function renderLicensePlateInputs(focusIndex){
   const container = document.getElementById('licensePlateList');
   if (!container || !CURRENT) return;
+  if (CONTACT_MODE) {
+    container.innerHTML = '';
+    return;
+  }
   if (!Array.isArray(CURRENT.license_plate)) CURRENT.license_plate = [];
   CURRENT.license_plate = CURRENT.license_plate.slice(0, MAX_LICENSE_PLATES);
   container.innerHTML = '';
@@ -934,17 +943,17 @@ function applyCredentialPrompts(){
   CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
   const pinRow = document.getElementById('pinRow');
   if (pinRow){
-    pinRow.style.display = CREDENTIAL_PROMPTS.code ? '' : 'none';
+    pinRow.style.display = CONTACT_MODE ? 'none' : (CREDENTIAL_PROMPTS.code ? '' : 'none');
   }
   const phoneRow = document.getElementById('phoneRow');
   if (phoneRow){
-    phoneRow.style.display = CREDENTIAL_PROMPTS.token ? '' : 'none';
+    phoneRow.style.display = CREDENTIAL_PROMPTS.phone || CONTACT_MODE ? '' : 'none';
   }
   const faceSection = document.getElementById('faceSection');
   if (faceSection){
-    faceSection.style.display = CREDENTIAL_PROMPTS.face ? '' : 'none';
+    faceSection.style.display = CONTACT_MODE ? 'none' : (CREDENTIAL_PROMPTS.face ? '' : 'none');
   }
-  if (!CREDENTIAL_PROMPTS.face){
+  if (!CREDENTIAL_PROMPTS.face || CONTACT_MODE){
     const local = document.getElementById('pLocal');
     const remote = document.getElementById('pRemote');
     if (local) local.style.display = 'none';
@@ -952,9 +961,34 @@ function applyCredentialPrompts(){
   }
   const anprSection = document.getElementById('anprSection');
   if (anprSection){
-    anprSection.style.display = CREDENTIAL_PROMPTS.anpr ? '' : 'none';
-    renderLicensePlateInputs();
+    anprSection.style.display = CONTACT_MODE ? 'none' : (CREDENTIAL_PROMPTS.anpr ? '' : 'none');
+    if (!CONTACT_MODE) {
+      renderLicensePlateInputs();
+    }
   }
+}
+
+function applyContactMode(){
+  if (!CONTACT_MODE) return;
+  const title = document.getElementById('title');
+  if (title) title.textContent = CURRENT && CURRENT.id ? 'Edit Contact' : 'Add Contact';
+  const scheduleRow = document.getElementById('scheduleRow');
+  if (scheduleRow) scheduleRow.style.display = 'none';
+  const scheduleSelect = document.getElementById('schedule');
+  if (scheduleSelect && CURRENT) {
+    const target = CURRENT.schedule_id || '1002';
+    scheduleSelect.value = target;
+    CURRENT.schedule_id = target;
+    CURRENT.schedule_name = nameForId(target);
+  }
+  const accessBlock = document.getElementById('accessWindow');
+  if (accessBlock) accessBlock.style.display = 'none';
+  const reactivateRow = document.getElementById('accessReactivateRow');
+  if (reactivateRow) reactivateRow.style.display = 'none';
+  const expiryNotice = document.getElementById('accessExpiryNotice');
+  if (expiryNotice) expiryNotice.style.display = 'none';
+  const licenseList = document.getElementById('licensePlateList');
+  if (licenseList) licenseList.innerHTML = '';
 }
 
 function buildScheduleMap(){
@@ -1072,7 +1106,18 @@ async function load(){
     const params = new URLSearchParams(location.search);
     const id = (params.get('id') || '').trim();
     const modeParam = (params.get('mode') || '').toLowerCase();
+    CONTACT_MODE = modeParam === 'contact';
     const startInEditMode = modeParam === 'edit';
+    if (CONTACT_MODE) {
+      CREDENTIAL_PROMPTS = sanitizeCredentialPrompts({
+        ...CREDENTIAL_PROMPTS,
+        code: false,
+        token: false,
+        face: false,
+        anpr: false,
+        phone: true,
+      });
+    }
     let handledBySelect = false;
 
     if (id) {
@@ -1091,7 +1136,7 @@ async function load(){
         document.getElementById('user_id').value = CURRENT.id;
       }
     } else if (!startInEditMode) {
-      document.getElementById('title').textContent = 'Add User';
+      document.getElementById('title').textContent = CONTACT_MODE ? 'Add Contact' : 'Add User';
       CURRENT = blankProfile('');
       const restoredId = await restoreReservationFromStorage();
       if (restoredId) {
@@ -1107,11 +1152,20 @@ async function load(){
           if (idRow) idRow.style.display = 'none';
         }
       }
+      if (CONTACT_MODE) {
+        CURRENT.schedule_id = '1002';
+        CURRENT.schedule_name = 'No Access';
+        CURRENT.access_start = todayIso();
+        CURRENT.access_end = '';
+        CURRENT.access_expired = false;
+        CURRENT.access_in_future = false;
+        CURRENT.key_holder = false;
+      }
     } else {
       CURRENT = blankProfile('');
       applyReservedIdToForm('');
       setReservationMessage('');
-      document.getElementById('title').textContent = 'Edit User';
+      document.getElementById('title').textContent = CONTACT_MODE ? 'Edit Contact' : 'Edit User';
       const idRow = document.getElementById('idRow');
       if (idRow) idRow.style.display = 'none';
     }
@@ -1199,6 +1253,7 @@ function fillForm(){
     }
   }
   applyCredentialPrompts();
+  applyContactMode();
 }
 
 function updateAccessExpirationUI(){
@@ -1323,8 +1378,12 @@ async function save(){
       }
     }
 
-    const selectedScheduleId = document.getElementById('schedule').value || '1001';
-    const selectedScheduleName = nameForId(selectedScheduleId);
+    const scheduleEl = document.getElementById('schedule');
+    let selectedScheduleId = CONTACT_MODE ? '1002' : (scheduleEl && scheduleEl.value ? scheduleEl.value : '1001');
+    let selectedScheduleName = nameForId(selectedScheduleId);
+    if (CONTACT_MODE) {
+      selectedScheduleName = 'No Access';
+    }
 
     const prompts = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
     const payload = {
@@ -1341,13 +1400,13 @@ async function save(){
       CURRENT.pin = pinValue;
     }
 
-    if (prompts.token){
+    if (prompts.phone || CONTACT_MODE){
       const phoneValue = document.getElementById('phone').value.trim();
       payload.phone = phoneValue || undefined;
       CURRENT.phone = phoneValue;
     }
 
-    if (prompts.anpr){
+    if (prompts.anpr && !CONTACT_MODE){
       const plates = collectLicensePlates();
       payload.license_plate = plates;
       CURRENT.license_plate = [...plates];
@@ -1494,7 +1553,7 @@ function showPanel(which){
       <div class="mt-2 muted" id="remoteResult"></div>
     </div>
 
-    <div class="mb-3" id="phoneRow"><label class="form-label">Token</label><input id="phone" class="form-control"/></div>
+    <div class="mb-3" id="phoneRow"><label class="form-label">Phone number</label><input id="phone" class="form-control"/></div>
 
     <div class="mb-3" id="anprSection">
       <label class="form-label">License Plates (ANPR)</label>
@@ -1503,13 +1562,13 @@ function showPanel(which){
       <div class="form-text muted">Enter up to five vehicle plates.</div>
     </div>
 
-    <div class="mb-3">
+    <div class="mb-3" id="scheduleRow">
       <label class="form-label">Access Schedule</label>
       <select id="schedule" class="form-select"></select>
       <div class="form-text muted">Need a new schedule? Open <b>Global Settings → Access Schedules</b> to build one, then come back and select it here.</div>
     </div>
 
-    <div class="mb-3">
+    <div class="mb-3" id="accessWindow">
       <div id="accessReactivateRow" class="mb-2" style="display:none;">
         <button type="button" class="btn btn-outline-success btn-sm" onclick="reactivateAccess(event)"><i class="bi bi-arrow-counterclockwise me-1"></i>Reactivate access</button>
       </div>

@@ -503,7 +503,7 @@ const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 
-const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true };
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 
 let SETTINGS_DATA = {
   integrity_interval_minutes: null,
@@ -920,16 +920,19 @@ function renderAlerts(){
 function sanitizeCredentialPrompts(raw){
   const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
   if (!raw || typeof raw !== 'object') return base;
-  ['code','token','anpr','face'].forEach((key) => {
+  Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
     if (typeof raw[key] === 'boolean') base[key] = raw[key];
   });
+  if (typeof raw.phone !== 'boolean' && typeof raw.token === 'boolean') {
+    base.phone = raw.token;
+  }
   return base;
 }
 
 function renderCredentialPrompts(){
   const data = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
   SETTINGS_DATA.credential_prompts = data;
-  ['code','token','anpr','face'].forEach((key) => {
+  Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
     const input = document.querySelector(`input[data-credential="${key}"]`);
     if (input) input.checked = !!data[key];
   });
@@ -1819,6 +1822,10 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" id="credentialToken" data-credential="token">
           <label class="form-check-label" for="credentialToken">Token</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialPhone" data-credential="phone">
+          <label class="form-check-label" for="credentialPhone">Phone number</label>
         </div>
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" id="credentialAnpr" data-credential="anpr">
