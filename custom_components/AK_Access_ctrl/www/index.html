@@ -571,9 +571,19 @@ const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const $ = (sel) => document.querySelector(sel);
 
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
+let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let CONTACTS_ENABLED = true;
+
 let eventFilterMode = 'all';
 let cachedEvents = [];
 let activeUserTab = 'users';
+try {
+  const tabParam = new URLSearchParams(location.search).get('tab');
+  if (typeof tabParam === 'string' && tabParam.toLowerCase() === 'contacts') {
+    activeUserTab = 'contacts';
+  }
+} catch (err) {}
 
 window.addEventListener('DOMContentLoaded', () => {
   const select = document.getElementById('eventFilter');
@@ -603,6 +613,19 @@ function parseIsoDate(value){
     return null;
   }
   return candidate;
+}
+
+function sanitizeCredentialPrompts(raw){
+  const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
+  if (raw && typeof raw === 'object'){
+    Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
+      if (typeof raw[key] === 'boolean') base[key] = raw[key];
+    });
+  }
+  if (!base.code && !base.token && !base.face && !base.anpr && !base.phone){
+    base.code = true;
+  }
+  return base;
 }
 
 function computeAccessState(startStr, endStr){
@@ -1397,6 +1420,11 @@ function renderUsers(devs, registryUsers){
 function renderContacts(registryUsers){
   const tableBody = document.getElementById('tblContacts');
   if (!tableBody) return;
+  if (!CONTACTS_ENABLED){
+    tableBody.innerHTML = '<tr><td colspan="4" class="text-muted">Contacts disabled</td></tr>';
+    setUserTab(activeUserTab);
+    return;
+  }
   const map = new Map();
   (registryUsers || []).forEach(entry => {
     if (!entry || typeof entry !== 'object') return;
@@ -1465,28 +1493,37 @@ function renderContacts(registryUsers){
 }
 
 function setUserTab(tab){
-  const normalized = tab === 'contacts' ? 'contacts' : 'users';
+  const contactsAllowed = CONTACTS_ENABLED;
+  const normalized = contactsAllowed && tab === 'contacts' ? 'contacts' : 'users';
   activeUserTab = normalized;
   document.querySelectorAll('[data-user-tab]').forEach(btn => {
     if (!btn || typeof btn.dataset.userTab !== 'string') return;
     const target = btn.dataset.userTab === 'contacts' ? 'contacts' : 'users';
+    if (target === 'contacts') {
+      btn.style.display = contactsAllowed ? '' : 'none';
+    }
     if (target === normalized) btn.classList.add('active');
     else btn.classList.remove('active');
   });
   const usersWrap = document.getElementById('usersTableWrap');
   if (usersWrap) usersWrap.style.display = normalized === 'users' ? '' : 'none';
   const contactsWrap = document.getElementById('contactsTableWrap');
-  if (contactsWrap) contactsWrap.style.display = normalized === 'contacts' ? '' : 'none';
+  if (contactsWrap) contactsWrap.style.display = contactsAllowed && normalized === 'contacts' ? '' : 'none';
   const addUserBtn = document.getElementById('btnAddUser');
   if (addUserBtn) addUserBtn.style.display = normalized === 'users' ? '' : 'none';
   const addContactBtn = document.getElementById('btnAddContact');
-  if (addContactBtn) addContactBtn.style.display = normalized === 'contacts' ? '' : 'none';
+  if (addContactBtn) addContactBtn.style.display = contactsAllowed && normalized === 'contacts' ? '' : 'none';
 }
 
 /* ===== Fetch + render ===== */
 async function refresh(){
   try{
     const state = await apiGet(stateUrl);
+    CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
+    CONTACTS_ENABLED = !!CREDENTIAL_PROMPTS.phone;
+    if (!CONTACTS_ENABLED && activeUserTab === 'contacts') {
+      activeUserTab = 'users';
+    }
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     renderDevices(devs);
