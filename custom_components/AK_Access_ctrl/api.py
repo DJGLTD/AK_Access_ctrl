@@ -705,7 +705,10 @@ class AkuvoxAPI:
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
 
+            # For user.add normalize pass (allow_face_url == False), drop 'Schedule'
+            # to avoid firmware retcode -100 (error param) on add.
             if not allow_face_url:
+                it2.pop("Schedule", None)
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
 
@@ -1565,9 +1568,12 @@ class AkuvoxAPI:
         schedule_id = sched_fields.get("ScheduleID")
         if schedule_id not in (None, ""):
             base["ScheduleID"] = schedule_id
+        # NOTE: Do not include free-text 'Schedule' in user.add payloads.
+        # Some Akuvox firmwares reject this with retcode -100 (error param).
+        # Use ScheduleID and ScheduleRelay only on user.add. 'Schedule'
+        # may be applied later via user.set if needed.
         schedule_value = sched_fields.get("Schedule")
-        if schedule_value not in (None, ""):
-            base["Schedule"] = schedule_value
+        # intentionally omitted: base["Schedule"]
 
         relay_value = item.get("ScheduleRelay")
         if relay_value is None:

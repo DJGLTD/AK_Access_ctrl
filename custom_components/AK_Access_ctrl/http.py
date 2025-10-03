@@ -290,6 +290,7 @@ def _build_face_upload_payload(
     if face_reference not in (None, ""):
         payload["FaceUrl"] = str(face_reference)
 
+    # Use device path in FaceUrl (from upload result); never send FaceFileName to device
     for key in ("FaceFileName", "faceFileName"):
         payload.pop(key, None)
     payload.pop("faceInfo", None)
