@@ -947,7 +947,7 @@ function applyCredentialPrompts(){
   }
   const phoneRow = document.getElementById('phoneRow');
   if (phoneRow){
-    phoneRow.style.display = CREDENTIAL_PROMPTS.phone || CONTACT_MODE ? '' : 'none';
+    phoneRow.style.display = CREDENTIAL_PROMPTS.phone ? '' : 'none';
   }
   const faceSection = document.getElementById('faceSection');
   if (faceSection){
@@ -1106,7 +1106,8 @@ async function load(){
     const params = new URLSearchParams(location.search);
     const id = (params.get('id') || '').trim();
     const modeParam = (params.get('mode') || '').toLowerCase();
-    CONTACT_MODE = modeParam === 'contact';
+    const phonePromptEnabled = !!CREDENTIAL_PROMPTS.phone;
+    CONTACT_MODE = phonePromptEnabled && modeParam === 'contact';
     const startInEditMode = modeParam === 'edit';
     if (CONTACT_MODE) {
       CREDENTIAL_PROMPTS = sanitizeCredentialPrompts({
@@ -1400,9 +1401,11 @@ async function save(){
       CURRENT.pin = pinValue;
     }
 
-    if (prompts.phone || CONTACT_MODE){
-      const phoneValue = document.getElementById('phone').value.trim();
-      payload.phone = phoneValue || undefined;
+    const phoneInput = document.getElementById('phone');
+    const phoneValue = phoneInput ? phoneInput.value.trim() : '';
+    const hadPhone = !!(CURRENT && typeof CURRENT.phone === 'string' && CURRENT.phone.trim());
+    if (prompts.phone || CONTACT_MODE || phoneValue || hadPhone){
+      payload.phone = phoneValue;
       CURRENT.phone = phoneValue;
     }
 

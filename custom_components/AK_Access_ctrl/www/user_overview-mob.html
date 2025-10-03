@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Akuvox • User Overview</title>
+  <title>Akuvox • User Management</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" crossorigin="anonymous" />
@@ -14,8 +14,9 @@
     html,body{height:100%;}
     body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
     .page{min-height:100vh;display:flex;flex-direction:column;padding:1rem;gap:1rem;max-width:960px;margin:0 auto;}
-    header.page-header{display:flex;align-items:center;gap:0.75rem;}
+    header.page-header{display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;}
     header.page-header h1{flex:1;font-size:1.35rem;margin:0;}
+    header.page-header .header-actions{display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;flex:1 1 auto;}
     header.page-header .btn{white-space:nowrap;}
     .summary-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
     .summary-card{background:var(--card);border:1px solid var(--border);border-radius:0.75rem;padding:0.85rem;display:flex;flex-direction:column;gap:0.4rem;}
@@ -45,8 +46,8 @@
     .last-updated{color:var(--muted);font-size:0.85rem;text-align:right;}
     @media (max-width:720px){
       .page{padding:0.75rem;}
-      header.page-header{flex-wrap:wrap;}
       header.page-header h1{flex-basis:100%;font-size:1.25rem;}
+      header.page-header .header-actions{width:100%;justify-content:flex-start;}
       header.page-header .btn{flex:1 1 calc(50% - 0.5rem);}
       .summary-card .value{font-size:1.35rem;}
       .status-stack{width:100%;flex-direction:row;justify-content:flex-start;gap:0.5rem;margin-left:0;}
@@ -57,8 +58,13 @@
 <body>
 <div class="page">
   <header class="page-header">
-    <h1>User Overview</h1>
-    <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    <h1>User Management</h1>
+    <div class="header-actions">
+      <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+      <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
+      <a class="btn btn-outline-light btn-sm" id="btnMobileContactManagement" href="#"><i class="bi bi-people"></i> Contact Management</a>
+      <a class="btn btn-success btn-sm" id="btnMobileNewContact" href="#"><i class="bi bi-person-lines-fill"></i> New Contact</a>
+    </div>
   </header>
   <section class="summary-grid" aria-label="User summary">
     <div class="summary-card">
@@ -428,6 +434,9 @@ function signedPath(key, fallback){
 const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const UI_ROOT   = '/akuvox-ac';
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
+let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let CONTACTS_ENABLED = true;
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -514,7 +523,48 @@ function handleAuthError(err) {
   return true;
 }
 
-document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+const refreshBtn = document.getElementById('refreshBtn');
+if (refreshBtn) {
+  refreshBtn.addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+}
+
+const mobileAddUser = document.getElementById('btnMobileAddUser');
+if (mobileAddUser) {
+  mobileAddUser.href = buildHref('users');
+  mobileAddUser.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('users');
+  });
+}
+
+const mobileContactMgmt = document.getElementById('btnMobileContactManagement');
+if (mobileContactMgmt) {
+  mobileContactMgmt.href = buildHref('index', { tab: 'contacts' });
+  mobileContactMgmt.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('index', { tab: 'contacts' });
+  });
+}
+
+const mobileNewContact = document.getElementById('btnMobileNewContact');
+if (mobileNewContact) {
+  mobileNewContact.href = buildHref('users', { mode: 'contact' });
+  mobileNewContact.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('users', { mode: 'contact' });
+  });
+}
+
+function updateContactButtons(){
+  const show = !!CONTACTS_ENABLED;
+  const controls = [mobileContactMgmt, mobileNewContact];
+  controls.forEach((btn) => {
+    if (!btn) return;
+    btn.style.display = show ? '' : 'none';
+  });
+}
+
+updateContactButtons();
 
 function escapeHtml(value){
   const lookup = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -539,6 +589,19 @@ function parseIsoDate(value){
     return null;
   }
   return candidate;
+}
+
+function sanitizeCredentialPrompts(raw){
+  const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
+  if (raw && typeof raw === 'object'){
+    Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
+      if (typeof raw[key] === 'boolean') base[key] = raw[key];
+    });
+  }
+  if (!base.code && !base.token && !base.face && !base.anpr && !base.phone){
+    base.code = true;
+  }
+  return base;
 }
 
 function computeAccessState(startStr, endStr){
@@ -986,6 +1049,9 @@ async function refresh(){
   try {
     document.getElementById('refreshBtn').setAttribute('disabled', 'disabled');
     const state = await apiGet(stateUrl);
+    CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
+    CONTACTS_ENABLED = !!CREDENTIAL_PROMPTS.phone;
+    updateContactButtons();
     const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     const list = compileUsers(devices, state.registry_users || []);
     renderSummary(state.kpis || {}, list);
