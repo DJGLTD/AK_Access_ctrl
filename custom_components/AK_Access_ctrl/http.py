@@ -2203,6 +2203,7 @@ class AkuvoxUIView(HomeAssistantView):
                 "token": True,
                 "anpr": False,
                 "face": True,
+                "phone": True,
             },
         }
 

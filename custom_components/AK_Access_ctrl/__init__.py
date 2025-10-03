@@ -1286,6 +1286,7 @@ class AkuvoxSettingsStore(Store):
         "token": True,
         "anpr": False,
         "face": True,
+        "phone": True,
     }
 
     def __init__(self, hass: HomeAssistant):
@@ -1360,9 +1361,19 @@ class AkuvoxSettingsStore(Store):
         defaults = dict(self.DEFAULT_CREDENTIAL_PROMPTS)
         if not isinstance(raw, dict):
             return defaults
+
         for key in defaults.keys():
             if isinstance(raw.get(key), bool):
                 defaults[key] = raw[key]
+
+        # Backwards compatibility: if "phone" isn't explicitly provided but
+        # legacy "token" was toggled, mirror the value so existing settings
+        # still govern the phone prompt.
+        if "phone" in defaults and not isinstance(raw.get("phone"), bool):
+            token_value = raw.get("token")
+            if isinstance(token_value, bool):
+                defaults["phone"] = token_value
+
         return defaults
 
     def get_credential_prompts(self) -> Dict[str, bool]:
