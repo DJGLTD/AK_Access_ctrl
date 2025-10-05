@@ -623,7 +623,7 @@ class AkuvoxAPI:
         if not normalized:
             return ""
 
-        return ";".join(normalized) + ";"
+        return ";".join(normalized)
 
     @staticmethod
     def _schedule_id_from_relay(val: Any) -> Optional[str]:
@@ -730,7 +730,7 @@ class AkuvoxAPI:
                     continue
                 if isinstance(v, bool):
                     if k in numeric_fields:
-                        d[k] = 1 if v else 0
+                        d[k] = "1" if v else "0"
                     else:
                         d[k] = "1" if v else "0"
                     continue
@@ -760,13 +760,15 @@ class AkuvoxAPI:
                     if k in numeric_fields:
                         coerced = self._coerce_int(v)
                         if coerced is not None:
-                            d[k] = coerced
+                            d[k] = str(coerced)
                         else:
                             text = str(v).strip()
                             if text:
                                 d[k] = text
                     else:
-                        d[k] = str(v)
+                        text = str(v).strip()
+                        if text:
+                            d[k] = text
                 else:
                     d[k] = v
             if allow_face_url:
@@ -871,10 +873,10 @@ class AkuvoxAPI:
             payload["data"] = {"item": items}
 
         rel_paths = (
-            f"/api/web/user/{action}",
-            "/api/web/user",
             f"/api/user/{action}",
             "/api/user",
+            f"/api/web/user/{action}",
+            "/api/web/user",
         )
         return await self._post_api(payload, rel_paths=rel_paths)
 
@@ -1556,24 +1558,32 @@ class AkuvoxAPI:
             "Type": str(item.get("Type") or item.get("type") or "0"),
         }
 
-        if group:
+        if group and group.strip().lower() != "default":
             base["Group"] = group
 
         if user_id:
             base["UserID"] = user_id
 
-        # Mirror key schedule metadata in the initial payload so the firmware
-        # doesn't reject the add request due to missing parameters.
-        sched_fields = self._map_schedule_fields(item)
-        schedule_id = sched_fields.get("ScheduleID")
-        if schedule_id not in (None, ""):
-            base["ScheduleID"] = schedule_id
+        # Only pass through schedule metadata when the caller explicitly
+        # supplied it. X912 firmwares reject cosmetic defaults such as
+        # ScheduleID=1001 when not required.
+        schedule_keys = (
+            "ScheduleID",
+            "schedule_id",
+            "Schedule",
+            "schedule",
+            "schedule_name",
+        )
+        include_schedule = any(key in item for key in schedule_keys)
+        if include_schedule:
+            sched_fields = self._map_schedule_fields(item)
+            schedule_id = sched_fields.get("ScheduleID")
+            if schedule_id not in (None, ""):
+                base["ScheduleID"] = str(schedule_id)
         # NOTE: Do not include free-text 'Schedule' in user.add payloads.
         # Some Akuvox firmwares reject this with retcode -100 (error param).
-        # Use ScheduleID and ScheduleRelay only on user.add. 'Schedule'
-        # may be applied later via user.set if needed.
-        schedule_value = sched_fields.get("Schedule")
-        # intentionally omitted: base["Schedule"]
+        # Use ScheduleRelay only on user.add; additional scheduling can be
+        # applied later via user.set if needed.
 
         relay_value = item.get("ScheduleRelay")
         if relay_value is None:
@@ -1588,43 +1598,44 @@ class AkuvoxAPI:
                     return item.get(key)
             return None
 
-        def _int_field(target: str, default: int, *aliases: str) -> None:
-            value = None
-            for key in (target, *aliases):
-                value = self._coerce_int(_first(key))
-                if value is not None:
-                    break
-            if value is None:
-                value = default
-            base[target] = value
-
-        _int_field("DialAccount", 0, "dial_account")
-        _int_field("DoorNum", 1, "door_num")
-        _int_field("LiftFloorNum", 0, "lift_floor_num", "lift_floor")
-        _int_field("PriorityCall", 0, "priority_call")
-        _int_field("AuthMode", 0, "auth_mode")
-        _int_field("C4EventNo", 0, "c4_event_no")
-
-        def _string_field(target: str, default: Optional[str] = None, *aliases: str) -> None:
-            value = None
-            for key in (target, *aliases):
-                if key in item:
-                    value = item.get(key)
-                    break
+        def _stringify_numeric(value: Any) -> Optional[str]:
+            coerced = self._coerce_int(value)
+            if coerced is not None:
+                return str(coerced)
             if value in (None, ""):
-                if default is not None:
-                    base[target] = default
-                return
+                return None
             text = str(value).strip()
-            if text or (default is not None and text == ""):
-                base[target] = text
-            elif default is not None:
-                base[target] = default
+            return text or None
 
-        _string_field("WebRelay", "0", "web_relay")
-        _string_field("CardCode", "", "card_code")
-        _string_field("Building", None)
-        _string_field("Room", None)
+        optional_numeric: Dict[str, Tuple[str, ...]] = {
+            "DialAccount": ("dial_account",),
+            "DoorNum": ("door_num",),
+            "LiftFloorNum": ("lift_floor_num", "lift_floor"),
+            "PriorityCall": ("priority_call",),
+            "AuthMode": ("auth_mode",),
+            "C4EventNo": ("c4_event_no",),
+        }
+
+        for target, aliases in optional_numeric.items():
+            raw = _first(target, *aliases)
+            value = _stringify_numeric(raw)
+            if value is not None:
+                base[target] = value
+
+        optional_string: Dict[str, Tuple[str, ...]] = {
+            "WebRelay": ("web_relay",),
+            "CardCode": ("card_code",),
+            "Building": tuple(),
+            "Room": tuple(),
+        }
+
+        for target, aliases in optional_string.items():
+            raw = _first(target, *aliases)
+            if raw in (None, ""):
+                continue
+            text = str(raw).strip()
+            if text:
+                base[target] = text
         pin_value = _first("PrivatePIN", "pin", "Pin", "private_pin")
         if pin_value not in (None, ""):
             pin_text = str(pin_value).strip()
@@ -1737,30 +1748,101 @@ class AkuvoxAPI:
         """
         prepared: List[Dict[str, Any]] = []
         follow_up: List[Dict[str, Any]] = []
+        updates: List[Dict[str, Any]] = []
+
+        preflight_needed = False
+        for original in items or []:
+            if not isinstance(original, dict):
+                continue
+            if any(
+                str(original.get(key) or "").strip()
+                for key in ("UserID", "user_id", "UserId", "Name", "name")
+            ):
+                preflight_needed = True
+                break
+
+        existing_by_user_id: Dict[str, Dict[str, Any]] = {}
+        existing_by_name: Dict[str, Dict[str, Any]] = {}
+        if preflight_needed:
+            try:
+                existing_records = await self.user_list()
+            except Exception as err:
+                existing_records = []
+                _LOGGER.debug("Preflight user.list failed before user.add: %s", err)
+            for record in existing_records or []:
+                if not isinstance(record, dict):
+                    continue
+                user_id_value = str(record.get("UserID") or record.get("UserId") or "").strip()
+                name_value = str(record.get("Name") or "").strip()
+                if user_id_value:
+                    existing_by_user_id.setdefault(user_id_value, record)
+                if name_value:
+                    existing_by_name.setdefault(name_value.lower(), record)
 
         for original in items or []:
             if not isinstance(original, dict):
                 continue
+
+            user_id_value = str(
+                original.get("UserID")
+                or original.get("user_id")
+                or original.get("UserId")
+                or ""
+            ).strip()
+            name_value = str(original.get("Name") or original.get("name") or "").strip()
+
+            matched: Optional[Dict[str, Any]] = None
+            if user_id_value and user_id_value in existing_by_user_id:
+                matched = existing_by_user_id[user_id_value]
+            elif name_value and name_value.lower() in existing_by_name:
+                matched = existing_by_name[name_value.lower()]
+
+            if matched:
+                update_payload = dict(original)
+                device_id = str(
+                    matched.get("ID")
+                    or matched.get("Id")
+                    or matched.get("id")
+                    or ""
+                ).strip()
+                if device_id:
+                    update_payload.setdefault("ID", device_id)
+                updates.append(update_payload)
+                continue
+
             follow_up.append(dict(original))
             prepared.append(self._initial_user_add_payload(original))
 
+        if updates:
+            try:
+                await self.user_set(updates)
+            except Exception as err:
+                _LOGGER.debug("user.set during duplicate preflight failed: %s", err)
+
         normalized_items = self._normalize_user_items_for_add_or_set(prepared)
 
-        try:
-            result = await self._api_user("add", normalized_items)
-        except Exception:
-            # small retry in case the device expects the alternate endpoint first
-            result = await self._api_user("add", normalized_items)
-        retcode, message = self._parse_result_status(result)
-        if retcode not in (None, 0):
-            detail = f" (message: {message})" if message else ""
-            raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
+        result: Dict[str, Any] = {}
+        if normalized_items:
+            try:
+                result = await self._api_user("add", normalized_items)
+            except Exception:
+                # small retry in case the device expects the alternate endpoint first
+                result = await self._api_user("add", normalized_items)
+            retcode, message = self._parse_result_status(result)
+            if retcode not in (None, 0):
+                detail = f" (message: {message})" if message else ""
+                raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
 
-        try:
-            created_ids = self._extract_created_ids(result)
-            await self._apply_user_set_after_add(follow_up, created_ids)
-        except Exception as err:
-            _LOGGER.debug("user.set follow-up after user.add failed: %s", err)
+            try:
+                created_ids = self._extract_created_ids(result)
+                await self._apply_user_set_after_add(follow_up, created_ids)
+            except Exception as err:
+                _LOGGER.debug("user.set follow-up after user.add failed: %s", err)
+        elif follow_up:
+            try:
+                await self.user_set(follow_up)
+            except Exception as err:
+                _LOGGER.debug("user.set applied without user.add payload failed: %s", err)
 
         return result
 
