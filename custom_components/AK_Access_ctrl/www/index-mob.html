@@ -622,10 +622,10 @@ function renderKPIs(k){
     clearNextSyncCountdown();
     if (nextEl) nextEl.textContent = k.next_sync || 'Syncing…';
   } else if (k.next_sync_eta) {
-    startNextSyncCountdown(k.next_sync_eta, k.auto_sync_time || k.next_sync);
+    startNextSyncCountdown(k.next_sync_eta, k.next_sync);
   } else if (nextEl) {
     clearNextSyncCountdown();
-    nextEl.textContent = k.next_sync || k.auto_sync_time || '—';
+    nextEl.textContent = k.next_sync || '—';
   }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
@@ -646,11 +646,6 @@ function renderKPIs(k){
   if (forceBtn) {
     if (syncActive) forceBtn.setAttribute('disabled', 'disabled');
     else forceBtn.removeAttribute('disabled');
-  }
-  const auto = k.auto_sync_time;
-  const autoEl = document.getElementById('kpiAutoSync');
-  if (autoEl) {
-    autoEl.textContent = auto || '—';
   }
   const footer = document.querySelector('.footer-note');
   if (footer) {
@@ -1622,7 +1617,7 @@ function startNextSyncCountdown(iso, fallbackTime){
         clearInterval(nextSyncWatchdog); nextSyncWatchdog=null;
         const el = document.getElementById('kpiNext');
         if (el) {
-          el.textContent = state.kpis?.auto_sync_time || fallbackTime || '—';
+          el.textContent = state.kpis?.next_sync || fallbackTime || '—';
         }
       }
     }catch{}
@@ -1649,7 +1644,6 @@ setInterval(refresh, 5000);
         <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
         <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
-        <div class="box text-end"><div>Auto Sync</div><div id="kpiAutoSync">—</div></div>
       </div>
     </div>
 
