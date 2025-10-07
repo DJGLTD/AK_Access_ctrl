@@ -10,7 +10,6 @@
     body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     .card{ background:#111a2b; border:1px solid #1b2942; }
     .muted{ color:var(--muted); }
-    video, canvas{ width:100%; max-width: 420px; border-radius: .5rem; }
     .btn-row{ gap:.5rem; flex-wrap:wrap; }
   </style>
 </head>
@@ -233,8 +232,22 @@ const USER_ID_DISPLAY = USER_ID || (RAW_USER_ID ? RAW_USER_ID.trim() : '');
 const USER_NAME = (qsGet('name') || '').trim();
 const DEVICE_ID = qsGet('device');  // informational for now
 
+let BUSY = false;
 function setBusy(yes){
-  document.getElementById('busy').style.display = yes ? 'inline-block' : 'none';
+  BUSY = !!yes;
+  const busyEl = document.getElementById('busy');
+  if (busyEl) busyEl.style.display = yes ? 'inline-block' : 'none';
+  document.querySelectorAll('[data-busy-lock]').forEach(el => {
+    if (yes){
+      if (!el.dataset.busyPrevDisabled){
+        el.dataset.busyPrevDisabled = el.disabled ? '1' : '0';
+      }
+      if ('disabled' in el) el.disabled = true;
+    }else if (el.dataset.busyPrevDisabled){
+      if ('disabled' in el) el.disabled = el.dataset.busyPrevDisabled === '1';
+      delete el.dataset.busyPrevDisabled;
+    }
+  });
 }
 function setStatus(msg, good=false){
   const el = document.getElementById('status');
@@ -242,55 +255,9 @@ function setStatus(msg, good=false){
   el.className = good ? 'text-success' : 'text-warning';
 }
 
-/* ---------- Camera capture ---------- */
-let mediaStream = null;
-let usingFront = true;
-
-async function startCamera(){
-  setStatus('');
-  try{
-    if (mediaStream){
-      mediaStream.getTracks().forEach(t=>t.stop());
-      mediaStream = null;
-    }
-    const constraints = {
-      video: {
-        facingMode: usingFront ? 'user' : 'environment',
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    };
-    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-    const v = document.getElementById('video');
-    v.srcObject = mediaStream;
-    await v.play();
-    document.getElementById('shot').disabled = false;
-    document.getElementById('switch').disabled = false;
-  }catch(e){
-    setStatus('Camera unavailable. Use file upload below instead.');
-    document.getElementById('shot').disabled = true;
-    document.getElementById('switch').disabled = true;
-  }
-}
-
-function switchCamera(){
-  usingFront = !usingFront;
-  startCamera();
-}
-
-function snapToCanvas(){
-  const v = document.getElementById('video');
-  const c = document.getElementById('canvas');
-  const w = v.videoWidth || 1280, h = v.videoHeight || 720;
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.drawImage(v, 0, 0, w, h);
-  document.getElementById('uploadCanvas').disabled = false;
-}
-
 /* ---------- Upload helpers ---------- */
 async function uploadBlobAsJpg(blob){
+  if (BUSY) return;
   if (!USER_ID){
     setStatus('Missing or invalid user id. This page must be opened with ?user=HAXXX (e.g. HA123 or HA-123).', false);
     return;
@@ -324,19 +291,8 @@ async function uploadBlobAsJpg(blob){
   }
 }
 
-async function uploadFromCanvas(){
-  const c = document.getElementById('canvas');
-  if (!c.width || !c.height){
-    setStatus('Take a snapshot first.', false);
-    return;
-  }
-  c.toBlob(async (blob)=> {
-    if (!blob){ setStatus('Snapshot encode failed.', false); return; }
-    await uploadBlobAsJpg(blob);
-  }, 'image/jpeg', 0.92);
-}
-
 async function uploadFromFile(){
+  if (BUSY) return;
   const inp = document.getElementById('file');
   if (!inp.files || !inp.files[0]){
     setStatus('Choose a JPG file first.', false);
@@ -371,11 +327,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       nameEl.style.display = 'none';
     }
   }
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
-    startCamera();
-  }else{
-    setStatus('Camera API not supported. Use file upload instead.');
-  }
+  setStatus('');
 });
 </script>
 
@@ -385,37 +337,17 @@ document.addEventListener('DOMContentLoaded', ()=>{
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
 
-  <div class="card p-3 mb-3">
+  <div class="card p-3">
     <div class="mb-2 d-flex align-items-center flex-wrap gap-2">
       <span class="muted">User:</span>
       <span id="userName" class="fw-semibold"></span>
       <span id="userBadge" class="badge bg-secondary"></span>
     </div>
 
-    <!-- Camera capture -->
-    <div class="row g-3 align-items-start">
-      <div class="col-md-6">
-        <video id="video" playsinline muted></video>
-        <div class="d-flex btn-row mt-2">
-          <button id="shot" class="btn btn-primary" onclick="snapToCanvas()">Take snapshot</button>
-          <button id="switch" class="btn btn-outline-light" onclick="switchCamera()">Switch camera</button>
-        </div>
-      </div>
-      <div class="col-md-6">
-        <canvas id="canvas"></canvas>
-        <div class="d-flex btn-row mt-2">
-          <button id="uploadCanvas" class="btn btn-success" onclick="uploadFromCanvas()" disabled>Upload snapshot</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- File upload fallback -->
-  <div class="card p-3">
-    <div class="mb-2 muted">No camera? Upload a JPG instead:</div>
+    <div class="mb-2 muted">Upload a JPG face photo:</div>
     <div class="d-flex btn-row align-items-center">
-      <input id="file" type="file" accept=".jpg,image/jpeg" class="form-control" style="max-width:420px;" />
-      <button class="btn btn-success" onclick="uploadFromFile()">Upload selected file</button>
+      <input id="file" type="file" accept=".jpg,image/jpeg" class="form-control" style="max-width:420px;" data-busy-lock />
+      <button id="uploadFileBtn" class="btn btn-success" onclick="uploadFromFile()" data-busy-lock>Upload selected file</button>
     </div>
   </div>
 

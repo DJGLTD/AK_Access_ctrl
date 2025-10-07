@@ -198,55 +198,90 @@ async function loadUsers() {
   // Wire actions
   usersDiv.querySelectorAll("button[data-del]").forEach(btn => {
     btn.addEventListener("click", async () => {
+      if (btn.dataset.pending === "1") return;
       if (!confirm("Delete user " + btn.dataset.del + "?")) return;
-      await haPost("/api/services/akuvox_ac/delete_user", { id: btn.dataset.del });
-      await loadUsers();
+      btn.dataset.pending = "1";
+      btn.disabled = true;
+      try {
+        await haPost("/api/services/akuvox_ac/delete_user", { id: btn.dataset.del });
+        await loadUsers();
+      } finally {
+        delete btn.dataset.pending;
+        btn.disabled = false;
+      }
     });
   });
   usersDiv.querySelectorAll("button[data-face]").forEach(btn => {
     btn.addEventListener("click", async () => {
+      if (btn.dataset.pending === "1") return;
       const id = btn.dataset.face;
       const path = prompt("Full image path under /config/www (e.g. /config/www/faces/steve.jpg):");
       if (!path) return;
-      await haPost("/api/services/akuvox_ac/upload_face", { id, face_image_path: path });
-      alert("Face queued. Device(s) marked pending sync.");
+      btn.dataset.pending = "1";
+      btn.disabled = true;
+      try {
+        await haPost("/api/services/akuvox_ac/upload_face", { id, face_image_path: path });
+        alert("Face queued. Device(s) marked pending sync.");
+      } finally {
+        delete btn.dataset.pending;
+        btn.disabled = false;
+      }
     });
   });
   usersDiv.querySelectorAll("button[data-edit]").forEach(btn => {
     btn.addEventListener("click", async () => {
+      if (btn.dataset.pending === "1") return;
       const id = btn.dataset.edit;
       const groupsStr = prompt("Enter groups (comma separated):", "Default");
       if (groupsStr === null) return;
       const groups = groupsStr.split(",").map(s => s.trim()).filter(Boolean);
-      await haPost("/api/services/akuvox_ac/set_user_groups", { key: id, groups });
-      await loadDevices(); // permissions applied immediately; refresh statuses
-      await loadUsers();
+      btn.dataset.pending = "1";
+      btn.disabled = true;
+      try {
+        await haPost("/api/services/akuvox_ac/set_user_groups", { key: id, groups });
+        await loadDevices(); // permissions applied immediately; refresh statuses
+        await loadUsers();
+      } finally {
+        delete btn.dataset.pending;
+        btn.disabled = false;
+      }
     });
   });
 }
 
 // ---- Add User form
-document.getElementById("addUserForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const name = fd.get("name");
-  const pin = fd.get("pin");
-  const card = fd.get("card_code");
-  const groups = (fd.get("groups") || "").toString().split(",").map(s => s.trim()).filter(Boolean);
-  const face = fd.get("face_image_path");
-  try {
-    await haPost("/api/services/akuvox_ac/add_user", {
-      name, pin, card_code: card,
-      sync_groups: groups.length ? groups : ["Default"],
-      face_image_path: face || undefined
-    });
-    e.target.reset();
-    await loadDevices(); // devices now pending
-    await loadUsers();
-  } catch (err) {
-    alert("Error adding user: " + err);
-  }
-});
+const addUserForm = document.getElementById("addUserForm");
+if (addUserForm) {
+  let addUserPending = false;
+  const submitBtn = addUserForm.querySelector("button[type='submit']");
+  addUserForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (addUserPending) return;
+    addUserPending = true;
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const fd = new FormData(addUserForm);
+      const name = fd.get("name");
+      const pin = fd.get("pin");
+      const card = fd.get("card_code");
+      const groups = (fd.get("groups") || "").toString().split(",").map(s => s.trim()).filter(Boolean);
+      const face = fd.get("face_image_path");
+      await haPost("/api/services/akuvox_ac/add_user", {
+        name, pin, card_code: card,
+        sync_groups: groups.length ? groups : ["Default"],
+        face_image_path: face || undefined
+      });
+      addUserForm.reset();
+      await loadDevices(); // devices now pending
+      await loadUsers();
+    } catch (err) {
+      alert("Error adding user: " + err);
+    } finally {
+      addUserPending = false;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
 
 // ---- Top buttons
 document.getElementById("refreshAll").addEventListener("click", async () => {
