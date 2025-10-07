@@ -523,7 +523,11 @@ def _desired_device_user_payload(
 
     door_digits = door_relays(relay_roles)
     relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
-    schedule_relay = f"{schedule_id}-{relay_suffix};"
+    if not relay_suffix:
+        relay_suffix = "1"
+    if not schedule_id:
+        schedule_id = "1001"
+    schedule_relay = f"{schedule_id}-{relay_suffix}".rstrip(";") + ";"
 
     device_type = str(device_type_raw or "").strip().lower()
     is_keypad = device_type == "keypad"
@@ -552,22 +556,33 @@ def _desired_device_user_payload(
 
     def _schedule_list_from_local() -> List[str]:
         schedule_list: List[str] = []
+
+        def _append_token(value: str) -> None:
+            token = value.strip()
+            if token.endswith(";"):
+                token = token.rstrip(";")
+            if token and token not in schedule_list:
+                schedule_list.append(token)
+
         local_schedule = local.get("Schedule")
         if isinstance(local_schedule, (list, tuple, set)):
             for entry in local_schedule:
                 text = _string_or_default(entry, default="")
                 if text:
-                    schedule_list.append(text)
+                    _append_token(text)
         elif local_schedule not in (None, ""):
             text = _string_or_default(local_schedule, default="")
             if text:
-                schedule_list.append(text)
+                _append_token(text)
+
         local_schedule_id = _string_or_default(local.get("ScheduleID"), default="")
         if local_schedule_id:
+            cleaned_id = local_schedule_id.rstrip(";") or local_schedule_id
             if not schedule_list:
-                schedule_list.append(local_schedule_id)
-            elif local_schedule_id not in schedule_list:
-                schedule_list.insert(0, local_schedule_id)
+                schedule_list.append(cleaned_id)
+            elif cleaned_id not in schedule_list:
+                schedule_list.insert(0, cleaned_id)
+
         return schedule_list
 
     def _normalise_license_plate() -> List[Dict[str, Any]]:
@@ -652,6 +667,23 @@ def _desired_device_user_payload(
             schedule_list = [schedule_id]
         else:
             schedule_list = ["1001"]
+    elif schedule_id and schedule_id not in schedule_list:
+        schedule_list.insert(0, schedule_id)
+
+    schedule_value = schedule_id or "1001"
+    fallback_schedule: Optional[str] = None
+    for token in schedule_list:
+        candidate = str(token or "").strip().rstrip(";")
+        if not candidate:
+            continue
+        if candidate.isdigit():
+            schedule_value = candidate
+            break
+        if fallback_schedule is None:
+            fallback_schedule = candidate
+    else:
+        if fallback_schedule:
+            schedule_value = fallback_schedule
 
     web_relay = _string_or_default(profile.get("web_relay"), local.get("WebRelay"), default="0")
     priority_call = _string_or_default(profile.get("priority_call"), local.get("PriorityCall"), default="0")
@@ -666,7 +698,8 @@ def _desired_device_user_payload(
         "Name": name,
         "DoorNum": door_num,
         "LiftFloorNum": lift_floor,
-        "Schedule": schedule_list,
+        "ScheduleID": schedule_id,
+        "Schedule": schedule_value,
         "ScheduleRelay": schedule_relay,
         "WebRelay": web_relay,
         "Group": group_value,

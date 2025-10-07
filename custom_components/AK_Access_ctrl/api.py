@@ -623,7 +623,7 @@ class AkuvoxAPI:
         if not normalized:
             return ""
 
-        return ";".join(normalized)
+        return ";".join(normalized) + ";"
 
     @staticmethod
     def _schedule_id_from_relay(val: Any) -> Optional[str]:

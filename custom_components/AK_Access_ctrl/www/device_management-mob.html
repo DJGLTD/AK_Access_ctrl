@@ -548,7 +548,7 @@ function renderSummary(devices, kpis){
   const total = devices.length;
   const online = devices.filter(d => d.status === 'online').length;
   const pending = devices.filter(d => d.status !== 'offline' && d.sync_status !== 'in_sync').length;
-  const next = kpis?.next_sync || kpis?.auto_sync_time || '—';
+  const next = kpis?.next_sync || '—';
   document.getElementById('summaryDevices').textContent = String(total);
   document.getElementById('summaryOnline').textContent = String(online);
   document.getElementById('summaryPending').textContent = String(pending);
