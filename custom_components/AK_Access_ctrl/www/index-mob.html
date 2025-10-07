@@ -897,18 +897,37 @@ function extractFaceUrl(record){
 
 function computeFaceActive(record){
   if (!record || typeof record !== 'object') return false;
+  const status = String(record.status || record.Status || '').trim().toLowerCase();
+  const blockedStatus = ['pending','deleted','inactive','disabled'].includes(status);
   for (const key of FACE_STATUS_FIELDS){
     if (!(key in record)) continue;
     const normalized = normalizeFaceFlag(record[key]);
-    if (normalized !== null) return normalized;
+    if (normalized !== null){
+      if (normalized && blockedStatus) return false;
+      return normalized;
+    }
   }
+  if (blockedStatus) return false;
   const url = extractFaceUrl(record);
-  if (url){
-    const status = String(record.status || record.Status || '').trim().toLowerCase();
-    if (status === 'pending') return false;
-    return true;
-  }
+  if (url) return true;
   return false;
+}
+
+function scheduleDisplayId(rawId){
+  const text = String(rawId ?? '').trim();
+  if (!/^\d+$/.test(text)) return '';
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
+  if (suffix <= 0) return '';
+  return `HA${suffix}`;
+}
+
+function formatScheduleDisplay(rawId, label){
+  const name = String(label ?? '').trim();
+  const displayId = scheduleDisplayId(rawId);
+  if (displayId && name) return `${displayId} - ${name}`;
+  return displayId || name;
 }
 
 function renderUsers(devs, registryUsers){
@@ -981,6 +1000,9 @@ function renderUsers(devs, registryUsers){
           last,
           presentOnDevice: true,
           fromRegistry: false,
+          schedule_name: u.ScheduleName || u.schedule_name || '',
+          schedule_id: u.ScheduleId || u.schedule_id || '',
+          access_level: u.AccessLevel || u.access_level || '',
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
           face_active: deviceFaceActive
@@ -1006,6 +1028,18 @@ function renderUsers(devs, registryUsers){
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
       }
+      const deviceScheduleName = u.ScheduleName || u.schedule_name || '';
+      const deviceScheduleId = u.ScheduleId || u.schedule_id || '';
+      const deviceAccessLevel = u.AccessLevel || u.access_level || '';
+      if (deviceScheduleName && !cur.schedule_name) {
+        cur.schedule_name = deviceScheduleName;
+      }
+      if (deviceScheduleId && !cur.schedule_id) {
+        cur.schedule_id = deviceScheduleId;
+      }
+      if (deviceAccessLevel) {
+        cur.access_level = deviceAccessLevel;
+      }
       if (cur.fromRegistry) {
         if (deviceFaceActive) {
           cur._deviceFaceActive = true;
@@ -1028,8 +1062,10 @@ function renderUsers(devs, registryUsers){
   });
 
   const list = Array.from(by.values()).map(item => {
+    const baseScheduleName = item.access_level || item.schedule_name || '24/7 Access';
+    const scheduleDisplay = formatScheduleDisplay(item.schedule_id, baseScheduleName) || baseScheduleName;
     if (!item.fromRegistry) {
-      return item;
+      return { ...item, access_schedule: scheduleDisplay };
     }
     const seenIds = Array.from(item._seenOn instanceof Set ? item._seenOn : []);
     const shouldHost = normalizedDevices.filter(dev =>
@@ -1046,8 +1082,7 @@ function renderUsers(devs, registryUsers){
     const accessState = computeAccessState(item.access_start, item.access_end);
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
-    const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
-    const baseLower = String(baseLabel).toLowerCase();
+    const baseLower = String(baseScheduleName).toLowerCase();
     let accessText = 'Pending';
     if (expired) {
       accessText = 'Expired';
@@ -1091,7 +1126,8 @@ function renderUsers(devs, registryUsers){
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
       pendingDevices: pendingDevices.length,
       face_active: !!faceActiveFinal,
-      face_status: faceStatusFinal
+      face_status: faceStatusFinal,
+      access_schedule: scheduleDisplay
     };
   }).filter(u => {
     const statusLower = String(u.status || '').toLowerCase();

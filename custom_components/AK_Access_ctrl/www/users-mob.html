@@ -435,7 +435,23 @@ async function apiPost(url, body){
   return r.json();
 }
 const UI_ROOT = '/akuvox-ac';
-function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+let BUSY = false;
+function setBusy(yes){
+  BUSY = !!yes;
+  const busyEl = document.getElementById('busy');
+  if (busyEl) busyEl.style.display = yes ? 'inline-block':'none';
+  document.querySelectorAll('[data-busy-lock]').forEach(el => {
+    if (yes){
+      if (!el.dataset.busyPrevDisabled){
+        el.dataset.busyPrevDisabled = el.disabled ? '1' : '0';
+      }
+      if ('disabled' in el) el.disabled = true;
+    } else if (el.dataset.busyPrevDisabled) {
+      if ('disabled' in el) el.disabled = el.dataset.busyPrevDisabled === '1';
+      delete el.dataset.busyPrevDisabled;
+    }
+  });
+}
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -770,7 +786,24 @@ function selectExistingUser(id, options = {}){
 }
 
 // ---------- schedule id mapping helpers ----------
-let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access"}, ...]
+let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access", display:"HA1 - 24/7 Access"}, ...]
+
+function scheduleDisplayId(rawId){
+  const text = String(rawId ?? '').trim();
+  if (!/^\d+$/.test(text)) return '';
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
+  if (suffix <= 0) return '';
+  return `HA${suffix}`;
+}
+
+function formatScheduleDisplay(rawId, label){
+  const name = String(label ?? '').trim();
+  const displayId = scheduleDisplayId(rawId);
+  if (displayId && name) return `${displayId} - ${name}`;
+  return displayId || name;
+}
 
 function todayIso(){
   const now = new Date();
@@ -1006,9 +1039,14 @@ function buildScheduleMap(){
     const id = String(base + i);
     out.push({ id, name, label: name });
   });
-  SCHED_MAP = out;
+  SCHED_MAP = out.map(item => ({ ...item, display: formatScheduleDisplay(item.id, item.label) }));
 }
-function optionLabel(item){ return `${item.id} - ${item.label}`; }
+function optionLabel(item){
+  const display = item && typeof item === 'object'
+    ? (item.display || formatScheduleDisplay(item.id, item.label))
+    : '';
+  return display || `${item.id} - ${item.label}`;
+}
 function nameForId(id){
   const x = SCHED_MAP.find(s => s.id === String(id));
   return x ? x.name : '24/7 Access';
@@ -1358,6 +1396,7 @@ async function save(){
     alert('Form not ready yet. Please reload the page.');
     return;
   }
+  if (BUSY) return;
   setBusy(true);
   try{
     // Ensure we have or reserve an ID
@@ -1595,7 +1634,7 @@ function showPanel(which){
     </div>
 
     <div class="action-buttons mb-3">
-      <button class="btn btn-success" onclick="save()"><i class="bi bi-check2-circle me-1"></i>Save</button>
+      <button class="btn btn-success" onclick="save()" data-busy-lock><i class="bi bi-check2-circle me-1"></i>Save</button>
       <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 

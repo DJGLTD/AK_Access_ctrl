@@ -736,18 +736,37 @@ function extractFaceUrl(record){
 
 function computeFaceActive(record){
   if (!record || typeof record !== 'object') return false;
+  const status = String(record.status || record.Status || '').trim().toLowerCase();
+  const blockedStatus = ['pending','deleted','inactive','disabled'].includes(status);
   for (const key of FACE_STATUS_FIELDS){
     if (!(key in record)) continue;
     const normalized = normalizeFaceFlag(record[key]);
-    if (normalized !== null) return normalized;
+    if (normalized !== null){
+      if (normalized && blockedStatus) return false;
+      return normalized;
+    }
   }
+  if (blockedStatus) return false;
   const url = extractFaceUrl(record);
-  if (url){
-    const status = String(record.status || record.Status || '').trim().toLowerCase();
-    if (status === 'pending') return false;
-    return true;
-  }
+  if (url) return true;
   return false;
+}
+
+function scheduleDisplayId(rawId){
+  const text = String(rawId ?? '').trim();
+  if (!/^\d+$/.test(text)) return '';
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
+  if (suffix <= 0) return '';
+  return `HA${suffix}`;
+}
+
+function formatScheduleDisplay(rawId, label){
+  const name = String(label ?? '').trim();
+  const displayId = scheduleDisplayId(rawId);
+  if (displayId && name) return `${displayId} - ${name}`;
+  return displayId || name;
 }
 
 function compileUsers(devices, registryUsers){
@@ -847,6 +866,18 @@ function compileUsers(devices, registryUsers){
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
       }
+      const deviceScheduleName = u.ScheduleName || u.schedule_name || '';
+      const deviceScheduleId = u.ScheduleID || u.schedule_id || '';
+      const deviceAccessLevel = u.AccessLevel || u.access_level || '';
+      if (deviceScheduleName && !cur.schedule_name) {
+        cur.schedule_name = deviceScheduleName;
+      }
+      if (deviceScheduleId && !cur.schedule_id) {
+        cur.schedule_id = deviceScheduleId;
+      }
+      if (deviceAccessLevel) {
+        cur.access_level = deviceAccessLevel;
+      }
       if (cur.fromRegistry) {
         if (deviceFaceActive) {
           cur._deviceFaceActive = true;
@@ -869,8 +900,14 @@ function compileUsers(devices, registryUsers){
   });
 
   const list = Array.from(by.values()).map(item => {
+    const baseScheduleName = item.access_level || item.schedule_name || '24/7 Access';
+    const scheduleDisplay = formatScheduleDisplay(item.schedule_id, baseScheduleName) || baseScheduleName;
     if (!item.fromRegistry) {
-      return { ...item, deviceSummary: { required: 0, ready: 0, pending: 0, verified: item.presentOnDevice, seen: item._seenOn?.size || 0 } };
+      return {
+        ...item,
+        access_schedule: scheduleDisplay,
+        deviceSummary: { required: 0, ready: 0, pending: 0, verified: item.presentOnDevice, seen: item._seenOn?.size || 0 }
+      };
     }
     const seenIds = Array.from(item._seenOn instanceof Set ? item._seenOn : []);
     const shouldHost = normalizedDevices.filter(dev =>
@@ -887,8 +924,7 @@ function compileUsers(devices, registryUsers){
     const accessState = computeAccessState(item.access_start, item.access_end);
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
-    const baseLabel = item.access_level || item.schedule_name || '24/7 Access';
-    const baseLower = String(baseLabel).toLowerCase();
+    const baseLower = String(baseScheduleName).toLowerCase();
     let accessText = 'Pending';
     if (expired) {
       accessText = 'Expired';
@@ -933,6 +969,7 @@ function compileUsers(devices, registryUsers){
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
       face_active: !!faceActiveFinal,
       face_status: faceStatusFinal,
+      access_schedule: scheduleDisplay,
       deviceSummary: {
         required: requiredIds.length,
         ready: readyDevices.length,
@@ -997,7 +1034,9 @@ function renderUsers(list){
     }
 
     const chips = (u.groups || []).map(g => `<span class="chip">${escapeHtml(g)}</span>`).join(' ');
-    const schedule = escapeHtml(u.schedule_name || u.access_level || '—');
+    const scheduleDisplay = u.access_schedule
+      || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
+    const schedule = escapeHtml(scheduleDisplay || '—');
     const coverage = u.deviceSummary || { required: 0, ready: 0, pending: 0, verified: false };
     let coverageText;
     if (!coverage.required) {
