@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import datetime as dt
 from datetime import timedelta
 import time
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -12,6 +13,22 @@ from homeassistant.helpers.event import async_call_later
 from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED
 from .ha_id import normalize_ha_id
 from .api import AkuvoxAPI
+from .http import (
+    _build_phone_index,
+    _call_entry_is_received,
+    _call_entry_number,
+    _call_entry_id,
+    _call_entry_timestamp,
+    _call_entry_type,
+    _digits_only,
+    _match_user_by_number,
+    _normalize_call_number,
+)
+
+
+CALLER_LOOKBACK_SECONDS = 120
+CALLER_CLEAR_DELAY_SECONDS = 10
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,6 +152,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "denied_active": False,
         }
         self._event_reset_handles: Dict[str, Callable[[], None]] = {}
+        self.caller_state: Dict[str, Any] = self._empty_caller_state()
+        self._caller_reset_handle: Optional[Callable[[], None]] = None
 
     # Stable accessor other code can use
     @property
@@ -643,6 +662,49 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 pass
         return True
 
+    def _empty_caller_state(self) -> Dict[str, Any]:
+        return {
+            "caller_id": None,
+            "caller_name": None,
+            "caller_number": None,
+            "raw_number": None,
+            "digits": None,
+            "call_id": None,
+            "call_type": None,
+            "timestamp": None,
+            "age_seconds": None,
+            "key_holder": None,
+            "status": None,
+            "error": None,
+            "source": None,
+        }
+
+    def _cancel_caller_reset(self) -> None:
+        handle = self._caller_reset_handle
+        if handle:
+            try:
+                handle()
+            except Exception:
+                pass
+        self._caller_reset_handle = None
+
+    def _schedule_caller_clear(self) -> None:
+        self._cancel_caller_reset()
+
+        def _reset(_now):
+            self._caller_reset_handle = None
+            self._set_caller_state(self._empty_caller_state(), auto_clear=False)
+
+        self._caller_reset_handle = async_call_later(self.hass, CALLER_CLEAR_DELAY_SECONDS, _reset)
+
+    def _set_caller_state(self, state: Dict[str, Any], *, auto_clear: bool) -> None:
+        self.caller_state = state
+        self.async_update_listeners()
+        if auto_clear:
+            self._schedule_caller_clear()
+        else:
+            self._cancel_caller_reset()
+
     def _extract_event_user_name(self, event: Dict[str, Any]) -> Optional[str]:
         for key in (
             "Name",
@@ -721,6 +783,133 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             await _process_inbound_call_webhook(self.hass)
         except Exception as err:
             _LOGGER.debug("Failed to refresh inbound call history: %s", _safe_str(err))
+
+    async def async_fetch_current_caller(self) -> None:
+        state = self._empty_caller_state()
+        state["source"] = "call_log"
+
+        try:
+            log_items = await self.api.call_log()
+        except Exception as err:
+            _LOGGER.debug(
+                "Failed to fetch current caller for %s: %s",
+                self.entry_id,
+                _safe_str(err),
+            )
+            state["status"] = "error"
+            state["error"] = _safe_str(err) or "call_log_error"
+            self._set_caller_state(state, auto_clear=True)
+            return
+
+        if isinstance(log_items, dict):
+            items: List[Dict[str, Any]] = [log_items]
+        elif isinstance(log_items, list):
+            items = log_items
+        else:
+            items = []
+
+        now_local = dt.datetime.now()
+        now_utc = dt.datetime.now(dt.timezone.utc)
+
+        best: Optional[Dict[str, Any]] = None
+
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+
+            call_type = _call_entry_type(raw) or ""
+            if not _call_entry_is_received(call_type or ""):
+                continue
+
+            timestamp = _call_entry_timestamp(raw)
+            if not isinstance(timestamp, dt.datetime):
+                continue
+
+            try:
+                if timestamp.tzinfo is None:
+                    age_seconds = (now_local - timestamp).total_seconds()
+                else:
+                    age_seconds = (now_utc - timestamp.astimezone(dt.timezone.utc)).total_seconds()
+            except Exception:
+                continue
+
+            if age_seconds < 0:
+                continue
+
+            if CALLER_LOOKBACK_SECONDS and age_seconds > CALLER_LOOKBACK_SECONDS:
+                continue
+
+            raw_number = _call_entry_number(raw) or ""
+            normalized = _normalize_call_number(raw_number)
+            digits = _digits_only(normalized)
+
+            candidate = {
+                "raw": raw,
+                "call_type": call_type or "received",
+                "timestamp": timestamp,
+                "age_seconds": round(age_seconds, 2),
+                "raw_number": raw_number,
+                "normalized": normalized,
+                "digits": digits,
+                "call_id": _call_entry_id(raw),
+            }
+
+            if best is None or candidate["age_seconds"] < best["age_seconds"]:
+                best = candidate
+
+        if not best:
+            state["status"] = "no_match"
+            state["error"] = "no_recent_call"
+            self._set_caller_state(state, auto_clear=True)
+            return
+
+        root = self.hass.data.get(DOMAIN, {}) or {}
+        try:
+            phone_index = _build_phone_index(root)
+        except Exception:
+            phone_index = []
+
+        match = None
+        digits = best.get("digits") or ""
+        if digits:
+            try:
+                match = _match_user_by_number(digits, phone_index)
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to match caller digits for %s: %s",
+                    self.entry_id,
+                    _safe_str(err),
+                )
+
+        timestamp = best.get("timestamp")
+        if isinstance(timestamp, dt.datetime):
+            state["timestamp"] = timestamp.isoformat()
+
+        state.update(
+            {
+                "call_id": best.get("call_id") or None,
+                "call_type": best.get("call_type"),
+                "raw_number": best.get("raw_number"),
+                "caller_number": best.get("normalized")
+                or best.get("raw_number")
+                or (digits or None),
+                "digits": digits or None,
+                "age_seconds": best.get("age_seconds"),
+                "key_holder": False,
+                "status": "unmatched",
+                "error": None,
+            }
+        )
+
+        if match:
+            state["caller_id"] = match.get("ha_id")
+            state["caller_name"] = match.get("name")
+            if match.get("number"):
+                state["caller_number"] = match.get("number")
+            state["key_holder"] = bool(match.get("key_holder"))
+            state["status"] = "matched"
+
+        self._set_caller_state(state, auto_clear=True)
 
     async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
         """Send notifications for a door event (best effort)."""

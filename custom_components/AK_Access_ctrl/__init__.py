@@ -941,7 +941,7 @@ class AkuvoxSchedulesStore(Store):
             "end": "23:59",
             "days": list(self._DAYS),
             "always_permit_exit": self._default_exit_flag(name),
-            "type": "2",
+            "type": "0",
             "date_start": "",
             "date_end": "",
         }
@@ -970,7 +970,7 @@ class AkuvoxSchedulesStore(Store):
                 normalized["end"] = self._clean_time(raw_end, default=normalized["end"])
 
             if "type" in payload or "Type" in payload:
-                normalized["type"] = str(payload.get("type") or payload.get("Type") or "2")
+                normalized["type"] = str(payload.get("type") or payload.get("Type") or "0")
 
             if "date_start" in payload or "DateStart" in payload:
                 normalized["date_start"] = str(payload.get("date_start") or payload.get("DateStart") or "").strip()
@@ -1055,7 +1055,7 @@ class AkuvoxSchedulesStore(Store):
                     "end": "23:59",
                     "days": list(self._DAYS),
                     "always_permit_exit": True,
-                    "type": "2",
+                    "type": "0",
                 },
             )
         if "No Access" not in existing:
@@ -1066,7 +1066,7 @@ class AkuvoxSchedulesStore(Store):
                     "end": "00:00",
                     "days": [],
                     "always_permit_exit": False,
-                    "type": "2",
+                    "type": "0",
                 },
             )
 

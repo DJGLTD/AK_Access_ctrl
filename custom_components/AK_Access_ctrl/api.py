@@ -2113,7 +2113,7 @@ class AkuvoxAPI:
             else:
                 selected_days = {"mon", "tue", "wed", "thu", "fri"}
 
-        sched_type = str(spec.get("type") or spec.get("Type") or "2")
+        sched_type = str(spec.get("type") or spec.get("Type") or "0")
         date_start = str(spec.get("date_start") or spec.get("DateStart") or "").strip()
         date_end = str(spec.get("date_end") or spec.get("DateEnd") or "").strip()
 

@@ -19,6 +19,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         AkuvoxUsersCountSensor(coord, entry),
         AkuvoxEventsCountSensor(coord, entry),
         AkuvoxLastAccessUserSensor(coord, entry),
+        AkuvoxCurrentCallerSensor(coord, entry),
     ]
     async_add_entities(entities, update_before_add=True)
 
@@ -183,6 +184,46 @@ class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
                 "event_summary": state.get("last_event_summary"),
                 "event_timestamp": state.get("last_event_timestamp"),
                 "key_holder": state.get("last_event_key_holder"),
+            }
+        )
+        return attrs
+
+
+class AkuvoxCurrentCallerSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Caller ID"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_current_caller"
+
+    @property
+    def native_value(self):
+        state = getattr(self._coord, "caller_state", {}) or {}
+        value = state.get("caller_id") or state.get("caller_number")
+        return value or None
+
+    @property
+    def extra_state_attributes(self):
+        state = getattr(self._coord, "caller_state", {}) or {}
+        attrs = super().extra_state_attributes
+        attrs.update(
+            {
+                "akuvox_metric": "current_caller",
+                "caller_id": state.get("caller_id"),
+                "caller_name": state.get("caller_name"),
+                "caller_number": state.get("caller_number"),
+                "raw_number": state.get("raw_number"),
+                "digits": state.get("digits"),
+                "call_id": state.get("call_id"),
+                "call_type": state.get("call_type"),
+                "timestamp": state.get("timestamp"),
+                "age_seconds": state.get("age_seconds"),
+                "key_holder": state.get("key_holder"),
+                "status": state.get("status"),
+                "error": state.get("error"),
+                "source": state.get("source"),
             }
         )
         return attrs

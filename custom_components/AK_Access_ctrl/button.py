@@ -20,6 +20,7 @@ async def async_setup_entry(
         AkuvoxAccessPermittedButton(coord, entry),
         AkuvoxAccessDeniedButton(coord, entry),
         AkuvoxCallEndButton(coord, entry),
+        AkuvoxCallerIdRefreshButton(coord, entry),
     ]
     async_add_entities(entities)
 
@@ -75,3 +76,16 @@ class AkuvoxCallEndButton(_Base):
 
     async def async_press(self) -> None:
         await self._coord.async_refresh_inbound_call_history()
+
+
+class AkuvoxCallerIdRefreshButton(_Base):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Refresh Caller ID"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_refresh_caller_id"
+
+    async def async_press(self) -> None:
+        await self._coord.async_fetch_current_caller()
