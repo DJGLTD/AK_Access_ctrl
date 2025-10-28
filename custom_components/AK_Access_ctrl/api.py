@@ -22,6 +22,20 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _retcode_is_success(retcode: Optional[int]) -> bool:
+    """Return ``True`` if the Akuvox API *retcode* indicates success."""
+
+    if retcode is None:
+        return True
+
+    try:
+        normalized = int(retcode)
+    except Exception:
+        return False
+
+    return normalized in (0, 1)
+
+
 def _utc_now_iso() -> str:
     """Return an ISO8601 UTC timestamp without microseconds."""
 
@@ -1530,7 +1544,7 @@ class AkuvoxAPI:
     @staticmethod
     def _validate_face_upload_result(result: Dict[str, Any]) -> None:
         retcode, message = AkuvoxAPI._parse_result_status(result)
-        if retcode in (None, 0):
+        if _retcode_is_success(retcode):
             return
         detail = f" (message: {message})" if message else ""
         raise RuntimeError(f"Akuvox face upload returned retcode {retcode}{detail}")
@@ -1829,7 +1843,7 @@ class AkuvoxAPI:
                 # small retry in case the device expects the alternate endpoint first
                 result = await self._api_user("add", normalized_items)
             retcode, message = self._parse_result_status(result)
-            if retcode not in (None, 0):
+            if not _retcode_is_success(retcode):
                 detail = f" (message: {message})" if message else ""
                 raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
 
@@ -1862,7 +1876,7 @@ class AkuvoxAPI:
             result = await self._api_user("set", items)
 
         retcode, message = self._parse_result_status(result)
-        if retcode not in (None, 0):
+        if not _retcode_is_success(retcode):
             detail = f" (message: {message})" if message else ""
             raise RuntimeError(f"Akuvox user.set returned retcode {retcode}{detail}")
 
