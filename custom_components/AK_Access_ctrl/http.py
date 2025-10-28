@@ -295,6 +295,7 @@ def _build_face_upload_payload(
         payload.pop(key, None)
     payload.pop("faceInfo", None)
     payload["FaceRegister"] = 1
+    payload["FaceRegisterStatus"] = "0"
     payload.setdefault("Type", "0")
 
     return payload
@@ -498,6 +499,7 @@ async def _push_face_to_devices(
             payload: Dict[str, Any] = {
                 identifier_key: identifier_value,
                 "FaceRegister": 1,
+                "FaceRegisterStatus": "0",
             }
             if face_link_reference:
                 payload["FaceUrl"] = face_link_reference
@@ -532,7 +534,7 @@ async def _push_face_to_devices(
                 continue
 
             try:
-                await api.user_add([payload])
+                await api.user_set([payload])
             except Exception as err:
                 _LOGGER.debug(
                     "Failed to update face metadata for %s on %s using legacy flow: %s",
