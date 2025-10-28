@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable, Set
 
 from aiohttp import ClientSession, BasicAuth, FormData
-from urllib.parse import urlsplit, urlencode
+from urllib.parse import urlsplit, urlencode, unquote
 
 from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
@@ -691,6 +691,41 @@ class AkuvoxAPI:
         # such a filename is present we should ensure the register flag stays set.
         return bool(re.fullmatch(r"HA\d+\.jpg", name, flags=re.IGNORECASE))
 
+    @staticmethod
+    def _face_reference_to_filename(reference: Any) -> str:
+        """Best-effort conversion of a FaceUrl reference to a filename."""
+
+        if reference in (None, ""):
+            return ""
+
+        if not isinstance(reference, str):
+            text = str(reference)
+        else:
+            text = reference
+
+        candidate = text.strip()
+        if not candidate:
+            return ""
+
+        try:
+            parsed = urlsplit(candidate)
+            extracted = parsed.path or candidate
+        except Exception:
+            extracted = candidate
+
+        try:
+            extracted = unquote(extracted)
+        except Exception:
+            pass
+
+        try:
+            name = Path(extracted).name
+        except Exception:
+            name = ""
+
+        cleaned = str(name or "").strip()
+        return cleaned or candidate
+
     def _normalize_user_items_for_add_or_set(
         self,
         items: List[Dict[str, Any]],
@@ -725,6 +760,22 @@ class AkuvoxAPI:
                 it2.pop("Schedule", None)
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
+            else:
+                face_reference = ""
+                for key in ("FaceUrl", "FaceURL"):
+                    raw = it2.pop(key, None)
+                    if raw in (None, ""):
+                        continue
+                    text = str(raw).strip()
+                    if not text:
+                        continue
+                    face_reference = self._face_reference_to_filename(text)
+                if face_reference:
+                    it2["FaceUrl"] = face_reference
+
+            # Drop QR code payloads that some firmwares reject on user.set.
+            it2.pop("QrCodeUrl", None)
+            it2.pop("QrCodeURL", None)
 
             # ScheduleRelay normalization (pass-through otherwise)
             relay_value = None
@@ -840,7 +891,10 @@ class AkuvoxAPI:
         for item in items or []:
             if not isinstance(item, dict):
                 continue
-            trimmed.append(dict(item))
+            cleaned = dict(item)
+            cleaned.pop("QrCodeUrl", None)
+            cleaned.pop("QrCodeURL", None)
+            trimmed.append(cleaned)
         return trimmed
 
     async def _ensure_ids_for_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
