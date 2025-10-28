@@ -715,6 +715,14 @@ async function restoreReservationFromStorage() {
 }
 
 async function reserveNewId(options = {}) {
+  const prior = (() => {
+    if (RESERVED_ID) return RESERVED_ID;
+    const stored = readStoredReservation();
+    return stored && stored.id ? String(stored.id).trim() : '';
+  })();
+  if (prior) {
+    try { await releaseReservation({ id: prior }); } catch (err) {}
+  }
   applyReservedIdToForm('');
   try {
     const res = await apiGet(API_RESERVE_ID);

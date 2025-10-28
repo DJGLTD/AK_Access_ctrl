@@ -1998,6 +1998,81 @@ def _cleanup_stale_reservations(hass: HomeAssistant, max_age_minutes: int = 120)
     return removed
 
 
+def _parse_reserved_at(value: Any) -> Optional[dt.datetime]:
+    if isinstance(value, str) and value:
+        try:
+            return dt.datetime.fromisoformat(value.rstrip("Z"))
+        except Exception:
+            return None
+    return None
+
+
+def _select_reusable_reservation(users: Mapping[str, Any]) -> Optional[tuple[str, str]]:
+    """Return ``(canonical_id, store_key)`` for the freshest empty reservation."""
+
+    if not isinstance(users, Mapping):
+        return None
+
+    best: Optional[tuple[str, str]] = None
+    best_stamp: Optional[dt.datetime] = None
+
+    for store_key, profile in users.items():
+        if not _profile_is_empty_reserved(profile):
+            continue
+        canonical = normalize_ha_id(store_key)
+        if not canonical:
+            continue
+        stamp: Optional[dt.datetime] = None
+        if isinstance(profile, Mapping):
+            stamp = _parse_reserved_at(profile.get("reserved_at"))
+        if best is None:
+            best = (canonical, store_key)
+            best_stamp = stamp
+            continue
+        if stamp and (best_stamp is None or stamp > best_stamp):
+            best = (canonical, store_key)
+            best_stamp = stamp
+            continue
+        if best_stamp is None and stamp is None and canonical < best[0]:
+            best = (canonical, store_key)
+
+    return best
+
+
+def _prune_inactive_reservations(
+    users: Dict[str, Any],
+    *,
+    keep_key: Optional[str] = None,
+    max_age_minutes: int = RESERVATION_TTL_MINUTES,
+) -> bool:
+    """Remove abandoned empty reservations.
+
+    Returns True if any entries were removed.
+    """
+
+    if not isinstance(users, dict):
+        return False
+
+    cutoff = dt.datetime.utcnow() - dt.timedelta(minutes=max_age_minutes)
+    changed = False
+
+    for store_key in list(users.keys()):
+        if keep_key is not None and store_key == keep_key:
+            continue
+        profile = users.get(store_key)
+        if not _profile_is_empty_reserved(profile):
+            continue
+        stamp: Optional[dt.datetime] = None
+        if isinstance(profile, Mapping):
+            stamp = _parse_reserved_at(profile.get("reserved_at"))
+        if stamp and stamp >= cutoff:
+            continue
+        users.pop(store_key, None)
+        changed = True
+
+    return changed
+
+
 _SPECIAL_DEVICE_KEYS = {
     "groups_store",
     "users_store",
@@ -3080,6 +3155,32 @@ class AkuvoxUIReserveId(HomeAssistantView):
             _cleanup_stale_reservations(hass, max_age_minutes=RESERVATION_TTL_MINUTES)
         except Exception as err:
             _LOGGER.debug("Reservation cleanup before reserve failed: %s", err)
+
+        store_data = users_store.data.setdefault("users", {})  # type: ignore[attr-defined]
+
+        reusable = _select_reusable_reservation(store_data)
+        if reusable is not None:
+            candidate, store_key = reusable
+            existing_profile = store_data.get(store_key)
+            if isinstance(existing_profile, dict):
+                profile = existing_profile
+            elif isinstance(existing_profile, Mapping):
+                profile = dict(existing_profile)
+            else:
+                profile = {}
+            face_url = profile.get("face_url") if isinstance(profile, dict) else None
+            if not isinstance(face_url, str) or not face_url.strip():
+                face_url = f"{face_base_url(hass, request)}/{candidate}.jpg"
+            profile["status"] = "pending"
+            profile["face_url"] = face_url
+            profile["reserved_at"] = _now_iso()
+            store_data[store_key] = profile
+            _prune_inactive_reservations(store_data, keep_key=store_key)
+            try:
+                await users_store.async_save()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return web.json_response({"ok": True, "id": candidate})
 
         # Find lowest free HA### using local registry only
         try:
