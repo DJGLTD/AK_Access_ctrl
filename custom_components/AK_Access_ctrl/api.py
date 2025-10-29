@@ -769,7 +769,7 @@ class AkuvoxAPI:
                     text = str(raw).strip()
                     if not text:
                         continue
-                    face_reference = self._face_reference_to_filename(text)
+                    face_reference = text
                 if face_reference:
                     it2["FaceUrl"] = face_reference
 
