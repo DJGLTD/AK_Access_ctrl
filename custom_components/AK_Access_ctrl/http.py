@@ -3,10 +3,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import json
 import re
 import time
 from datetime import timedelta
 from pathlib import Path
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Mapping, Set
 from urllib.parse import urlencode, urlsplit, unquote
 
@@ -2731,6 +2733,81 @@ class AkuvoxUIAction(AkuvoxUIView):
             except Exception as e:
                 return err(e)
 
+        if action == "diagnostics_send_request":
+            if not entry_id:
+                return err("entry_id required")
+
+            manager = root.get("sync_manager")
+            if not manager:
+                return err("sync manager unavailable", code=500)
+
+            method = str(payload.get("method") or "POST").strip().upper()
+            if method not in {"GET", "POST"}:
+                return err("method must be GET or POST")
+
+            raw_path = str(payload.get("path") or "").strip()
+            if not raw_path:
+                return err("path required")
+
+            def _normalize_rel(value: str) -> Optional[str]:
+                text = str(value or "").strip()
+                if not text:
+                    return None
+                if not text.startswith("/"):
+                    text = "/" + text
+                return text
+
+            primary_path = _normalize_rel(raw_path)
+            if not primary_path:
+                return err("path required")
+
+            rel_paths: List[str] = [primary_path]
+            fallbacks = payload.get("fallbacks") or payload.get("rel_paths") or payload.get("alternate_paths")
+            if isinstance(fallbacks, (list, tuple)):
+                for extra in fallbacks:
+                    normalized = _normalize_rel(extra)
+                    if normalized and normalized not in rel_paths:
+                        rel_paths.append(normalized)
+
+            api = None
+            try:
+                for dev_entry_id, _coord, dev_api, _opts in manager._devices():  # type: ignore[attr-defined]
+                    if dev_entry_id == entry_id:
+                        api = dev_api
+                        break
+            except Exception:
+                api = None
+
+            if not api:
+                return err("device entry not found", code=404)
+
+            body = None
+            if method == "POST":
+                body = payload.get("body")
+                if body is None:
+                    body = {}
+                elif not isinstance(body, (dict, list)):
+                    return err("payload body must be a JSON object or array")
+
+            try:
+                response_payload = await api._request_attempts(  # type: ignore[attr-defined]
+                    method, tuple(rel_paths), body if method == "POST" else None
+                )
+            except Exception as request_err:
+                return err(request_err, code=500)
+
+            return web.json_response(
+                {
+                    "ok": True,
+                    "response": response_payload,
+                    "request": {
+                        "entry_id": entry_id,
+                        "method": method,
+                        "paths": rel_paths,
+                    },
+                }
+            )
+
         return err("unknown action")
 
 
@@ -3033,6 +3110,247 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 
         return current, min_limit, max_limit
 
+    @staticmethod
+    def _copy_json(value: Any) -> Any:
+        try:
+            return json.loads(json.dumps(value))
+        except Exception:
+            if isinstance(value, dict):
+                out: Dict[str, Any] = {}
+                for key, item in value.items():
+                    try:
+                        out[key] = AkuvoxUIDiagnostics._copy_json(item)
+                    except Exception:
+                        pass
+                return out
+            if isinstance(value, list):
+                out_list: List[Any] = []
+                for item in value:
+                    try:
+                        out_list.append(AkuvoxUIDiagnostics._copy_json(item))
+                    except Exception:
+                        pass
+                return out_list
+            return value
+
+    @staticmethod
+    def _normalize_path_from_request(req: Dict[str, Any]) -> str:
+        path_candidate = req.get("path")
+        if isinstance(path_candidate, str) and path_candidate.strip():
+            candidate = path_candidate.strip()
+        else:
+            url_candidate = req.get("url")
+            candidate = ""
+            if isinstance(url_candidate, str) and url_candidate.strip():
+                try:
+                    parsed = urlsplit(url_candidate)
+                    candidate = parsed.path or ""
+                except Exception:
+                    candidate = url_candidate
+        candidate = (candidate or "").strip()
+        if candidate and not candidate.startswith("/"):
+            candidate = "/" + candidate
+        return candidate
+
+    @staticmethod
+    def _payload_has_face(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str) and "face" in key.lower():
+                    return True
+                if AkuvoxUIDiagnostics._payload_has_face(item):
+                    return True
+            return False
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if AkuvoxUIDiagnostics._payload_has_face(item):
+                    return True
+            return False
+        if isinstance(value, str):
+            return "face" in value.lower()
+        return False
+
+    @staticmethod
+    def _request_is_face_related(req: Dict[str, Any]) -> bool:
+        if not isinstance(req, dict):
+            return False
+        for key in ("diag_type", "diagType", "type"):
+            value = req.get(key)
+            if isinstance(value, str) and "face" in value.lower():
+                return True
+        for key in ("path", "url"):
+            value = req.get(key)
+            if isinstance(value, str) and "face" in value.lower():
+                return True
+        payload = req.get("payload")
+        if isinstance(payload, dict):
+            if AkuvoxUIDiagnostics._payload_has_face(payload):
+                return True
+            action = payload.get("action") or payload.get("Action")
+            target = payload.get("target") or payload.get("Target")
+            if isinstance(action, str) and "face" in action.lower():
+                return True
+            if isinstance(target, str) and "face" in target.lower():
+                return True
+        return False
+
+    def _summarize_face_attempts(
+        self, devices: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        summary: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            entry_id = str(device.get("entry_id") or "").strip()
+            device_name = str(device.get("name") or "").strip() or entry_id or "Akuvox Device"
+            requests = device.get("requests") if isinstance(device.get("requests"), list) else []
+            for req in requests:
+                if not isinstance(req, dict):
+                    continue
+                if not self._request_is_face_related(req):
+                    continue
+
+                method = str(req.get("method") or "GET").upper()
+                path = self._normalize_path_from_request(req)
+
+                diag_type = ""
+                for key in ("diag_type", "diagType", "type"):
+                    candidate = req.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        diag_type = candidate.strip()
+                        break
+
+                payload_raw = req.get("payload")
+                payload_dict = payload_raw if isinstance(payload_raw, dict) else None
+
+                target = ""
+                action = ""
+                if payload_dict:
+                    for key in ("target", "Target"):
+                        candidate = payload_dict.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            target = candidate.strip()
+                            break
+                    for key in ("action", "Action"):
+                        candidate = payload_dict.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            action = candidate.strip()
+                            break
+
+                payload_keys: List[str] = []
+                data_keys: List[str] = []
+                if payload_dict:
+                    payload_keys = sorted({str(k).lower() for k in payload_dict.keys() if str(k).strip()})
+                    data_section = payload_dict.get("data")
+                    if isinstance(data_section, dict):
+                        data_keys = sorted({str(k).lower() for k in data_section.keys() if str(k).strip()})
+
+                signature_data = {
+                    "method": method,
+                    "path": path,
+                    "diag": diag_type.lower(),
+                    "target": target.lower(),
+                    "action": action.lower(),
+                    "payload_keys": tuple(payload_keys),
+                    "data_keys": tuple(data_keys),
+                }
+                signature = json.dumps(signature_data, sort_keys=True)
+
+                entry = summary.get(signature)
+                if not entry:
+                    entry = {
+                        "method": method,
+                        "path": path,
+                        "diag_type": diag_type,
+                        "target": target,
+                        "action": action,
+                        "payload_keys": payload_keys,
+                        "data_keys": data_keys,
+                        "count": 0,
+                        "devices": {},
+                        "first_seen": None,
+                        "last_seen": None,
+                        "last_status": None,
+                        "last_error": None,
+                        "status_codes": [],
+                        "ok_count": 0,
+                        "error_count": 0,
+                        "payload": None,
+                        "last_entry_id": "",
+                        "last_device_name": "",
+                    }
+                    summary[signature] = entry
+
+                entry["count"] += 1
+                timestamp = req.get("timestamp")
+                if isinstance(timestamp, str) and timestamp:
+                    if not entry["first_seen"] or timestamp < entry["first_seen"]:
+                        entry["first_seen"] = timestamp
+                    if not entry["last_seen"] or timestamp > entry["last_seen"]:
+                        entry["last_seen"] = timestamp
+
+                status = req.get("status")
+                if status is not None:
+                    entry["last_status"] = status
+                    entry["status_codes"].append(status)
+
+                if req.get("ok") is True:
+                    entry["ok_count"] += 1
+                elif req.get("ok") is False:
+                    entry["error_count"] += 1
+
+                if req.get("error") and isinstance(req.get("error"), str):
+                    entry["last_error"] = req.get("error")
+
+                if payload_dict is not None:
+                    entry["payload"] = self._copy_json(payload_dict)
+
+                if entry_id:
+                    entry.setdefault("devices", {})[entry_id] = device_name
+                    entry["last_entry_id"] = entry_id
+                if device_name:
+                    entry["last_device_name"] = device_name
+
+        results: List[Dict[str, Any]] = []
+        sorted_entries = sorted(
+            summary.values(), key=lambda item: item.get("last_seen") or "", reverse=True
+        )
+        for idx, entry in enumerate(sorted_entries, start=1):
+            devices_list = []
+            for dev_id, name in sorted(entry.get("devices", {}).items(), key=lambda pair: (pair[1] or pair[0])):
+                devices_list.append({"entry_id": dev_id, "name": name})
+
+            result: Dict[str, Any] = {
+                "key": f"face_attempt_{idx}",
+                "method": entry.get("method"),
+                "path": entry.get("path"),
+                "diag_type": entry.get("diag_type"),
+                "target": entry.get("target"),
+                "action": entry.get("action"),
+                "payload_keys": entry.get("payload_keys", []),
+                "data_keys": entry.get("data_keys", []),
+                "count": entry.get("count", 0),
+                "first_seen": entry.get("first_seen"),
+                "last_seen": entry.get("last_seen"),
+                "last_status": entry.get("last_status"),
+                "last_error": entry.get("last_error"),
+                "ok_count": entry.get("ok_count", 0),
+                "error_count": entry.get("error_count", 0),
+                "devices": devices_list,
+                "payload": entry.get("payload"),
+                "last_entry_id": entry.get("last_entry_id"),
+                "last_device_name": entry.get("last_device_name"),
+            }
+
+            status_codes = entry.get("status_codes")
+            if status_codes:
+                result["status_codes"] = status_codes[-5:]
+
+            results.append(result)
+
+        return results
+
     async def _build_payload(
         self, root: Dict[str, Any], limit_override: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -3083,6 +3401,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             "history_limit": limit,
             "min_history_limit": min_limit,
             "max_history_limit": max_limit,
+            "face_attempts": self._summarize_face_attempts(devices),
         }
 
     async def get(self, request: web.Request):
