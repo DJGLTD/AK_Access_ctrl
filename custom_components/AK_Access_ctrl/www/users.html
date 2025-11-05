@@ -1443,8 +1443,14 @@ async function save(){
     };
 
     if (prompts.code){
-      const pinValue = document.getElementById('pin').value.trim();
-      payload.pin = pinValue || undefined;
+      const pinInput = document.getElementById('pin');
+      const pinValue = pinInput ? pinInput.value.trim() : '';
+      const priorPin = typeof CURRENT.pin === 'string' ? CURRENT.pin.trim() : '';
+      if (pinValue || priorPin){
+        if (pinValue !== priorPin){
+          payload.pin = pinValue;
+        }
+      }
       CURRENT.pin = pinValue;
     }
 

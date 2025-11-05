@@ -823,6 +823,14 @@ class AkuvoxAPI:
                     "BLEAuthCode",
                     "ScheduleRelay",
                 ):
+                    if k == "PrivatePIN":
+                        if v == "":
+                            d[k] = ""
+                        else:
+                            text = str(v).strip()
+                            if text:
+                                d[k] = text
+                        continue
                     if k in numeric_fields:
                         coerced = self._coerce_int(v)
                         if coerced is not None:
@@ -1657,11 +1665,17 @@ class AkuvoxAPI:
             text = str(raw).strip()
             if text:
                 base[target] = text
+        pin_present = any(
+            key in item for key in ("PrivatePIN", "pin", "Pin", "private_pin")
+        )
         pin_value = _first("PrivatePIN", "pin", "Pin", "private_pin")
-        if pin_value not in (None, ""):
-            pin_text = str(pin_value).strip()
-            if pin_text:
-                base["PrivatePIN"] = pin_text
+        if pin_present:
+            if pin_value in (None, ""):
+                base["PrivatePIN"] = ""
+            else:
+                pin_text = str(pin_value).strip()
+                if pin_text:
+                    base["PrivatePIN"] = pin_text
 
         return base
 

@@ -787,11 +787,23 @@ def _desired_device_user_payload(
     if device_id:
         desired["ID"] = device_id
 
-    pin_value = profile.get("pin")
-    if pin_value in (None, ""):
+    profile_pin_present = False
+    profile_pin_value: Any = None
+    for key in ("pin", "PrivatePIN", "private_pin", "Pin"):
+        if isinstance(profile, Mapping) and key in profile:
+            profile_pin_present = True
+            profile_pin_value = profile.get(key)
+            break
+
+    if profile_pin_present:
+        if profile_pin_value in (None, ""):
+            desired["PrivatePIN"] = ""
+        else:
+            desired["PrivatePIN"] = str(profile_pin_value).strip()
+    else:
         pin_value = local.get("PrivatePIN") or local.get("Pin")
-    if pin_value not in (None, ""):
-        desired["PrivatePIN"] = str(pin_value)
+        if pin_value not in (None, ""):
+            desired["PrivatePIN"] = str(pin_value)
 
     if not is_keypad:
         phone_value = profile.get("phone")
@@ -2822,11 +2834,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         face_url = f"{face_base_url(hass)}/{face_filename}"
 
+        pin_payload: Optional[str] = None
+        if "pin" in d:
+            raw_pin = d.get("pin")
+            if raw_pin in (None, ""):
+                pin_payload = ""
+            else:
+                pin_payload = str(raw_pin)
+
         await users_store.upsert_profile(
             ha_id,
             name=name,
             groups=groups,
-            pin=str(d.get("pin")) if d.get("pin") else None,
+            pin=pin_payload,
             phone=str(d.get("phone")) if d.get("phone") else None,
             schedule_name=d.get("schedule_name") or "24/7 Access",
             key_holder=bool(d.get("key_holder", False)),
@@ -2855,11 +2875,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         lp_payload = d.get("license_plate") if "license_plate" in d else None
 
+        pin_payload_edit: Optional[str] = None
+        if "pin" in d:
+            raw_pin = d.get("pin")
+            if raw_pin in (None, ""):
+                pin_payload_edit = ""
+            else:
+                pin_payload_edit = str(raw_pin)
+
         await users_store.upsert_profile(
             effective_id,
             name=d.get("name"),
             groups=list(d.get("groups") or []) if "groups" in d else None,
-            pin=str(d.get("pin")) if "pin" in d else None,
+            pin=pin_payload_edit,
             phone=str(d.get("phone")) if "phone" in d else None,
             schedule_name=d.get("schedule_name") if "schedule_name" in d else None,
             key_holder=bool(d.get("key_holder")) if "key_holder" in d else None,

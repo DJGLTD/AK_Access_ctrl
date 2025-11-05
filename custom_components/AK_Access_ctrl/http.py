@@ -266,9 +266,21 @@ def _build_face_upload_payload(
     schedule_name = profile.get("schedule_name") or payload.get("Schedule") or "24/7 Access"
     payload["Schedule"] = str(schedule_name)
 
-    pin = profile.get("pin")
-    if pin not in (None, ""):
-        payload["PrivatePIN"] = str(pin)
+    pin_present = False
+    pin_value: Any = None
+    for key in ("pin", "PrivatePIN", "private_pin", "Pin"):
+        if isinstance(profile, Mapping) and key in profile:
+            pin_present = True
+            pin_value = profile.get(key)
+            break
+
+    if pin_present:
+        if pin_value in (None, ""):
+            payload["PrivatePIN"] = ""
+        else:
+            payload["PrivatePIN"] = str(pin_value).strip()
+        for alias in ("Pin", "PIN"):
+            payload.pop(alias, None)
 
     phone = profile.get("phone")
     if phone in (None, ""):
@@ -1504,6 +1516,9 @@ _FACE_FLAG_KEYS = (
     "has_face",
     "hasFace",
     "HasFace",
+    "FaceRegisterStatus",
+    "faceRegisterStatus",
+    "face_register_status",
     "FaceRegister",
     "faceRegister",
     "face_register",
