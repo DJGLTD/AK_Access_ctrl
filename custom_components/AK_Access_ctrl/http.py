@@ -1589,6 +1589,17 @@ def _groups_overlap(user_groups: Any, device_groups: Any) -> bool:
     return bool(_group_tokens(user_groups) & _group_tokens(device_groups))
 
 
+def _device_supports_face(record: Mapping[str, Any]) -> bool:
+    device_type = str(
+        record.get("type")
+        or record.get("device_type")
+        or ""
+    ).strip().lower()
+    if not device_type:
+        return True
+    return device_type == "intercom"
+
+
 def _device_face_is_active(record: Mapping[str, Any]) -> bool:
     flag = _face_flag_from_record(record)
     if flag is not None:
@@ -1637,6 +1648,7 @@ def _evaluate_face_status(
         dev
         for dev in devices
         if dev.get("participate_in_sync", True)
+        and _device_supports_face(dev)
         and _groups_overlap(user_groups, dev.get("sync_groups"))
     ]
 
