@@ -746,6 +746,7 @@ class AkuvoxAPI:
             "C4EventNo",
             "AuthMode",
             "FaceRegister",
+            "FaceRegisterStatus",
             "KeyHolder",
             "SourceType",
         }
@@ -1682,6 +1683,7 @@ class AkuvoxAPI:
             "PriorityCall": ("priority_call",),
             "AuthMode": ("auth_mode",),
             "C4EventNo": ("c4_event_no",),
+            "FaceRegisterStatus": ("face_register_status",),
         }
 
         for target, aliases in optional_numeric.items():
@@ -1695,6 +1697,7 @@ class AkuvoxAPI:
             "CardCode": ("card_code",),
             "Building": tuple(),
             "Room": tuple(),
+            "PhoneNum": ("phone", "phone_num"),
         }
 
         for target, aliases in optional_string.items():
