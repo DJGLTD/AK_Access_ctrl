@@ -884,57 +884,6 @@ class AkuvoxAPI:
             norm.append(d)
         return norm
 
-    @staticmethod
-    def _prune_user_items_for_set(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Remove keys that firmwares reject from user.set payloads."""
-
-        trimmed: List[Dict[str, Any]] = []
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            cleaned = dict(item)
-            cleaned.pop("QrCodeUrl", None)
-            cleaned.pop("QrCodeURL", None)
-            trimmed.append(cleaned)
-        return trimmed
-
-    async def _ensure_ids_for_set(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        'user set' expects the device 'ID'. If caller provided only UserID/Name,
-        resolve to the device 'ID' from the current list first.
-        """
-        need_lookup = [
-            it
-            for it in (items or [])
-            if not it.get("ID") and (it.get("UserID") or it.get("UserId") or it.get("Name"))
-        ]
-        if not need_lookup:
-            return items
-
-        try:
-            dev_users = await self.user_list()
-        except Exception:
-            dev_users = []
-
-        def _find_id(rec: Dict[str, Any]) -> Optional[str]:
-            uid = str(rec.get("UserID") or rec.get("UserId") or "")
-            name = str(rec.get("Name") or "")
-            for u in dev_users or []:
-                if uid and str(u.get("UserID") or u.get("UserId") or "") == uid:
-                    return str(u.get("ID") or "")
-                if name and str(u.get("Name") or "") == name:
-                    return str(u.get("ID") or "")
-            return None
-
-        out: List[Dict[str, Any]] = []
-        for it in items or []:
-            if not it.get("ID"):
-                did = _find_id(it)
-                if did:
-                    it = {**it, "ID": did}
-            out.append(it)
-        return out
-
     # -------------------- Unified API call helpers --------------------
     async def _api_user(self, action: str, items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"target": "user", "action": action}
@@ -1698,6 +1647,7 @@ class AkuvoxAPI:
             "Building": tuple(),
             "Room": tuple(),
             "PhoneNum": ("phone", "phone_num"),
+            "FaceUrl": ("face_url", "FaceURL"),
         }
 
         for target, aliases in optional_string.items():
@@ -1714,75 +1664,6 @@ class AkuvoxAPI:
                 base["PrivatePIN"] = pin_text
 
         return base
-
-    @staticmethod
-    def _extract_created_ids(result: Any) -> List[str]:
-        """Extract device numeric IDs from a ``user.add`` response."""
-
-        ids: List[str] = []
-
-        def _append(value: Any) -> None:
-            if value in (None, ""):
-                return
-            text = str(value).strip()
-            if not text:
-                return
-            ids.append(text)
-
-        def _walk(candidate: Any) -> None:
-            if isinstance(candidate, dict):
-                if "ID" in candidate:
-                    _append(candidate.get("ID"))
-                elif "Id" in candidate:
-                    _append(candidate.get("Id"))
-                elif "id" in candidate:
-                    _append(candidate.get("id"))
-                for value in candidate.values():
-                    _walk(value)
-            elif isinstance(candidate, (list, tuple)):
-                for entry in candidate:
-                    _walk(entry)
-
-        if isinstance(result, dict):
-            data = result.get("data")
-            if isinstance(data, dict):
-                items = data.get("item")
-                if isinstance(items, list):
-                    for entry in items:
-                        if isinstance(entry, dict) and "ID" in entry:
-                            _append(entry.get("ID"))
-                    if ids:
-                        return ids
-                elif isinstance(items, dict):
-                    if "ID" in items:
-                        _append(items.get("ID"))
-                        return ids
-            result_section = result.get("result")
-            if isinstance(result_section, dict) and not ids:
-                _walk(result_section)
-        _walk(result)
-        return ids
-
-    async def _apply_user_set_after_add(
-        self,
-        items: List[Dict[str, Any]],
-        created_ids: Optional[List[str]] = None,
-    ) -> None:
-        """Reapply the desired fields using ``user.set`` after the initial creation."""
-
-        follow_up: List[Dict[str, Any]] = []
-        for idx, item in enumerate(items or []):
-            if not isinstance(item, dict):
-                continue
-            payload = dict(item)
-            if created_ids and idx < len(created_ids):
-                device_id = created_ids[idx]
-                if device_id not in (None, ""):
-                    payload.setdefault("ID", str(device_id))
-            follow_up.append(payload)
-        if not follow_up:
-            return
-        await self.user_set(follow_up)
 
     async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
         """Delete face images associated with the provided UserID values."""
@@ -1818,8 +1699,8 @@ class AkuvoxAPI:
         We normalize booleans, schedule name/ID, and ScheduleRelay lightly.
         """
         prepared: List[Dict[str, Any]] = []
-        follow_up: List[Dict[str, Any]] = []
-        updates: List[Dict[str, Any]] = []
+        delete_ids: List[str] = []
+        delete_keys: List[str] = []
 
         preflight_needed = False
         for original in items or []:
@@ -1868,8 +1749,9 @@ class AkuvoxAPI:
             elif name_value and name_value.lower() in existing_by_name:
                 matched = existing_by_name[name_value.lower()]
 
+            payload_source = dict(original)
             if matched:
-                update_payload = dict(original)
+                payload_source = {**matched, **payload_source}
                 device_id = str(
                     matched.get("ID")
                     or matched.get("Id")
@@ -1877,20 +1759,40 @@ class AkuvoxAPI:
                     or ""
                 ).strip()
                 if device_id:
-                    update_payload.setdefault("ID", device_id)
-                updates.append(update_payload)
-                continue
+                    delete_ids.append(device_id)
+                else:
+                    removal_key = user_id_value or name_value
+                    if removal_key:
+                        delete_keys.append(removal_key)
 
-            follow_up.append(dict(original))
-            prepared.append(self._initial_user_add_payload(original))
+            prepared.append(self._initial_user_add_payload(payload_source))
 
-        if updates:
-            try:
-                await self.user_set(updates)
-            except Exception as err:
-                _LOGGER.debug("user.set during duplicate preflight failed: %s", err)
+        if delete_ids:
+            unique_ids = [str(i) for i in dict.fromkeys(delete_ids) if str(i)]
+            if unique_ids:
+                try:
+                    await self.user_del(unique_ids)
+                except Exception as err:
+                    _LOGGER.debug("Bulk delete before user.add failed: %s", err)
+                    for did in unique_ids:
+                        try:
+                            await self.user_del([did])
+                        except Exception:
+                            continue
 
-        normalized_items = self._normalize_user_items_for_add_or_set(prepared)
+        if delete_keys:
+            for key in dict.fromkeys(delete_keys):
+                text = str(key or "").strip()
+                if not text:
+                    continue
+                try:
+                    await self.user_delete(text)
+                except Exception:
+                    continue
+
+        normalized_items = self._normalize_user_items_for_add_or_set(
+            prepared, allow_face_url=True
+        )
 
         result: Dict[str, Any] = {}
         if normalized_items:
@@ -1903,39 +1805,6 @@ class AkuvoxAPI:
             if not _retcode_is_success(retcode):
                 detail = f" (message: {message})" if message else ""
                 raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
-
-            try:
-                created_ids = self._extract_created_ids(result)
-                await self._apply_user_set_after_add(follow_up, created_ids)
-            except Exception as err:
-                _LOGGER.debug("user.set follow-up after user.add failed: %s", err)
-        elif follow_up:
-            try:
-                await self.user_set(follow_up)
-            except Exception as err:
-                _LOGGER.debug("user.set applied without user.add payload failed: %s", err)
-
-        return result
-
-    async def user_set(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        'user set' updates an existing record and expects device 'ID'.
-        - Resolves device IDs when only UserID/Name are supplied
-        - Normalizes schedules (names -> ScheduleID 1001/1002)
-        - Normalizes booleans and ScheduleRelay
-        """
-        items = await self._ensure_ids_for_set(items)
-        items = self._prune_user_items_for_set(items)
-        items = self._normalize_user_items_for_add_or_set(items, allow_face_url=True)
-        try:
-            result = await self._api_user("set", items)
-        except Exception:
-            result = await self._api_user("set", items)
-
-        retcode, message = self._parse_result_status(result)
-        if not _retcode_is_success(retcode):
-            detail = f" (message: {message})" if message else ""
-            raise RuntimeError(f"Akuvox user.set returned retcode {retcode}{detail}")
 
         return result
 

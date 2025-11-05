@@ -353,6 +353,23 @@ _FACE_REGISTER_KEYS = (
 )
 
 
+_FACE_STATUS_KEYS = (
+    "FaceRegisterStatus",
+    "face_register_status",
+)
+
+
+def _face_status_from_record(record: Dict[str, Any]) -> Optional[bool]:
+    if not isinstance(record, dict):
+        return None
+    for key in _FACE_STATUS_KEYS:
+        if key in record:
+            flag = _normalize_boolish(record.get(key))
+            if flag is not None:
+                return flag
+    return None
+
+
 def _ensure_face_payload_fields(
     payload: Dict[str, Any],
     *,
@@ -444,8 +461,22 @@ def _prepare_user_add_payload(
         sources=source_tuple,
     )
 
-    face_registered = str(cleaned.get("FaceRegister") or "").strip() == "1"
-    cleaned["FaceRegisterStatus"] = "1" if face_registered else "0"
+    face_status: Optional[bool] = None
+    for source in source_tuple:
+        candidate = _face_status_from_record(source or {})
+        if candidate is not None:
+            face_status = candidate
+            break
+    if face_status is None:
+        for source in source_tuple:
+            candidate = _face_flag_from_record(source or {})
+            if candidate is not None:
+                face_status = candidate
+                break
+    if face_status is None:
+        face_status = False
+
+    cleaned["FaceRegisterStatus"] = "1" if face_status else "0"
 
     if cleaned.get("ScheduleRelay") and "Schedule-Relay" not in cleaned:
         cleaned["Schedule-Relay"] = cleaned["ScheduleRelay"]
@@ -788,7 +819,21 @@ def _desired_device_user_payload(
                 desired["FaceRegister"] = 1
 
     if desired.get("FaceRegister"):
-        desired["FaceRegisterStatus"] = "1"
+        status_flag: Optional[bool] = None
+        for source in (profile, local):
+            candidate = _face_status_from_record(source or {})
+            if candidate is not None:
+                status_flag = candidate
+                break
+        if status_flag is None:
+            for source in (local, profile):
+                candidate = _face_flag_from_record(source or {})
+                if candidate is not None:
+                    status_flag = candidate
+                    break
+        if status_flag is None:
+            status_flag = False
+        desired["FaceRegisterStatus"] = "1" if status_flag else "0"
     else:
         desired["FaceRegisterStatus"] = "0"
 

@@ -303,69 +303,6 @@ def _build_face_upload_payload(
     return payload
 
 
-async def _ensure_face_register_flag(api, user_id: str, device_name: str) -> None:
-    """Ensure the FaceRegister flag is marked as ``1`` for the provided user."""
-
-    target = str(user_id or "").strip()
-    if not target:
-        return
-
-    try:
-        refreshed = await api.user_list()
-    except Exception as err:
-        _LOGGER.debug(
-            "Unable to refresh users after face upload for %s on %s: %s",
-            target,
-            device_name,
-            err,
-        )
-        return
-
-    record: Optional[Dict[str, Any]] = None
-    for candidate in refreshed or []:
-        try:
-            if _record_matches_user(candidate, target):
-                record = candidate if isinstance(candidate, dict) else None
-                if record is not None:
-                    break
-        except Exception:
-            continue
-
-    if not isinstance(record, dict):
-        _LOGGER.debug(
-            "User %s not found on %s after face upload when updating FaceRegister",
-            target,
-            device_name,
-        )
-        return
-
-    current = None
-    for key in ("FaceRegister", "faceRegister", "face_register"):
-        value = record.get(key)
-        if value in (None, ""):
-            continue
-        current = str(value).strip()
-        break
-
-    if current == "1":
-        return
-
-    payload: Dict[str, Any] = {"FaceRegister": 1, "UserID": target}
-    dev_id = record.get("ID")
-    if dev_id not in (None, ""):
-        payload["ID"] = str(dev_id)
-
-    try:
-        await api.user_set([payload])
-    except Exception as err:
-        _LOGGER.debug(
-            "Failed to update FaceRegister for %s on %s: %s",
-            target,
-            device_name,
-            err,
-        )
-
-
 async def _push_face_to_devices(
     hass: HomeAssistant,
     root: Dict[str, Any],
@@ -424,11 +361,7 @@ async def _push_face_to_devices(
         reference = record_face_source or profile_face_source or face_url_public
         face_filename = face_filename_from_reference(reference, user_id)
 
-        device_record_id = ""
-        if isinstance(record, dict):
-            device_record_id = str(record.get("ID") or "").strip()
-
-        if not device_record_id:
+        if not isinstance(record, dict) or not str(record.get("ID") or "").strip():
             lookup_values: List[str] = []
             if isinstance(record, dict):
                 for key in ("UserID", "Name"):
@@ -455,19 +388,12 @@ async def _push_face_to_devices(
                     continue
                 for candidate in matches or []:
                     try:
-                        candidate_id = str(candidate.get("ID") or "").strip()
-                    except Exception:
-                        candidate_id = ""
-                    if not candidate_id:
-                        continue
-                    try:
                         if _record_matches_user(candidate, user_id):
-                            device_record_id = candidate_id
                             record = candidate
                             break
                     except Exception:
                         continue
-                if device_record_id:
+                if isinstance(record, dict) and str(record.get("ID") or "").strip():
                     break
 
         try:
@@ -493,62 +419,37 @@ async def _push_face_to_devices(
         elif isinstance(upload_result, str):
             face_import_path = upload_result.strip()
 
-        linked = False
-        identifier_key = "ID" if device_record_id else "UserID"
-        identifier_value = device_record_id or user_id
         face_link_reference = face_import_path or reference
-        if identifier_value:
-            payload: Dict[str, Any] = {
-                identifier_key: identifier_value,
-                "FaceRegister": 1,
-                "FaceRegisterStatus": "0",
-            }
-            if face_link_reference:
-                payload["FaceUrl"] = face_link_reference
-            payload.setdefault("Type", "0")
-            try:
-                await api.user_set([payload])
-                linked = True
-            except Exception as err:
-                _LOGGER.debug(
-                    "Failed to link face data for %s on %s: %s",
-                    user_id,
-                    device_name,
-                    err,
-                )
-
-        if not linked:
-            try:
-                payload = _build_face_upload_payload(
-                    profile, record, user_id, face_link_reference
-                )
-            except Exception as err:
-                _LOGGER.debug(
-                    "Failed to prepare fallback face payload for %s on %s: %s",
-                    user_id,
-                    device_name,
-                    err,
-                )
-                try:
-                    await _ensure_face_register_flag(api, user_id, device_name)
-                except Exception:
-                    pass
-                continue
-
-            try:
-                await api.user_set([payload])
-            except Exception as err:
-                _LOGGER.debug(
-                    "Failed to update face metadata for %s on %s using legacy flow: %s",
-                    user_id,
-                    device_name,
-                    err,
-                )
 
         try:
-            await _ensure_face_register_flag(api, user_id, device_name)
-        except Exception:
-            pass
+            payload = _build_face_upload_payload(
+                profile, record, user_id, face_link_reference
+            )
+        except Exception as err:
+            _LOGGER.debug(
+                "Failed to prepare face payload for %s on %s: %s",
+                user_id,
+                device_name,
+                err,
+            )
+            continue
+
+        existing_record = record if isinstance(record, dict) else None
+
+        try:
+            await manager._replace_user_on_device(
+                api,
+                payload,
+                user_id,
+                existing=existing_record,
+            )
+        except Exception as err:
+            _LOGGER.debug(
+                "Failed to recreate user %s on %s after face upload: %s",
+                user_id,
+                device_name,
+                err,
+            )
 
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {
