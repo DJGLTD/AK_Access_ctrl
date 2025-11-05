@@ -416,6 +416,42 @@ def _ensure_face_payload_fields(
 
     payload.setdefault("Type", "0")
 
+
+def _prepare_user_add_payload(
+    ha_key: str,
+    payload: Dict[str, Any],
+    *,
+    sources: Tuple[Optional[Dict[str, Any]], ...] = (),
+) -> Dict[str, Any]:
+    """Return a device-friendly payload for user.add."""
+
+    cleaned: Dict[str, Any] = {k: v for k, v in (payload or {}).items() if v is not None}
+
+    canonical_key = str(ha_key or "").strip()
+    if not canonical_key:
+        canonical_key = _key_of_user(cleaned)
+
+    if canonical_key:
+        cleaned.setdefault("UserID", canonical_key)
+
+    cleaned.pop("ID", None)
+
+    source_tuple: Tuple[Optional[Dict[str, Any]], ...] = sources or (payload,)
+
+    _ensure_face_payload_fields(
+        cleaned,
+        ha_key=str(cleaned.get("UserID") or canonical_key or ""),
+        sources=source_tuple,
+    )
+
+    face_registered = str(cleaned.get("FaceRegister") or "").strip() == "1"
+    cleaned["FaceRegisterStatus"] = "1" if face_registered else "0"
+
+    if cleaned.get("ScheduleRelay") and "Schedule-Relay" not in cleaned:
+        cleaned["Schedule-Relay"] = cleaned["ScheduleRelay"]
+
+    return cleaned
+
 def _migrate_face_storage(hass: HomeAssistant) -> None:
     """Copy face assets from legacy locations into the persistent store."""
 
@@ -713,6 +749,9 @@ def _desired_device_user_payload(
         "Type": "0",
     }
 
+    if schedule_relay:
+        desired["Schedule-Relay"] = schedule_relay
+
     device_id = _string_or_default(profile.get("device_id"), local.get("ID"), default="")
     if device_id:
         desired["ID"] = device_id
@@ -747,6 +786,11 @@ def _desired_device_user_payload(
                     face_active = None
             if face_active:
                 desired["FaceRegister"] = 1
+
+    if desired.get("FaceRegister"):
+        desired["FaceRegisterStatus"] = "1"
+    else:
+        desired["FaceRegisterStatus"] = "0"
 
     return desired
 
@@ -2021,32 +2065,43 @@ class SyncManager:
         ha_key: str,
         existing: Optional[Dict[str, Any]] = None,
     ):
-        """Update the device record for ha_key using user.set with a merged payload."""
+        """Recreate the device record for ha_key via delete + add."""
 
-        base_payload: Dict[str, Any] = {}
+        payload = _prepare_user_add_payload(ha_key, desired, sources=(desired, existing))
+
+        delete_candidates: List[Dict[str, Any]] = []
         if isinstance(existing, dict):
-            base_payload = {k: v for k, v in existing.items() if v is not None}
-
-        payload: Dict[str, Any] = {**base_payload, **(desired or {})}
-
-        if not payload.get("ID"):
-            # ensure device ID is present when available
-            lookup_id = None
-            try:
-                records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-                if records:
-                    lookup_id = str(records[0].get("ID") or records[0].get("id") or "")
-            except Exception:
-                lookup_id = None
-            if lookup_id:
-                payload["ID"] = lookup_id
-
-        _ensure_face_payload_fields(payload, ha_key=ha_key, sources=(desired, existing))
+            delete_candidates.append(existing)
 
         try:
-            await api.user_set([payload])
+            lookup_records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+        except Exception:
+            lookup_records = []
+        for rec in lookup_records:
+            if rec:
+                delete_candidates.append(rec)
+
+        seen_delete_keys: set[Tuple[str, str, str]] = set()
+        for rec in delete_candidates:
+            if not isinstance(rec, dict):
+                continue
+            key_tuple = (
+                str(rec.get("ID") or ""),
+                str(rec.get("UserID") or rec.get("UserId") or ""),
+                str(rec.get("Name") or ""),
+            )
+            if key_tuple in seen_delete_keys:
+                continue
+            seen_delete_keys.add(key_tuple)
+            try:
+                await _delete_user_every_way(api, rec)
+            except Exception:
+                continue
+
+        try:
+            await api.user_add([payload])
         except Exception as err:
-            _LOGGER.warning("Failed to update user %s via user.set: %s", ha_key, err)
+            _LOGGER.warning("Failed to replace user %s via delete+add: %s", ha_key, err)
             raise
 
     async def reconcile(self, full: bool = True):
@@ -2255,7 +2310,7 @@ class SyncManager:
                 if not local:
                     add_batch.append(desired_base)
                 else:
-                    replace = str(prof.get("status") or "").lower() == "pending" or any(
+                    replace = full or str(prof.get("status") or "").lower() == "pending" or any(
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
                     if replace:
@@ -2267,8 +2322,14 @@ class SyncManager:
 
         # 1) Add new users
         if add_batch:
+            prepared_add_batch: List[Dict[str, Any]] = []
+            for candidate in add_batch:
+                ha_candidate = _key_of_user(candidate)
+                prepared_add_batch.append(
+                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                )
             try:
-                await api.user_add(add_batch)
+                await api.user_add(prepared_add_batch)
             except Exception:
                 pass
 
