@@ -19,6 +19,14 @@ add_user:
       required: false
       selector:
         date:
+    exit_permission:
+      required: false
+      selector:
+        select:
+          options:
+            - match
+            - working_days
+            - always
     relays:
       required: false
       example: "3"
@@ -72,6 +80,14 @@ edit_user:
       required: false
       selector:
         date:
+    exit_permission:
+      required: false
+      selector:
+        select:
+          options:
+            - match
+            - working_days
+            - always
     face_image_path:
       required: false
       selector:

@@ -84,8 +84,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
   return access;
 }
 
@@ -514,6 +527,9 @@ let SETTINGS_DATA = {
   capabilities: { alarm_relay: false },
   min_health_check_interval_seconds: 10,
   max_health_check_interval_seconds: 300,
+  access_event_limit: 30,
+  min_access_event_limit: 5,
+  max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
 };
 let PHONES = [];
@@ -528,7 +544,10 @@ let autoSyncSaving = false;
 let autoSyncSavedTimer = null;
 let healthSaving = false;
 let healthSavedTimer = null;
+let eventLimitSaving = false;
+let eventLimitSavedTimer = null;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
+const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
   { key: 'mon', label: 'Monday' },
   { key: 'tue', label: 'Tuesday' },
@@ -613,6 +632,28 @@ function showHealthSavedOverlay(message = 'Saved'){
     healthSavedTimer = null;
   }, 5000);
 }
+function hideEventLimitSavedOverlay(){
+  const overlay = document.getElementById('eventLimitSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (eventLimitSavedTimer){
+    clearTimeout(eventLimitSavedTimer);
+    eventLimitSavedTimer = null;
+  }
+}
+function showEventLimitSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('eventLimitSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (eventLimitSavedTimer){
+    clearTimeout(eventLimitSavedTimer);
+  }
+  eventLimitSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    eventLimitSavedTimer = null;
+  }, 5000);
+}
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
   if (!el) return;
@@ -673,6 +714,26 @@ function setHealthStatus(text, tone = 'muted') {
   if (tone === 'error') el.classList.add('text-danger');
   else el.classList.add('muted');
 }
+function setEventLimitStatus(text, tone = 'muted') {
+  const el = document.getElementById('eventLimitStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showEventLimitSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideEventLimitSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
 function setAlertsStatus(text, tone = 'muted') {
   const el = document.getElementById('alertsStatus');
   if (!el) return;
@@ -696,6 +757,15 @@ function healthRange(){
   const maxRaw = Number(SETTINGS_DATA?.max_health_check_interval_seconds);
   const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 10;
   let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 300;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function eventLimitRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_access_event_limit);
+  const maxRaw = Number(SETTINGS_DATA?.max_access_event_limit);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 200;
   if (max < min) max = min;
   return { min, max };
 }
@@ -730,6 +800,54 @@ function renderHealthInterval(){
   input.max = String(max);
   input.value = String(seconds);
   setHealthStatus('');
+}
+
+function renderEventLimit(){
+  const input = document.getElementById('accessEventLimitInput');
+  if (!input) return;
+  const { min, max } = eventLimitRange();
+  let value = Number(SETTINGS_DATA.access_event_limit);
+  if (!Number.isFinite(value)) value = 30;
+  value = Math.round(value);
+  if (value < min) value = min;
+  if (value > max) value = max;
+  SETTINGS_DATA.access_event_limit = value;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(value);
+  setEventLimitStatus('');
+}
+
+async function saveEventLimit(){
+  if (eventLimitSaving) return;
+  const input = document.getElementById('accessEventLimitInput');
+  if (!input) return;
+  const { min, max } = eventLimitRange();
+  let raw = Number(input.value);
+  if (!Number.isFinite(raw)) raw = SETTINGS_DATA.access_event_limit;
+  let value = Math.round(raw);
+  if (value < min) value = min;
+  if (value > max) value = max;
+
+  eventLimitSaving = true;
+  hideEventLimitSavedOverlay();
+
+  try {
+    const res = await apiPost(API_SETTINGS, { access_event_limit: value });
+    const returned = Number(res?.access_event_limit);
+    if (Number.isFinite(returned)) {
+      SETTINGS_DATA.access_event_limit = returned;
+    } else {
+      SETTINGS_DATA.access_event_limit = value;
+    }
+    renderEventLimit();
+    showEventLimitSavedOverlay();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to update event history limit: ' + (err && err.message ? err.message : err));
+  } finally {
+    eventLimitSaving = false;
+  }
 }
 
 function minutesToHHMM(minutes){
@@ -1140,11 +1258,34 @@ function cloneScheduleSpec(spec){
 }
 
 function scheduleNames(){
-  return Object.keys(SCHEDULES || {}).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  return Object.entries(SCHEDULES || {})
+    .filter(([name, spec]) => !scheduleIsExitClone(name, spec))
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
 function scheduleIsBuiltin(name){
   return BUILTIN_SCHEDULES.has(String(name || '').trim());
+}
+
+function scheduleCloneSuffix(){
+  return EXIT_CLONE_SUFFIX;
+}
+
+function normalizedScheduleKey(name){
+  return String(name || '').trim().toLowerCase();
+}
+
+function scheduleIsExitClone(name, spec){
+  const normalized = normalizedScheduleKey(name);
+  if (!normalized) return false;
+  const specObj = spec && typeof spec === 'object' ? spec : {};
+  if (specObj.system_exit_clone) return true;
+  if (specObj.exit_clone_for){
+    const base = normalizedScheduleKey(specObj.exit_clone_for);
+    if (base && base !== normalized) return true;
+  }
+  return normalized.endsWith(scheduleCloneSuffix().toLowerCase());
 }
 
 function setScheduleStatus(text, tone = 'muted'){
@@ -1361,6 +1502,18 @@ async function callAction(actionName, payload){
   return body;
 }
 
+function broadcastScheduleRevision(){
+  const stamp = `${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  try { localStorage.setItem('akuvox_schedule_revision', stamp); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_schedule_revision', stamp); } catch (err) {}
+  try { window.dispatchEvent(new CustomEvent('akuvox-schedules-updated', { detail: { revision: stamp } })); } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'akuvox-schedules-updated', revision: stamp }, window.location.origin);
+    }
+  } catch (err) {}
+}
+
 async function saveSchedule(){
   if (scheduleSaving || scheduleReadOnly) return;
   const input = document.getElementById('scheduleNameInput');
@@ -1387,6 +1540,7 @@ async function saveSchedule(){
   try{
     setScheduleStatus('Saving…');
     await callAction('upsert_schedule', { name, spec });
+    broadcastScheduleRevision();
     SCHEDULES[name] = spec;
     const next = populateScheduleSelect(name);
     updateScheduleSelection(next);
@@ -1416,6 +1570,7 @@ async function deleteSchedule(){
   try{
     setScheduleStatus('Deleting…');
     await callAction('delete_schedule', { name: SELECTED_SCHEDULE });
+    broadcastScheduleRevision();
     delete SCHEDULES[SELECTED_SCHEDULE];
     const next = populateScheduleSelect('');
     updateScheduleSelection(next);
@@ -1545,6 +1700,7 @@ async function loadData(){
       integrity_interval_minutes: 15,
       auto_sync_delay_minutes: 30,
       health_check_interval_seconds: 30,
+      access_event_limit: 30,
       alerts: { targets: {} },
       registry_users: [],
     };
@@ -1586,6 +1742,24 @@ async function loadData(){
     if (healthValue > safeMaxHealth) healthValue = safeMaxHealth;
     SETTINGS_DATA.health_check_interval_seconds = healthValue;
 
+    const minEvents = Number(settingsResp?.min_access_event_limit);
+    const maxEvents = Number(settingsResp?.max_access_event_limit);
+    const safeMinEvents = Number.isFinite(minEvents) ? Math.max(1, Math.round(minEvents)) : 5;
+    const safeMaxEvents = Number.isFinite(maxEvents)
+      ? Math.max(safeMinEvents, Math.round(maxEvents))
+      : Math.max(safeMinEvents, 200);
+    SETTINGS_DATA.min_access_event_limit = safeMinEvents;
+    SETTINGS_DATA.max_access_event_limit = safeMaxEvents;
+    const rawEventLimit = SETTINGS_DATA.access_event_limit;
+    let eventLimitValue = Number(rawEventLimit);
+    if (!Number.isFinite(eventLimitValue) || rawEventLimit === null || rawEventLimit === undefined || rawEventLimit === '') {
+      eventLimitValue = 30;
+    }
+    eventLimitValue = Math.round(eventLimitValue);
+    if (eventLimitValue < safeMinEvents) eventLimitValue = safeMinEvents;
+    if (eventLimitValue > safeMaxEvents) eventLimitValue = safeMaxEvents;
+    SETTINGS_DATA.access_event_limit = eventLimitValue;
+
     PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
     ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
@@ -1607,6 +1781,7 @@ async function loadData(){
     updateScheduleSelection(nextSchedule);
     renderAutoSyncDelay();
     renderHealthInterval();
+    renderEventLimit();
     renderIntegrity();
     renderCredentialPrompts();
     renderAlerts();
@@ -1654,6 +1829,33 @@ document.addEventListener('DOMContentLoaded', () => {
     SETTINGS_DATA.auto_sync_delay_minutes = val;
     autoSyncInput.value = String(val);
     await saveAutoSyncDelay(val);
+  });
+
+  const eventLimitInput = document.getElementById('accessEventLimitInput');
+  eventLimitInput?.addEventListener('input', () => {
+    hideEventLimitSavedOverlay();
+    setEventLimitStatus('');
+  });
+  eventLimitInput?.addEventListener('change', async () => {
+    const { min, max } = eventLimitRange();
+    const rawStr = (eventLimitInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    SETTINGS_DATA.access_event_limit = val;
+    eventLimitInput.value = String(val);
+    await saveEventLimit();
   });
 
   const healthInput = document.getElementById('healthIntervalInput');
@@ -1783,6 +1985,18 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="autoSyncSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="autoSyncStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Event History Limit</div>
+    <div class="card-body">
+      <p class="muted">Choose how many access events the dashboard keeps at once. Newer events appear first, and older entries are removed once the limit is reached.</p>
+      <div class="saved-input-wrap">
+        <input id="accessEventLimitInput" class="form-control" type="number" min="5" max="200" step="1" />
+        <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 

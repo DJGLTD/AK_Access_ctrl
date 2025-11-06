@@ -99,8 +99,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
   return access;
 }
 
@@ -916,8 +929,8 @@ function compileUsers(devices, registryUsers){
       groupsIntersect(item.groups, dev.groups)
     );
     const requiredIds = shouldHost.map(dev => dev.entryId).filter(id => !!id);
-    const pendingDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
     const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
+    const outOfSyncDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
       : !requiredIds.length;
@@ -925,22 +938,6 @@ function compileUsers(devices, registryUsers){
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLower = String(baseScheduleName).toLowerCase();
-    let accessText = 'Pending';
-    if (expired) {
-      accessText = 'Expired';
-    } else if (item._denied && baseLower !== 'no access') {
-      accessText = 'Denied';
-    } else if (String(item.status || '').toLowerCase() === 'deleted') {
-      accessText = 'Deleted';
-    } else if (String(item.status || '').toLowerCase() === 'pending') {
-      accessText = 'Pending';
-    } else if (pendingDevices.length) {
-      accessText = 'Pending';
-    } else if (!requiredIds.length) {
-      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
-    } else if (allVerified) {
-      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
-    }
     const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
     const statusLower = String(rest.face_status || '').trim().toLowerCase();
     let faceStatusFinal = statusLower;
@@ -959,6 +956,31 @@ function compileUsers(devices, registryUsers){
         faceActiveFinal = computeFaceActive(rest);
       }
       faceStatusFinal = faceActiveFinal ? 'active' : '';
+    }
+
+    const userPending = String(item.status || '').toLowerCase() === 'pending';
+    const facePendingFinal = faceStatusFinal === 'pending';
+    const pendingDevices = outOfSyncDevices.filter(dev => {
+      if (!dev.entryId) return true;
+      if (userPending || facePendingFinal) return true;
+      return !seenIds.includes(dev.entryId);
+    });
+
+    let accessText = 'Pending';
+    if (expired) {
+      accessText = 'Expired';
+    } else if (item._denied && baseLower !== 'no access') {
+      accessText = 'Denied';
+    } else if (String(item.status || '').toLowerCase() === 'deleted') {
+      accessText = 'Deleted';
+    } else if (userPending) {
+      accessText = 'Pending';
+    } else if (pendingDevices.length) {
+      accessText = 'Pending';
+    } else if (!requiredIds.length) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
+    } else if (allVerified) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     }
 
     return {

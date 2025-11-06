@@ -166,8 +166,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
   return access;
 }
 
@@ -620,6 +633,38 @@ let historyLimitSaving = false;
 const TYPE_FILTER_OTHER = '__other__';
 const TYPE_FILTER_ALL = '__all__';
 let activeTypeFilter = TYPE_FILTER_ALL;
+const EXCLUDED_REQUEST_PATHS = Object.freeze([
+  '/api/web/face/del',
+  '/api/web/user/get',
+]);
+
+function normalizeRequestPath(req){
+  if (!req || typeof req !== 'object') return '';
+  const pathCandidate = typeof req.path === 'string' ? req.path.trim() : '';
+  let candidate = pathCandidate;
+  if (!candidate){
+    const urlCandidate = typeof req.url === 'string' ? req.url.trim() : '';
+    if (urlCandidate){
+      try {
+        const parsed = new URL(urlCandidate, window.location.origin);
+        candidate = parsed.pathname || '';
+      } catch (err) {
+        const withoutQuery = urlCandidate.split('?')[0].split('#')[0].trim();
+        candidate = withoutQuery;
+      }
+    }
+  }
+  if (!candidate) return '';
+  const stripped = candidate.split('?')[0].split('#')[0].trim();
+  if (!stripped) return '';
+  return (stripped.startsWith('/') ? stripped : '/' + stripped).toLowerCase();
+}
+
+function requestShouldBeHidden(req){
+  const normalized = normalizeRequestPath(req);
+  if (!normalized) return false;
+  return EXCLUDED_REQUEST_PATHS.includes(normalized);
+}
 
 function getTypeFilterSelect(){
   return document.getElementById('typeFilterSelect');
@@ -1230,9 +1275,10 @@ function renderDevices(devices, options = {}){
 function renderRequestList(container, device){
   container.innerHTML = '';
   const requests = Array.isArray(device.requests) ? device.requests : [];
+  const visible = requests.filter((req) => !requestShouldBeHidden(req));
   const filtered = activeTypeFilter === TYPE_FILTER_ALL
-    ? requests
-    : requests.filter((req) => {
+    ? visible
+    : visible.filter((req) => {
       const value = requestTypeValue(req);
       if (activeTypeFilter === TYPE_FILTER_OTHER){
         return value === TYPE_FILTER_OTHER;
@@ -1242,7 +1288,7 @@ function renderRequestList(container, device){
   if (!filtered.length){
     const empty = document.createElement('div');
     empty.className = 'muted';
-    empty.textContent = requests.length
+    empty.textContent = visible.length
       ? 'No requests match the current filter.'
       : 'No requests have been recorded for this device yet.';
     container.appendChild(empty);
