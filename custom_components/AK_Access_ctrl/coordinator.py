@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED
+from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED, DEFAULT_ACCESS_HISTORY_LIMIT
 from .ha_id import normalize_ha_id
 from .api import AkuvoxAPI
 from .http import (
@@ -24,6 +24,7 @@ from .http import (
     _match_user_by_number,
     _normalize_call_number,
 )
+from .access_history import AccessHistory
 
 
 CALLER_LOOKBACK_SECONDS = 120
@@ -341,6 +342,15 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not isinstance(events, list) or not events:
             return
 
+        try:
+            self._publish_access_history(events)
+        except Exception as err:
+            _LOGGER.debug(
+                "Unable to publish door events to history for %s: %s",
+                self.entry_id,
+                _safe_str(err),
+            )
+
         state = self.storage.data.setdefault("door_events", {})
         last_seen = _safe_str(state.get("last_event_key")) or None
 
@@ -525,6 +535,93 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "access ok",
         )
         return any(word in summary for word in granted_words)
+
+    def _event_timestamp_to_epoch(self, timestamp: Any) -> float:
+        value = AccessHistory._coerce_timestamp(timestamp)
+        if value:
+            return value
+        try:
+            return float(time.time())
+        except Exception:
+            return 0.0
+
+    def _prepare_access_history_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        prepared: List[Dict[str, Any]] = []
+        if not events:
+            return prepared
+
+        now_iso = _now_iso(self.hass)
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            base_key = self._event_unique_key(event)
+            if not base_key:
+                continue
+
+            timestamp_text = self._extract_event_timestamp(event) or now_iso
+            ts_value = self._event_timestamp_to_epoch(timestamp_text)
+
+            combined_key = f"{self.entry_id}:{base_key}"
+
+            copy = dict(event)
+            copy.setdefault("timestamp", timestamp_text)
+            copy.setdefault("Time", timestamp_text)
+            copy["_key"] = combined_key
+            copy["_device"] = self.device_name
+            copy["_device_id"] = self.entry_id
+            copy["_source"] = "doorlog"
+            copy["_category"] = "access"
+            copy["_t"] = ts_value
+
+            tokens = self._event_summary_tokens(event)
+            if tokens:
+                if self._event_is_access_denied(tokens):
+                    copy.setdefault("Result", "Access denied")
+                elif self._event_is_access_granted(tokens):
+                    copy.setdefault("Result", "Access granted")
+
+            prepared.append(copy)
+
+        prepared.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
+        return prepared
+
+    def _publish_access_history(self, events: List[Dict[str, Any]]) -> None:
+        if not events:
+            return
+
+        try:
+            root = self.hass.data.get(DOMAIN, {}) or {}
+        except Exception:
+            return
+
+        history = root.get("access_history")
+        if not history or not hasattr(history, "ingest"):
+            return
+
+        settings = root.get("settings_store")
+        try:
+            limit = (
+                settings.get_access_history_limit()
+                if settings and hasattr(settings, "get_access_history_limit")
+                else DEFAULT_ACCESS_HISTORY_LIMIT
+            )
+        except Exception:
+            limit = DEFAULT_ACCESS_HISTORY_LIMIT
+
+        prepared = self._prepare_access_history_events(events)
+        if not prepared or limit <= 0:
+            return
+
+        try:
+            history.ingest(prepared, limit)
+        except Exception as err:
+            _LOGGER.debug(
+                "Failed to update aggregated access history for %s: %s",
+                self.entry_id,
+                _safe_str(err),
+            )
 
     async def _handle_door_event(self, event: Dict[str, Any], notify_targets: List[str]) -> bool:
         """Handle a single door event, firing HA events as needed."""

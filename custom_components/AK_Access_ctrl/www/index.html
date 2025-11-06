@@ -121,8 +121,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
   return access;
 }
 
@@ -962,21 +975,55 @@ function applyEventFilter(){
   listEl.innerHTML = html || `<li class="event-item"><span class="event-title dim">${emptyMessage}</span></li>`;
 }
 
-function renderEvents(devs){
+function renderEvents(devs, aggregated){
   const events = [];
-  (devs || []).forEach(d => (d.events || []).forEach(e => {
-    let ts = e.timestamp || e.Time || '';
-    let dObj = new Date(ts);
-    if (isNaN(dObj.getTime()) && ts) {
-      try { ts = String(ts).split('.')[0] + 'Z'; dObj = new Date(ts); } catch {}
+  const seen = new Set();
+  const aggregatedList = Array.isArray(aggregated) ? aggregated : [];
+
+  aggregatedList.forEach((evt) => {
+    if (!evt || typeof evt !== 'object') return;
+    const copy = { ...evt };
+    const keyBase = copy._key || `${copy._device_id || ''}|${copy.timestamp || copy.Time || ''}|${copy.Event || copy.Result || ''}`;
+    const key = keyBase ? String(keyBase) : '';
+    if (key) {
+      if (seen.has(key)) return;
+      seen.add(key);
     }
-    events.push({
-      ...e,
-      _device: safeDeviceName(d),
-      _t: dObj.getTime() || 0,
-      _category: categorizeEvent(e, d),
+    if (typeof copy._t !== 'number') {
+      const rawTs = copy.timestamp || copy.Time || '';
+      const parsed = rawTs ? new Date(rawTs) : new Date();
+      if (parsed instanceof Date && !isNaN(parsed.getTime())) copy._t = parsed.getTime();
+      else copy._t = Number(copy._t) || 0;
+    }
+    copy._category = copy._category || 'access';
+    copy._device = copy._device || copy.device || '';
+    events.push(copy);
+  });
+
+  (devs || []).forEach(d => {
+    const deviceName = safeDeviceName(d);
+    (d.events || []).forEach(e => {
+      let ts = e.timestamp || e.Time || '';
+      let dObj = new Date(ts);
+      if (isNaN(dObj.getTime()) && ts) {
+        try { ts = String(ts).split('.')[0] + 'Z'; dObj = new Date(ts); } catch {}
+      }
+      const copy = {
+        ...e,
+        _device: deviceName,
+        _t: dObj instanceof Date && !isNaN(dObj.getTime()) ? dObj.getTime() : 0,
+        _category: categorizeEvent(e, d),
+      };
+      const keyBase = copy._key || `${deviceName}|${ts || ''}|${copy.Event || copy.Result || ''}`;
+      const key = keyBase ? String(keyBase) : '';
+      if (key) {
+        if (seen.has(key)) return;
+        seen.add(key);
+      }
+      events.push(copy);
     });
-  }));
+  });
+
   events.sort((a,b)=> (b._t||0) - (a._t||0));
   cachedEvents = events;
   applyEventFilter();
@@ -1071,9 +1118,14 @@ function scheduleDisplayId(rawId){
   if (!/^\d+$/.test(text)) return '';
   const numeric = Number(text);
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
-  const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
-  if (suffix <= 0) return '';
-  return `HA${suffix}`;
+  if (numeric >= 1000){
+    const adjusted = numeric - 901;
+    return adjusted > 0 ? `HA${adjusted}` : '';
+  }
+  if (numeric >= 100){
+    return `HA${numeric}`;
+  }
+  return '';
 }
 
 function formatScheduleDisplay(rawId, label){
@@ -1290,8 +1342,8 @@ function renderUsers(devs, registryUsers){
       groupsIntersect(item.groups, dev.groups)
     );
     const requiredIds = shouldHost.map(dev => dev.entryId).filter(id => !!id);
-    const pendingDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
     const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
+    const outOfSyncDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
       : !requiredIds.length;
@@ -1299,22 +1351,6 @@ function renderUsers(devs, registryUsers){
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLower = String(baseScheduleName).toLowerCase();
-    let accessText = 'Pending';
-    if (expired) {
-      accessText = 'Expired';
-    } else if (item._denied && baseLower !== 'no access') {
-      accessText = 'Denied';
-    } else if (String(item.status || '').toLowerCase() === 'deleted') {
-      accessText = 'Deleted';
-    } else if (String(item.status || '').toLowerCase() === 'pending') {
-      accessText = 'Pending';
-    } else if (pendingDevices.length) {
-      accessText = 'Pending';
-    } else if (!requiredIds.length) {
-      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
-    } else if (allVerified) {
-      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
-    }
     const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
     const statusLower = String(rest.face_status || '').trim().toLowerCase();
     let faceStatusFinal = statusLower;
@@ -1333,6 +1369,31 @@ function renderUsers(devs, registryUsers){
         faceActiveFinal = computeFaceActive(rest);
       }
       faceStatusFinal = faceActiveFinal ? 'active' : '';
+    }
+
+    const userPending = String(item.status || '').toLowerCase() === 'pending';
+    const facePendingFinal = faceStatusFinal === 'pending';
+    const pendingDevices = outOfSyncDevices.filter(dev => {
+      if (!dev.entryId) return true;
+      if (userPending || facePendingFinal) return true;
+      return !seenIds.includes(dev.entryId);
+    });
+
+    let accessText = 'Pending';
+    if (expired) {
+      accessText = 'Expired';
+    } else if (item._denied && baseLower !== 'no access') {
+      accessText = 'Denied';
+    } else if (String(item.status || '').toLowerCase() === 'deleted') {
+      accessText = 'Deleted';
+    } else if (userPending) {
+      accessText = 'Pending';
+    } else if (pendingDevices.length) {
+      accessText = 'Pending';
+    } else if (!requiredIds.length) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
+    } else if (allVerified) {
+      accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     }
 
     return {
@@ -1358,7 +1419,40 @@ function renderUsers(devs, registryUsers){
     .filter(u => u.isCloud || idMatchesFilter(u.id))
     .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
 
-  const rows = listSorted.map(u => {
+  const dedupedByName = [];
+  const nameIndex = new Map();
+
+  listSorted.forEach((entry) => {
+    const nameCanonical = canonicalString(entry.name || '');
+    const nameKey = nameCanonical ? nameCanonical.toLowerCase() : '';
+
+    if (!nameKey) {
+      dedupedByName.push(entry);
+      return;
+    }
+
+    if (!nameIndex.has(nameKey)) {
+      nameIndex.set(nameKey, dedupedByName.length);
+      dedupedByName.push(entry);
+      return;
+    }
+
+    const existingIndex = nameIndex.get(nameKey);
+    const existing = dedupedByName[existingIndex];
+
+    if (existing.isCloud && !entry.isCloud) {
+      dedupedByName[existingIndex] = entry;
+      return;
+    }
+
+    if (existing.isCloud || entry.isCloud) {
+      return;
+    }
+
+    dedupedByName.push(entry);
+  });
+
+  const rows = dedupedByName.map(u => {
     const scheduleRaw = u.access_schedule
       || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
     const scheduleLabel = String(scheduleRaw || '').trim();
@@ -1544,7 +1638,7 @@ async function refresh(){
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     renderDevices(devs);
-    renderEvents(devs);
+    renderEvents(devs, state.access_events || []);
     renderUsers(devs, state.registry_users || []);
     renderContacts(state.registry_users || []);
   } catch(e){
@@ -1552,6 +1646,67 @@ async function refresh(){
     if (handleAuthError(e)) return;
     document.querySelector('#tblDevices').innerHTML =
       `<tr><td colspan="9" class="text-danger">Failed to load: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+
+async function refreshEventHistory(){
+  const btn = document.getElementById('btnRefreshEvents');
+  const originalHtml = btn ? btn.innerHTML : '';
+  const setBusy = (busy) => {
+    if (!btn) return;
+    if (busy){
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Refreshing';
+      btn.setAttribute('disabled', 'disabled');
+    } else {
+      btn.innerHTML = originalHtml || '<i class="bi bi-arrow-clockwise"></i> Refresh Events';
+      btn.removeAttribute('disabled');
+    }
+  };
+
+  setBusy(true);
+
+  let ok = false;
+  let lastError = '';
+  let aborted = false;
+
+  try {
+    try {
+      await callService('akuvox_ac','refresh_events', {});
+      ok = true;
+    } catch (err) {
+      if (handleAuthError(err)) {
+        aborted = true;
+      } else {
+        lastError = err?.message || String(err);
+      }
+    }
+
+    if (!ok && !aborted) {
+      try {
+        const res = await apiPost(actionUrl, { action: 'refresh_events' });
+        if (res && typeof res === 'object') {
+          if (res.ok) ok = true;
+          else if ('ok' in res && !res.ok) lastError = res.error || lastError;
+        } else if (res === true) {
+          ok = true;
+        }
+      } catch (err) {
+        if (handleAuthError(err)) {
+          aborted = true;
+        } else if (!lastError) {
+          lastError = err?.message || String(err);
+        }
+      }
+    }
+
+    if (!aborted) {
+      if (!ok && lastError) {
+        alert(`Failed to refresh events${lastError ? `: ${lastError}` : ''}`);
+      }
+      await refresh();
+    }
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -1787,6 +1942,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
+  document.getElementById('btnRefreshEvents')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    refreshEventHistory();
+  });
   document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
     e.preventDefault();
     openInApp('settings');
@@ -1913,7 +2072,10 @@ setInterval(refresh, 5000);
     <div class="section-33">
       <div class="card flex-fill" id="sectionEvents">
         <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
-          <span>Event History</span>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span>Event History</span>
+            <button id="btnRefreshEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-clockwise"></i> Refresh Events</button>
+          </div>
           <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
             <option value="all">All events</option>
             <option value="system">System events</option>

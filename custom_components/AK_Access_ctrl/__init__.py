@@ -38,6 +38,9 @@ from .const import (
     MAX_DIAGNOSTICS_HISTORY_LIMIT,
     MIN_HEALTH_CHECK_INTERVAL,
     MAX_HEALTH_CHECK_INTERVAL,
+    DEFAULT_ACCESS_HISTORY_LIMIT,
+    MIN_ACCESS_HISTORY_LIMIT,
+    MAX_ACCESS_HISTORY_LIMIT,
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
@@ -56,6 +59,7 @@ from .relay import (
 
 from .api import AkuvoxAPI
 from .coordinator import AkuvoxCoordinator
+from .access_history import AccessHistory
 from .http import (
     face_base_url,
     face_filename_from_reference,
@@ -218,6 +222,57 @@ _BOOLISH_TRUE = {
     "available",
     "linked",
 }
+
+EXIT_PERMISSION_MATCH = "match"
+EXIT_PERMISSION_WORKING_DAYS = "working_days"
+EXIT_PERMISSION_ALWAYS = "always"
+_VALID_EXIT_PERMISSIONS: set[str] = {
+    EXIT_PERMISSION_MATCH,
+    EXIT_PERMISSION_WORKING_DAYS,
+    EXIT_PERMISSION_ALWAYS,
+}
+
+EXIT_CLONE_SUFFIX = " - EP"
+
+
+def _normalize_exit_permission(value: Any) -> Optional[str]:
+    """Coerce arbitrary representations into one of the supported exit policies."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return EXIT_PERMISSION_ALWAYS if value else EXIT_PERMISSION_MATCH
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    cleaned = text.replace("-", "_").replace(" ", "_")
+
+    if cleaned in {"same_as_entry", "match", "matching", "default"}:
+        return EXIT_PERMISSION_MATCH
+
+    if cleaned in {"working_days", "work_days", "workingdays", "workdays"}:
+        return EXIT_PERMISSION_WORKING_DAYS
+
+    if cleaned in {
+        "always",
+        "always_allow",
+        "always_permit",
+        "always_permit_exit",
+        "24_7",
+        "24x7",
+        "1",
+        "true",
+        "yes",
+    }:
+        return EXIT_PERMISSION_ALWAYS
+
+    if cleaned in _VALID_EXIT_PERMISSIONS:
+        return cleaned
+
+    return None
 
 _BOOLISH_FALSE = {
     "0",
@@ -549,7 +604,7 @@ def _desired_device_user_payload(
     *,
     opts: Dict[str, Any],
     sched_map: Optional[Dict[str, str]],
-    exit_allow_map: Optional[Dict[str, bool]],
+    exit_schedule_map: Optional[Dict[str, Dict[str, Any]]],
     face_root_base: str,
     device_type_raw: str,
 ) -> Dict[str, Any]:
@@ -558,29 +613,55 @@ def _desired_device_user_payload(
     profile = profile or {}
     local = local or {}
     sched_map = sched_map or {}
-    exit_allow_map = exit_allow_map or {}
+    exit_schedule_map = exit_schedule_map or {}
 
     schedule_name = (profile.get("schedule_name") or local.get("Schedule") or "24/7 Access").strip()
     schedule_lower = schedule_name.lower()
+    exit_info = exit_schedule_map.get(schedule_lower, {})
+    exit_permission = _normalize_exit_permission(profile.get("exit_permission"))
+    if exit_permission is None:
+        exit_permission = _normalize_exit_permission(local.get("exit_permission"))
+    if exit_permission is None:
+        default_mode = str(exit_info.get("default_mode") or "").strip().lower()
+        if default_mode == EXIT_PERMISSION_ALWAYS:
+            exit_permission = EXIT_PERMISSION_ALWAYS
+        elif default_mode == EXIT_PERMISSION_WORKING_DAYS:
+            exit_permission = EXIT_PERMISSION_WORKING_DAYS
+    if exit_permission is None:
+        exit_permission = EXIT_PERMISSION_MATCH
     key_holder_flag = _key_holder_from_record(profile)
     if key_holder_flag is None:
         key_holder_flag = _key_holder_from_record(local)
     key_holder = bool(key_holder_flag)
     explicit_id = str(profile.get("schedule_id") or "").strip()
 
-    schedule_exit_enabled = bool(exit_allow_map.get(schedule_lower, False))
-    if not schedule_exit_enabled and explicit_id == "1001":
-        schedule_exit_enabled = True
-
-    exit_override = bool(opts.get("exit_device")) and bool(schedule_exit_enabled)
-    effective_schedule = "24/7 Access" if exit_override else schedule_name
+    exit_override = bool(opts.get("exit_device"))
+    exit_schedule_id: Optional[str] = None
+    effective_schedule = schedule_name
 
     if exit_override:
-        schedule_id = "1001"
+        if exit_permission == EXIT_PERMISSION_ALWAYS:
+            exit_schedule_id = "1001"
+            effective_schedule = "24/7 Access"
+        elif exit_permission == EXIT_PERMISSION_WORKING_DAYS:
+            clone_name = str(exit_info.get("clone_name") or "").strip()
+            if clone_name:
+                candidate_id = sched_map.get(clone_name.lower())
+                if candidate_id:
+                    exit_schedule_id = candidate_id
+                    effective_schedule = clone_name
+            if not exit_schedule_id:
+                exit_permission = EXIT_PERMISSION_MATCH
+                effective_schedule = schedule_name
+
+    if exit_override and exit_permission != EXIT_PERMISSION_MATCH and exit_schedule_id:
+        schedule_id = exit_schedule_id
     elif explicit_id and explicit_id.isdigit():
         schedule_id = explicit_id
     else:
-        schedule_id = sched_map.get(effective_schedule.lower(), "1001")
+        schedule_id = sched_map.get(effective_schedule.lower(), "")
+    if not schedule_id:
+        schedule_id = "1001"
 
     relay_roles = normalize_relay_roles(opts.get("relay_roles"), device_type_raw)
     try:
@@ -852,6 +933,56 @@ def _desired_device_user_payload(
     return desired
 
 
+def _build_exit_schedule_map(schedules: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Map normalized schedule names to their exit-clone metadata."""
+
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(schedules, dict):
+        return result
+
+    def _norm(text: Any) -> str:
+        return str(text or "").strip().lower()
+
+    for name, spec in schedules.items():
+        if not isinstance(spec, dict):
+            continue
+        normalized_name = _norm(name)
+        if not normalized_name:
+            continue
+
+        is_clone = bool(spec.get("system_exit_clone"))
+        clone_for = _norm(spec.get("exit_clone_for"))
+        if is_clone and clone_for and clone_for != normalized_name:
+            entry = result.setdefault(clone_for, {})
+            entry.setdefault("clone_name", str(name).strip())
+            continue
+
+        entry = result.setdefault(normalized_name, {})
+        clone_name = str(spec.get("exit_clone_name") or "").strip()
+        if clone_name:
+            entry["clone_name"] = clone_name
+        if spec.get("always_permit_exit"):
+            entry["default_mode"] = EXIT_PERMISSION_ALWAYS
+
+    for name, spec in schedules.items():
+        if not isinstance(spec, dict):
+            continue
+        normalized_name = _norm(name)
+        if normalized_name in result and result[normalized_name].get("clone_name"):
+            continue
+        if normalized_name.endswith(EXIT_CLONE_SUFFIX.lower()):
+            base = _norm(name[: -len(EXIT_CLONE_SUFFIX)])
+            if base:
+                entry = result.setdefault(base, {})
+                entry.setdefault("clone_name", str(name).strip())
+
+    for builtin in ("24/7 access", "24/7", "24x7", "always"):
+        entry = result.setdefault(builtin, {})
+        entry.setdefault("default_mode", EXIT_PERMISSION_ALWAYS)
+
+    return result
+
+
 def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
     """Return the list of high-level fields that differ between device data and expectations."""
 
@@ -979,6 +1110,119 @@ class AkuvoxSchedulesStore(Store):
         if isinstance(val, str):
             return val.strip().lower() in {"1", "true", "yes", "y", "on", "enable", "enabled"}
         return bool(val)
+
+    def _exit_clone_name(self, name: str) -> str:
+        base = str(name or "").strip()
+        if not base:
+            return ""
+        if base.lower().endswith(EXIT_CLONE_SUFFIX.lower()):
+            return base
+        return f"{base}{EXIT_CLONE_SUFFIX}"
+
+    def _is_exit_clone(self, name: str, spec: Optional[Mapping[str, Any]] = None) -> bool:
+        if spec and spec.get("system_exit_clone"):
+            return True
+        if spec and spec.get("exit_clone_for"):
+            clone_for = str(spec.get("exit_clone_for") or "").strip().lower()
+            if clone_for and clone_for != str(name or "").strip().lower():
+                return True
+        return str(name or "").strip().lower().endswith(EXIT_CLONE_SUFFIX.lower())
+
+    def _ensure_exit_clones(self, schedules: Optional[Dict[str, Any]] = None) -> bool:
+        store = schedules if isinstance(schedules, dict) else self.data.setdefault("schedules", {})
+        if not isinstance(store, dict):
+            return False
+
+        changed = False
+        base_lookup: Dict[str, str] = {}
+        expected_clones: Dict[str, Dict[str, Any]] = {}
+
+        for name, spec in list(store.items()):
+            if not isinstance(spec, dict):
+                continue
+            if self._is_exit_clone(name, spec):
+                continue
+            normalized = str(name or "").strip().lower()
+            if normalized:
+                base_lookup[normalized] = name
+
+        for name, spec in list(store.items()):
+            if not isinstance(spec, dict):
+                continue
+            if self._is_exit_clone(name, spec):
+                continue
+
+            clone_name = str(spec.get("exit_clone_name") or self._exit_clone_name(name)).strip()
+            if spec.get("exit_clone_name") != clone_name:
+                spec = dict(spec)
+                spec["exit_clone_name"] = clone_name
+                store[name] = spec
+                changed = True
+
+            clone_payload = {
+                "start": "00:00",
+                "end": "23:59",
+                "days": list(spec.get("days") or []),
+                "always_permit_exit": True,
+                "type": spec.get("type", "0"),
+                "date_start": spec.get("date_start", ""),
+                "date_end": spec.get("date_end", ""),
+                "system_exit_clone": True,
+                "exit_clone_for": name,
+            }
+
+            normalized_clone = self._normalize_payload(clone_name, clone_payload)
+            normalized_clone["exit_clone_for"] = name
+            expected_clones[clone_name] = normalized_clone
+
+        for clone_name, normalized_clone in expected_clones.items():
+            current_clone = store.get(clone_name)
+            if current_clone != normalized_clone:
+                store[clone_name] = normalized_clone
+                changed = True
+
+        for name, spec in list(store.items()):
+            if not isinstance(spec, dict):
+                continue
+            if not self._is_exit_clone(name, spec):
+                continue
+
+            if name in expected_clones:
+                # Ensure the stored payload stays normalised and points at the canonical base name.
+                normalized_clone = self._normalize_payload(name, spec)
+                target_base = normalized_clone.get("exit_clone_for", "")
+                if target_base:
+                    base_key = str(target_base).strip().lower()
+                    canonical = base_lookup.get(base_key)
+                    if canonical and canonical != target_base:
+                        normalized_clone["exit_clone_for"] = canonical
+                if store[name] != normalized_clone:
+                    store[name] = normalized_clone
+                    changed = True
+                continue
+
+            normalized_clone = self._normalize_payload(name, spec)
+            target_base = str(normalized_clone.get("exit_clone_for") or "").strip().lower()
+            canonical = base_lookup.get(target_base)
+
+            if canonical:
+                desired_name = self._exit_clone_name(canonical)
+                desired_payload = expected_clones.get(desired_name)
+                if desired_payload:
+                    if name != desired_name:
+                        store.pop(name, None)
+                        store[desired_name] = desired_payload
+                        changed = True
+                    elif store[name] != desired_payload:
+                        store[name] = desired_payload
+                        changed = True
+                    continue
+
+            if normalized_clone.get("system_exit_clone") or normalized_clone.get("exit_clone_for"):
+                store.pop(name, None)
+                changed = True
+
+        return changed
 
     @staticmethod
     def _time_to_minutes(value: Any) -> Optional[int]:
@@ -1136,6 +1380,18 @@ class AkuvoxSchedulesStore(Store):
 
         normalized["days"] = [day for day in self._DAYS if day in days_selected]
 
+        system_clone_flag = self._as_bool(payload.get("system_exit_clone")) if payload else False
+        normalized["system_exit_clone"] = system_clone_flag
+        if system_clone_flag or (payload and "exit_clone_for" in payload):
+            normalized["exit_clone_for"] = str((payload or {}).get("exit_clone_for") or "").strip()
+        elif "exit_clone_for" in normalized:
+            normalized["exit_clone_for"] = str(normalized.get("exit_clone_for") or "").strip()
+
+        if payload and "exit_clone_name" in payload:
+            normalized["exit_clone_name"] = str(payload.get("exit_clone_name") or "").strip()
+        elif not system_clone_flag:
+            normalized["exit_clone_name"] = self._exit_clone_name(name)
+
         return normalized
 
     async def async_load(self):
@@ -1172,6 +1428,8 @@ class AkuvoxSchedulesStore(Store):
             )
 
         changed = original != existing
+        if self._ensure_exit_clones(existing):
+            changed = True
         self.data["schedules"] = existing
         if changed:
             await self.async_save()
@@ -1183,14 +1441,29 @@ class AkuvoxSchedulesStore(Store):
         return dict(self.data.get("schedules") or {})
 
     async def upsert(self, name: str, payload: Dict[str, Any]):
-        self.data.setdefault("schedules", {})[name] = self._normalize_payload(name, payload)
+        schedules = self.data.setdefault("schedules", {})
+        schedules[name] = self._normalize_payload(name, payload)
+        self._ensure_exit_clones(schedules)
         await self.async_save()
 
     async def delete(self, name: str):
         if name in ("24/7 Access", "No Access"):
             return
-        self.data.setdefault("schedules", {}).pop(name, None)
-        await self.async_save()
+        schedules = self.data.setdefault("schedules", {})
+        removed = False
+        spec = schedules.get(name)
+        if self._is_exit_clone(name, spec):
+            removed = schedules.pop(name, None) is not None
+        else:
+            if name in schedules:
+                schedules.pop(name, None)
+                removed = True
+            clone_name = self._exit_clone_name(name)
+            if clone_name in schedules:
+                schedules.pop(clone_name, None)
+                removed = True
+        if removed:
+            await self.async_save()
 
 
 class AkuvoxUsersStore(Store):
@@ -1301,6 +1574,7 @@ class AkuvoxUsersStore(Store):
         access_end: Optional[str] = None,
         source: Optional[str] = None,
         license_plate: Optional[List[Any]] = None,
+        exit_permission: Optional[str] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1383,6 +1657,12 @@ class AkuvoxUsersStore(Store):
                 u["license_plate"] = cleaned
             else:
                 u.pop("license_plate", None)
+        if exit_permission is not None:
+            normalized_exit = _normalize_exit_permission(exit_permission)
+            if normalized_exit:
+                u["exit_permission"] = normalized_exit
+            else:
+                u.pop("exit_permission", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -1434,6 +1714,7 @@ class AkuvoxSettingsStore(Store):
             "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
             "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
             "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
+            "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
         }
 
     async def async_load(self):
@@ -1487,6 +1768,14 @@ class AkuvoxSettingsStore(Store):
         self.data["credential_prompts"] = self._sanitize_credential_prompts(
             self.data.get("credential_prompts")
         )
+
+        try:
+            access_limit = self._normalize_access_history_limit(
+                self.data.get("access_history_limit", DEFAULT_ACCESS_HISTORY_LIMIT)
+            )
+        except ValueError:
+            access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+        self.data["access_history_limit"] = access_limit
 
     async def async_save(self):
         await super().async_save(self.data)
@@ -1604,6 +1893,36 @@ class AkuvoxSettingsStore(Store):
     async def set_health_check_interval_seconds(self, seconds: Any) -> int:
         value = self._normalize_health_interval(seconds)
         self.data["health_check_interval_seconds"] = value
+        await self.async_save()
+        return value
+
+    def _normalize_access_history_limit(self, limit: Any) -> int:
+        if limit is None:
+            raise ValueError("Invalid access history limit")
+        try:
+            value = int(limit)
+        except Exception as err:
+            raise ValueError("Invalid access history limit") from err
+        if value < MIN_ACCESS_HISTORY_LIMIT:
+            return MIN_ACCESS_HISTORY_LIMIT
+        if value > MAX_ACCESS_HISTORY_LIMIT:
+            return MAX_ACCESS_HISTORY_LIMIT
+        return value
+
+    def get_access_history_limit(self) -> int:
+        try:
+            return self._normalize_access_history_limit(
+                self.data.get("access_history_limit", DEFAULT_ACCESS_HISTORY_LIMIT)
+            )
+        except ValueError:
+            return DEFAULT_ACCESS_HISTORY_LIMIT
+
+    def get_access_history_bounds(self) -> Tuple[int, int]:
+        return (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
+
+    async def set_access_history_limit(self, limit: Any) -> int:
+        value = self._normalize_access_history_limit(limit)
+        self.data["access_history_limit"] = value
         await self.async_save()
         return value
 
@@ -1881,6 +2200,29 @@ class SyncQueue:
 
         self._handle = async_call_later(self.hass, remaining, _schedule_cb)
 
+    def ensure_future_run(self):
+        if self._active:
+            return
+
+        eta = self.next_sync_eta
+        if not isinstance(eta, datetime):
+            return
+
+        if eta > datetime.now():
+            return
+
+        handle = self._handle
+        self._handle = None
+
+        if handle:
+            try:
+                handle()
+            except Exception:
+                pass
+
+        self.next_sync_eta = datetime.now()
+        self.hass.async_create_task(self.run())
+
     async def run(self, only_entry: Optional[str] = None):
         async with self._lock:
             self.next_sync_eta = None
@@ -1954,7 +2296,15 @@ class SyncQueue:
                 self._handle = None
                 self._active = False
 
-    async def sync_now(self, entry_id: Optional[str] = None):
+    async def sync_now(
+        self, entry_id: Optional[str] = None, *, include_all: bool = False
+    ):
+        if include_all and entry_id:
+            include_all = False
+
+        if include_all and not entry_id:
+            self._pending_all = True
+
         self._set_health_status(entry_id, "in_progress" if entry_id else "pending")
         if self._handle is not None:
             try:
@@ -2079,6 +2429,11 @@ class SyncManager:
     def get_next_sync_text(self) -> str:
         sq: SyncQueue = self._root().get("sync_queue")
         if sq:
+            if hasattr(sq, "ensure_future_run"):
+                try:
+                    sq.ensure_future_run()
+                except Exception:
+                    pass
             if getattr(sq, "_active", False):
                 return "Syncing…"
             if sq.next_sync_eta:
@@ -2326,13 +2681,7 @@ class SyncManager:
         # Resolve device schedule IDs after pushing (so we use what the device knows)
         sched_map = await self._device_schedule_map(api)
 
-        exit_allow_map: Dict[str, bool] = {}
-        for name, spec in (schedules_all or {}).items():
-            if not isinstance(spec, dict):
-                continue
-            exit_allow_map[name.strip().lower()] = bool(spec.get("always_permit_exit"))
-        for builtin in ("24/7 access", "24/7", "24x7", "always"):
-            exit_allow_map.setdefault(builtin, True)
+        exit_schedule_map = _build_exit_schedule_map(schedules_all)
 
         def _find_local_by_key(ha_key: str) -> Optional[Dict[str, Any]]:
             for u in local_users:
@@ -2358,7 +2707,7 @@ class SyncManager:
                 local,
                 opts=opts,
                 sched_map=sched_map,
-                exit_allow_map=exit_allow_map,
+                exit_schedule_map=exit_schedule_map,
                 face_root_base=face_root_base,
                 device_type_raw=device_type_raw,
             )
@@ -2463,13 +2812,7 @@ class SyncManager:
             except Exception:
                 schedules_all = {}
 
-        exit_allow_map: Dict[str, bool] = {}
-        for name, spec in (schedules_all or {}).items():
-            if not isinstance(spec, dict):
-                continue
-            exit_allow_map[name.strip().lower()] = bool(spec.get("always_permit_exit"))
-        for builtin in ("24/7 access", "24/7", "24x7", "always"):
-            exit_allow_map.setdefault(builtin, True)
+        exit_schedule_map = _build_exit_schedule_map(schedules_all)
 
         face_root_base = face_base_url(self.hass)
 
@@ -2515,7 +2858,7 @@ class SyncManager:
                         local,
                         opts=opts,
                         sched_map=sched_map,
-                        exit_allow_map=exit_allow_map,
+                        exit_schedule_map=exit_schedule_map,
                         face_root_base=face_root_base,
                         device_type_raw=device_type_raw,
                     )
@@ -2566,6 +2909,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     root = hass.data[DOMAIN]
 
     _migrate_face_storage(hass)
+
+    if "access_history" not in root:
+        root["access_history"] = AccessHistory()
 
     if "groups_store" not in root:
         gs = AkuvoxGroupsStore(hass)
@@ -2859,6 +3205,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             access_start=d.get("access_start") if "access_start" in d else date.today().isoformat(),
             access_end=d.get("access_end") if "access_end" in d else None,
             source="Local",
+            exit_permission=d.get("exit_permission"),
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -2899,6 +3246,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             access_end=d.get("access_end") if "access_end" in d else None,
             source="Local",
             license_plate=lp_payload,
+            exit_permission=d.get("exit_permission") if "exit_permission" in d else None,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
@@ -3103,8 +3451,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         for coord in coords:
             _log_full_sync(coord, triggered_by)
 
+        include_all = not entry_id
+
         try:
-            await queue.sync_now(entry_id)
+            await queue.sync_now(entry_id, include_all=include_all)
         except Exception:
             pass
 

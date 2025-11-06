@@ -523,13 +523,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
   try { window.AK_AC_HA_AUTH = payload; } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
   try {
     if (window.parent && window.parent !== window) {
-      try { window.parent.AK_AC_HA_AUTH = payload; } catch (err) {}
-      try { window.parent.localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+      try { window.parent.AK_AC_HA_AUTH = payload; } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
     }
   } catch (err) {}
   return rememberToken(access);

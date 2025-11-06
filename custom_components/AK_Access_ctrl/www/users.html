@@ -46,8 +46,21 @@ function persistTokens(access, refresh) {
   if (!access) return null;
   const payload = { access_token: access };
   if (refresh) payload.refresh_token = refresh;
-  try { sessionStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
-  try { localStorage.setItem('hassTokens', JSON.stringify(payload)); } catch (err) {}
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
   return access;
 }
 
@@ -497,6 +510,9 @@ function openInApp(view, params = {}, options = {}) {
 
 /* -------------------- app state -------------------- */
 let SCHEDULES = {};     // { name: weekSpec, ... }
+let EXIT_CLONES = {};   // { normalizedName: cloneName }
+let scheduleRefreshPromise = null;
+let scheduleRefreshTimer = null;
 let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
 let CURRENT = null;     // working user object
@@ -611,6 +627,149 @@ function escapeHtml(value){
     '"': '&quot;',
     "'": '&#39;'
   }[ch] || ch));
+}
+
+function normalizedScheduleKey(name){
+  return String(name || '').trim().toLowerCase();
+}
+
+function scheduleCloneSuffix(){
+  return ' - EP';
+}
+
+function scheduleIsExitClone(name, spec){
+  const normalized = normalizedScheduleKey(name);
+  if (!normalized) return false;
+  const specObj = spec && typeof spec === 'object' ? spec : {};
+  if (specObj.system_exit_clone) return true;
+  if (specObj.exit_clone_for){
+    const base = normalizedScheduleKey(specObj.exit_clone_for);
+    if (base && base !== normalized) return true;
+  }
+  return normalized.endsWith(scheduleCloneSuffix().toLowerCase());
+}
+
+function buildExitCloneMap(source){
+  const out = {};
+  Object.entries(source || {}).forEach(([name, spec]) => {
+    const normalized = normalizedScheduleKey(name);
+    if (!normalized) return;
+    const specObj = spec && typeof spec === 'object' ? spec : {};
+    if (scheduleIsExitClone(name, specObj)){
+      const base = specObj.exit_clone_for ? String(specObj.exit_clone_for).trim() : name.slice(0, -scheduleCloneSuffix().length);
+      const baseNorm = normalizedScheduleKey(base);
+      if (baseNorm && baseNorm !== normalized){
+        out[baseNorm] = name;
+      }
+      return;
+    }
+    const cloneName = specObj.exit_clone_name ? String(specObj.exit_clone_name).trim() : '';
+    if (cloneName){
+      out[normalized] = cloneName;
+    }
+  });
+  return out;
+}
+
+function scheduleHasWorkingExitClone(scheduleName){
+  const clone = EXIT_CLONES[normalizedScheduleKey(scheduleName)];
+  return !!(clone && SCHEDULES && SCHEDULES[clone]);
+}
+
+function applySchedulesUpdate(nextSchedules){
+  const scheduleSelect = document.getElementById('schedule');
+  const previousId = scheduleSelect ? scheduleSelect.value : (CURRENT && CURRENT.schedule_id ? CURRENT.schedule_id : '');
+  const previousName = CURRENT && CURRENT.schedule_name ? CURRENT.schedule_name : '';
+  const sanitized = {};
+  if (nextSchedules && typeof nextSchedules === 'object'){
+    Object.entries(nextSchedules).forEach(([name, spec]) => {
+      sanitized[name] = spec;
+    });
+  }
+  SCHEDULES = sanitized;
+  buildScheduleMap();
+  if (scheduleSelect){
+    const optionsHtml = scheduleOptionsHtml();
+    scheduleSelect.innerHTML = optionsHtml;
+    const optionIds = new Set(Array.from(scheduleSelect.options).map(opt => opt.value));
+    let target = previousId && optionIds.has(previousId) ? previousId : '';
+    if (!target && previousName){
+      const fallback = idForName(previousName);
+      if (optionIds.has(fallback)) target = fallback;
+    }
+    if (!target){
+      target = '1001';
+    }
+    scheduleSelect.value = target;
+    if (CURRENT){
+      CURRENT.schedule_id = target;
+      CURRENT.schedule_name = nameForId(target);
+    }
+  }
+  ensureExitPermissionAvailability();
+}
+
+function queueScheduleRefresh(){
+  if (scheduleRefreshTimer){
+    return;
+  }
+  scheduleRefreshTimer = setTimeout(() => {
+    scheduleRefreshTimer = null;
+    refreshSchedulesFromServer();
+  }, 200);
+}
+
+async function refreshSchedulesFromServer(){
+  if (scheduleRefreshPromise) return scheduleRefreshPromise;
+  scheduleRefreshPromise = (async () => {
+    try {
+      const state = await apiGet(API_STATE);
+      if (state && typeof state === 'object' && state.schedules){
+        applySchedulesUpdate(state.schedules);
+      }
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      console.warn('Failed to refresh schedules', err);
+    } finally {
+      scheduleRefreshPromise = null;
+    }
+  })();
+  return scheduleRefreshPromise;
+}
+
+function handleScheduleRevisionSignal(){
+  queueScheduleRefresh();
+}
+
+window.addEventListener('storage', (event) => {
+  if (!event) return;
+  if (event.key === 'akuvox_schedule_revision') {
+    handleScheduleRevisionSignal();
+  }
+});
+
+window.addEventListener('message', (event) => {
+  if (!event) return;
+  if (event.origin && event.origin !== window.location.origin) return;
+  const data = event.data;
+  if (data && typeof data === 'object' && data.type === 'akuvox-schedules-updated') {
+    handleScheduleRevisionSignal();
+  }
+});
+
+window.addEventListener('akuvox-schedules-updated', handleScheduleRevisionSignal);
+
+function normalizeExitPermission(value){
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value ? 'always' : 'match';
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return null;
+  const cleaned = text.replace(/[-\s]+/g, '_');
+  if (['match', 'matching', 'same_as_entry', 'default'].includes(cleaned)) return 'match';
+  if (['working_days', 'work_days', 'workingdays', 'workdays'].includes(cleaned)) return 'working_days';
+  if (['always', 'always_allow', 'always_permit', 'always_permit_exit', '24_7', '24x7', '1', 'true', 'yes'].includes(cleaned)) return 'always';
+  if (['match', 'working_days', 'always'].includes(cleaned)) return cleaned;
+  return null;
 }
 
 function updateKeyHolderAvailability(){
@@ -759,6 +918,7 @@ function selectExistingUser(id, options = {}){
       ? [...existing.Groups]
       : ['Default'],
   };
+  CURRENT.exit_permission = normalizeExitPermission(existing.exit_permission) || 'match';
   CURRENT.license_plate = sanitizeLicensePlateList(existing.license_plate || existing.LicensePlate || CURRENT.license_plate);
   if (!CURRENT.schedule_id && CURRENT.schedule_name) {
     CURRENT.schedule_id = idForName(CURRENT.schedule_name);
@@ -801,9 +961,14 @@ function scheduleDisplayId(rawId){
   if (!/^\d+$/.test(text)) return '';
   const numeric = Number(text);
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
-  const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
-  if (suffix <= 0) return '';
-  return `HA${suffix}`;
+  if (numeric >= 1000){
+    const adjusted = numeric - 901;
+    return adjusted > 0 ? `HA${adjusted}` : '';
+  }
+  if (numeric >= 100){
+    return `HA${numeric}`;
+  }
+  return '';
 }
 
 function formatScheduleDisplay(rawId, label){
@@ -865,6 +1030,7 @@ function blankProfile(id = ''){
     schedule_id: '1001',
     key_holder: false,
     access_level: '',
+    exit_permission: 'match',
     access_start: todayIso(),
     access_end: '',
     access_expired: false,
@@ -1015,6 +1181,8 @@ function applyContactMode(){
   if (title) title.textContent = CURRENT && CURRENT.id ? 'Edit Contact' : 'Add Contact';
   const scheduleRow = document.getElementById('scheduleRow');
   if (scheduleRow) scheduleRow.style.display = 'none';
+  const exitRow = document.getElementById('exitPermissionRow');
+  if (exitRow) exitRow.style.display = 'none';
   const scheduleSelect = document.getElementById('schedule');
   if (scheduleSelect && CURRENT) {
     const target = CURRENT.schedule_id || '1002';
@@ -1033,21 +1201,39 @@ function applyContactMode(){
 }
 
 function buildScheduleMap(){
-  // Built-ins first
+  EXIT_CLONES = buildExitCloneMap(SCHEDULES);
   const out = [
     { id: '1001', name: '24/7 Access', label: '24/7 Access' },
     { id: '1002', name: 'No Access',   label: 'No Access' }
   ];
-  // Custom schedules (deterministic IDs: 1003+)
-  const customNames = Object.keys(SCHEDULES || {})
-    .filter(n => n !== '24/7 Access' && n !== 'No Access')
-    .sort((a,b) => a.localeCompare(b));
+  const entries = Object.entries(SCHEDULES || {})
+    .filter(([name, spec]) => name !== '24/7 Access' && name !== 'No Access' && !scheduleIsExitClone(name, spec))
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
   const base = 1003;
-  customNames.forEach((name, i) => {
+  entries.forEach((name, i) => {
     const id = String(base + i);
     out.push({ id, name, label: name });
   });
   SCHED_MAP = out.map(item => ({ ...item, display: formatScheduleDisplay(item.id, item.label) }));
+}
+
+function ensureExitPermissionAvailability(){
+  const exitEl = document.getElementById('exit_permission');
+  if (!exitEl) return;
+  const scheduleEl = document.getElementById('schedule');
+  const selectedId = scheduleEl ? scheduleEl.value : (CURRENT && CURRENT.schedule_id ? CURRENT.schedule_id : '');
+  const scheduleName = nameForId(selectedId);
+  const hasWorking = scheduleHasWorkingExitClone(scheduleName);
+  Array.from(exitEl.options).forEach(opt => {
+    if (opt.value === 'working_days'){
+      opt.disabled = !hasWorking;
+    }
+  });
+  if (exitEl.value === 'working_days' && !hasWorking){
+    exitEl.value = 'match';
+    if (CURRENT) CURRENT.exit_permission = 'match';
+  }
 }
 function optionLabel(item){
   const display = item && typeof item === 'object'
@@ -1136,7 +1322,7 @@ async function load(){
     }
     updateKeyHolderAvailability();
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
-    SCHEDULES = state.schedules || {};
+    applySchedulesUpdate(state?.schedules || {});
     REGISTRY = state.registry_users || [];
 
     // Load phones (notify services from HA mobile app)
@@ -1252,6 +1438,32 @@ function fillForm(){
   selEl.value = selectedId;
   CURRENT.schedule_id = selectedId;
   CURRENT.schedule_name = nameForId(selectedId);
+  if (!selEl._exitBound){
+    selEl.addEventListener('change', () => {
+      const val = selEl.value || '1001';
+      CURRENT.schedule_id = val;
+      CURRENT.schedule_name = nameForId(val);
+      ensureExitPermissionAvailability();
+    });
+    selEl._exitBound = true;
+  }
+
+  const exitSelect = document.getElementById('exit_permission');
+  if (exitSelect){
+    if (!exitSelect._bound){
+      exitSelect.addEventListener('change', () => {
+        const normalized = normalizeExitPermission(exitSelect.value) || 'match';
+        if (CURRENT) CURRENT.exit_permission = normalized;
+      });
+      exitSelect._bound = true;
+    }
+    const desiredExit = normalizeExitPermission(CURRENT.exit_permission) || 'match';
+    exitSelect.value = desiredExit;
+    CURRENT.exit_permission = desiredExit;
+    ensureExitPermissionAvailability();
+  }
+  const exitRow = document.getElementById('exitPermissionRow');
+  if (exitRow) exitRow.style.display = CONTACT_MODE ? 'none' : '';
 
   const startInput = document.getElementById('access_start');
   if (startInput){
@@ -1442,6 +1654,11 @@ async function save(){
       key_holder: ANY_ALARM_CAPABLE ? document.getElementById('key_holder').checked : false,
     };
 
+    const exitSelect = document.getElementById('exit_permission');
+    const exitPermissionValue = normalizeExitPermission(exitSelect ? exitSelect.value : CURRENT.exit_permission) || 'match';
+    payload.exit_permission = exitPermissionValue;
+    CURRENT.exit_permission = exitPermissionValue;
+
     if (prompts.code){
       const pinInput = document.getElementById('pin');
       const pinValue = pinInput ? pinInput.value.trim() : '';
@@ -1622,6 +1839,16 @@ function showPanel(which){
       <label class="form-label">Access Schedule</label>
       <select id="schedule" class="form-select"></select>
       <div class="form-text muted">Need a new schedule? Open <b>Global Settings → Access Schedules</b> to build one, then come back and select it here.</div>
+    </div>
+
+    <div class="mb-3" id="exitPermissionRow">
+      <label class="form-label">Exit permissions</label>
+      <select id="exit_permission" class="form-select">
+        <option value="match">Match access schedule</option>
+        <option value="working_days">Permit exit on working days</option>
+        <option value="always">Always permit exit</option>
+      </select>
+      <div class="form-text muted">Controls schedules applied on exit-only devices.</div>
     </div>
 
     <div class="mb-3" id="accessWindow">

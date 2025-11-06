@@ -36,6 +36,9 @@ from .const import (
     INBOUND_CALL_RESULT_APPROVED,
     INBOUND_CALL_RESULT_APPROVED_KEY_HOLDER,
     INBOUND_CALL_RESULT_DENIED,
+    DEFAULT_ACCESS_HISTORY_LIMIT,
+    MIN_ACCESS_HISTORY_LIMIT,
+    MAX_ACCESS_HISTORY_LIMIT,
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
@@ -45,6 +48,10 @@ COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
+
+EXIT_PERMISSION_MATCH = "match"
+EXIT_PERMISSION_WORKING_DAYS = "working_days"
+EXIT_PERMISSION_ALWAYS = "always"
 
 
 def _component_face_dir() -> Path:
@@ -82,6 +89,40 @@ def _face_file_exists_in(base: Path, user_id: str) -> bool:
         if candidate is not None and candidate.is_file():
             return True
     return False
+
+
+def _normalize_exit_permission_http(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return EXIT_PERMISSION_ALWAYS if value else EXIT_PERMISSION_MATCH
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    cleaned = text.replace("-", "_").replace(" ", "_")
+    if cleaned in {"match", "matching", "same_as_entry", "default"}:
+        return EXIT_PERMISSION_MATCH
+    if cleaned in {"working_days", "work_days", "workingdays", "workdays"}:
+        return EXIT_PERMISSION_WORKING_DAYS
+    if cleaned in {
+        "always",
+        "always_allow",
+        "always_permit",
+        "always_permit_exit",
+        "24_7",
+        "24x7",
+        "1",
+        "true",
+        "yes",
+    }:
+        return EXIT_PERMISSION_ALWAYS
+    if cleaned in {
+        EXIT_PERMISSION_MATCH,
+        EXIT_PERMISSION_WORKING_DAYS,
+        EXIT_PERMISSION_ALWAYS,
+    }:
+        return cleaned
+    return None
 
 
 def _face_image_exists(hass: HomeAssistant, user_id: str) -> bool:
@@ -1659,8 +1700,6 @@ def _evaluate_face_status(
         if not dev.get("online", True):
             return "pending"
         sync_state = str(dev.get("sync_status") or "").strip().lower()
-        if sync_state != "in_sync":
-            return "pending"
         record = None
         for candidate in dev.get("_users") or dev.get("users") or []:
             if _user_key(candidate) == user_id:
@@ -1668,7 +1707,10 @@ def _evaluate_face_status(
                 break
         if record is None:
             return "pending"
-        if not _device_face_is_active(record):
+        face_active = _device_face_is_active(record)
+        if not face_active:
+            return "pending"
+        if sync_state != "in_sync" and stored_status == "pending":
             return "pending"
 
     return "active"
@@ -2200,6 +2242,8 @@ class AkuvoxUIView(HomeAssistantView):
                 "version_raw": INTEGRATION_VERSION,
             },
             "devices": [],
+            "access_events": [],
+            "access_event_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "registry_users": [],
             "schedules": {},
             "groups": [],
@@ -2245,6 +2289,26 @@ class AkuvoxUIView(HomeAssistantView):
                     for key, prof in profiles.items()
                     if normalize_ha_id(key) and not _profile_is_empty_reserved(prof)
                 )
+
+            settings_store = root.get("settings_store")
+            try:
+                access_limit = (
+                    settings_store.get_access_history_limit()
+                    if settings_store and hasattr(settings_store, "get_access_history_limit")
+                    else DEFAULT_ACCESS_HISTORY_LIMIT
+                )
+            except Exception:
+                access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+
+            history = root.get("access_history")
+            aggregated_events: List[Dict[str, Any]] = []
+            if history and hasattr(history, "snapshot"):
+                try:
+                    aggregated_events = history.snapshot(access_limit)
+                except Exception:
+                    aggregated_events = []
+            response["access_events"] = aggregated_events
+            response["access_event_limit"] = access_limit
 
             mgr = root.get("sync_manager")
             if queue_active:
@@ -2312,6 +2376,10 @@ class AkuvoxUIView(HomeAssistantView):
                             "access_expired": bool(access_end and access_end <= today),
                             "access_in_future": bool(access_start and access_start > today),
                             "license_plate": _extract_license_plates(prof),
+                            "exit_permission": _normalize_exit_permission_http(
+                                prof.get("exit_permission")
+                            )
+                            or EXIT_PERMISSION_MATCH,
                         }
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
@@ -2399,10 +2467,19 @@ class AkuvoxUIAction(AkuvoxUIView):
                 if not queue:
                     return err(service_err)
                 try:
-                    await queue.sync_now(entry_id)
+                    await queue.sync_now(entry_id, include_all=not entry_id)
                     return web.json_response({"ok": True})
                 except Exception as queue_err:
                     return err(queue_err)
+
+        if action == "refresh_events":
+            try:
+                service_data = {"entry_id": entry_id} if entry_id else {}
+                await hass.services.async_call(DOMAIN, "refresh_events", service_data, blocking=True, context=ctx)
+                return web.json_response({"ok": True})
+            except Exception as service_err:
+                _LOGGER.debug("Refresh-events service call failed via UI: %s", service_err)
+                return err(service_err)
 
         if action in ("force_full_sync", "sync_all"):
             queue = root.get("sync_queue")
@@ -2443,7 +2520,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                         pass
 
                 try:
-                    await queue.sync_now(entry_id)
+                    await queue.sync_now(entry_id, include_all=not entry_id)
                     return web.json_response({"ok": True})
                 except Exception as queue_err:
                     return err(queue_err)
@@ -2782,6 +2859,8 @@ class AkuvoxUISettings(HomeAssistantView):
         delay = None
         health_interval = None
         health_bounds = (MIN_HEALTH_CHECK_INTERVAL, MAX_HEALTH_CHECK_INTERVAL)
+        access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+        access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
         alerts = {"targets": {}}
         if settings:
             try:
@@ -2802,6 +2881,16 @@ class AkuvoxUISettings(HomeAssistantView):
                     health_bounds = (int(hb[0]), int(hb[1]))
             except Exception:
                 health_bounds = (MIN_HEALTH_CHECK_INTERVAL, MAX_HEALTH_CHECK_INTERVAL)
+            try:
+                access_limit = settings.get_access_history_limit()
+            except Exception:
+                access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+            try:
+                ab = settings.get_access_history_bounds()
+                if isinstance(ab, (tuple, list)) and len(ab) >= 2:
+                    access_bounds = (int(ab[0]), int(ab[1]))
+            except Exception:
+                access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
             try:
                 alerts = {"targets": settings.get_alert_targets()}
             except Exception:
@@ -2863,6 +2952,9 @@ class AkuvoxUISettings(HomeAssistantView):
                 "max_auto_sync_delay_minutes": 60,
                 "min_health_check_interval_seconds": health_bounds[0],
                 "max_health_check_interval_seconds": health_bounds[1],
+                "access_event_limit": access_limit,
+                "min_access_event_limit": access_bounds[0],
+                "max_access_event_limit": access_bounds[1],
                 "credential_prompts": credential_prompts,
             }
         )
@@ -2946,6 +3038,26 @@ class AkuvoxUISettings(HomeAssistantView):
                 coord = data.get("coordinator")
                 if coord and hasattr(coord, "update_interval"):
                     coord.update_interval = interval_td
+
+        if "access_event_limit" in payload:
+            if not settings or not hasattr(settings, "set_access_history_limit"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+
+            try:
+                limit_value = await settings.set_access_history_limit(payload.get("access_event_limit"))
+            except ValueError as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+            response["access_event_limit"] = limit_value
+
+            history = root.get("access_history")
+            if history and hasattr(history, "prune"):
+                try:
+                    history.prune(limit_value)
+                except Exception:
+                    pass
 
         if "alerts" in payload and settings and hasattr(settings, "set_alert_targets"):
             alerts_payload = payload.get("alerts") or {}
