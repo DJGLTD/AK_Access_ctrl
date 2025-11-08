@@ -2393,7 +2393,10 @@ class SyncManager:
                 "_ui_registered",
                 "_panel_registered",
                 "settings_store",
+                "access_history",
             ):
+                continue
+            if not isinstance(v, dict):
                 continue
             coord = v.get("coordinator")
             api = v.get("api")
