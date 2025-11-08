@@ -559,6 +559,9 @@ const $ = (sel) => document.querySelector(sel);
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 let CONTACTS_ENABLED = true;
+let cachedEvents = [];
+let eventHistoryInitialized = false;
+let lastEventRefreshAttempt = 0;
 let activeUserTab = 'users';
 try {
   const tabParam = new URLSearchParams(location.search).get('tab');
@@ -879,6 +882,11 @@ function renderEvents(devs, aggregated){
   });
 
   events.sort((a,b)=> (b._t||0) - (a._t||0));
+  cachedEvents = events;
+
+  const listEl = document.getElementById('eventList');
+  if (!listEl) return;
+
   const html = events.map(e => {
     const when = formatWhen(e.timestamp || e.Time || '');
     const msg  = e.Event || e.Result || e.action || 'event';
@@ -889,7 +897,7 @@ function renderEvents(devs, aggregated){
       <div class="event-time">${when}</div>
     </li>`;
   }).join('');
-  $('#eventList').innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
+  listEl.innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
 }
 
 /* ===== Users ===== */
@@ -1378,6 +1386,10 @@ async function refresh(){
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     renderDevices(devs);
     renderEvents(devs, state.access_events || []);
+    if (cachedEvents.length > 0) {
+      eventHistoryInitialized = true;
+    }
+    await maybeRequestEventHistory(state);
     renderUsers(devs, state.registry_users || []);
     renderContacts(state.registry_users || []);
   } catch(e){
@@ -1389,25 +1401,10 @@ async function refresh(){
 }
 
 
-async function refreshEventHistory(){
-  const btn = document.getElementById('btnRefreshEvents');
-  const originalHtml = btn ? btn.innerHTML : '';
-  const setBusy = (busy) => {
-    if (!btn) return;
-    if (busy){
-      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Refreshing';
-      btn.setAttribute('disabled', 'disabled');
-    } else {
-      btn.innerHTML = originalHtml || '<i class="bi bi-arrow-clockwise"></i> Refresh Events';
-      btn.removeAttribute('disabled');
-    }
-  };
-
-  setBusy(true);
-
+async function requestEventHistoryRefresh(){
   let ok = false;
-  let lastError = '';
   let aborted = false;
+  let lastError = '';
 
   try {
     try {
@@ -1438,15 +1435,44 @@ async function refreshEventHistory(){
         }
       }
     }
-
-    if (!aborted) {
-      if (!ok && lastError) {
-        alert(`Failed to refresh events${lastError ? `: ${lastError}` : ''}`);
-      }
-      await refresh();
-    }
   } finally {
-    setBusy(false);
+    if (!ok && !aborted && lastError) {
+      console.warn(`Failed to refresh events: ${lastError}`);
+    }
+  }
+
+  return ok;
+}
+
+async function maybeRequestEventHistory(state){
+  if (eventHistoryInitialized) return;
+
+  const aggregated = Array.isArray(state?.access_events) ? state.access_events : [];
+  const deviceEventsAvailable = Array.isArray(state?.devices)
+    && state.devices.some(dev => Array.isArray(dev?.events) && dev.events.length > 0);
+
+  if (aggregated.length > 0 || deviceEventsAvailable) {
+    eventHistoryInitialized = true;
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastEventRefreshAttempt < 60000) {
+    return;
+  }
+
+  const devices = Array.isArray(state?.devices) ? state.devices : [];
+  const anyDeviceOnline = devices.some(dev => dev && dev.online !== false);
+  if (!anyDeviceOnline) {
+    return;
+  }
+
+  lastEventRefreshAttempt = now;
+
+  try {
+    await requestEventHistoryRefresh();
+  } catch (err) {
+    console.warn('Event history refresh request failed', err);
   }
 }
 
@@ -1680,10 +1706,6 @@ window.addEventListener('message', (event) => {
 // ✅ Wait until the DOM exists before wiring buttons/inputs
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
-  document.getElementById('btnRefreshEvents')?.addEventListener('click', (e) => {
-    e.preventDefault();
-    refreshEventHistory();
-  });
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
   document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
@@ -1813,7 +1835,6 @@ setInterval(refresh, 5000);
       <div class="card flex-fill" id="sectionEvents">
         <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
           <span>Event History</span>
-          <button id="btnRefreshEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-clockwise"></i> Refresh Events</button>
         </div>
         <div class="card-body">
           <ul id="eventList" class="event-list">
