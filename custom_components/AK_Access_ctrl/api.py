@@ -7,7 +7,7 @@ import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Iterable, Set
+from typing import Any, Dict, List, Optional, Tuple, Iterable, Set, Deque
 
 from aiohttp import ClientSession, BasicAuth, FormData
 from urllib.parse import urlsplit, urlencode, unquote
@@ -1079,18 +1079,124 @@ class AkuvoxAPI:
         return bool(info.get("ok"))
 
     # -------------------- public user/event/contact APIs --------------------
-    async def events_last(self) -> List[Dict[str, Any]]:
-        # GET door log; limited variations in practice
-        try:
-            r = await self._get_api("/api/doorlog/get", "/api/doorlog/last")
-            items = r.get("data", {}).get("item")
-            if isinstance(items, list):
-                return items
-            if isinstance(items, dict):
-                return [items]
-        except Exception:
-            pass
+    @staticmethod
+    def _coerce_event_list(value: Any) -> List[Dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
         return []
+
+    @staticmethod
+    def _extract_doorlog_items(result: Any) -> List[Dict[str, Any]]:
+        """Best-effort extraction of door log entries from varied payloads."""
+
+        if result is None:
+            return []
+
+        queue: Deque[Any] = deque([result])
+        seen: Set[int] = set()
+        event_keys = {
+            "Event",
+            "EventType",
+            "Type",
+            "Description",
+            "Result",
+            "User",
+            "UserID",
+            "UserId",
+            "UserName",
+            "Name",
+            "CardNo",
+            "CardNumber",
+            "LogID",
+            "LogId",
+            "Index",
+            "ID",
+            "Time",
+            "time",
+            "Timestamp",
+            "timestamp",
+            "CreateTime",
+            "RecordTime",
+            "LogTime",
+        }
+
+        search_keys = (
+            "item",
+            "items",
+            "Item",
+            "Items",
+            "list",
+            "List",
+            "rows",
+            "Rows",
+            "row",
+            "Row",
+            "records",
+            "Records",
+            "record",
+            "Record",
+            "entries",
+            "Entries",
+            "entry",
+            "Entry",
+            "logs",
+            "Logs",
+            "log",
+            "Log",
+            "doorlog",
+            "Doorlog",
+            "doorLog",
+            "DoorLog",
+            "data",
+            "Data",
+            "result",
+            "Result",
+        )
+
+        while queue:
+            current = queue.popleft()
+            ident = id(current)
+            if ident in seen:
+                continue
+            seen.add(ident)
+
+            if isinstance(current, list):
+                dict_entries = [item for item in current if isinstance(item, dict)]
+                if dict_entries:
+                    return dict_entries
+                for item in current:
+                    if isinstance(item, (list, dict)):
+                        queue.append(item)
+                continue
+
+            if isinstance(current, dict):
+                match_count = sum(1 for key in event_keys if key in current)
+                if match_count >= 2:
+                    return [current]
+                for key in search_keys:
+                    value = current.get(key)
+                    if value is not None:
+                        queue.append(value)
+
+        return []
+
+    async def events_last(self) -> List[Dict[str, Any]]:
+        # GET door log; limited variations in practice but allow fallbacks
+        try:
+            result = await self._get_api("/api/doorlog/get", "/api/doorlog/last")
+        except Exception:
+            return []
+
+        items = []
+        if isinstance(result, dict):
+            items = self._coerce_event_list(result.get("data", {}).get("item"))
+
+        if not items:
+            items = self._extract_doorlog_items(result)
+
+        return items
 
     async def call_log(self) -> List[Dict[str, Any]]:
         """Return recent call log entries (best effort)."""
