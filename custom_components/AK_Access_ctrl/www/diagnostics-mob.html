@@ -135,6 +135,7 @@
     .diag-command-status.success{ color:#2ff0c4; }
     .diag-command-status.error{ color:#ff7d8a; }
     .diag-command-status.muted{ color:var(--muted); }
+    .diag-suppressed-note{ font-size:0.75rem; color:var(--muted); margin-top:0.5rem; }
     .diag-face-attempt{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; margin-bottom:0.85rem; background:#0b172d; }
     .diag-face-attempt:last-child{ margin-bottom:0; }
     .diag-face-attempt .attempt-header{ display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:space-between; align-items:center; }
@@ -1275,7 +1276,12 @@ function renderDevices(devices, options = {}){
 function renderRequestList(container, device){
   container.innerHTML = '';
   const requests = Array.isArray(device.requests) ? device.requests : [];
-  const visible = requests.filter((req) => !requestShouldBeHidden(req));
+  let visible = requests.filter((req) => !requestShouldBeHidden(req));
+  let suppressedMessage = '';
+  if (!visible.length && requests.length){
+    visible = requests;
+    suppressedMessage = 'All recorded requests are normally hidden. Showing them to avoid an empty view.';
+  }
   const filtered = activeTypeFilter === TYPE_FILTER_ALL
     ? visible
     : visible.filter((req) => {
@@ -1292,7 +1298,19 @@ function renderRequestList(container, device){
       ? 'No requests match the current filter.'
       : 'No requests have been recorded for this device yet.';
     container.appendChild(empty);
+    if (suppressedMessage){
+      const helper = document.createElement('div');
+      helper.className = 'diag-suppressed-note';
+      helper.textContent = suppressedMessage;
+      container.appendChild(helper);
+    }
     return;
+  }
+  if (suppressedMessage){
+    const helper = document.createElement('div');
+    helper.className = 'diag-suppressed-note';
+    helper.textContent = suppressedMessage;
+    container.appendChild(helper);
   }
   filtered.forEach((req, idx) => {
     const details = document.createElement('details');
