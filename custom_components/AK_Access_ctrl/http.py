@@ -43,6 +43,7 @@ from .const import (
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
+from .access_history import AccessHistory, categorize_event
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -561,6 +562,61 @@ def _json_clone(value: Any) -> Any:
         return value
 
 
+def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
+    if not isinstance(event, dict):
+        return
+
+    root = hass.data.get(DOMAIN, {}) or {}
+    history = root.get("access_history")
+    if not history or not hasattr(history, "ingest"):
+        return
+
+    settings = root.get("settings_store")
+    try:
+        limit = (
+            settings.get_access_history_limit()
+            if settings and hasattr(settings, "get_access_history_limit")
+            else DEFAULT_ACCESS_HISTORY_LIMIT
+        )
+    except Exception:
+        limit = DEFAULT_ACCESS_HISTORY_LIMIT
+
+    event_copy = dict(event)
+
+    timestamp = event_copy.get("timestamp") or event_copy.get("Time")
+    if not timestamp:
+        timestamp = dt.datetime.utcnow().isoformat() + "Z"
+        event_copy.setdefault("timestamp", timestamp)
+
+    event_copy["_t"] = AccessHistory._coerce_timestamp(event_copy.get("_t") or timestamp)
+
+    key = AccessHistory._coerce_key(event_copy.get("_key"))
+    if not key:
+        parts = [
+            event_copy.get("_source") or "call",
+            event_copy.get("_device_id") or event_copy.get("entry_id") or "",
+            event_copy.get("call_id") or event_copy.get("CallID") or event_copy.get("CallId") or "",
+            event_copy.get("timestamp") or "",
+        ]
+        key = ":".join(str(part) for part in parts if part)
+        if not key:
+            key = f"call:{time.time()}"
+    event_copy["_key"] = key
+
+    if "_device" not in event_copy:
+        event_copy["_device"] = event_copy.get("device_name") or ""
+    if "_device_id" not in event_copy and event_copy.get("entry_id"):
+        event_copy["_device_id"] = event_copy["entry_id"]
+
+    if "_category" not in event_copy:
+        event_copy["_category"] = categorize_event(event_copy)
+
+    try:
+        history.ingest([event_copy], limit)
+    except Exception as err:
+        _LOGGER.debug("Failed to ingest aggregated event: %s", err)
+
+
 def _normalize_call_number(value: Any) -> str:
     if value in (None, ""):
         return ""
@@ -1046,6 +1102,30 @@ async def _process_inbound_call_webhook(
         )
     else:
         event_payload.update({"user_id": None, "user_name": None, "key_holder": False})
+
+    history_event = {
+        "timestamp": event_payload.get("timestamp"),
+        "Event": status_label,
+        "Result": status_label,
+        "entry_id": event_payload.get("entry_id"),
+        "device_name": event_payload.get("device_name"),
+        "call_id": event_payload.get("call_id"),
+        "call_type": event_payload.get("call_type"),
+        "CallNumber": event_payload.get("number"),
+        "raw_number": event_payload.get("raw_number"),
+        "digits": event_payload.get("digits"),
+        "status": result,
+        "status_label": status_label,
+        "_source": "inbound_call",
+    }
+    if event_payload.get("user_name"):
+        history_event["User"] = event_payload.get("user_name")
+    if event_payload.get("user_id"):
+        history_event["UserID"] = event_payload.get("user_id")
+    if event_payload.get("key_holder") is not None:
+        history_event["key_holder"] = bool(event_payload.get("key_holder"))
+
+    _ingest_history_event(hass, history_event)
 
     hass.bus.async_fire(EVENT_INBOUND_CALL, event_payload)
 

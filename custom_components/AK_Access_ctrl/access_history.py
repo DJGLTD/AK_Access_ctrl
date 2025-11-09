@@ -2,6 +2,135 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 import datetime as dt
+import re
+
+
+_TYPE_KEYS = (
+    "EventType",
+    "Type",
+    "EventCategory",
+    "Category",
+    "LogType",
+    "LogTypeName",
+    "CallType",
+    "SubType",
+    "Event",
+    "Result",
+    "action",
+    "Message",
+    "Description",
+    "Detail",
+)
+
+_CALL_KEYS = (
+    "CallNo",
+    "CallNum",
+    "CallNumber",
+    "CallType",
+    "CallMode",
+    "CallStatus",
+    "PriorityCall",
+    "RoomNumber",
+    "RoomNo",
+    "Terminal",
+    "Intercom",
+    "SipAccount",
+    "SipNumber",
+)
+
+_ACCESS_KEYS = (
+    "AccessMode",
+    "Method",
+    "AccessType",
+    "AccessPoint",
+    "Door",
+    "DoorName",
+    "Reader",
+    "OpenType",
+    "User",
+    "UserID",
+    "UserName",
+    "Name",
+    "CardNo",
+    "CardNumber",
+    "Credential",
+    "CredentialType",
+    "Pin",
+    "PIN",
+    "Passcode",
+    "Password",
+    "AccessResult",
+    "AccessStatus",
+    "OpenResult",
+)
+
+_CALL_PATTERN = re.compile(r"\bcall\b|doorbell|ringback|\bsip\b|intercom|monitor", re.IGNORECASE)
+_ACCESS_PATTERN = re.compile(
+    r"\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger",
+    re.IGNORECASE,
+)
+_SYSTEM_PATTERN = re.compile(
+    r"system|integrity|mismatch|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic",
+    re.IGNORECASE,
+)
+
+
+def _has_meaningful_value(obj: Optional[Dict[str, Any]], key: str) -> bool:
+    if not obj or key not in obj:
+        return False
+    value = obj.get(key)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _combined_event_text(event: Optional[Dict[str, Any]], device: Optional[Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for key in _TYPE_KEYS:
+        value = (event or {}).get(key)
+        if value is None:
+            continue
+        try:
+            text = str(value).strip()
+        except Exception:
+            continue
+        if text:
+            parts.append(text)
+
+    if isinstance(device, dict):
+        for key in ("device_type", "deviceModel", "device_model", "model"):
+            value = device.get(key)
+            if value is None:
+                continue
+            try:
+                text = str(value).strip()
+            except Exception:
+                continue
+            if text:
+                parts.append(text)
+
+    return " ".join(parts)
+
+
+def categorize_event(event: Optional[Dict[str, Any]], device: Optional[Dict[str, Any]] = None) -> str:
+    """Return the UI category for *event* (access, call, or system)."""
+
+    combined = _combined_event_text(event, device)
+
+    call_detected = any(_has_meaningful_value(event, key) for key in _CALL_KEYS)
+    if call_detected or _CALL_PATTERN.search(combined):
+        return "call"
+
+    if _SYSTEM_PATTERN.search(combined):
+        return "system"
+
+    access_detected = any(_has_meaningful_value(event, key) for key in _ACCESS_KEYS)
+    if access_detected or _ACCESS_PATTERN.search(combined):
+        return "access"
+
+    return "system"
 
 
 class AccessHistory:
@@ -48,7 +177,7 @@ class AccessHistory:
             event_copy["_key"] = key
             event_copy["_t"] = ts_value
             if not event_copy.get("_category"):
-                event_copy["_category"] = "access"
+                event_copy["_category"] = categorize_event(event_copy)
 
             self._events.append(event_copy)
             self._seen.add(key)
@@ -178,4 +307,4 @@ class AccessHistory:
         return parsed.timestamp()
 
 
-__all__ = ["AccessHistory"]
+__all__ = ["AccessHistory", "categorize_event"]
