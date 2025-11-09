@@ -918,13 +918,13 @@ function categorizeEvent(event, device) {
     return 'call';
   }
 
+  if (/system|integrity|mismatch|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
+    return 'system';
+  }
+
   const accessDetected = accessKeys.some((key) => hasMeaningfulValue(evt, key));
   if (accessDetected || /\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger/i.test(combined)) {
     return 'access';
-  }
-
-  if (/system|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
-    return 'system';
   }
 
   return 'system';

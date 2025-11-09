@@ -24,7 +24,7 @@ from .http import (
     _match_user_by_number,
     _normalize_call_number,
 )
-from .access_history import AccessHistory
+from .access_history import AccessHistory, categorize_event
 
 
 CALLER_LOOKBACK_SECONDS = 120
@@ -572,7 +572,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             copy["_device"] = self.device_name
             copy["_device_id"] = self.entry_id
             copy["_source"] = "doorlog"
-            copy["_category"] = "access"
+            copy["_category"] = categorize_event(copy, self.health)
             copy["_t"] = ts_value
 
             tokens = self._event_summary_tokens(event)
