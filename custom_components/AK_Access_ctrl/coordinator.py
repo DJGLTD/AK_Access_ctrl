@@ -4,6 +4,7 @@ import logging
 import datetime as dt
 from datetime import timedelta
 import time
+import re
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 from homeassistant.core import HomeAssistant
@@ -32,6 +33,9 @@ CALLER_CLEAR_DELAY_SECONDS = 10
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+_TIME_ONLY_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$")
 
 
 def _safe_str(x) -> str:
@@ -418,7 +422,46 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         return None
 
+    @staticmethod
+    def _clean_event_component(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = _safe_str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered in {"-", "--", "—", "n/a", "none", "null"}:
+            return None
+        return text
+
+    @classmethod
+    def _event_date_component(cls, event: Dict[str, Any]) -> Optional[str]:
+        for key in ("DateTime", "datetime", "Date", "date", "EventDate", "LogDate"):
+            text = cls._clean_event_component(event.get(key))
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _event_time_component(cls, event: Dict[str, Any]) -> Optional[str]:
+        for key in ("Time", "time", "EventTime", "LogTime", "RecordTime", "timestamp", "Timestamp"):
+            text = cls._clean_event_component(event.get(key))
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _combine_event_date_time(cls, event: Dict[str, Any]) -> Optional[str]:
+        date_text = cls._event_date_component(event)
+        time_text = cls._event_time_component(event)
+        if date_text and time_text:
+            return f"{date_text} {time_text}"
+        return date_text or time_text
+
     def _extract_event_timestamp(self, event: Dict[str, Any], *, fallback: bool = True) -> Optional[str]:
+        date_text = self._event_date_component(event)
+        time_only: Optional[str] = None
+
         for key in (
             "Time",
             "time",
@@ -431,9 +474,27 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "LogTime",
             "EventTime",
         ):
-            val = event.get(key)
-            if val not in (None, ""):
-                return _safe_str(val)
+            raw = event.get(key)
+            cleaned = self._clean_event_component(raw)
+            if not cleaned:
+                continue
+            lowered = key.lower()
+            if lowered in {"time", "timestamp", "recordtime", "logtime", "eventtime"}:
+                if lowered == "time" and _TIME_ONLY_RE.match(cleaned):
+                    if date_text:
+                        return f"{date_text} {cleaned}"
+                    time_only = time_only or cleaned
+                    continue
+                return cleaned
+            return cleaned
+
+        combined = self._combine_event_date_time(event)
+        if combined:
+            return combined
+
+        if time_only:
+            return time_only
+
         if fallback:
             return _now_iso(self.hass)
         return None

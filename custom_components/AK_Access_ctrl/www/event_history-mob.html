@@ -531,40 +531,167 @@ function classifyEvent(txt){
   return 'dim';
 }
 
-function formatWhen(ts){
-  if (!ts) return '—';
-  let d = ts instanceof Date ? ts : new Date(ts);
-  if (isNaN(d.getTime())) {
-    try { const clean = String(ts).split('.')[0] + 'Z'; d = new Date(clean); }
-    catch { return String(ts); }
-  }
-  if (isNaN(d.getTime())) return String(ts);
-  return d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function eventEpochMillis(evt){
+  if (!evt || typeof evt !== 'object') return null;
+  const raw = Number(evt._t);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return raw > 1e12 ? raw : raw * 1000;
 }
 
-function gatherEvents(devices){
-  const events = [];
-  (devices || []).forEach(device => {
-    (device.events || []).forEach(evt => {
-      let ts = evt.timestamp || evt.Time || evt.time || evt.ts || '';
-      let date = new Date(ts);
-      if (isNaN(date.getTime()) && ts) {
-        try { ts = String(ts).split('.')[0] + 'Z'; date = new Date(ts); } catch {}
-      }
-      events.push({
-        ...evt,
-        _device: safeDeviceName(device),
-        _ts: date.getTime() || 0,
-        _when: date
-      });
-    });
-  });
-  events.sort((a,b) => (b._ts || 0) - (a._ts || 0));
-  return events;
+function pickEventValue(evt, keys){
+  if (!evt || typeof evt !== 'object') return null;
+  for (const key of keys){
+    if (!(key in evt)) continue;
+    const value = evt[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string'){
+      const trimmed = value.trim();
+      if (!trimmed) continue;
+      const lowered = trimmed.toLowerCase();
+      if (['--','-','—','n/a','null','none'].includes(lowered)) continue;
+      return trimmed;
+    }
+    return value;
+  }
+  return null;
+}
+
+function parseDateCandidate(value){
+  if (value === undefined || value === null) return null;
+  if (value instanceof Date){
+    return isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'number'){
+    if (!Number.isFinite(value)) return null;
+    const ms = value > 1e12 ? value : value * 1000;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return parseDateString(value);
+}
+
+function parseDateString(value){
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const lowered = text.toLowerCase();
+  if (['--','-','—','n/a','null','none'].includes(lowered)) return null;
+  if (/^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) return null;
+  let attempt = text;
+  let parsed = new Date(attempt);
+  if (!isNaN(parsed.getTime())) return parsed;
+  if (attempt.indexOf('T') === -1 && attempt.includes(' ')){
+    attempt = attempt.replace(' ', 'T');
+    parsed = new Date(attempt);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
+  if (!/[a-z]/i.test(attempt) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(attempt)){
+    parsed = new Date(`${attempt}Z`);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+function resolveEventDate(evt){
+  if (!evt || typeof evt !== 'object') return null;
+  const fromEpoch = eventEpochMillis(evt);
+  if (fromEpoch){
+    const epochDate = new Date(fromEpoch);
+    if (!isNaN(epochDate.getTime())) return epochDate;
+  }
+
+  const directKeys = ['_when','timestamp','Timestamp','ts','DateTime','datetime','RecordTime','LogTime','EventTime'];
+  for (const key of directKeys){
+    const candidate = evt[key];
+    const parsed = parseDateCandidate(candidate);
+    if (parsed) return parsed;
+  }
+
+  const datePart = pickEventValue(evt, ['DateTime','datetime','Date','date','EventDate','LogDate']);
+  const timePart = pickEventValue(evt, ['Time','time','EventTime','LogTime','RecordTime']);
+  if (datePart && timePart){
+    const combined = parseDateString(`${datePart} ${timePart}`);
+    if (combined) return combined;
+  }
+  if (datePart){
+    const parsedDate = parseDateString(datePart);
+    if (parsedDate) return parsedDate;
+  }
+  if (timePart){
+    const parsedTime = parseDateString(timePart);
+    if (parsedTime) return parsedTime;
+  }
+  return null;
+}
+
+function formatWhen(ts){
+  if (ts === undefined || ts === null) return '—';
+  const date = parseDateCandidate(ts);
+  if (!date) return typeof ts === 'string' && ts ? ts : '—';
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function safeDeviceName(d){
+  if (!d) return '-';
+  if (typeof d === 'string'){
+    const trimmed = d.trim();
+    return trimmed || '-';
+  }
   return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
+}
+
+function resolveDeviceName(evt, device){
+  if (evt && typeof evt._device === 'string' && evt._device.trim()) return evt._device.trim();
+  if (typeof device === 'string'){
+    const trimmed = device.trim();
+    if (trimmed) return trimmed;
+  }
+  if (device && typeof device === 'object') return safeDeviceName(device);
+  const nested = pickEventValue(evt, ['Device','device','Panel','Reader']);
+  if (typeof nested === 'string' && nested.trim()) return nested.trim();
+  if (nested && typeof nested === 'object') return safeDeviceName(nested);
+  return '-';
+}
+
+function eventIdentity(evt){
+  const key = pickEventValue(evt, ['_key','LogID','LogId','ID','Index','Sn','SN']);
+  if (key) return String(key);
+  const time = pickEventValue(evt, ['timestamp','Time','time','DateTime','datetime','EventTime','LogTime']);
+  const user = pickEventValue(evt, ['UserID','User','UserName','Name']);
+  const summary = pickEventValue(evt, ['Event','Result','Description','Type','Message','action']);
+  const fingerprint = [time, user, summary].filter(Boolean).join('|');
+  return fingerprint || null;
+}
+
+function gatherEvents(devices, aggregated){
+  const events = [];
+  const seen = new Set();
+
+  function push(evt, deviceRef){
+    if (!evt || typeof evt !== 'object') return;
+    const identity = eventIdentity(evt);
+    if (identity){
+      if (seen.has(identity)) return;
+      seen.add(identity);
+    }
+    const when = resolveEventDate(evt);
+    const epoch = when ? when.getTime() : (eventEpochMillis(evt) || 0);
+    const deviceName = resolveDeviceName(evt, deviceRef);
+    const normalized = { ...evt };
+    if (when) normalized._when = when;
+    normalized._ts = epoch;
+    normalized._device = deviceName;
+    events.push(normalized);
+  }
+
+  (Array.isArray(aggregated) ? aggregated : []).forEach(evt => push(evt, evt?._device));
+  (devices || []).forEach(device => {
+    const deviceName = safeDeviceName(device);
+    (device?.events || []).forEach(evt => push(evt, deviceName));
+  });
+
+  events.sort((a,b) => (b._ts || 0) - (a._ts || 0));
+  return events;
 }
 
 function renderSummary(events){
@@ -624,7 +751,8 @@ async function refresh(){
     document.getElementById('refreshBtn').setAttribute('disabled', 'disabled');
     const state = await apiGet(stateUrl);
     const devices = state.devices || [];
-    const events = gatherEvents(devices);
+    const aggregated = Array.isArray(state?.access_events) ? state.access_events : [];
+    const events = gatherEvents(devices, aggregated);
     renderSummary(events);
     renderEvents(events);
     const ts = new Date();
