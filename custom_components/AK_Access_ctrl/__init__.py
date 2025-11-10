@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable, Set
 
 from homeassistant.const import Platform
+
+try:  # pragma: no cover - fallback for test stubs without full HA constants
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+except (ImportError, AttributeError):  # pragma: no cover - executed in unit tests
+    EVENT_HOMEASSISTANT_STARTED = "homeassistant_start"
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.storage import Store
@@ -2073,6 +2078,25 @@ class SyncQueue:
         self._last_mark: Optional[datetime] = None
         self._last_delay_from_default = False
         self._active: bool = False
+        self._tick_unsub: Optional[Callable[[], None]] = None
+        self._startup_unsub: Optional[Callable[[], None]] = None
+
+        try:
+            self._tick_unsub = async_track_time_interval(
+                hass,
+                self._background_tick,
+                timedelta(minutes=1),
+            )
+        except Exception:
+            self._tick_unsub = None
+
+        try:
+            self._startup_unsub = hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                self._handle_hass_started,
+            )
+        except Exception:
+            self._startup_unsub = None
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
@@ -2222,6 +2246,97 @@ class SyncQueue:
 
         self.next_sync_eta = datetime.now()
         self.hass.async_create_task(self.run())
+
+    def _handle_hass_started(self, _event):
+        try:
+            self.ensure_future_run()
+        except Exception:
+            pass
+
+        if self._startup_unsub:
+            try:
+                self._startup_unsub()
+            except Exception:
+                pass
+            self._startup_unsub = None
+
+        try:
+            self.hass.async_create_task(self._background_tick(datetime.now()))
+        except Exception:
+            pass
+
+    async def _background_tick(self, _now):
+        try:
+            self.ensure_future_run()
+        except Exception:
+            pass
+
+        if self._active or self._handle is not None:
+            return
+
+        if self._pending_all or self._pending_devices:
+            return
+
+        root = self._root()
+        pending_detected = False
+
+        for data in root.values():
+            if not isinstance(data, Mapping):
+                continue
+            coord = data.get("coordinator")
+            if not coord:
+                continue
+            health = getattr(coord, "health", {}) or {}
+            status = str(health.get("sync_status") or "").strip().lower()
+            online = bool(health.get("online", True))
+            if online and status and status != "in_sync":
+                pending_detected = True
+                break
+
+        if not pending_detected:
+            users_store = root.get("users_store")
+            if users_store and hasattr(users_store, "all"):
+                try:
+                    profiles = users_store.all() or {}
+                except Exception:
+                    profiles = {}
+                for profile in profiles.values():
+                    status = str((profile or {}).get("status") or "").strip().lower()
+                    face_status = str((profile or {}).get("face_status") or "").strip().lower()
+                    if status == "pending" or face_status == "pending":
+                        pending_detected = True
+                        break
+
+        if pending_detected:
+            try:
+                self.mark_change(None, delay_minutes=0)
+            except Exception:
+                pass
+
+    def shutdown(self):
+        if self._tick_unsub:
+            try:
+                self._tick_unsub()
+            except Exception:
+                pass
+            self._tick_unsub = None
+
+        if self._startup_unsub:
+            try:
+                self._startup_unsub()
+            except Exception:
+                pass
+            self._startup_unsub = None
+
+        if self._handle:
+            try:
+                self._handle()
+            except Exception:
+                pass
+            self._handle = None
+
+        self._pending_all = False
+        self._pending_devices.clear()
 
     async def run(self, only_entry: Optional[str] = None):
         async with self._lock:
@@ -3581,12 +3696,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
         if only_special:
             sq = root.get("sync_queue")
-            if sq and sq._handle is not None:
-                try:
-                    sq._handle()
-                except Exception:
-                    pass
-                root["sync_queue"]._handle = None  # type: ignore[attr-defined]
+            if sq:
+                if hasattr(sq, "shutdown"):
+                    try:
+                        sq.shutdown()
+                    except Exception:
+                        pass
+                elif getattr(sq, "_handle", None) is not None:
+                    try:
+                        sq._handle()
+                    except Exception:
+                        pass
+                    root["sync_queue"]._handle = None  # type: ignore[attr-defined]
 
             if root.pop("_panel_registered", False):
                 _remove_admin_dashboard(hass)
