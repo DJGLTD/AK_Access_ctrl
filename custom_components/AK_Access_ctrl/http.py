@@ -2316,6 +2316,7 @@ class AkuvoxUIView(HomeAssistantView):
                 "users": 0,
                 "pending": 0,
                 "next_sync": "—",
+                "events_last_sync": None,
                 "auto_sync_time": None,
                 "next_sync_eta": None,
                 "version": INTEGRATION_VERSION_LABEL,
@@ -2389,6 +2390,35 @@ class AkuvoxUIView(HomeAssistantView):
                     aggregated_events = []
             response["access_events"] = aggregated_events
             response["access_event_limit"] = access_limit
+
+            last_event_epoch = 0.0
+
+            def _consider_event_timestamp(event: Optional[Dict[str, Any]]) -> None:
+                nonlocal last_event_epoch
+                if not isinstance(event, dict):
+                    return
+                ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
+                if not ts_value:
+                    ts_value = AccessHistory._coerce_timestamp(event.get("timestamp"))
+                if not ts_value:
+                    ts_value = AccessHistory._coerce_timestamp(event.get("Time"))
+                if ts_value and ts_value > last_event_epoch:
+                    last_event_epoch = ts_value
+
+            for item in aggregated_events:
+                _consider_event_timestamp(item)
+
+            for device in devices:
+                for event in device.get("events", []) or []:
+                    _consider_event_timestamp(event)
+
+            if last_event_epoch:
+                try:
+                    kpis["events_last_sync"] = dt.datetime.fromtimestamp(
+                        last_event_epoch, dt.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    kpis["events_last_sync"] = last_event_epoch
 
             mgr = root.get("sync_manager")
             if queue_active:

@@ -633,6 +633,11 @@ function badge(text, kind, attrs = ''){
 
 function renderKPIs(k){
   const nextEl = document.getElementById('kpiNext');
+  const eventsLastEl = document.getElementById('kpiEventsLast');
+  if (eventsLastEl) {
+    const lastSync = k?.events_last_sync;
+    eventsLastEl.textContent = lastSync ? formatWhen(lastSync) : '—';
+  }
   const syncActive = !!k.sync_active;
   if (syncActive) {
     clearNextSyncCountdown();
@@ -645,9 +650,25 @@ function renderKPIs(k){
   }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
-  const pendingRaw = Number(k?.pending ?? 0);
-  const pendingCount = Number.isFinite(pendingRaw) ? pendingRaw : 0;
-  $('#kpiPending').textContent = String(pendingCount);
+  const pendingSource = k?.pending;
+  const pendingHasValue = pendingSource !== undefined && pendingSource !== null && pendingSource !== '';
+  const pendingNumeric = Number(pendingSource);
+  const pendingIsNumeric = Number.isFinite(pendingNumeric);
+  const pendingCount = pendingIsNumeric ? pendingNumeric : 0;
+  const pendingEl = document.getElementById('kpiPending');
+  if (pendingEl) {
+    if (!pendingHasValue) {
+      pendingEl.textContent = '—';
+    } else if (pendingIsNumeric) {
+      pendingEl.textContent = String(pendingCount);
+    } else {
+      pendingEl.textContent = String(pendingSource);
+    }
+    const pendingBox = pendingEl.closest('.box');
+    if (pendingBox) {
+      pendingBox.style.display = pendingHasValue && pendingIsNumeric && pendingCount === 0 ? 'none' : '';
+    }
+  }
   const syncNowBox = document.getElementById('kpiSyncNowBox');
   if (syncNowBox) {
     const showSync = pendingCount > 1 && !syncActive;
@@ -1441,7 +1462,7 @@ async function requestEventHistoryRefresh(){
     }
   }
 
-  return ok;
+  return { ok, aborted, lastError };
 }
 
 async function maybeRequestEventHistory(state){
@@ -1473,6 +1494,32 @@ async function maybeRequestEventHistory(state){
     await requestEventHistoryRefresh();
   } catch (err) {
     console.warn('Event history refresh request failed', err);
+  }
+}
+
+async function updateAccessEvents(){
+  const btn = document.getElementById('btnUpdateAccessEvents');
+  if (btn) {
+    btn.setAttribute('disabled', 'disabled');
+    btn.classList.add('disabled');
+  }
+
+  try {
+    const { ok, aborted, lastError } = await requestEventHistoryRefresh();
+    if (!ok) {
+      if (aborted) {
+        return;
+      }
+      const message = lastError ? `Failed to update access events: ${lastError}` : 'Failed to update access events. Check logs for details.';
+      alert(message);
+      return;
+    }
+    await refresh();
+  } finally {
+    if (btn) {
+      btn.removeAttribute('disabled');
+      btn.classList.remove('disabled');
+    }
   }
 }
 
@@ -1707,6 +1754,7 @@ window.addEventListener('message', (event) => {
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
+  document.getElementById('btnUpdateAccessEvents')?.addEventListener('click', updateAccessEvents);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
   document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -1820,6 +1868,7 @@ setInterval(refresh, 5000);
           <button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now</button>
         </div>
         <button id="btnForceFull" class="btn btn-sm btn-outline-light"><i class="bi bi-lightning-charge-fill"></i> Force Full Sync</button>
+        <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-journal-arrow-down"></i> Update Access Events</button>
         <button id="btnRebootAll" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-repeat"></i> Reboot All</button>
         <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear-wide-connected"></i> Global Settings</button>
       </div>
@@ -1827,6 +1876,7 @@ setInterval(refresh, 5000);
         <div class="box text-end"><div>Users</div><div id="kpiUsers">—</div></div>
         <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
+        <div class="box text-end"><div>Events Last Sync</div><div id="kpiEventsLast">—</div></div>
         <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
       </div>
     </div>
