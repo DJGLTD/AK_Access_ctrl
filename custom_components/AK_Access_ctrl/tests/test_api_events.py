@@ -2,11 +2,12 @@ from pathlib import Path
 import sys
 import types
 
-ROOT = Path(__file__).resolve().parents[1]
+# Ensure the repository root is on the path so component modules are importable.
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import tests.test_exit_permissions  # noqa: F401
+from . import test_exit_permissions  # noqa: F401
 
 ha_module = types.ModuleType("homeassistant")
 const_module = types.ModuleType("homeassistant.const")
