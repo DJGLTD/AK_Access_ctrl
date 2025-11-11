@@ -1764,6 +1764,9 @@ def _evaluate_face_status(
     if not wants_face:
         return "none"
 
+    if stored_status == "active":
+        return "active"
+
     user_groups = user.get("groups") or []
     relevant_devices = [
         dev
