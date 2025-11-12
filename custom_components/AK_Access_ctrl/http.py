@@ -3548,6 +3548,60 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             except Exception as err:  # pragma: no cover - best effort
                 _LOGGER.debug("Failed to assemble diagnostics payload: %s", err)
 
+        settings_store = root.get("settings_store")
+        access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+        access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
+        if settings_store and hasattr(settings_store, "get_access_history_limit"):
+            try:
+                access_limit = settings_store.get_access_history_limit()
+            except Exception:
+                access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+            try:
+                bounds = settings_store.get_access_history_bounds()
+                if isinstance(bounds, (tuple, list)) and len(bounds) >= 2:
+                    access_bounds = (int(bounds[0]), int(bounds[1]))
+            except Exception:
+                access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
+
+        min_access, max_access = access_bounds
+        if min_access > max_access:
+            min_access, max_access = max_access, min_access
+        access_bounds = (min_access, max_access)
+
+        if access_limit < min_access:
+            access_limit = min_access
+        if access_limit > max_access:
+            access_limit = max_access
+
+        history = root.get("access_history")
+        aggregated_events: List[Dict[str, Any]] = []
+        if history and hasattr(history, "snapshot"):
+            try:
+                aggregated_events = history.snapshot(access_limit)
+            except Exception:
+                aggregated_events = []
+
+        events_last_sync: Optional[str] = None
+        last_event_epoch = 0.0
+        for event in aggregated_events:
+            if not isinstance(event, dict):
+                continue
+            ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
+            if not ts_value:
+                ts_value = AccessHistory._coerce_timestamp(event.get("timestamp"))
+            if not ts_value:
+                ts_value = AccessHistory._coerce_timestamp(event.get("Time"))
+            if ts_value and ts_value > last_event_epoch:
+                last_event_epoch = ts_value
+
+        if last_event_epoch:
+            try:
+                events_last_sync = dt.datetime.fromtimestamp(
+                    last_event_epoch, dt.timezone.utc
+                ).isoformat()
+            except Exception:
+                events_last_sync = str(last_event_epoch)
+
         return {
             "ok": True,
             "devices": devices,
@@ -3555,6 +3609,11 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             "min_history_limit": min_limit,
             "max_history_limit": max_limit,
             "face_attempts": self._summarize_face_attempts(devices),
+            "access_events": aggregated_events,
+            "access_event_limit": access_limit,
+            "min_access_event_limit": min_access,
+            "max_access_event_limit": max_access,
+            "events_last_sync": events_last_sync,
         }
 
     async def get(self, request: web.Request):
