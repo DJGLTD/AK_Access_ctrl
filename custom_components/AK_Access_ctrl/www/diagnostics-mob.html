@@ -146,6 +146,17 @@
     .diag-face-attempt .attempt-devices strong{ color:var(--text); font-weight:600; }
     .diag-face-attempt .btn-sm{ font-size:0.75rem; }
     .diag-command-card .form-text{ color:var(--muted); }
+    .diag-events-list{ display:flex; flex-direction:column; gap:0.75rem; }
+    .diag-event{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; background:#0b172d; }
+    .diag-event-title{ display:flex; align-items:center; gap:0.5rem; font-weight:600; }
+    .diag-event-badge{ display:inline-flex; align-items:center; gap:0.35rem; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; border-radius:999px; padding:0.15rem 0.65rem; background:rgba(13,110,253,0.15); color:#9bbcff; }
+    .diag-event-badge.access{ background:rgba(46,204,113,0.18); color:#5ef3a8; }
+    .diag-event-badge.system{ background:rgba(255,193,7,0.15); color:#ffd86b; }
+    .diag-event-badge.call{ background:rgba(13,202,240,0.2); color:#9ee7ff; }
+    .diag-event-meta{ margin-top:0.35rem; color:var(--muted); font-size:0.85rem; display:flex; flex-wrap:wrap; gap:0.65rem; }
+    .diag-event-meta span{ display:inline-flex; align-items:center; gap:0.35rem; }
+    .diag-event-empty{ color:var(--muted); font-style:italic; }
+    .diag-event-filters .btn{ min-width:72px; }
     @media (max-width: 768px){
       .diag-container{ max-width:100%; padding:0 1rem; }
       .diag-toggle{ padding:0.85rem 1rem; }
@@ -526,6 +537,7 @@ function openInApp(view, params = {}, options = {}) {
   <div id="statusMessage" class="alert alert-danger d-none" role="alert"></div>
   <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
     <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
+    <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
     <button class="nav-link" type="button" data-tab-target="face">Face diagnostics</button>
   </div>
   <div class="diag-tab-content">
@@ -557,6 +569,36 @@ function openInApp(view, params = {}, options = {}) {
         </div>
       </div>
       <div id="diagnosticDevices" class="mt-3"></div>
+    </div>
+    <div class="diag-tab-pane" id="tabEvents" data-tab="events" hidden>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+              <div class="form-label text-uppercase small muted mb-1">Stored access events</div>
+              <div class="h3 mb-0" id="eventsCount">—</div>
+              <div class="form-text" id="eventsMeta">—</div>
+              <div class="form-text" id="eventsLimitHelper"></div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+              <button class="btn btn-outline-light" type="button" id="btnOpenEventHistory"><i class="bi bi-journal-text me-1"></i>Full history</button>
+              <button class="btn btn-info" type="button" id="btnRefreshEvents"><i class="bi bi-arrow-clockwise me-1"></i>Refresh events</button>
+            </div>
+          </div>
+          <div id="eventsStatus" class="diag-settings-status muted mt-3"></div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="diag-event-filters btn-group" role="group" aria-label="Filter events">
+            <button class="btn btn-sm btn-outline-info active" type="button" data-event-filter="all">All</button>
+            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="access">Access</button>
+            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="system">System</button>
+            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="call">Call</button>
+          </div>
+          <div id="eventsList" class="diag-events-list mt-3"></div>
+        </div>
+      </div>
     </div>
     <div class="diag-tab-pane" id="tabFace" data-tab="face" hidden>
       <div class="diag-settings-card card diag-command-card">
@@ -624,6 +666,13 @@ const commandStatusEl = document.getElementById('commandStatus');
 const commandResponseEl = document.getElementById('commandResponse');
 const commandSendBtn = document.getElementById('commandSendBtn');
 const commandClearBtn = document.getElementById('commandClearBtn');
+const eventsListEl = document.getElementById('eventsList');
+const eventsCountEl = document.getElementById('eventsCount');
+const eventsMetaEl = document.getElementById('eventsMeta');
+const eventsLimitHelperEl = document.getElementById('eventsLimitHelper');
+const eventsStatusEl = document.getElementById('eventsStatus');
+const btnRefreshEvents = document.getElementById('btnRefreshEvents');
+const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
 let DIAG_DATA = [];
 let FACE_ATTEMPTS = [];
 let ACTIVE_TAB = 'requests';
@@ -631,6 +680,12 @@ let HISTORY_LIMIT = 50;
 let MIN_HISTORY_LIMIT = 10;
 let MAX_HISTORY_LIMIT = 200;
 let historyLimitSaving = false;
+let ACCESS_EVENTS = [];
+let ACCESS_EVENT_LIMIT = 30;
+let MIN_ACCESS_EVENT_LIMIT = 5;
+let MAX_ACCESS_EVENT_LIMIT = 200;
+let EVENTS_LAST_SYNC = null;
+let EVENT_FILTER_MODE = 'all';
 const TYPE_FILTER_OTHER = '__other__';
 const TYPE_FILTER_ALL = '__all__';
 let activeTypeFilter = TYPE_FILTER_ALL;
@@ -638,6 +693,13 @@ const EXCLUDED_REQUEST_PATHS = Object.freeze([
   '/api/web/face/del',
   '/api/web/user/get',
 ]);
+const EVENT_EMPTY_MESSAGES = Object.freeze({
+  all: 'No recorded events yet.',
+  access: 'No access events recorded yet.',
+  system: 'No system events recorded yet.',
+  call: 'No call events recorded yet.',
+});
+const EVENT_FILTERS = Object.freeze(['all', 'access', 'system', 'call']);
 
 function normalizeRequestPath(req){
   if (!req || typeof req !== 'object') return '';
@@ -1115,6 +1177,7 @@ async function saveHistoryLimit(){
     }
     const data = await response.json();
     applyHistoryLimitResponse(data);
+    applyEventsResponse(data);
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
     FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
     updateCommandDeviceOptions(DIAG_DATA);
@@ -1138,9 +1201,18 @@ function escapeHtml(value){
 }
 
 function formatDateTime(value){
-  if (!value) return '—';
+  if (value === undefined || value === null || value === '') return '—';
   try {
-    const dt = new Date(value);
+    let source = value;
+    if (typeof value === 'number'){
+      source = value > 1e12 ? value : value * 1000;
+    } else if (typeof value === 'string'){
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0 && numeric < 1e12){
+        source = numeric * 1000;
+      }
+    }
+    const dt = new Date(source);
     if (Number.isNaN(dt.getTime())) return escapeHtml(String(value));
     return dt.toLocaleString();
   } catch (err) {
@@ -1203,6 +1275,295 @@ function requestTypeLabelFromValue(value){
       .join(' / '));
   const label = colonParts.filter(Boolean).join(': ');
   return label || 'Other';
+}
+
+function hasMeaningfulValue(obj, key){
+  if (!obj || typeof obj !== 'object') return false;
+  if (!(key in obj)) return false;
+  const value = obj[key];
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+function categorizeHistoryEvent(event){
+  const evt = event || {};
+  const typeKeys = [
+    'EventType','Type','EventCategory','Category','LogType','LogTypeName','CallType','SubType',
+    'Event','Result','action','Message','Description','Detail',
+  ];
+  const parts = [];
+  typeKeys.forEach((key) => {
+    if (!hasMeaningfulValue(evt, key)) return;
+    const text = String(evt[key]).trim();
+    if (text) parts.push(text);
+  });
+  const combined = parts.join(' ').toLowerCase();
+
+  const callKeys = [
+    'CallNo','CallNum','CallNumber','CallType','CallMode','CallStatus','PriorityCall',
+    'RoomNumber','RoomNo','Terminal','Intercom','SipAccount','SipNumber',
+  ];
+  const accessKeys = [
+    'AccessMode','Method','AccessType','AccessPoint','Door','DoorName','Reader','OpenType',
+    'User','UserID','UserName','Name','CardNo','CardNumber','Credential','CredentialType',
+    'Pin','PIN','Passcode','Password','AccessResult','AccessStatus','OpenResult',
+  ];
+
+  const callDetected = callKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (callDetected || /\bcall\b|doorbell|ringback|\bsip\b|intercom|monitor/i.test(combined)) {
+    return 'call';
+  }
+
+  if (/system|integrity|mismatch|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
+    return 'system';
+  }
+
+  const accessDetected = accessKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (accessDetected || /\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger/i.test(combined)) {
+    return 'access';
+  }
+
+  return 'system';
+}
+
+function normalizeAccessEvent(event){
+  const copy = Object.assign({}, event || {});
+  if (!copy._category){
+    copy._category = categorizeHistoryEvent(copy);
+  }
+  if (!copy._device){
+    const candidates = [copy.device, copy.device_name, copy.Device, copy.DoorName, copy.Reader, copy.entry_id];
+    for (const candidate of candidates){
+      if (candidate === null || candidate === undefined) continue;
+      const text = String(candidate).trim();
+      if (text){
+        copy._device = text;
+        break;
+      }
+    }
+  }
+  if (!copy._t){
+    const candidates = [copy.timestamp, copy.Time, copy.RecordTime, copy.LogTime];
+    for (const candidate of candidates){
+      if (candidate === null || candidate === undefined) continue;
+      const parsed = new Date(candidate);
+      if (!Number.isNaN(parsed.getTime())){
+        copy._t = parsed.getTime();
+        break;
+      }
+      try {
+        const normalized = String(candidate).split('.')[0] + 'Z';
+        const fallback = new Date(normalized);
+        if (!Number.isNaN(fallback.getTime())){
+          copy._t = fallback.getTime();
+          break;
+        }
+      } catch (err) {}
+    }
+    if (!copy._t){
+      const coerced = Number(event && event._t);
+      copy._t = Number.isFinite(coerced) ? coerced : Date.now();
+    }
+  }
+  return copy;
+}
+
+function eventSummaryText(event){
+  if (!event) return 'Event';
+  const keys = ['Event','Result','Description','Message','Detail','action'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return 'Event';
+}
+
+function eventDeviceLabel(event){
+  if (!event) return '';
+  const keys = ['_device','device_name','device','DoorName','Reader'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return '';
+}
+
+function eventUserLabel(event){
+  if (!event) return '';
+  const keys = ['User','UserName','user_name','UserID','user_id','Name'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return '';
+}
+
+function eventCategoryLabel(value){
+  if (value === 'access') return 'Access';
+  if (value === 'call') return 'Call';
+  return 'System';
+}
+
+function renderAccessEvents(events = ACCESS_EVENTS){
+  if (!eventsListEl) return;
+  const normalized = (Array.isArray(events) ? events : []).map((evt) => normalizeAccessEvent(evt));
+  normalized.sort((a, b) => (b._t || 0) - (a._t || 0));
+  const list = EVENT_FILTER_MODE === 'all'
+    ? normalized
+    : normalized.filter((evt) => (evt._category || 'system') === EVENT_FILTER_MODE);
+
+  if (!list.length){
+    const message = EVENT_EMPTY_MESSAGES[EVENT_FILTER_MODE] || EVENT_EMPTY_MESSAGES.all;
+    eventsListEl.innerHTML = `<div class="diag-event-empty">${escapeHtml(message)}</div>`;
+    return;
+  }
+
+  const html = list.map((evt) => {
+    const category = evt._category || 'system';
+    const summary = eventSummaryText(evt);
+    const device = eventDeviceLabel(evt);
+    const user = eventUserLabel(evt);
+    const timeSource = evt.timestamp || evt.Time || evt.RecordTime || evt.LogTime || evt._t;
+    const when = formatDateTime(timeSource);
+    const badgeClass = `diag-event-badge ${category}`;
+    const userMeta = user ? `<span><i class="bi bi-person-badge"></i>${escapeHtml(user)}</span>` : '';
+    const deviceMeta = device ? `<span><i class="bi bi-hdd-network"></i>${escapeHtml(device)}</span>` : '';
+    return `
+      <div class="diag-event" data-category="${escapeHtml(category)}">
+        <div class="diag-event-title">
+          <span class="${badgeClass}">${escapeHtml(eventCategoryLabel(category))}</span>
+          <span>${escapeHtml(summary)}</span>
+        </div>
+        <div class="diag-event-meta">
+          <span><i class="bi bi-clock-history"></i>${escapeHtml(when)}</span>
+          ${deviceMeta}
+          ${userMeta}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  eventsListEl.innerHTML = html;
+}
+
+function updateEventsSummary(){
+  const total = Array.isArray(ACCESS_EVENTS) ? ACCESS_EVENTS.length : 0;
+  if (eventsCountEl){
+    eventsCountEl.textContent = String(total);
+  }
+  if (eventsMetaEl){
+    const parts = [];
+    if (EVENTS_LAST_SYNC){
+      parts.push(`Last sync ${formatDateTime(EVENTS_LAST_SYNC)}`);
+    }
+    if (ACCESS_EVENT_LIMIT){
+      parts.push(`Keeping up to ${ACCESS_EVENT_LIMIT} events`);
+    }
+    eventsMetaEl.textContent = parts.join(' • ') || '—';
+  }
+  if (eventsLimitHelperEl){
+    eventsLimitHelperEl.textContent = `Range: ${MIN_ACCESS_EVENT_LIMIT} - ${MAX_ACCESS_EVENT_LIMIT} events.`;
+  }
+}
+
+function updateEventFilterButtons(){
+  document.querySelectorAll('[data-event-filter]')?.forEach((btn) => {
+    if (!btn || typeof btn.dataset.eventFilter !== 'string') return;
+    const value = btn.dataset.eventFilter;
+    if (value === EVENT_FILTER_MODE) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+}
+
+function setEventFilter(mode){
+  if (!EVENT_FILTERS.includes(mode)){
+    EVENT_FILTER_MODE = 'all';
+  } else {
+    EVENT_FILTER_MODE = mode;
+  }
+  updateEventFilterButtons();
+  renderAccessEvents(ACCESS_EVENTS);
+}
+
+function setEventsStatus(message, tone = 'muted'){
+  if (!eventsStatusEl) return;
+  if (!message){
+    eventsStatusEl.textContent = '';
+    eventsStatusEl.className = 'diag-settings-status muted';
+    return;
+  }
+  const classes = ['diag-settings-status'];
+  if (tone === 'success') classes.push('success');
+  else if (tone === 'error') classes.push('error');
+  else classes.push('muted');
+  eventsStatusEl.className = classes.join(' ');
+  eventsStatusEl.textContent = message;
+}
+
+function applyEventsResponse(data){
+  if (data && typeof data === 'object'){
+    ACCESS_EVENTS = Array.isArray(data.access_events) ? data.access_events : [];
+    const limit = Number(data.access_event_limit);
+    if (Number.isFinite(limit)) ACCESS_EVENT_LIMIT = limit;
+    const minLimit = Number(data.min_access_event_limit);
+    if (Number.isFinite(minLimit)) MIN_ACCESS_EVENT_LIMIT = minLimit;
+    const maxLimit = Number(data.max_access_event_limit);
+    if (Number.isFinite(maxLimit)) MAX_ACCESS_EVENT_LIMIT = maxLimit;
+    EVENTS_LAST_SYNC = data.events_last_sync || null;
+  } else {
+    ACCESS_EVENTS = [];
+    EVENTS_LAST_SYNC = null;
+  }
+  renderAccessEvents(ACCESS_EVENTS);
+  updateEventsSummary();
+}
+
+async function requestEventsRefresh(){
+  const response = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'refresh_events' })
+  });
+  if (!response.ok){
+    const text = await response.text();
+    let message = text;
+    try {
+      const parsed = text ? JSON.parse(text) : null;
+      if (parsed && typeof parsed === 'object' && parsed.error){
+        message = parsed.error;
+      }
+    } catch (err) {}
+    const err = buildError(response, text);
+    if (message) err.message = message;
+    throw err;
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (payload && typeof payload === 'object' && 'ok' in payload && !payload.ok){
+    throw new Error(payload.error || 'Refresh failed');
+  }
+  return true;
+}
+
+async function refreshAccessEvents(){
+  if (btnRefreshEvents) btnRefreshEvents.setAttribute('disabled', 'true');
+  setEventsStatus('Requesting fresh events…');
+  try {
+    await requestEventsRefresh();
+    setEventsStatus('Events requested, reloading…');
+    await loadDiagnostics();
+    setEventsStatus('Events refreshed ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to refresh events', err);
+    setEventsStatus(`Refresh failed: ${err && err.message ? err.message : err}`, 'error');
+    alert('Failed to refresh events: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btnRefreshEvents) btnRefreshEvents.removeAttribute('disabled');
+  }
 }
 
 function renderDevices(devices, options = {}){
@@ -1398,6 +1759,7 @@ async function loadDiagnostics(){
     }
     const data = await response.json();
     applyHistoryLimitResponse(data);
+    applyEventsResponse(data);
     setHistoryLimitStatus('');
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
     FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
@@ -1429,6 +1791,12 @@ document.addEventListener('DOMContentLoaded', () => {
       setActiveTab(btn.dataset.tabTarget);
     });
   });
+  document.querySelectorAll('[data-event-filter]')?.forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      setEventFilter(btn.dataset.eventFilter || 'all');
+    });
+  });
   getTypeFilterSelect()?.addEventListener('change', (ev) => {
     setTypeFilter(ev.target.value);
   });
@@ -1448,11 +1816,19 @@ document.addEventListener('DOMContentLoaded', () => {
   commandClearBtn?.addEventListener('click', () => {
     clearCommandEditor();
   });
+  btnRefreshEvents?.addEventListener('click', () => {
+    refreshAccessEvents();
+  });
+  btnOpenEventHistory?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('event_history');
+  });
   renderHistoryLimitControls();
   refreshTypeFilterOptions(DIAG_DATA);
   updateCommandDeviceOptions(DIAG_DATA);
   renderFaceAttempts(FACE_ATTEMPTS);
   syncCommandPayloadState();
+  setEventFilter(EVENT_FILTER_MODE);
   setActiveTab(ACTIVE_TAB);
   loadDiagnostics();
 });
