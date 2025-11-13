@@ -951,6 +951,59 @@ function categorizeEvent(event, device) {
   return 'system';
 }
 
+function normalizeEventCategory(value){
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim().toLowerCase();
+  if (text === 'access' || text === 'call' || text === 'system') return text;
+  return '';
+}
+
+const EVENT_CATEGORY_LABELS = { access: 'Access', call: 'Call', system: 'System' };
+const EVENT_DEVICE_KEYS = [
+  '_device','device_name','device','Device','DoorName','Door','AccessPoint','Reader',
+];
+const EVENT_DETAIL_KEYS = {
+  call: [
+    'status_label','status','call_type','CallType','CallStatus','CallMode','CallNumber','CallNo','CallNum','number','digits',
+  ],
+  access: [
+    'AccessType','AccessMode','Method','OpenType','AccessResult','AccessStatus','OpenResult','CredentialType','Credential',
+    'CardNumber','CardNo','Pin','PIN','Passcode','Password','UserName','User','UserID','Name',
+  ],
+  system: ['Event','Result','status_label','Description','Detail','Message'],
+  default: ['Event','Result','status_label','action','Description','Detail','Message'],
+};
+
+function pickFirstEventText(event, keys){
+  if (!event || typeof event !== 'object') return '';
+  for (const key of keys || []){
+    if (!key) continue;
+    const value = event[key];
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function describeEventForDisplay(event){
+  const category = normalizeEventCategory(event && event._category) || categorizeEvent(event);
+  const normalizedCategory = category || 'system';
+  const label = EVENT_CATEGORY_LABELS[normalizedCategory] || normalizedCategory.charAt(0).toUpperCase() + normalizedCategory.slice(1);
+  const device = pickFirstEventText(event, EVENT_DEVICE_KEYS);
+  const categoryDetailKeys = EVENT_DETAIL_KEYS[normalizedCategory] || [];
+  const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'event';
+  const detail = pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
+  const parts = [label];
+  if (device) parts.push(device);
+  if (detail) parts.push(detail);
+  return {
+    category: normalizedCategory,
+    title: parts.join(' - '),
+    highlight: fallbackMessage || detail || label,
+  };
+}
+
 const EVENT_EMPTY_MESSAGES = {
   all: 'No recent events',
   system: 'No system events',
@@ -986,11 +1039,10 @@ function applyEventFilter(){
   if (!listEl) return;
   const html = list.map(e => {
     const when = formatWhen(e.timestamp || e.Time || '');
-    const msg  = e.Event || e.Result || e.action || 'event';
-    const cls  = classifyEvent(msg);
-    const dev  = e._device || '';
-    return `<li class="event-item" data-category="${e._category}">
-      <span class="event-title ${cls}">${msg} - ${dev}</span>
+    const info = describeEventForDisplay(e);
+    const cls  = classifyEvent(info.highlight);
+    return `<li class="event-item" data-category="${info.category}">
+      <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
       <div class="event-time">${when}</div>
     </li>`;
   }).join('');
@@ -1018,7 +1070,7 @@ function renderEvents(devs, aggregated){
       if (parsed instanceof Date && !isNaN(parsed.getTime())) copy._t = parsed.getTime();
       else copy._t = Number(copy._t) || 0;
     }
-    copy._category = copy._category || 'access';
+    copy._category = normalizeEventCategory(copy._category) || categorizeEvent(copy);
     copy._device = copy._device || copy.device || '';
     events.push(copy);
   });

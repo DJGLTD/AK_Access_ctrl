@@ -645,16 +645,20 @@ def _desired_device_user_payload(
     effective_schedule = schedule_name
 
     if exit_override:
+        clone_name = str(exit_info.get("clone_name") or "").strip()
+        clone_schedule_id = clone_name and sched_map.get(clone_name.lower()) or ""
+
         if exit_permission == EXIT_PERMISSION_ALWAYS:
-            exit_schedule_id = "1001"
-            effective_schedule = "24/7 Access"
+            if clone_schedule_id:
+                exit_schedule_id = clone_schedule_id
+                effective_schedule = clone_name
+            else:
+                exit_schedule_id = "1001"
+                effective_schedule = "24/7 Access"
         elif exit_permission == EXIT_PERMISSION_WORKING_DAYS:
-            clone_name = str(exit_info.get("clone_name") or "").strip()
-            if clone_name:
-                candidate_id = sched_map.get(clone_name.lower())
-                if candidate_id:
-                    exit_schedule_id = candidate_id
-                    effective_schedule = clone_name
+            if clone_schedule_id:
+                exit_schedule_id = clone_schedule_id
+                effective_schedule = clone_name
             if not exit_schedule_id:
                 exit_permission = EXIT_PERMISSION_MATCH
                 effective_schedule = schedule_name

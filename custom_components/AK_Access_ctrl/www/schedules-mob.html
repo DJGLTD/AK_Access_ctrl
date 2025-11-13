@@ -626,12 +626,6 @@ function cloneScheduleSpec(spec){
   return base;
 }
 
-function scheduleExitFlag(spec){
-  if (!spec || typeof spec !== 'object') return false;
-  if ('always_permit_exit' in spec) return truthy(spec.always_permit_exit);
-  return false;
-}
-
 function renderDayButtons(selectedDays = [], disabled = false){
   const container = document.getElementById('schedDayButtons');
   if (!container) return;
@@ -659,7 +653,6 @@ function render(name){
   const isBuiltin = name === '24/7 Access' || name === 'No Access';
   const startInput = document.getElementById('schedStart');
   const endInput = document.getElementById('schedEnd');
-  const exitToggle = document.getElementById('schedExit');
 
   if (startInput){
     startInput.value = spec.start;
@@ -668,10 +661,6 @@ function render(name){
   if (endInput){
     endInput.value = spec.end;
     endInput.disabled = isBuiltin;
-  }
-  if (exitToggle){
-    exitToggle.checked = scheduleExitFlag(spec);
-    exitToggle.disabled = isBuiltin;
   }
 
   renderDayButtons(spec.days, isBuiltin);
@@ -751,8 +740,6 @@ async function save(){
   spec.start = parsedStart.text;
   spec.end = parsedEnd.text;
   spec.days = days;
-  const exitToggle = document.getElementById('schedExit');
-  spec.always_permit_exit = !!(exitToggle && exitToggle.checked);
   if (!spec.type) spec.type = '2';
   if (spec.date_start === undefined || spec.date_start === null) spec.date_start = '';
   if (spec.date_end === undefined || spec.date_end === null) spec.date_end = '';
@@ -816,11 +803,6 @@ async function load(){
       <select id="schedSel" class="form-select form-select-sm"></select>
     </div>
     <div class="mb-2"><label class="form-label">Schedule name</label><input id="schedName" class="form-control"/></div>
-    <div class="form-check form-switch mb-3">
-      <input class="form-check-input" type="checkbox" id="schedExit">
-      <label class="form-check-label" for="schedExit">Always permit exit devices</label>
-      <div class="form-text">Exit devices treat this schedule as 24/7 when enabled.</div>
-    </div>
     <div class="schedule-window" id="scheduleEditor">
       <div class="row g-2 align-items-end">
         <div class="col-12 col-md-4 col-lg-3">
@@ -837,6 +819,7 @@ async function load(){
         <div class="schedule-window-days" id="schedDayButtons"></div>
       </div>
     </div>
+    <div class="form-text muted mt-2">Exit-only devices automatically receive all-day access on the selected days.</div>
     <div class="mt-3 d-flex gap-2">
       <button class="btn btn-success" onclick="save()">Save</button>
       <button class="btn btn-danger" onclick="del()">Delete</button>
