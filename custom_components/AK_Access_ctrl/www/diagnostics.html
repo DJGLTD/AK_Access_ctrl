@@ -593,7 +593,6 @@ function openInApp(view, params = {}, options = {}) {
           <div class="diag-event-filters btn-group" role="group" aria-label="Filter events">
             <button class="btn btn-sm btn-outline-info active" type="button" data-event-filter="all">All</button>
             <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="access">Access</button>
-            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="system">System</button>
             <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="call">Call</button>
           </div>
           <div id="eventsList" class="diag-events-list mt-3"></div>
@@ -697,10 +696,9 @@ const EXCLUDED_REQUEST_PATHS = Object.freeze([
 const EVENT_EMPTY_MESSAGES = Object.freeze({
   all: 'No recorded events yet.',
   access: 'No access events recorded yet.',
-  system: 'No system events recorded yet.',
   call: 'No call events recorded yet.',
 });
-const EVENT_FILTERS = Object.freeze(['all', 'access', 'system', 'call']);
+const EVENT_FILTERS = Object.freeze(['all', 'access', 'call']);
 
 function normalizeRequestPath(req){
   if (!req || typeof req !== 'object') return '';
