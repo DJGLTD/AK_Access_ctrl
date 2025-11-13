@@ -112,11 +112,11 @@ def test_exit_permission_defaults_to_match_when_clone_missing():
 
 
 def test_exit_permission_always_forces_247_clone():
-    sched_map = {"office": "1500", "24/7 access": "1001"}
+    sched_map = {"office": "1500", "office - ep": "2150", "24/7 access": "1001"}
     exit_schedule_map = {"office": {"clone_name": "Office - EP"}}
     payload = _payload_for_exit_permission("always", sched_map, exit_schedule_map)
-    assert payload["ScheduleID"] == "1001"
-    assert payload["Schedule"] == "1001"
+    assert payload["ScheduleID"] == "2150"
+    assert payload["Schedule"] == "2150"
 
 
 def test_exit_permission_working_days_uses_clone_when_available():
