@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import datetime as dt
 from datetime import timedelta
 import time
 import re
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -30,6 +31,7 @@ from .access_history import AccessHistory, categorize_event
 
 CALLER_LOOKBACK_SECONDS = 120
 CALLER_CLEAR_DELAY_SECONDS = 10
+CALLER_EVENT_WINDOW_SECONDS = 30
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -331,20 +333,29 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.debug("Failed to persist alert state: %s", _safe_str(err))
 
-    async def _process_door_events(self):
+    async def _process_door_events(self) -> List[Dict[str, Any]]:
         """Fetch recent door events and handle non-key access notifications."""
 
         notifications = self.storage.data.get("notifications") or {}
         notify_targets: List[str] = list(notifications.get("targets") or [])
 
+        events: List[Dict[str, Any]] = []
+
         try:
-            events = await self.api.events_last()
+            raw_events = await self.api.events_last()
         except Exception as err:
             _LOGGER.debug("Failed to fetch door events: %s", _safe_str(err))
-            return
+            return events
 
-        if not isinstance(events, list) or not events:
-            return
+        if isinstance(raw_events, list):
+            events = list(raw_events)
+        elif isinstance(raw_events, dict):
+            events = [raw_events]
+        else:
+            events = []
+
+        if not events:
+            return events
 
         try:
             self._publish_access_history(events)
@@ -381,7 +392,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             events_to_process.append((key, event, parsed_ts))
 
         if not events_to_process:
-            return
+            return events
 
         # Avoid processing an unbounded backlog.
         max_events = 25
@@ -411,6 +422,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 await self.storage.async_save()
             except Exception as err:
                 _LOGGER.debug("Unable to persist door event state: %s", _safe_str(err))
+
+        return events
 
     def _event_unique_key(self, event: Dict[str, Any]) -> Optional[str]:
         """Generate a stable identifier for a door event."""
@@ -946,11 +959,15 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         return None
 
-    async def async_refresh_access_history(self):
+    async def async_refresh_access_history(self) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
         try:
-            await self._process_door_events()
+            result = await self._process_door_events()
+            if isinstance(result, list):
+                events = result
         finally:
             self.async_update_listeners()
+        return events
 
     async def async_refresh_inbound_call_history(self):
         try:
@@ -960,7 +977,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.debug("Failed to refresh inbound call history: %s", _safe_str(err))
 
-    async def async_fetch_current_caller(self) -> None:
+    async def async_fetch_current_caller(self) -> Dict[str, Any]:
         state = self._empty_caller_state()
         state["source"] = "call_log"
 
@@ -975,7 +992,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             state["status"] = "error"
             state["error"] = _safe_str(err) or "call_log_error"
             self._set_caller_state(state, auto_clear=True)
-            return
+            return state
 
         if isinstance(log_items, dict):
             items: List[Dict[str, Any]] = [log_items]
@@ -1037,7 +1054,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             state["status"] = "no_match"
             state["error"] = "no_recent_call"
             self._set_caller_state(state, auto_clear=True)
-            return
+            return state
 
         root = self.hass.data.get(DOMAIN, {}) or {}
         try:
@@ -1086,6 +1103,174 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             state["status"] = "matched"
 
         self._set_caller_state(state, auto_clear=True)
+        return state
+
+    async def async_refresh_caller_via_button(self) -> None:
+        """Button workflow: refresh caller, then align with door events."""
+
+        pressed_at = dt.datetime.now(dt.timezone.utc)
+        state = await self.async_fetch_current_caller()
+
+        status = (state or {}).get("status") or ""
+        if status != "matched":
+            return
+
+        await asyncio.sleep(1)
+
+        events_by_device = await self._refresh_access_histories_for_all_devices()
+        if not events_by_device:
+            return
+
+        self._link_caller_state_to_events(state, pressed_at, events_by_device)
+
+    async def _refresh_access_histories_for_all_devices(self) -> List[Tuple["AkuvoxCoordinator", List[Dict[str, Any]]]]:
+        root = self.hass.data.get(DOMAIN, {}) or {}
+        if not isinstance(root, dict):
+            return []
+
+        coords: List[AkuvoxCoordinator] = []
+        tasks: List[Awaitable[List[Dict[str, Any]]]] = []
+
+        for value in root.values():
+            if not isinstance(value, dict):
+                continue
+            coord = value.get("coordinator")
+            if not isinstance(coord, AkuvoxCoordinator):
+                continue
+            coords.append(coord)
+            tasks.append(coord.async_refresh_access_history())
+
+        if not tasks:
+            return []
+
+        results: List[Tuple[AkuvoxCoordinator, List[Dict[str, Any]]]] = []
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        for coord, response in zip(coords, responses):
+            if isinstance(response, Exception):
+                continue
+            if isinstance(response, list):
+                events = response
+            elif response is None:
+                events = []
+            else:
+                try:
+                    events = list(response)
+                except Exception:
+                    events = []
+            results.append((coord, events))
+
+        return results
+
+    def _link_caller_state_to_events(
+        self,
+        caller_state: Dict[str, Any],
+        pressed_at: dt.datetime,
+        events_by_device: List[Tuple["AkuvoxCoordinator", List[Dict[str, Any]]]],
+    ) -> None:
+        if not caller_state:
+            return
+
+        caller_id = caller_state.get("caller_id") or None
+        normalized_caller_id = normalize_ha_id(caller_id) if caller_id else None
+        caller_name_raw = caller_state.get("caller_name")
+        caller_name = _safe_str(caller_name_raw).strip() if caller_name_raw else None
+        caller_name_lower = caller_name.lower() if caller_name else None
+        key_holder_flag = caller_state.get("key_holder")
+
+        pressed_epoch = 0.0
+        try:
+            if pressed_at.tzinfo is None:
+                pressed_epoch = pressed_at.replace(tzinfo=dt.timezone.utc).timestamp()
+            else:
+                pressed_epoch = pressed_at.astimezone(dt.timezone.utc).timestamp()
+        except Exception:
+            try:
+                pressed_epoch = float(time.time())
+            except Exception:
+                pressed_epoch = 0.0
+
+        best_match: Optional[Dict[str, Any]] = None
+
+        for coord, events in events_by_device:
+            if not events:
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+
+                timestamp_text = coord._extract_event_timestamp(event, fallback=False)
+                if not timestamp_text:
+                    continue
+                event_epoch = AccessHistory._coerce_timestamp(timestamp_text)
+                if not event_epoch:
+                    continue
+
+                delta = abs(event_epoch - pressed_epoch)
+                if CALLER_EVENT_WINDOW_SECONDS and delta > CALLER_EVENT_WINDOW_SECONDS:
+                    continue
+
+                tokens = coord._event_summary_tokens(event)
+                if not coord._event_is_access_granted(tokens):
+                    continue
+
+                event_user_id = coord._extract_event_user_id(event)
+                event_user_name = coord._extract_event_user_name(event)
+                event_name_lower = event_user_name.lower() if isinstance(event_user_name, str) else None
+
+                matches = False
+                if normalized_caller_id and event_user_id:
+                    if normalize_ha_id(event_user_id) == normalized_caller_id:
+                        matches = True
+                if not matches and caller_name_lower and event_name_lower:
+                    if event_name_lower == caller_name_lower:
+                        matches = True
+
+                if not matches:
+                    continue
+
+                if best_match is None or delta < best_match["delta"]:
+                    best_match = {
+                        "coord": coord,
+                        "event": event,
+                        "delta": delta,
+                        "event_epoch": event_epoch,
+                        "user_id": event_user_id,
+                        "user_name": event_user_name,
+                    }
+
+        if not best_match:
+            return
+
+        coord: AkuvoxCoordinator = best_match["coord"]
+        event = dict(best_match["event"] or {})
+
+        if key_holder_flag is not None and "key_holder" not in event:
+            normalized_flag = bool(key_holder_flag)
+            event["key_holder"] = normalized_flag
+            event.setdefault("KeyHolder", normalized_flag)
+            event.setdefault("keyHolder", normalized_flag)
+
+        user_name = best_match.get("user_name")
+        if isinstance(user_name, str) and user_name.strip():
+            display_name = user_name.strip()
+        elif caller_name:
+            display_name = caller_name
+        else:
+            display_name = caller_state.get("caller_number") or caller_state.get("raw_number") or "Unknown caller"
+
+        summary = f"Access granted to {display_name} by Call to open"
+
+        try:
+            coord._append_event(summary)
+        except Exception:
+            pass
+
+        coord._update_access_state(
+            "granted",
+            event,
+            user_id=best_match.get("user_id"),
+            summary=summary,
+        )
 
     async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
         """Send notifications for a door event (best effort)."""
