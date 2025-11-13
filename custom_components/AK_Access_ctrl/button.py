@@ -88,4 +88,4 @@ class AkuvoxCallerIdRefreshButton(_Base):
         return f"{self._entry.entry_id}_refresh_caller_id"
 
     async def async_press(self) -> None:
-        await self._coord.async_fetch_current_caller()
+        await self._coord.async_refresh_caller_via_button()
