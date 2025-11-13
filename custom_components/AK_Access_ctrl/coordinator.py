@@ -357,8 +357,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         state = self.storage.data.setdefault("door_events", {})
         last_seen = _safe_str(state.get("last_event_key")) or None
+        last_seen_epoch_raw = state.get("last_event_epoch")
+        try:
+            last_seen_epoch = float(last_seen_epoch_raw)
+        except (TypeError, ValueError):
+            last_seen_epoch = 0.0
 
-        events_to_process: List[Tuple[str, Dict[str, Any]]] = []
+        events_to_process: List[Tuple[str, Dict[str, Any], float]] = []
         for event in reversed(events):
             key = self._event_unique_key(event)
             if key is None:
@@ -367,7 +372,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 # Drop everything collected so far (they are older events).
                 events_to_process = []
                 continue
-            events_to_process.append((key, event))
+            timestamp_text = self._extract_event_timestamp(event)
+            parsed_ts = 0.0
+            if timestamp_text:
+                parsed_ts = AccessHistory._coerce_timestamp(timestamp_text)
+            if parsed_ts and parsed_ts <= last_seen_epoch:
+                continue
+            events_to_process.append((key, event, parsed_ts))
 
         if not events_to_process:
             return
@@ -379,13 +390,20 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         storage_dirty = False
         last_processed_key = last_seen
-        for key, event in events_to_process:
+        last_processed_epoch = last_seen_epoch
+        for key, event, parsed_ts in events_to_process:
             if await self._handle_door_event(event, notify_targets):
                 storage_dirty = True
             last_processed_key = key
+            if parsed_ts > last_processed_epoch:
+                last_processed_epoch = parsed_ts
 
         if last_processed_key and last_processed_key != last_seen:
             state["last_event_key"] = last_processed_key
+            storage_dirty = True
+
+        if last_processed_epoch > last_seen_epoch:
+            state["last_event_epoch"] = last_processed_epoch
             storage_dirty = True
 
         if storage_dirty:
