@@ -658,7 +658,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             return
 
         history = root.get("access_history")
-        if not history or not hasattr(history, "ingest"):
+        if history is None or not hasattr(history, "ingest"):
             return
 
         settings = root.get("settings_store")
