@@ -282,7 +282,7 @@ async function uploadBlobAsJpg(blob){
       setStatus('Upload failed: ' + (res.error || text || err.message || r.status), false);
       return;
     }
-    setStatus('Face uploaded. A sync will push it to the device shortly.', true);
+    setStatus('Face uploaded for ' + USER_ID + '. It is now stored in the FaceData folder of Home Assistant and will sync to the device shortly.', true);
   }catch(e){
     if (handleAuthError(e)) return;
     setStatus('Upload error: ' + (e && e.message ? e.message : e), false);
@@ -309,6 +309,7 @@ async function uploadFromFile(){
 /* ---------- init ---------- */
 document.addEventListener('DOMContentLoaded', ()=>{
   const badge = document.getElementById('userBadge');
+  const badgeInline = document.getElementById('userBadgeInline');
   if (badge){
     if (USER_ID_DISPLAY){
       badge.textContent = USER_ID_DISPLAY;
@@ -318,6 +319,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if (!USER_ID){
       badge.style.display = 'none';
     }
+  }
+  if (badgeInline){
+    badgeInline.textContent = USER_ID_DISPLAY || '(unknown)';
+    if (!USER_ID) badgeInline.closest('code')?.classList.add('text-warning');
   }
   const nameEl = document.getElementById('userName');
   if (nameEl){
@@ -344,9 +349,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
       <span id="userBadge" class="badge bg-secondary"></span>
     </div>
 
-    <div class="mb-2 muted">Upload a JPG face photo:</div>
+    <div class="mb-2 muted">Upload a JPG face photo (stored as <code><span id="userBadgeInline" class="badge bg-secondary"></span>.jpg</code> in Home Assistant):</div>
     <div class="d-flex btn-row align-items-center">
-      <input id="file" type="file" accept=".jpg,image/jpeg" class="form-control" style="max-width:420px;" data-busy-lock />
+      <input id="file" type="file" accept=".jpg,image/jpeg" capture="environment" class="form-control" style="max-width:420px;" data-busy-lock />
       <button id="uploadFileBtn" class="btn btn-success" onclick="uploadFromFile()" data-busy-lock>Upload selected file</button>
     </div>
   </div>
