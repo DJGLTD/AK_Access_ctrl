@@ -516,6 +516,11 @@ function openInApp(view, params = {}, options = {}) {
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
+const AUTO_UPDATE_CONFIG = '/api/config/automation/config';
+const AUTO_UPDATE_ID = 'akuvox_ac_auto_update';
+const AUTO_UPDATE_UPDATE_ENTITY = 'update.akuvox_access_control';
+const AUTO_UPDATE_DEFAULT_TIME = '03:00';
+const AUTO_UPDATE_CATEGORY = 'Akuvox Access Control';
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 
@@ -567,6 +572,178 @@ let scheduleStatusTimer = null;
 let scheduleReadOnly = false;
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+/* Automation helpers */
+let autoUpdateSaving = false;
+
+function getAutoUpdateInputs(){
+  return {
+    toggle: document.getElementById('autoUpdateToggle'),
+    time: document.getElementById('autoUpdateTime'),
+    restart: document.getElementById('autoUpdateRestartToggle'),
+  };
+}
+
+function setAutoUpdateStatus(text, tone = 'muted'){
+  const el = document.getElementById('autoUpdateStatus');
+  if (!el) return;
+  const base = 'form-text mt-2';
+  let cls = base + ' text-muted';
+  if (tone === 'success') cls = base + ' text-success';
+  else if (tone === 'error') cls = base + ' text-danger';
+  el.className = cls;
+  el.textContent = text;
+}
+
+function normalizeAutoUpdateTime(raw){
+  if (!raw || typeof raw !== 'string') return AUTO_UPDATE_DEFAULT_TIME;
+  const match = raw.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return AUTO_UPDATE_DEFAULT_TIME;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return AUTO_UPDATE_DEFAULT_TIME;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return AUTO_UPDATE_DEFAULT_TIME;
+  return `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
+}
+
+function extractAutoUpdateTime(trigger){
+  if (!trigger || typeof trigger.at !== 'string') return null;
+  const normalized = normalizeAutoUpdateTime(trigger.at);
+  return normalized;
+}
+
+function hasRestartAction(action){
+  if (!action) return false;
+  if (Array.isArray(action)) return action.some(hasRestartAction);
+  if (action.service === 'homeassistant.restart') return true;
+  if (Array.isArray(action.sequence)) return action.sequence.some(hasRestartAction);
+  if (Array.isArray(action.choose)) return action.choose.some((choice) => Array.isArray(choice.sequence) && choice.sequence.some(hasRestartAction));
+  return false;
+}
+
+function buildAutoUpdateAutomation(timeValue, allowRestart){
+  const time = normalizeAutoUpdateTime(timeValue);
+  const sequence = [
+    {
+      service: 'update.install',
+      target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] },
+      data: { backup: false }
+    }
+  ];
+  if (allowRestart) {
+    sequence.push({ service: 'homeassistant.restart' });
+  }
+  return {
+    id: AUTO_UPDATE_ID,
+    alias: 'Akuvox Access Control • Auto update',
+    category: AUTO_UPDATE_CATEGORY,
+    description: 'Automatically install updates for the Akuvox Access Control integration when they are available.',
+    mode: 'single',
+    trigger: [
+      { platform: 'time', at: time }
+    ],
+    action: [
+      { service: 'homeassistant.update_entity', target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] } },
+      { delay: { minutes: 1 } },
+      {
+        choose: [
+          {
+            conditions: [ { condition: 'state', entity_id: AUTO_UPDATE_UPDATE_ENTITY, state: 'on' } ],
+            sequence
+          }
+        ],
+        default: []
+      }
+    ],
+  };
+}
+
+async function fetchAutoUpdateConfig(){
+  try {
+    const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text();
+      throw buildError(res, text);
+    }
+    return res.json();
+  } catch (err) {
+    if (handleAuthError(err)) return null;
+    throw err;
+  }
+}
+
+async function setAutoUpdateEnabled(desired){
+  if (autoUpdateSaving) return;
+  const { toggle, time, restart } = getAutoUpdateInputs();
+  autoUpdateSaving = true;
+  if (toggle) toggle.disabled = true;
+  setAutoUpdateStatus(desired ? 'Saving automation…' : 'Removing automation…');
+  try {
+    if (desired){
+      const config = buildAutoUpdateAutomation(time?.value, !!restart?.checked);
+      let res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      if (res.status === 404){
+        res = await fetchWithAuth(AUTO_UPDATE_CONFIG, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
+      }
+      if (!res.ok){
+        const text = await res.text();
+        throw buildError(res, text);
+      }
+      setAutoUpdateStatus('Automation enabled. Home Assistant will check and install updates automatically.', 'success');
+      if (toggle) toggle.checked = true;
+    } else {
+      const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, { method: 'DELETE' });
+      if (res.status !== 200 && res.status !== 404){
+        const text = await res.text();
+        throw buildError(res, text);
+      }
+      setAutoUpdateStatus('Automation removed. Updates will no longer install automatically.', 'muted');
+      if (toggle) toggle.checked = false;
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    if (toggle) toggle.checked = !desired;
+    setAutoUpdateStatus('Automation change failed: ' + (err && err.message ? err.message : err), 'error');
+    alert('Failed to update automation: ' + (err && err.message ? err.message : err));
+  } finally {
+    autoUpdateSaving = false;
+    if (toggle) toggle.disabled = false;
+  }
+}
+
+async function refreshAutoUpdateToggle(){
+  const { toggle, time, restart } = getAutoUpdateInputs();
+  if (!toggle) return;
+  toggle.disabled = true;
+  setAutoUpdateStatus('Checking current automation…');
+  try {
+    const cfg = await fetchAutoUpdateConfig();
+    const enabled = !!cfg;
+    toggle.checked = enabled;
+    const triggers = Array.isArray(cfg?.trigger) ? cfg.trigger : [];
+    const timeTrigger = triggers.find((item) => item?.platform === 'time');
+    const currentTime = extractAutoUpdateTime(timeTrigger) || AUTO_UPDATE_DEFAULT_TIME;
+    if (time) time.value = currentTime;
+    if (restart) restart.checked = enabled ? hasRestartAction(cfg?.action) : false;
+    setAutoUpdateStatus(enabled
+      ? 'Automation is enabled and will install Akuvox Access Control updates when available.'
+      : 'No automation is configured. Enable the toggle to create one.');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setAutoUpdateStatus('Could not verify automation: ' + (err && err.message ? err.message : err), 'error');
+  } finally {
+    toggle.disabled = false;
+  }
+}
 function hideIntegritySavedOverlay(){
   const overlay = document.getElementById('integritySavedOverlay');
   if (!overlay) return;
@@ -1801,6 +1978,19 @@ document.addEventListener('DOMContentLoaded', () => {
     openInApp('diagnostics');
   });
 
+  document.getElementById('autoUpdateToggle')?.addEventListener('change', (e) => {
+    setAutoUpdateEnabled(e.target.checked);
+  });
+  document.getElementById('autoUpdateTime')?.addEventListener('change', () => {
+    const toggle = document.getElementById('autoUpdateToggle');
+    if (toggle?.checked) setAutoUpdateEnabled(true);
+  });
+  document.getElementById('autoUpdateRestartToggle')?.addEventListener('change', () => {
+    const toggle = document.getElementById('autoUpdateToggle');
+    if (toggle?.checked) setAutoUpdateEnabled(true);
+  });
+  refreshAutoUpdateToggle();
+
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
   autoSyncInput?.addEventListener('input', () => {
     hideAutoSyncSavedOverlay();
@@ -1967,6 +2157,29 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
       </div>
       <button class="btn btn-outline-info" id="openDiagnosticsBtn"><i class="bi bi-activity me-1"></i>Open diagnostics</button>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span>Integration Updates</span>
+      <span class="muted small">Create a Home Assistant automation to keep this integration updated.</span>
+    </div>
+    <div class="card-body">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="autoUpdateToggle">
+        <label class="form-check-label" for="autoUpdateToggle">Auto update this integration</label>
+      </div>
+      <div class="mt-3">
+        <label class="form-label" for="autoUpdateTime">Daily check time</label>
+        <input class="form-control" type="time" id="autoUpdateTime" step="60">
+        <div class="form-text text-muted">Choose the time Home Assistant should check for updates each day.</div>
+      </div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="autoUpdateRestartToggle">
+        <label class="form-check-label" for="autoUpdateRestartToggle">Allow restart after update</label>
+      </div>
+      <div class="form-text text-muted mt-2" id="autoUpdateStatus">Checking current automation…</div>
     </div>
   </div>
 
