@@ -526,15 +526,15 @@ const AUTO_UPDATE_DEFAULT_TIME = '03:00';
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 
 let SETTINGS_DATA = {
-  integrity_interval_minutes: null,
-  auto_sync_delay_minutes: 30,
-  health_check_interval_seconds: 30,
+  integrity_interval_minutes: 1200,
+  auto_sync_delay_minutes: 15,
+  health_check_interval_seconds: 300,
   alerts: { targets: {} },
   registry_users: [],
   capabilities: { alarm_relay: false },
   min_health_check_interval_seconds: 10,
   max_health_check_interval_seconds: 300,
-  access_event_limit: 30,
+  access_event_limit: 200,
   min_access_event_limit: 5,
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
@@ -592,7 +592,7 @@ function setAutoUpdateStatus(text, tone = 'muted'){
   const el = document.getElementById('autoUpdateStatus');
   if (!el) return;
   const base = 'form-text mt-2';
-  let cls = base + ' text-muted';
+  let cls = base + ' text-white';
   if (tone === 'success') cls = base + ' text-success';
   else if (tone === 'error') cls = base + ' text-danger';
   el.className = cls;
@@ -1119,7 +1119,7 @@ function escapeSelector(value){
 function renderIntegrity(){
   const input = document.getElementById('integrityInput');
   if (!input) return;
-  const minutes = SETTINGS_DATA.integrity_interval_minutes || 15;
+  const minutes = SETTINGS_DATA.integrity_interval_minutes || 1200;
   input.value = minutesToHHMM(minutes);
   setIntegrityStatus('');
 }
@@ -2004,16 +2004,24 @@ async function loadData(){
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('btnBack')?.addEventListener('click', (e) => {
-    e.preventDefault();
-    openInApp('index', {}, { replaceState: true });
-  });
+document.addEventListener('DOMContentLoaded', async () => {
+  const backBtn = document.getElementById('btnBack');
+  if (backBtn) {
+    backBtn.href = buildHref('index');
+    backBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('index', {}, { replaceState: true });
+    });
+  }
 
-  document.getElementById('openDiagnosticsBtn')?.addEventListener('click', (e) => {
-    e.preventDefault();
-    openInApp('diagnostics');
-  });
+  const diagnosticsBtn = document.getElementById('openDiagnosticsBtn');
+  if (diagnosticsBtn) {
+    diagnosticsBtn.href = buildHref('diagnostics');
+    diagnosticsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('diagnostics');
+    });
+  }
 
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
   const commitAutoSyncDelay = async () => {
@@ -2208,7 +2216,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <div class="container py-3">
   <div class="d-flex align-items-center gap-2">
-    <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
+    <a class="btn btn-outline-light" id="btnBack" href="/akuvox-ac/index"><i class="bi bi-arrow-left"></i> Back</a>
     <h2 class="m-0">Global Settings</h2>
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
@@ -2219,7 +2227,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="fw-semibold text-white">Device diagnostics</div>
         <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
       </div>
-      <button class="btn btn-outline-info" id="openDiagnosticsBtn"><i class="bi bi-activity me-1"></i>Open diagnostics</button>
+      <a class="btn btn-outline-info" id="openDiagnosticsBtn" href="/akuvox-ac/diagnostics"><i class="bi bi-activity me-1"></i>Open diagnostics</a>
     </div>
   </div>
 
@@ -2243,7 +2251,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </div>
       </div>
-      <div class="form-text text-muted mt-2" id="autoUpdateStatus">Checking current automation…</div>
+      <div class="form-text text-white mt-2" id="autoUpdateStatus">Checking current automation…</div>
     </div>
   </div>
 
