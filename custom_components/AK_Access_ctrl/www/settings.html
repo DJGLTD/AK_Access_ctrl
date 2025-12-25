@@ -2016,11 +2016,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
-  autoSyncInput?.addEventListener('input', () => {
-    hideAutoSyncSavedOverlay();
-    setAutoSyncStatus('');
-  });
-  autoSyncInput?.addEventListener('change', async () => {
+  const commitAutoSyncDelay = async () => {
+    if (!autoSyncInput) return;
     const { min, max } = autoSyncRange();
     const rawStr = (autoSyncInput.value ?? '').toString().trim();
     if (!rawStr){
@@ -2037,17 +2034,24 @@ document.addEventListener('DOMContentLoaded', () => {
       setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
       return;
     }
+    if (val === SETTINGS_DATA.auto_sync_delay_minutes){
+      setAutoSyncStatus('');
+      return;
+    }
     SETTINGS_DATA.auto_sync_delay_minutes = val;
     autoSyncInput.value = String(val);
     await saveAutoSyncDelay(val);
+  };
+  autoSyncInput?.addEventListener('input', () => {
+    hideAutoSyncSavedOverlay();
+    setAutoSyncStatus('');
   });
+  autoSyncInput?.addEventListener('change', commitAutoSyncDelay);
+  autoSyncInput?.addEventListener('blur', commitAutoSyncDelay);
 
   const healthInput = document.getElementById('healthIntervalInput');
-  healthInput?.addEventListener('input', () => {
-    hideHealthSavedOverlay();
-    setHealthStatus('');
-  });
-  healthInput?.addEventListener('change', async () => {
+  const commitHealthInterval = async () => {
+    if (!healthInput) return;
     const { min, max } = healthRange();
     const rawStr = (healthInput.value ?? '').toString().trim();
     if (!rawStr){
@@ -2064,17 +2068,24 @@ document.addEventListener('DOMContentLoaded', () => {
       setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
       return;
     }
+    if (val === SETTINGS_DATA.health_check_interval_seconds){
+      setHealthStatus('');
+      return;
+    }
     SETTINGS_DATA.health_check_interval_seconds = val;
     healthInput.value = String(val);
     await saveHealthInterval(val);
+  };
+  healthInput?.addEventListener('input', () => {
+    hideHealthSavedOverlay();
+    setHealthStatus('');
   });
+  healthInput?.addEventListener('change', commitHealthInterval);
+  healthInput?.addEventListener('blur', commitHealthInterval);
 
   const eventLimitInput = document.getElementById('accessEventLimitInput');
-  eventLimitInput?.addEventListener('input', () => {
-    hideEventLimitSavedOverlay();
-    setEventLimitStatus('');
-  });
-  eventLimitInput?.addEventListener('change', async () => {
+  const commitEventLimit = async () => {
+    if (!eventLimitInput) return;
     const { min, max } = eventLimitRange();
     const rawStr = (eventLimitInput.value ?? '').toString().trim();
     if (!rawStr){
@@ -2091,22 +2102,39 @@ document.addEventListener('DOMContentLoaded', () => {
       setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
       return;
     }
+    if (val === SETTINGS_DATA.access_event_limit){
+      setEventLimitStatus('');
+      return;
+    }
     SETTINGS_DATA.access_event_limit = val;
     eventLimitInput.value = String(val);
     await saveEventLimit();
+  };
+  eventLimitInput?.addEventListener('input', () => {
+    hideEventLimitSavedOverlay();
+    setEventLimitStatus('');
   });
+  eventLimitInput?.addEventListener('change', commitEventLimit);
+  eventLimitInput?.addEventListener('blur', commitEventLimit);
 
   const integrityInput = document.getElementById('integrityInput');
-  integrityInput?.addEventListener('input', hideIntegritySavedOverlay);
-  integrityInput?.addEventListener('change', async () => {
+  const commitIntegrity = async () => {
+    if (!integrityInput) return;
     const val = hhmmToMinutes(integrityInput.value);
     if (val === null){
       setIntegrityStatus('Enter a valid HH:MM between 00:05 and 24:00', 'error');
       return;
     }
+    if (val === SETTINGS_DATA.integrity_interval_minutes){
+      setIntegrityStatus('');
+      return;
+    }
     SETTINGS_DATA.integrity_interval_minutes = val;
     await saveIntegrity(val);
-  });
+  };
+  integrityInput?.addEventListener('input', hideIntegritySavedOverlay);
+  integrityInput?.addEventListener('change', commitIntegrity);
+  integrityInput?.addEventListener('blur', commitIntegrity);
 
   document.getElementById('addTargetSelect')?.addEventListener('change', async (ev) => {
     const service = ev.target.value;
