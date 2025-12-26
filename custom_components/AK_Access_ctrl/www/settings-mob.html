@@ -518,7 +518,6 @@ const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 const AUTO_UPDATE_CONFIG = '/api/config/automation/config';
 const AUTO_UPDATE_ID = 'akuvox_ac_auto_update';
 const AUTO_UPDATE_UPDATE_ENTITY = 'update.akuvox_access_control';
-const AUTO_UPDATE_CATEGORY = 'Akuvox Access Control';
 const AUTO_UPDATE_REPOSITORY = 'Akuvox Access Control';
 const AUTO_UPDATE_DEFAULT_TIME = '03:00';
 
@@ -651,7 +650,6 @@ function buildAutoUpdateAutomation({ time, allowRestart }){
   return {
     id: AUTO_UPDATE_ID,
     alias: 'Akuvox Access Control • Auto update',
-    category: AUTO_UPDATE_CATEGORY,
     description: 'Automatically install updates for the Akuvox Access Control integration when they are available.',
     mode: 'single',
     trigger: [
