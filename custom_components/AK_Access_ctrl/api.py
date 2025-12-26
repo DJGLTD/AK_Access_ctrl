@@ -879,8 +879,8 @@ class AkuvoxAPI:
             payload["data"] = {"item": items}
 
         rel_paths = (
-            f"/api/user/{action}",
             f"/api/web/user/{action}",
+            f"/api/user/{action}",
         )
         return await self._post_api(payload, rel_paths=rel_paths)
 
