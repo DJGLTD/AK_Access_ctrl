@@ -1120,8 +1120,9 @@ function formatScheduleDisplay(rawId, label){
   return displayId || name;
 }
 
-function renderUsers(devs, registryUsers){
+function renderUsers(devs, registryUsers, kpis){
   const devices = Array.isArray(devs) ? devs : [];
+  const syncActive = !!(kpis && kpis.sync_active);
   const normalizedDevices = devices.map(d => {
     const entryId = String(d.entry_id || d.id || '');
     const groups = normalizeGroupsList(d.sync_groups);
@@ -1266,9 +1267,6 @@ function renderUsers(devs, registryUsers){
     const requiredIds = shouldHost.map(dev => dev.entryId).filter(id => !!id);
     const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
     const outOfSyncDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
-    const allVerified = readyDevices.length
-      ? readyDevices.every(dev => seenIds.includes(dev.entryId))
-      : !requiredIds.length;
     const accessState = computeAccessState(item.access_start, item.access_end);
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
@@ -1294,8 +1292,20 @@ function renderUsers(devs, registryUsers){
     }
     const userPending = String(item.status || '').toLowerCase() === 'pending';
     const facePendingFinal = faceStatusFinal === 'pending';
+    const allVerified = readyDevices.length
+      ? readyDevices.every(dev => seenIds.includes(dev.entryId))
+      : !requiredIds.length
+        || (syncActive && outOfSyncDevices.length && !userPending && !facePendingFinal);
     const pendingDevices = outOfSyncDevices.filter(dev => {
       if (!dev.entryId) return true;
+      if (
+        syncActive
+        && (dev.syncStatus === 'pending' || dev.syncStatus === 'in_progress')
+        && !userPending
+        && !facePendingFinal
+      ) {
+        return false;
+      }
       if (userPending || facePendingFinal) return true;
       return !seenIds.includes(dev.entryId);
     });
@@ -1521,7 +1531,7 @@ async function refresh(){
       eventHistoryInitialized = true;
     }
     await maybeRequestEventHistory(state);
-    renderUsers(devs, state.registry_users || []);
+    renderUsers(devs, state.registry_users || [], state.kpis || {});
     renderContacts(state.registry_users || []);
   } catch(e){
     console.error('state load failed', e);
