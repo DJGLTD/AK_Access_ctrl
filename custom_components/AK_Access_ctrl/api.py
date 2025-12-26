@@ -84,7 +84,7 @@ class AkuvoxAPI:
         self.port = port
         self.username = username
         self.password = password
-        self.use_https = use_https
+        self.use_https = True
         self.verify_ssl = verify_ssl
         self._session = session
         self._rest_ok = True
@@ -139,20 +139,10 @@ class AkuvoxAPI:
         configured_port: Optional[int] = self.port
         verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        if self.use_https:
-            for verify in verify_order:
-                _add_combo(True, configured_port, verify)
-            _add_combo(True, 443, False)
-            _add_combo(True, 443, True)
-            _add_combo(False, configured_port, True)
-            _add_combo(False, 80, True)
-        else:
-            _add_combo(False, configured_port, True)
-            _add_combo(False, 80, True)
-            for verify in verify_order:
-                _add_combo(True, configured_port, verify)
-            _add_combo(True, 443, False)
-            _add_combo(True, 443, True)
+        for verify in verify_order:
+            _add_combo(True, configured_port, verify)
+        _add_combo(True, 443, False)
+        _add_combo(True, 443, True)
 
         # Deduplicate preserving order
         seen = set()
@@ -318,20 +308,10 @@ class AkuvoxAPI:
         configured_port: Optional[int] = self.port
         verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        if self.use_https:
-            for verify in verify_order:
-                _add_base(True, configured_port, verify)
-            _add_base(True, 443, False)
-            _add_base(True, 443, True)
-            _add_base(False, configured_port, True)
-            _add_base(False, 80, True)
-        else:
-            _add_base(False, configured_port, True)
-            _add_base(False, 80, True)
-            for verify in verify_order:
-                _add_base(True, configured_port, verify)
-            _add_base(True, 443, False)
-            _add_base(True, 443, True)
+        for verify in verify_order:
+            _add_base(True, configured_port, verify)
+        _add_base(True, 443, False)
+        _add_base(True, 443, True)
 
         # Try all combinations
         last_exc: Optional[Exception] = None
@@ -358,7 +338,7 @@ class AkuvoxAPI:
         except StopIteration:
             rel = "/api/"
 
-        fallback_use_https = bool(self.use_https)
+        fallback_use_https = True
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
         return await _attempt(fallback_use_https, fallback_port, fallback_verify, rel)
@@ -900,9 +880,7 @@ class AkuvoxAPI:
 
         rel_paths = (
             f"/api/user/{action}",
-            "/api/user",
             f"/api/web/user/{action}",
-            "/api/web/user",
         )
         return await self._post_api(payload, rel_paths=rel_paths)
 
@@ -1014,20 +992,10 @@ class AkuvoxAPI:
         configured_port = self.port
         verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        if self.use_https:
-            for verify in verify_order:
-                _add_combo(True, configured_port, verify)
-            _add_combo(True, 443, False)
-            _add_combo(True, 443, True)
-            _add_combo(False, configured_port, True)
-            _add_combo(False, 80, True)
-        else:
-            _add_combo(False, configured_port, True)
-            _add_combo(False, 80, True)
-            for verify in verify_order:
-                _add_combo(True, configured_port, verify)
-            _add_combo(True, 443, False)
-            _add_combo(True, 443, True)
+        for verify in verify_order:
+            _add_combo(True, configured_port, verify)
+        _add_combo(True, 443, False)
+        _add_combo(True, 443, True)
 
         paths = [
             ("GET", "/api/system/status", None),
@@ -1066,11 +1034,7 @@ class AkuvoxAPI:
                 except Exception:
                     port = 443 if str(chosen.get("scheme", "https")).lower() == "https" else 80
                 verify = bool(chosen.get("verify_ssl", True))
-                scheme = str(chosen.get("scheme", "https")).lower()
-                if scheme == "https":
-                    self._detected = (True, port, verify)
-                else:
-                    self._detected = (False, port, True)
+                self._detected = (True, port, verify)
 
         return {"ok": ok, "attempts": attempts}
 
@@ -1229,11 +1193,8 @@ class AkuvoxAPI:
     async def user_list(self) -> List[Dict[str, Any]]:
         # Try POST get/list then GET fallback
         rel_paths = (
-            "/api/web/user/get",
-            "/api/web/user",
             "/api/user/get",
-            "/api/user",
-            "/api/",
+            "/api/web/user/get",
         )
 
         for payload in (
@@ -1246,13 +1207,6 @@ class AkuvoxAPI:
                     return items
             except Exception:
                 pass
-        try:
-            r = await self._get_api("/api/user/get")
-            items = r.get("data", {}).get("item")
-            if isinstance(items, list):
-                return items
-        except Exception:
-            pass
         return []
 
     async def user_get(self, name_or_per_id: str) -> List[Dict[str, Any]]:
@@ -1261,11 +1215,8 @@ class AkuvoxAPI:
             return []
 
         rel_paths = (
-            "/api/web/user/get",
-            "/api/web/user",
             "/api/user/get",
-            "/api/user",
-            "/api/",
+            "/api/web/user/get",
         )
 
         def _matches(item: Dict[str, Any]) -> bool:
@@ -1475,20 +1426,10 @@ class AkuvoxAPI:
         configured_port: Optional[int] = self.port
         verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
 
-        if self.use_https:
-            for verify in verify_order:
-                _add_base(True, configured_port, verify)
-            _add_base(True, 443, False)
-            _add_base(True, 443, True)
-            _add_base(False, configured_port, True)
-            _add_base(False, 80, True)
-        else:
-            _add_base(False, configured_port, True)
-            _add_base(False, 80, True)
-            for verify in verify_order:
-                _add_base(True, configured_port, verify)
-            _add_base(True, 443, False)
-            _add_base(True, 443, True)
+        for verify in verify_order:
+            _add_base(True, configured_port, verify)
+        _add_base(True, 443, False)
+        _add_base(True, 443, True)
 
         for use_https, port, verify in bases:
             for rel in rel_paths:
@@ -1509,7 +1450,7 @@ class AkuvoxAPI:
                     continue
 
         fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
-        fallback_use_https = bool(self.use_https)
+        fallback_use_https = True
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
         data = await _attempt(fallback_use_https, fallback_port, fallback_verify, fallback_rel)
