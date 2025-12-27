@@ -2678,6 +2678,18 @@ class AkuvoxUIAction(AkuvoxUIView):
                 except Exception as fallback_err:
                     return err(fallback_err)
 
+        if action == "remove_device":
+            if not entry_id:
+                return err("entry_id required")
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if not entry:
+                return err("device entry not found", code=404)
+            try:
+                await hass.config_entries.async_remove(entry_id)
+                return web.json_response({"ok": True})
+            except Exception as remove_err:
+                return err(remove_err)
+
         # Device options
         if action == "set_exit_device":
             if not entry_id:
