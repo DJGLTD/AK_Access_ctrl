@@ -3394,7 +3394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
         effective_id = canonical_key or key
-        new_face_url = d.get("face_url") if "face_url" in d else f"{face_base_url(hass)}/{effective_id}.jpg"
+        new_face_url = d.get("face_url") if "face_url" in d else None
 
         lp_payload = d.get("license_plate") if "license_plate" in d else None
 

@@ -146,8 +146,10 @@ const FACE_UPLOAD_ALLOWED_TYPES = ['image/jpeg', 'image/png'];
 const FACE_UPLOAD_ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
 const FACE_UPLOAD_MAX_DIMENSION = 1280;
 const FACE_UPLOAD_MIN_DIMENSION = 480;
+const FACE_DATA_PATH = '/api/AK_AC/FaceData';
 
 let facePreviewUrl = null;
+let facePreviewMode = 'none';
 
 function isImageFile(file) {
   return !!file && typeof file.type === 'string' && file.type.startsWith('image/');
@@ -235,12 +237,83 @@ function setFacePreview(file) {
     preview.src = '';
     preview.style.display = 'none';
     if (placeholder) placeholder.style.display = 'block';
+    facePreviewMode = 'none';
     return;
   }
   facePreviewUrl = URL.createObjectURL(file);
   preview.src = facePreviewUrl;
   preview.style.display = 'block';
   if (placeholder) placeholder.style.display = 'none';
+  facePreviewMode = 'file';
+}
+
+function buildFacePreviewUrl(url) {
+  const text = String(url || '').trim();
+  if (!text) return '';
+  const stamp = `t=${Date.now()}`;
+  return text.includes('?') ? `${text}&${stamp}` : `${text}?${stamp}`;
+}
+
+function setFacePreviewUrl(url) {
+  const preview = document.getElementById('facePreview');
+  const placeholder = document.getElementById('facePreviewPlaceholder');
+  if (!preview) return;
+  if (facePreviewUrl) {
+    URL.revokeObjectURL(facePreviewUrl);
+    facePreviewUrl = null;
+  }
+  const finalUrl = buildFacePreviewUrl(url);
+  if (!finalUrl) {
+    setFacePreview(null);
+    return;
+  }
+  preview.src = finalUrl;
+  preview.style.display = 'block';
+  if (placeholder) placeholder.style.display = 'none';
+  facePreviewMode = 'remote';
+}
+
+function hasExistingFace() {
+  if (!CURRENT || CURRENT.face_removed) return false;
+  const faceUrl = String(CURRENT.face_url || '').trim();
+  if (faceUrl) return true;
+  const status = String(CURRENT.face_status || '').trim().toLowerCase();
+  return !!CURRENT.face_active || status === 'active' || status === 'pending';
+}
+
+function facePreviewUrlFromCurrent() {
+  if (!CURRENT) return '';
+  const faceUrl = String(CURRENT.face_url || '').trim();
+  if (faceUrl) return faceUrl;
+  if (CURRENT.id) return `${FACE_DATA_PATH}/${CURRENT.id}.jpg`;
+  return '';
+}
+
+function updateFacePreviewState() {
+  const placeholder = document.getElementById('facePreviewPlaceholder');
+  const fileInput = document.getElementById('facefile');
+  const hasFile = !!(fileInput && fileInput.files && fileInput.files[0]);
+  if (hasFile) {
+    if (placeholder) placeholder.textContent = 'Selected photo preview';
+    updateRemoveFaceButton();
+    return;
+  }
+  if (hasExistingFace()) {
+    setFacePreviewUrl(facePreviewUrlFromCurrent());
+    if (placeholder) placeholder.textContent = 'Current photo on file';
+  } else {
+    setFacePreview(null);
+    if (placeholder) placeholder.textContent = 'No photo on file';
+  }
+  updateRemoveFaceButton();
+}
+
+function updateRemoveFaceButton() {
+  const btn = document.getElementById('removeFaceBtn');
+  if (!btn) return;
+  const canRemove = !!(CURRENT && CURRENT.id && hasExistingFace());
+  btn.style.display = canRemove ? '' : 'none';
+  btn.disabled = !canRemove || BUSY;
 }
 
 function bindFaceFileInput() {
@@ -250,7 +323,7 @@ function bindFaceFileInput() {
     if (!input.files || !input.files[0]) {
       input._processedFace = null;
       input._processedToken = null;
-      setFacePreview(null);
+      updateFacePreviewState();
       return;
     }
     const file = input.files[0];
@@ -260,11 +333,13 @@ function bindFaceFileInput() {
       input._processedFace = processed;
       input._processedToken = token;
       setFacePreview(processed);
+      updateRemoveFaceButton();
     } catch (err) {
       input.value = '';
       input._processedFace = null;
       input._processedToken = null;
       setFacePreview(null);
+      updateFacePreviewState();
       alert(err && err.message ? err.message : err);
     }
   });
@@ -553,6 +628,7 @@ const API_RELEASE_ID      = signedPath('release_id', '/api/akuvox_ac/ui/release_
 const API_RESERVATION_PING = signedPath('reservation_ping', '/api/akuvox_ac/ui/reservation_ping');
 const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face');
 const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
+const API_ACTION          = signedPath('action', '/api/akuvox_ac/ui/action');
 const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
@@ -597,6 +673,7 @@ function setBusy(yes){
       delete el.dataset.busyPrevDisabled;
     }
   });
+  updateRemoveFaceButton();
 }
 
 function buildHref(slug, params = {}) {
@@ -1051,6 +1128,7 @@ function selectExistingUser(id, options = {}){
       ? [...existing.Groups]
       : ['Default'],
   };
+  CURRENT.face_removed = false;
   CURRENT.exit_permission = normalizeExitPermission(existing.exit_permission) || 'match';
   CURRENT.license_plate = sanitizeLicensePlateList(existing.license_plate || existing.LicensePlate || CURRENT.license_plate);
   if (!CURRENT.schedule_id && CURRENT.schedule_name) {
@@ -1071,6 +1149,7 @@ function selectExistingUser(id, options = {}){
   fillForm();
   fillPhones();
   updateKeyHolderAvailability();
+  updateFacePreviewState();
 
   if (options?.updateUrl !== false) {
     try {
@@ -1159,6 +1238,10 @@ function blankProfile(id = ''){
     pin: '',
     phone: '',
     license_plate: [],
+    face_url: '',
+    face_status: '',
+    face_active: false,
+    face_removed: false,
     schedule_name: '24/7 Access',
     schedule_id: '1001',
     key_holder: false,
@@ -1646,7 +1729,46 @@ function fillForm(){
   }
   applyCredentialPrompts();
   applyContactMode();
+  if (!CONTACT_MODE && CREDENTIAL_PROMPTS.face && hasExistingFace()) {
+    showPanel('local');
+  }
   bindFaceFileInput();
+  bindRemoveFaceButton();
+  updateFacePreviewState();
+}
+
+function bindRemoveFaceButton() {
+  const btn = document.getElementById('removeFaceBtn');
+  if (!btn || btn._bound) return;
+  btn.addEventListener('click', async (ev) => {
+    if (ev) ev.preventDefault();
+    if (!CURRENT || !CURRENT.id) return;
+    if (!hasExistingFace()) return;
+    const ok = confirm('Remove the saved face photo for this user?');
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await apiPost(API_ACTION, { action: 'remove_face', payload: { id: CURRENT.id } });
+      CURRENT.face_removed = true;
+      CURRENT.face_url = '';
+      CURRENT.face_status = '';
+      CURRENT.face_active = false;
+      const input = document.getElementById('facefile');
+      if (input) {
+        input.value = '';
+        input._processedFace = null;
+        input._processedToken = null;
+      }
+      updateFacePreviewState();
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      alert('Failed to remove face photo: ' + (err && err.message ? err.message : err));
+    } finally {
+      setBusy(false);
+      updateRemoveFaceButton();
+    }
+  });
+  btn._bound = true;
 }
 
 function updateAccessExpirationUI(){
@@ -1963,6 +2085,9 @@ function showPanel(which){
         <span id="facePreviewPlaceholder" class="face-preview-placeholder">No photo selected</span>
         <img id="facePreview" alt="Selected face photo preview" />
       </div>
+      <button type="button" class="btn btn-outline-danger btn-sm mt-2" id="removeFaceBtn" style="display:none;">
+        <i class="bi bi-trash me-1"></i>Remove face photo
+      </button>
     </div>
 
     <!-- Remote enrolment panel -->

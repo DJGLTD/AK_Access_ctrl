@@ -711,6 +711,7 @@ class AkuvoxAPI:
         items: List[Dict[str, Any]],
         *,
         allow_face_url: bool = False,
+        drop_schedule: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
@@ -735,8 +736,17 @@ class AkuvoxAPI:
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
 
-            # For user.add normalize pass (allow_face_url == False), drop 'Schedule'
-            # to avoid firmware retcode -100 (error param) on add.
+            if drop_schedule:
+                # Some Akuvox firmwares reject user.add payloads that include
+                # the free-text Schedule list (retcode -100 error param).
+                schedule_list = it2.get("Schedule")
+                if "ScheduleID" not in it2 and isinstance(schedule_list, (list, tuple, set)):
+                    for entry in schedule_list:
+                        text = str(entry or "").strip()
+                        if text.isdigit():
+                            it2["ScheduleID"] = text
+                            break
+                it2.pop("Schedule", None)
             if not allow_face_url:
                 it2.pop("Schedule", None)
                 it2.pop("FaceUrl", None)
@@ -1852,7 +1862,9 @@ class AkuvoxAPI:
                     continue
 
         normalized_items = self._normalize_user_items_for_add_or_set(
-            prepared, allow_face_url=True
+            prepared,
+            allow_face_url=True,
+            drop_schedule=True,
         )
 
         result: Dict[str, Any] = {}

@@ -92,6 +92,43 @@ def _face_file_exists_in(base: Path, user_id: str) -> bool:
     return False
 
 
+def _remove_face_files(hass: HomeAssistant, user_id: str) -> None:
+    removal_keys = {str(user_id or "").strip()}
+    canonical = normalize_ha_id(user_id)
+    if canonical:
+        removal_keys.add(canonical)
+    removal_keys = {key for key in removal_keys if key}
+    if not removal_keys:
+        return
+
+    face_dirs: List[Path] = []
+    try:
+        face_dirs.append(face_storage_dir(hass))
+    except Exception:
+        pass
+    face_dirs.append(_component_face_dir())
+    try:
+        face_dirs.append(_legacy_face_dir(hass))
+    except Exception:
+        pass
+
+    for base in face_dirs:
+        try:
+            resolved_base = base.resolve()
+        except Exception:
+            continue
+        for ext in FACE_FILE_EXTENSIONS:
+            for removal_key in removal_keys:
+                candidate = _face_candidate(resolved_base, removal_key, ext)
+                if candidate is None:
+                    continue
+                if candidate.exists():
+                    try:
+                        candidate.unlink()
+                    except Exception:
+                        continue
+
+
 def _normalize_exit_permission_http(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -2689,6 +2726,54 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return web.json_response({"ok": True})
             except Exception as remove_err:
                 return err(remove_err)
+
+        if action == "remove_face":
+            raw_id = payload.get("id") or payload.get("user_id")
+            user_id = str(raw_id or "").strip()
+            if not user_id:
+                return err("id required")
+            canonical = normalize_ha_id(user_id) or user_id
+
+            users_store = root.get("users_store")
+            if users_store:
+                try:
+                    await users_store.upsert_profile(
+                        canonical,
+                        face_url="",
+                        face_status="",
+                        face_synced_at="",
+                    )
+                except Exception:
+                    pass
+
+            manager = root.get("sync_manager")
+            if manager:
+                try:
+                    for _entry_id, coord, api, _ in manager._devices():
+                        try:
+                            await api.face_delete(canonical)
+                        except Exception:
+                            continue
+                        try:
+                            await coord.async_request_refresh()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            try:
+                _remove_face_files(hass, canonical)
+            except Exception:
+                pass
+
+            queue = root.get("sync_queue")
+            if queue:
+                try:
+                    queue.mark_change(None)
+                except Exception:
+                    pass
+
+            return web.json_response({"ok": True})
 
         # Device options
         if action == "set_exit_device":
