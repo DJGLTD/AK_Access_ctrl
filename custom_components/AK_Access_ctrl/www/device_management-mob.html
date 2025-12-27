@@ -623,6 +623,7 @@ function renderDevices(devices){
         <button class="btn btn-outline-light btn-sm" data-action="sync" data-id="${escapeHtml(entryId)}" ${!isOnline ? 'disabled' : ''}><i class="bi bi-arrow-repeat"></i> Sync now</button>
         <button class="btn btn-outline-light btn-sm" data-manage="${escapeHtml(entryId)}"><i class="bi bi-gear"></i> Manage</button>
         <button class="btn btn-outline-danger btn-sm" data-action="reboot" data-id="${escapeHtml(entryId)}" ${!isOnline ? 'disabled' : ''}><i class="bi bi-power"></i> Reboot</button>
+        <button class="btn btn-outline-danger btn-sm" data-action="remove" data-id="${escapeHtml(entryId)}" data-name="${escapeHtml(safeDeviceName(device))}"><i class="bi bi-trash"></i> Remove</button>
       </div>
     `;
     host.appendChild(card);
@@ -640,22 +641,33 @@ function renderDevices(devices){
     btn.addEventListener('click', async () => {
       const action = btn.dataset.action;
       const entryId = btn.dataset.id;
+      const deviceName = btn.dataset.name || 'this device';
       if (!entryId) return;
+      if (action === 'remove') {
+        const confirmed = confirm(`Remove ${deviceName}? This will delete the device from Home Assistant.`);
+        if (!confirmed) return;
+      }
       try {
         if (action === 'sync') {
           await apiPost(actionUrl, { action: 'sync_now', entry_id: entryId });
         } else if (action === 'reboot') {
           await apiPost(actionUrl, { action: 'reboot_device', entry_id: entryId });
+        } else if (action === 'remove') {
+          await apiPost(actionUrl, { action: 'remove_device', entry_id: entryId });
         }
       } catch (err) {
-        try {
-          if (action === 'sync') {
-            await callService('akuvox_ac', 'sync_now', { entry_id: entryId });
-          } else {
-            await callService('akuvox_ac', 'reboot_device', { entry_id: entryId });
+        if (action === 'remove') {
+          alert(`Remove failed: ${escapeHtml(err.message || err)}`);
+        } else {
+          try {
+            if (action === 'sync') {
+              await callService('akuvox_ac', 'sync_now', { entry_id: entryId });
+            } else {
+              await callService('akuvox_ac', 'reboot_device', { entry_id: entryId });
+            }
+          } catch (fallbackErr) {
+            alert(`Action failed: ${escapeHtml(fallbackErr.message || fallbackErr)}`);
           }
-        } catch (fallbackErr) {
-          alert(`Action failed: ${escapeHtml(fallbackErr.message || fallbackErr)}`);
         }
       }
       refresh();
