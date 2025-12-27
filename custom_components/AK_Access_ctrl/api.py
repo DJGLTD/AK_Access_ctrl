@@ -1832,12 +1832,12 @@ class AkuvoxAPI:
             unique_ids = [str(i) for i in dict.fromkeys(delete_ids) if str(i)]
             if unique_ids:
                 try:
-                    await self.user_del(unique_ids)
+                    await self._api_user("delete", [{"ID": uid} for uid in unique_ids])
                 except Exception as err:
                     _LOGGER.debug("Bulk delete before user.add failed: %s", err)
                     for did in unique_ids:
                         try:
-                            await self.user_del([did])
+                            await self._api_user("delete", [{"ID": did}])
                         except Exception:
                             continue
 
@@ -1869,11 +1869,6 @@ class AkuvoxAPI:
 
         return result
 
-    async def user_del(self, ids: List[str]) -> Dict[str, Any]:
-        """Low-level: delete by device 'ID' list (what most firmwares expect)."""
-        items = [{"ID": str(i)} for i in ids]
-        return await self._api_user("del", items)
-
     async def user_delete(self, identifier: str) -> None:
         """Delete by device ID or resolve by (ID/UserID/Name) first."""
         if identifier is None:
@@ -1903,24 +1898,24 @@ class AkuvoxAPI:
 
         if target_ids:
             try:
-                await self.user_del(target_ids)
+                await self._api_user("delete", [{"ID": tid} for tid in target_ids])
             except Exception:
                 for did in target_ids:
                     try:
-                        await self.user_del([did])
+                        await self._api_user("delete", [{"ID": did}])
                     except Exception:
                         pass
         else:
             deletion_attempted = False
             if text.isdigit():
                 try:
-                    await self.user_del([text])
+                    await self._api_user("delete", [{"ID": text}])
                     deletion_attempted = True
                 except Exception:
                     pass
             if not deletion_attempted:
                 try:
-                    await self._api_user("del", [{"UserID": text, "UserId": text}])
+                    await self._api_user("delete", [{"UserID": text, "UserId": text}])
                     deletion_attempted = True
                 except Exception:
                     pass
@@ -1956,11 +1951,11 @@ class AkuvoxAPI:
                     face_targets.add(user_id)
 
         try:
-            await self.user_del(ids)
+            await self._api_user("delete", [{"ID": did} for did in ids])
         except Exception:
             for did in ids:
                 try:
-                    await self.user_del([did])
+                    await self._api_user("delete", [{"ID": did}])
                 except Exception:
                     pass
 
@@ -1996,7 +1991,7 @@ class AkuvoxAPI:
             if face_ids:
                 for uid in face_ids:
                     try:
-                        await self._api_user("del", [{"UserID": uid, "UserId": uid}])
+                        await self._api_user("delete", [{"UserID": uid, "UserId": uid}])
                     except Exception:
                         pass
                 await self.face_delete_bulk(face_ids)

@@ -1292,23 +1292,13 @@ function renderUsers(devs, registryUsers, kpis){
     }
     const userPending = String(item.status || '').toLowerCase() === 'pending';
     const facePendingFinal = faceStatusFinal === 'pending';
+    const needsSync = userPending || facePendingFinal;
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
-      : !requiredIds.length
-        || (syncActive && outOfSyncDevices.length && !userPending && !facePendingFinal);
-    const pendingDevices = outOfSyncDevices.filter(dev => {
-      if (!dev.entryId) return true;
-      if (
-        syncActive
-        && (dev.syncStatus === 'pending' || dev.syncStatus === 'in_progress')
-        && !userPending
-        && !facePendingFinal
-      ) {
-        return false;
-      }
-      if (userPending || facePendingFinal) return true;
-      return !seenIds.includes(dev.entryId);
-    });
+      : !requiredIds.length || !needsSync;
+    const pendingDevices = needsSync
+      ? outOfSyncDevices.filter(dev => !dev.entryId || !seenIds.includes(dev.entryId))
+      : [];
 
     let accessText = 'Pending';
     if (expired) {
@@ -1317,7 +1307,7 @@ function renderUsers(devs, registryUsers, kpis){
       accessText = 'Denied';
     } else if (String(item.status || '').toLowerCase() === 'deleted') {
       accessText = 'Deleted';
-    } else if (userPending) {
+    } else if (userPending || facePendingFinal) {
       accessText = 'Pending';
     } else if (pendingDevices.length) {
       accessText = 'Pending';

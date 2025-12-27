@@ -162,6 +162,24 @@ def _key_of_user(u: Dict[str, Any]) -> str:
     )
 
 
+def _name_matches_user_id(name: Any, user_id: Any) -> bool:
+    """Return True when the name matches the user id (normalized)."""
+
+    try:
+        name_text = str(name or "").strip()
+    except Exception:
+        name_text = ""
+    try:
+        user_id_text = str(user_id or "").strip()
+    except Exception:
+        user_id_text = ""
+    if not name_text or not user_id_text:
+        return False
+    name_norm = normalize_ha_id(name_text) or name_text
+    user_norm = normalize_ha_id(user_id_text) or user_id_text
+    return name_norm == user_norm
+
+
 def _normalize_access_date(value: Any) -> Optional[str]:
     """Normalize user access dates to ISO format or clear them."""
 
@@ -2792,6 +2810,37 @@ class SyncManager:
         registry_keys = list(registry.keys())
         reg_key_set = set(registry_keys)
 
+        auto_delete_keys: Set[str] = set()
+        for record in local_users or []:
+            name_value = record.get("Name")
+            user_id_value = (
+                record.get("UserID")
+                or record.get("UserId")
+                or record.get("ID")
+            )
+            if _name_matches_user_id(name_value, user_id_value):
+                key = normalize_ha_id(user_id_value) or str(user_id_value or "").strip()
+                if key:
+                    auto_delete_keys.add(key)
+
+        for ha_key in registry_keys:
+            profile = registry.get(ha_key) or {}
+            if _name_matches_user_id(profile.get("name"), ha_key):
+                auto_delete_keys.add(ha_key)
+
+        if auto_delete_keys and users_store:
+            for ha_key in sorted(auto_delete_keys):
+                try:
+                    await users_store.upsert_profile(
+                        ha_key,
+                        status="deleted",
+                        groups=["No Access"],
+                        schedule_name="No Access",
+                        schedule_id="1002",
+                    )
+                except Exception:
+                    pass
+
         await self._remove_missing_users(api, local_users, reg_key_set)
 
         if full and schedules_store:
@@ -2817,6 +2866,11 @@ class SyncManager:
         face_root_base = face_base_url(self.hass)
 
         for ha_key in registry_keys:
+            if ha_key in auto_delete_keys:
+                local = _find_local_by_key(ha_key)
+                if local:
+                    delete_only_keys.append(ha_key)
+                continue
             prof = registry.get(ha_key) or {}
             ha_groups = list(prof.get("groups") or ["Default"])
             should_have_access = any(g in device_groups for g in ha_groups)
