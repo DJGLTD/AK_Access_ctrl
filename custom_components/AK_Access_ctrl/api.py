@@ -892,6 +892,8 @@ class AkuvoxAPI:
 
         if action == "del":
             rel_paths = ("/api/user/",)
+        elif action == "add":
+            rel_paths = (f"/api/user/{action}",)
         else:
             rel_paths = (
                 f"/api/user/{action}",
