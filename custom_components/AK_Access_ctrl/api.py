@@ -1868,12 +1868,12 @@ class AkuvoxAPI:
         )
 
         result: Dict[str, Any] = {}
-        if normalized_items:
+        for item in normalized_items:
             try:
-                result = await self._api_user("add", normalized_items)
+                result = await self._api_user("add", [item])
             except Exception:
                 # small retry in case the device expects the alternate endpoint first
-                result = await self._api_user("add", normalized_items)
+                result = await self._api_user("add", [item])
             retcode, message = self._parse_result_status(result)
             if not _retcode_is_success(retcode):
                 detail = f" (message: {message})" if message else ""
