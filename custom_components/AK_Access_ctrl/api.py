@@ -884,14 +884,19 @@ class AkuvoxAPI:
 
     # -------------------- Unified API call helpers --------------------
     async def _api_user(self, action: str, items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        if action == "delete":
+            action = "del"
         payload: Dict[str, Any] = {"target": "user", "action": action}
         if items is not None:
             payload["data"] = {"item": items}
 
-        rel_paths = (
-            f"/api/user/{action}",
-            f"/api/web/user/{action}",
-        )
+        if action == "del":
+            rel_paths = ("/api/user/",)
+        else:
+            rel_paths = (
+                f"/api/user/{action}",
+                f"/api/web/user/{action}",
+            )
         return await self._post_api(payload, rel_paths=rel_paths)
 
     async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
