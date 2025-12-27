@@ -4181,7 +4181,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
             notify(
                 hass,
                 f"Face enrolment requested for {display_label}.\n\n"
-                f"[Open enrolment page]({enrol_url})",
+                "Open enrolment page",
                 title="Akuvox: Face Enrolment",
                 notification_id=f"akuvox_face_enrol_{user_id}",
             )
