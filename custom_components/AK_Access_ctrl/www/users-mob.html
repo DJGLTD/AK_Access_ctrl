@@ -18,6 +18,9 @@
     .uploader-hint { font-size: .9rem; color: var(--muted); }
     .form-text code { color: #c7dfff; }
     .face-options{ display:flex; gap:0.5rem; flex-wrap:wrap; }
+    .face-preview-frame{ width:160px; height:160px; border:1px dashed var(--border); border-radius:0.5rem; background:#0f1726; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .face-preview-frame img{ max-width:100%; max-height:100%; object-fit:cover; display:none; }
+    .face-preview-placeholder{ font-size:0.8rem; color:var(--muted); text-align:center; padding:0.5rem; }
     .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
     .license-plate-row .btn{ min-width:3rem; }
     .license-plate-input{text-transform:uppercase; }
@@ -136,6 +139,136 @@ function tokenFromWindow(win) {
   } catch (err) {}
 
   return null;
+}
+
+const FACE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+const FACE_UPLOAD_ALLOWED_TYPES = ['image/jpeg', 'image/png'];
+const FACE_UPLOAD_ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png'];
+const FACE_UPLOAD_MAX_DIMENSION = 1280;
+const FACE_UPLOAD_MIN_DIMENSION = 480;
+
+let facePreviewUrl = null;
+
+function isImageFile(file) {
+  return !!file && typeof file.type === 'string' && file.type.startsWith('image/');
+}
+
+function replaceFileExtension(name, nextExt) {
+  const base = name ? name.replace(/\.[^/.]+$/, '') : 'face-photo';
+  return `${base}${nextExt}`;
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Unable to read image file.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+function encodeImageToJpeg(img, targetDim, quality) {
+  const scale = Math.min(1, targetDim / Math.max(img.width, img.height));
+  const width = Math.max(1, Math.round(img.width * scale));
+  const height = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+}
+
+async function prepareFaceFile(file) {
+  if (!file) return null;
+  const name = (file.name || '').toLowerCase();
+  const hasAllowedExtension = FACE_UPLOAD_ALLOWED_EXTENSIONS.some((ext) => name.endsWith(ext));
+  const allowedType = FACE_UPLOAD_ALLOWED_TYPES.includes(file.type) || hasAllowedExtension;
+  if (!isImageFile(file)) {
+    throw new Error('Face photo must be an image file.');
+  }
+
+  if (file.size <= FACE_UPLOAD_MAX_BYTES && allowedType) {
+    return file;
+  }
+
+  const img = await loadImageFromFile(file);
+  let targetDim = Math.min(FACE_UPLOAD_MAX_DIMENSION, Math.max(img.width, img.height));
+  let quality = 0.9;
+  let blob = await encodeImageToJpeg(img, targetDim, quality);
+
+  while (blob && blob.size > FACE_UPLOAD_MAX_BYTES && (quality > 0.6 || targetDim > FACE_UPLOAD_MIN_DIMENSION)) {
+    if (quality > 0.6) {
+      quality = Math.max(0.6, quality - 0.1);
+    } else {
+      targetDim = Math.max(FACE_UPLOAD_MIN_DIMENSION, Math.round(targetDim * 0.85));
+    }
+    blob = await encodeImageToJpeg(img, targetDim, quality);
+  }
+
+  if (!blob) {
+    throw new Error('Unable to process the selected face photo.');
+  }
+  if (blob.size > FACE_UPLOAD_MAX_BYTES) {
+    throw new Error('Face photo could not be reduced below 2MB.');
+  }
+
+  return new File([blob], replaceFileExtension(file.name, '.jpg'), { type: 'image/jpeg' });
+}
+
+function setFacePreview(file) {
+  const preview = document.getElementById('facePreview');
+  const placeholder = document.getElementById('facePreviewPlaceholder');
+  if (!preview) return;
+  if (facePreviewUrl) {
+    URL.revokeObjectURL(facePreviewUrl);
+    facePreviewUrl = null;
+  }
+  if (!file) {
+    preview.src = '';
+    preview.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'block';
+    return;
+  }
+  facePreviewUrl = URL.createObjectURL(file);
+  preview.src = facePreviewUrl;
+  preview.style.display = 'block';
+  if (placeholder) placeholder.style.display = 'none';
+}
+
+function bindFaceFileInput() {
+  const input = document.getElementById('facefile');
+  if (!input || input._faceBound) return;
+  input.addEventListener('change', async () => {
+    if (!input.files || !input.files[0]) {
+      input._processedFace = null;
+      input._processedToken = null;
+      setFacePreview(null);
+      return;
+    }
+    const file = input.files[0];
+    const token = `${file.name}:${file.size}:${file.lastModified}`;
+    try {
+      const processed = await prepareFaceFile(file);
+      input._processedFace = processed;
+      input._processedToken = token;
+      setFacePreview(processed);
+    } catch (err) {
+      input.value = '';
+      input._processedFace = null;
+      input._processedToken = null;
+      setFacePreview(null);
+      alert(err && err.message ? err.message : err);
+    }
+  });
+  input._faceBound = true;
 }
 
 function walkAuthWindows(start) {
@@ -1513,6 +1646,7 @@ function fillForm(){
   }
   applyCredentialPrompts();
   applyContactMode();
+  bindFaceFileInput();
 }
 
 function updateAccessExpirationUI(){
@@ -1711,9 +1845,22 @@ async function save(){
     // If a photo is selected, upload it now
     const fileInput = document.getElementById('facefile');
     if (fileInput.files && fileInput.files[0]){
+      const selectedFile = fileInput.files[0];
+      const token = `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`;
+      let faceFile = null;
+      if (fileInput._processedFace && fileInput._processedToken === token) {
+        faceFile = fileInput._processedFace;
+      } else {
+        try {
+          faceFile = await prepareFaceFile(selectedFile);
+        } catch (err) {
+          alert(err && err.message ? err.message : err);
+          return;
+        }
+      }
       const fd = new FormData();
       fd.append('id', CURRENT.id);
-      fd.append('file', fileInput.files[0]);
+      fd.append('file', faceFile);
       const r = await fetchWithAuth(API_UPLOAD_FACE, {
         method: 'POST',
         body: fd
@@ -1809,8 +1956,12 @@ function showPanel(which){
     <div id="pLocal" class="mt-2" style="display:none;">
       <div class="mb-2" id="localHelp"></div>
       <div class="mb-2">
-        <input id="facefile" class="form-control" type="file" accept=".jpg,image/jpeg" />
-        <div class="uploader-hint mt-1">Choose a clear, front-facing JPG photo. It will be uploaded when you press <b>Save</b>.</div>
+        <input id="facefile" class="form-control" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" />
+        <div class="uploader-hint mt-1">Choose a clear, front-facing photo (Max File Size: 2M, Format: .jpg/.png). Larger files are resized and saved as JPG before upload when you press <b>Save</b>.</div>
+      </div>
+      <div class="face-preview-frame">
+        <span id="facePreviewPlaceholder" class="face-preview-placeholder">No photo selected</span>
+        <img id="facePreview" alt="Selected face photo preview" />
       </div>
     </div>
 
