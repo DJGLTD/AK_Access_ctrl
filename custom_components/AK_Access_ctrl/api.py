@@ -901,7 +901,7 @@ class AkuvoxAPI:
 
     async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
-        return await self._post_api(payload, rel_paths=("/api/contact/", "/api/"))
+        return await self._post_api(payload, rel_paths=("/api/contact/",))
 
     # -------------------- diagnostics --------------------
     async def ping_info(self) -> Dict[str, Any]:
