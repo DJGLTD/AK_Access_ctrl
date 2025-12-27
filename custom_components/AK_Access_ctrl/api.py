@@ -889,8 +889,8 @@ class AkuvoxAPI:
             payload["data"] = {"item": items}
 
         rel_paths = (
-            f"/api/web/user/{action}",
             f"/api/user/{action}",
+            f"/api/web/user/{action}",
         )
         return await self._post_api(payload, rel_paths=rel_paths)
 
@@ -1867,17 +1867,18 @@ class AkuvoxAPI:
             drop_schedule=True,
         )
 
-        result: Dict[str, Any] = {}
-        for item in normalized_items:
-            try:
-                result = await self._api_user("add", [item])
-            except Exception:
-                # small retry in case the device expects the alternate endpoint first
-                result = await self._api_user("add", [item])
-            retcode, message = self._parse_result_status(result)
-            if not _retcode_is_success(retcode):
-                detail = f" (message: {message})" if message else ""
-                raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
+        if not normalized_items:
+            return {}
+
+        try:
+            result = await self._api_user("add", normalized_items)
+        except Exception:
+            # small retry in case the device expects the alternate endpoint first
+            result = await self._api_user("add", normalized_items)
+        retcode, message = self._parse_result_status(result)
+        if not _retcode_is_success(retcode):
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
 
         return result
 
