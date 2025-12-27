@@ -114,6 +114,9 @@
           <button id="btnSave" class="btn btn-success">
             <i class="bi bi-check2"></i> Save
           </button>
+          <button id="btnDeleteDevice" class="btn btn-outline-danger">
+            <i class="bi bi-trash"></i> Remove device
+          </button>
           <button id="btnCancel" class="btn btn-secondary">
             <i class="bi bi-x-lg"></i> Cancel
           </button>
@@ -945,6 +948,23 @@ async function init(){
       }catch(e){
         if (handleAuthError(e)) return;
         showError('Save failed: ' + (e.message || e));
+      }
+    });
+
+    document.getElementById('btnDeleteDevice').addEventListener('click', async () => {
+      if (!ENTRY_ID) {
+        showError('Device entry not found.');
+        return;
+      }
+      const ok = confirm('Remove this device from Home Assistant?');
+      if (!ok) return;
+      try{
+        await apiPost(actionUrl, { action: 'remove_device', entry_id: ENTRY_ID });
+        showOK('Device removed ✓');
+        setTimeout(() => goBack(), 600);
+      }catch(e){
+        if (handleAuthError(e)) return;
+        showError('Remove failed: ' + (e.message || e));
       }
     });
 
