@@ -690,7 +690,7 @@ function safeDeviceName(d){
 }
 
 function idMatchesFilter(id){
-  return /^HA\d+$/i.test(id) || /^User\d+$/i.test(id);
+  return /^HA-?\d+$/i.test(id) || /^User\d+$/i.test(id);
 }
 
 const FACE_URL_FIELDS = ['face_url','faceUrl','FaceUrl','FaceURL'];
