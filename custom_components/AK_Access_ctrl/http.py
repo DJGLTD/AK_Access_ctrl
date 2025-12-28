@@ -2276,6 +2276,9 @@ _EVENT_USER_KEYS = (
     "UserId",
     "User",
     "UserName",
+    "user_id",
+    "user_name",
+    "NameID",
     "Name",
     "ID",
     "CardNo",
@@ -2284,10 +2287,18 @@ _EVENT_USER_KEYS = (
 
 
 def _event_timestamp_text(event: Dict[str, Any]) -> str:
-    for key in ("timestamp", "Time", "DateTime", "datetime"):
+    for key in ("timestamp", "Time", "DateTime", "datetime", "EventTime", "LogTime"):
         text = _normalize_user_match_value(event.get(key))
         if text:
             return text
+    date_text = _normalize_user_match_value(event.get("Date")) or _normalize_user_match_value(
+        event.get("date")
+    )
+    time_text = _normalize_user_match_value(event.get("Time")) or _normalize_user_match_value(
+        event.get("time")
+    )
+    if date_text and time_text:
+        return f"{date_text} {time_text}"
     ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
     if ts_value:
         try:

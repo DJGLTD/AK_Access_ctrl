@@ -491,6 +491,12 @@ function buildHref(slug, params = {}) {
 function requestParentNav(view, params = {}, options = {}) {
   try {
     if (window.parent && window.parent !== window) {
+      try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || !parentDoc.getElementById('viewFrame')) return false;
+      } catch (err) {
+        return false;
+      }
       const msg = {
         type: 'akuvox-nav',
         view: String(view || ''),
@@ -505,6 +511,7 @@ function requestParentNav(view, params = {}, options = {}) {
   } catch (err) {}
   return false;
 }
+
 function openInApp(view, params = {}, options = {}) {
   const href = buildHref(view, params);
   const delivered = requestParentNav(view, params, options);

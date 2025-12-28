@@ -342,10 +342,21 @@ function buildHref(slug, params = {}){
   return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
 }
 
-function requestParentNav(view, params = {}, options = {}){
+function requestParentNav(view, params = {}, options = {}) {
   try {
     if (window.parent && window.parent !== window) {
-      const msg = { type: 'akuvox-nav', view: String(view || ''), slug: String(view || ''), params };
+      try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || !parentDoc.getElementById('viewFrame')) return false;
+      } catch (err) {
+        return false;
+      }
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
       if (options.updateHistory === false) msg.updateHistory = false;
       if (options.replaceState) msg.replaceState = true;
       window.parent.postMessage(msg, window.location.origin);
@@ -354,6 +365,7 @@ function requestParentNav(view, params = {}, options = {}){
   } catch (err) {}
   return false;
 }
+
 
 function broadcastScheduleRevision(){
   const stamp = `${Date.now()}:${Math.random().toString(16).slice(2)}`;
