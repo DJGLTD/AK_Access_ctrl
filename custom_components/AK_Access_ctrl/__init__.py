@@ -2931,6 +2931,7 @@ class SyncManager:
 
         add_batch: List[Dict[str, Any]] = []
         replace_list: List[Tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]] = []
+        full_sync_batch: List[Dict[str, Any]] = []
         delete_only_keys: List[str] = []
         face_root_base = face_base_url(self.hass)
 
@@ -2958,10 +2959,12 @@ class SyncManager:
             )
 
             if should_have_access:
-                if not local:
+                if full:
+                    full_sync_batch.append(desired_base)
+                elif not local:
                     add_batch.append(desired_base)
                 else:
-                    replace = full or str(prof.get("status") or "").lower() == "pending" or any(
+                    replace = str(prof.get("status") or "").lower() == "pending" or any(
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
                     if replace:
@@ -2971,20 +2974,7 @@ class SyncManager:
                     delete_only_keys.append(ha_key)
             # -----------------------------------------
 
-        # 1) Add new users
-        if add_batch:
-            prepared_add_batch: List[Dict[str, Any]] = []
-            for candidate in add_batch:
-                ha_candidate = _key_of_user(candidate)
-                prepared_add_batch.append(
-                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
-                )
-            try:
-                await api.user_add(prepared_add_batch)
-            except Exception:
-                pass
-
-        # 2) Delete-only
+        # 1) Delete-only
         for ha_key in delete_only_keys:
             try:
                 recs = await _lookup_device_user_ids_by_ha_key(api, ha_key)
@@ -2999,7 +2989,33 @@ class SyncManager:
             except Exception:
                 pass
 
-        # 3) Replace changed users (update in place)
+        # 2) Full sync bulk add
+        if full and full_sync_batch:
+            prepared_add_batch: List[Dict[str, Any]] = []
+            for candidate in full_sync_batch:
+                ha_candidate = _key_of_user(candidate)
+                prepared_add_batch.append(
+                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                )
+            try:
+                await api.user_add(prepared_add_batch)
+            except Exception:
+                pass
+
+        # 3) Add new users
+        if add_batch:
+            prepared_add_batch = []
+            for candidate in add_batch:
+                ha_candidate = _key_of_user(candidate)
+                prepared_add_batch.append(
+                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                )
+            try:
+                await api.user_add(prepared_add_batch)
+            except Exception:
+                pass
+
+        # 4) Replace changed users (update in place)
         for ha_key, desired, existing in replace_list:
             try:
                 await self._replace_user_on_device(api, desired, ha_key, existing)
