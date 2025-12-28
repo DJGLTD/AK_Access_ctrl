@@ -1277,7 +1277,7 @@ function renderUsers(devs, registryUsers, kpis){
       groups,
       access: 'Pending',
       isCloud: false,
-      last: '—',
+      last: r.last_access || '—',
       pin,
       presentOnDevice: false,
       fromRegistry: true,
@@ -1546,12 +1546,14 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const editHref = buildHref('users', { id: u.id });
+    const eventsHref = buildHref('event-history', { user: u.id });
     let actions;
     if (u.isCloud) {
       actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
     } else if (/^HA\d{3}$/.test(u.id)) {
       const safeId = escapeHtml(u.id);
-      actions = `<a class="btn btn-sm btn-primary" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+      actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+         <a class="btn btn-sm btn-info me-1" data-user-events="${safeId}" href="${escapeHtml(eventsHref)}">Events</a>
          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
     } else {
       actions = '';
@@ -1590,6 +1592,14 @@ function renderUsers(devs, registryUsers, kpis){
       ev.preventDefault();
       const uid = link.dataset.editUser || '';
       openInApp('users', uid ? { id: uid } : {});
+    });
+  });
+
+  tableBody.querySelectorAll('a[data-user-events]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const uid = link.dataset.userEvents || '';
+      openInApp('event-history', uid ? { user: uid } : {});
     });
   });
 
