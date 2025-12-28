@@ -2894,13 +2894,8 @@ class SyncManager:
             )
             if _name_matches_user_id(name_value, user_id_value):
                 key = normalize_ha_id(user_id_value) or str(user_id_value or "").strip()
-                if key:
+                if key and key not in reg_key_set:
                     auto_delete_keys.add(key)
-
-        for ha_key in registry_keys:
-            profile = registry.get(ha_key) or {}
-            if _name_matches_user_id(profile.get("name"), ha_key):
-                auto_delete_keys.add(ha_key)
 
         if auto_delete_keys and users_store:
             for ha_key in sorted(auto_delete_keys):
