@@ -2680,6 +2680,38 @@ class SyncManager:
         settings: AkuvoxSettingsStore = self._settings_store()
         self.hass.async_create_task(settings.set_auto_reboot(time_hhmm, days))
 
+    async def add_missing_users(self, entry_id: Optional[str] = None):
+        targets: List[Tuple[str, AkuvoxCoordinator]] = []
+        for entry, coord, *_ in self._devices():
+            if entry_id and entry != entry_id:
+                continue
+            if coord:
+                targets.append((entry, coord))
+
+        for entry, coord in targets:
+            try:
+                coord.health["sync_status"] = "in_progress"
+            except Exception:
+                pass
+            try:
+                await self.reconcile_device(entry, full=False, add_missing_only=True)
+                coord.health["sync_status"] = "in_sync"
+                coord.health["last_sync"] = _now_hh_mm()
+                try:
+                    coord._append_event("Missing users added")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            except Exception as err:
+                coord.health["sync_status"] = "pending"
+                try:
+                    coord._append_event(f"Missing users add failed: {err}")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            try:
+                await coord.async_request_refresh()
+            except Exception:
+                pass
+
     # ---------- NEW: device schedule map ----------
     async def _device_schedule_map(self, api: AkuvoxAPI) -> Dict[str, str]:
         """
@@ -2838,7 +2870,13 @@ class SyncManager:
             except Exception:
                 pass
 
-    async def reconcile_device(self, entry_id: str, full: bool = True):
+    async def reconcile_device(
+        self,
+        entry_id: str,
+        full: bool = True,
+        *,
+        add_missing_only: bool = False,
+    ):
         root = self._root()
         data = root.get(entry_id)
         if not data:
@@ -2885,32 +2923,33 @@ class SyncManager:
         reg_key_set = set(registry_keys)
 
         auto_delete_keys: Set[str] = set()
-        for record in local_users or []:
-            name_value = record.get("Name")
-            user_id_value = (
-                record.get("UserID")
-                or record.get("UserId")
-                or record.get("ID")
-            )
-            if _name_matches_user_id(name_value, user_id_value):
-                key = normalize_ha_id(user_id_value) or str(user_id_value or "").strip()
-                if key and key not in reg_key_set:
-                    auto_delete_keys.add(key)
+        if not add_missing_only:
+            for record in local_users or []:
+                name_value = record.get("Name")
+                user_id_value = (
+                    record.get("UserID")
+                    or record.get("UserId")
+                    or record.get("ID")
+                )
+                if _name_matches_user_id(name_value, user_id_value):
+                    key = normalize_ha_id(user_id_value) or str(user_id_value or "").strip()
+                    if key and key not in reg_key_set:
+                        auto_delete_keys.add(key)
 
-        if auto_delete_keys and users_store:
-            for ha_key in sorted(auto_delete_keys):
-                try:
-                    await users_store.upsert_profile(
-                        ha_key,
-                        status="deleted",
-                        groups=["No Access"],
-                        schedule_name="No Access",
-                        schedule_id="1002",
-                    )
-                except Exception:
-                    pass
+            if auto_delete_keys and users_store:
+                for ha_key in sorted(auto_delete_keys):
+                    try:
+                        await users_store.upsert_profile(
+                            ha_key,
+                            status="deleted",
+                            groups=["No Access"],
+                            schedule_name="No Access",
+                            schedule_id="1002",
+                        )
+                    except Exception:
+                        pass
 
-        await self._remove_missing_users(api, local_users, reg_key_set)
+            await self._remove_missing_users(api, local_users, reg_key_set)
 
         if full and schedules_store:
             try:
@@ -2959,7 +2998,10 @@ class SyncManager:
             )
 
             if should_have_access:
-                if full:
+                if add_missing_only:
+                    if not local:
+                        add_batch.append(desired_base)
+                elif full:
                     full_sync_batch.append(desired_base)
                 elif not local:
                     add_batch.append(desired_base)
@@ -2970,27 +3012,28 @@ class SyncManager:
                     if replace:
                         replace_list.append((ha_key, desired_base, local))
             else:
-                if local:
+                if local and not add_missing_only:
                     delete_only_keys.append(ha_key)
             # -----------------------------------------
 
         # 1) Delete-only
-        for ha_key in delete_only_keys:
-            try:
-                recs = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-                if recs:
-                    for rec in recs:
-                        await _delete_user_every_way(api, rec)
-                else:
-                    try:
-                        await api.user_delete(ha_key)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+        if not add_missing_only:
+            for ha_key in delete_only_keys:
+                try:
+                    recs = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+                    if recs:
+                        for rec in recs:
+                            await _delete_user_every_way(api, rec)
+                    else:
+                        try:
+                            await api.user_delete(ha_key)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
         # 2) Full sync bulk add
-        if full and full_sync_batch:
+        if full and full_sync_batch and not add_missing_only:
             prepared_add_batch: List[Dict[str, Any]] = []
             for candidate in full_sync_batch:
                 ha_candidate = _key_of_user(candidate)
@@ -3011,16 +3054,20 @@ class SyncManager:
                     _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
                 )
             try:
-                await api.user_add(prepared_add_batch)
+                if add_missing_only:
+                    await api.user_add_missing(prepared_add_batch)
+                else:
+                    await api.user_add(prepared_add_batch)
             except Exception:
                 pass
 
         # 4) Replace changed users (update in place)
-        for ha_key, desired, existing in replace_list:
-            try:
-                await self._replace_user_on_device(api, desired, ha_key, existing)
-            except Exception:
-                pass
+        if not add_missing_only:
+            for ha_key, desired, existing in replace_list:
+                try:
+                    await self._replace_user_on_device(api, desired, ha_key, existing)
+                except Exception:
+                    pass
 
         # Mark pending -> active
         try:
@@ -3731,6 +3778,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         entry_id = data.get("entry_id")
         await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id)
 
+    async def svc_add_missing_users(call):
+        data = call.data if isinstance(call.data, Mapping) else {}
+        entry_id = data.get("entry_id")
+        manager: SyncManager = hass.data[DOMAIN].get("sync_manager")  # type: ignore[assignment]
+        if not manager:
+            return
+        await manager.add_missing_users(entry_id)
+
     async def svc_create_group(call):
         await hass.data[DOMAIN]["groups_store"].add_group(call.data["name"])
 
@@ -3781,6 +3836,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "refresh_events", svc_refresh_events)
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)
+    hass.services.async_register(DOMAIN, "add_missing_users", svc_add_missing_users)
     hass.services.async_register(DOMAIN, "create_group", svc_create_group)
     hass.services.async_register(DOMAIN, "delete_groups", svc_delete_groups)
     hass.services.async_register(DOMAIN, "set_user_groups", svc_set_user_groups)
