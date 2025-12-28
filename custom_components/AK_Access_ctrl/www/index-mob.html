@@ -1139,7 +1139,7 @@ function renderUsers(devs, registryUsers, kpis){
       groups,
       access: 'Pending',
       isCloud: false,
-      last: '—',
+      last: r.last_access || '—',
       presentOnDevice: false,
       fromRegistry: true,
       status: r.status || 'active',
@@ -1360,8 +1360,10 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const editHref = buildHref('users', { id: u.id });
+    const eventsHref = buildHref('event-history', { user: u.id });
     const actions = /^HA\d{3}$/.test(u.id)
-      ? `<a class="btn btn-sm btn-primary" data-edit-user="${u.id}" href="${editHref}">Edit</a>
+      ? `<a class="btn btn-sm btn-primary me-1" data-edit-user="${u.id}" href="${editHref}">Edit</a>
+         <a class="btn btn-sm btn-info me-1" data-user-events="${u.id}" href="${eventsHref}">Events</a>
          <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
       : '';
 
@@ -1395,6 +1397,14 @@ function renderUsers(devs, registryUsers, kpis){
       ev.preventDefault();
       const uid = link.dataset.editUser || '';
       openInApp('users', uid ? { id: uid } : {});
+    });
+  });
+
+  $('#tblUsers').querySelectorAll('a[data-user-events]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const uid = link.dataset.userEvents || '';
+      openInApp('event-history', uid ? { user: uid } : {});
     });
   });
 }
