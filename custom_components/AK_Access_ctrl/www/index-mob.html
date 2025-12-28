@@ -559,17 +559,9 @@ const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const $ = (sel) => document.querySelector(sel);
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
-let CONTACTS_ENABLED = true;
 let cachedEvents = [];
 let eventHistoryInitialized = false;
 let lastEventRefreshAttempt = 0;
-let activeUserTab = 'users';
-try {
-  const tabParam = new URLSearchParams(location.search).get('tab');
-  if (typeof tabParam === 'string' && tabParam.toLowerCase() === 'contacts') {
-    activeUserTab = 'contacts';
-  }
-} catch (err) {}
 
 function parseIsoDate(value){
   const text = String(value || '').trim();
@@ -1407,113 +1399,12 @@ function renderUsers(devs, registryUsers, kpis){
   });
 }
 
-function renderContacts(registryUsers){
-  const tableBody = document.getElementById('tblContacts');
-  if (!tableBody) return;
-  if (!CONTACTS_ENABLED){
-    tableBody.innerHTML = '<tr><td colspan="4" class="text-muted">Contacts disabled</td></tr>';
-    setUserTab(activeUserTab);
-    return;
-  }
-  const map = new Map();
-  (registryUsers || []).forEach(entry => {
-    if (!entry || typeof entry !== 'object') return;
-    const id = canonicalString(entry.id || entry.UserID || entry.UserId || entry.ID);
-    const name = canonicalString(entry.name || id);
-    const phone = canonicalString(entry.phone || entry.PhoneNum || entry.Phone);
-    if (!phone) return;
-    const key = id || `${phone}:${name}`;
-    if (!map.has(key)) {
-      map.set(key, {
-        id,
-        name: name || phone,
-        phone,
-      });
-    }
-  });
-
-  const list = Array.from(map.values()).sort((a, b) => {
-    return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
-  });
-
-  const rows = list.map((contact) => {
-    const safeName = escapeHtml(contact.name || contact.id || contact.phone);
-    const safePhone = escapeHtml(contact.phone || '');
-    const safeId = escapeHtml(contact.id || '');
-    let actions = '<span class="text-muted">—</span>';
-    if (contact.id && /^HA\d{3}$/.test(contact.id)) {
-      const editHref = buildHref('users', { id: contact.id, mode: 'contact' });
-      actions = `<a class="btn btn-sm btn-primary" data-edit-contact="${safeId}" href="${escapeHtml(editHref)}">Edit</a>` +
-        ` <button class="btn btn-sm btn-danger" data-contact="${safeId}" data-act="delete-contact">Delete</button>`;
-    }
-    return `<tr>
-      <td>${safeName}</td>
-      <td>${safePhone || '—'}</td>
-      <td>${safeId || '—'}</td>
-      <td>${actions}</td>
-    </tr>`;
-  }).join('');
-
-  tableBody.innerHTML = rows || '<tr><td colspan="4" class="text-muted">No contacts</td></tr>';
-
-  tableBody.querySelectorAll('a[data-edit-contact]').forEach(link => {
-    link.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      const id = link.dataset.editContact || '';
-      if (!id) return;
-      openInApp('users', { id, mode: 'contact' });
-    });
-  });
-
-  tableBody.querySelectorAll('button[data-act="delete-contact"]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.contact;
-      if (!id) return;
-      if (!confirm(`Delete ${id}?`)) return;
-      try {
-        await callService('akuvox_ac','delete_user', { id });
-        refresh();
-      } catch (err) {
-        alert('Delete failed: ' + (err?.message || err));
-      }
-    });
-  });
-
-  setUserTab(activeUserTab);
-}
-
-function setUserTab(tab){
-  const contactsAllowed = CONTACTS_ENABLED;
-  const normalized = contactsAllowed && tab === 'contacts' ? 'contacts' : 'users';
-  activeUserTab = normalized;
-  document.querySelectorAll('[data-user-tab]').forEach(btn => {
-    if (!btn || typeof btn.dataset.userTab !== 'string') return;
-    const target = btn.dataset.userTab === 'contacts' ? 'contacts' : 'users';
-    if (target === 'contacts') {
-      btn.style.display = contactsAllowed ? '' : 'none';
-    }
-    if (target === normalized) btn.classList.add('active');
-    else btn.classList.remove('active');
-  });
-  const usersWrap = document.getElementById('usersTableWrap');
-  if (usersWrap) usersWrap.style.display = normalized === 'users' ? '' : 'none';
-  const contactsWrap = document.getElementById('contactsTableWrap');
-  if (contactsWrap) contactsWrap.style.display = contactsAllowed && normalized === 'contacts' ? '' : 'none';
-  const addUserBtn = document.getElementById('btnAddUser');
-  if (addUserBtn) addUserBtn.style.display = normalized === 'users' ? '' : 'none';
-  const addContactBtn = document.getElementById('btnAddContact');
-  if (addContactBtn) addContactBtn.style.display = contactsAllowed && normalized === 'contacts' ? '' : 'none';
-}
 
 /* ===== Fetch + render ===== */
 async function refresh(){
   try{
     const state = await apiGet(stateUrl);
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
-    CONTACTS_ENABLED = !!CREDENTIAL_PROMPTS.phone;
-    if (!CONTACTS_ENABLED && activeUserTab === 'contacts') {
-      activeUserTab = 'users';
-    }
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     renderDevices(devs);
@@ -1523,7 +1414,6 @@ async function refresh(){
     }
     await maybeRequestEventHistory(state);
     renderUsers(devs, state.registry_users || [], state.kpis || {});
-    renderContacts(state.registry_users || []);
   } catch(e){
     console.error('state load failed', e);
     if (handleAuthError(e)) return;
@@ -1882,25 +1772,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const addContactBtn = document.getElementById('btnAddContact');
-  if (addContactBtn) {
-    addContactBtn.href = buildHref('users', { mode: 'contact' });
-    addContactBtn.removeAttribute('target');
-    addContactBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      openInApp('users', { mode: 'contact' });
-    });
-  }
-
-  document.querySelectorAll('[data-user-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = btn.dataset.userTab === 'contacts' ? 'contacts' : 'users';
-      setUserTab(target);
-    });
-  });
-
-  setUserTab(activeUserTab);
-
   // initial + poll
   refresh();
   setInterval(refresh, 5000);
@@ -2022,18 +1893,9 @@ setInterval(refresh, 5000);
     <div class="section-50">
       <div class="card flex-fill" id="sectionUsers">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-          <div class="d-flex align-items-center gap-2 flex-wrap">
-            <div class="btn-group btn-group-sm" role="group" aria-label="User table tabs">
-              <button type="button" class="btn btn-outline-light active" data-user-tab="users">User Management</button>
-              <button type="button" class="btn btn-outline-light" data-user-tab="contacts">Contacts</button>
-            </div>
-          </div>
           <div class="d-flex gap-2">
             <a class="btn btn-success" id="btnAddUser" href="/akuvox-ac/users" target="_top">
               <i class="bi bi-person-plus"></i> Add User
-            </a>
-            <a class="btn btn-success" id="btnAddContact" href="/akuvox-ac/users?mode=contact" target="_top" style="display:none;">
-              <i class="bi bi-person-plus"></i> Add Contact
             </a>
           </div>
         </div>
@@ -2044,14 +1906,6 @@ setInterval(refresh, 5000);
                 <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Last Access</th><th>Actions</th></tr>
               </thead>
               <tbody id="tblUsers"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
-            </table>
-          </div>
-          <div id="contactsTableWrap" style="display:none;">
-            <table class="table table-sm table-dark mb-0 table-center">
-              <thead>
-                <tr><th>Name</th><th>Phone</th><th>User ID</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="tblContacts"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>

@@ -63,8 +63,6 @@
     <div class="header-actions">
       <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
       <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
-      <a class="btn btn-outline-light btn-sm" id="btnMobileContactManagement" href="#"><i class="bi bi-people"></i> Contact Management</a>
-      <a class="btn btn-success btn-sm" id="btnMobileNewContact" href="#"><i class="bi bi-person-lines-fill"></i> New Contact</a>
     </div>
   </header>
   <section class="summary-grid" aria-label="User summary">
@@ -450,7 +448,6 @@ const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const UI_ROOT   = '/akuvox-ac';
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
-let CONTACTS_ENABLED = true;
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -551,34 +548,6 @@ if (mobileAddUser) {
   });
 }
 
-const mobileContactMgmt = document.getElementById('btnMobileContactManagement');
-if (mobileContactMgmt) {
-  mobileContactMgmt.href = buildHref('index', { tab: 'contacts' });
-  mobileContactMgmt.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    openInApp('index', { tab: 'contacts' });
-  });
-}
-
-const mobileNewContact = document.getElementById('btnMobileNewContact');
-if (mobileNewContact) {
-  mobileNewContact.href = buildHref('users', { mode: 'contact' });
-  mobileNewContact.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    openInApp('users', { mode: 'contact' });
-  });
-}
-
-function updateContactButtons(){
-  const show = !!CONTACTS_ENABLED;
-  const controls = [mobileContactMgmt, mobileNewContact];
-  controls.forEach((btn) => {
-    if (!btn) return;
-    btn.style.display = show ? '' : 'none';
-  });
-}
-
-updateContactButtons();
 
 function escapeHtml(value){
   const lookup = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -1112,8 +1081,6 @@ async function refresh(){
     document.getElementById('refreshBtn').setAttribute('disabled', 'disabled');
     const state = await apiGet(stateUrl);
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
-    CONTACTS_ENABLED = !!CREDENTIAL_PROMPTS.phone;
-    updateContactButtons();
     const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     const list = compileUsers(devices, state.registry_users || [], state.kpis || {});
     renderSummary(state.kpis || {}, list);
