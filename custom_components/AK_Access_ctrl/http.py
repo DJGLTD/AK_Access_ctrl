@@ -9,7 +9,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Mapping, Set
+from typing import Any, Dict, Iterable, List, Optional, Mapping, Set
 from urllib.parse import urlencode, urlsplit, unquote
 
 from aiohttp import web
@@ -2271,6 +2271,71 @@ def _merge_last_access(root: Dict[str, Any], users: Dict[str, Any]) -> Dict[str,
     return merged
 
 
+_EVENT_USER_KEYS = (
+    "UserID",
+    "UserId",
+    "User",
+    "UserName",
+    "Name",
+    "ID",
+    "CardNo",
+    "CardNumber",
+)
+
+
+def _event_timestamp_text(event: Dict[str, Any]) -> str:
+    for key in ("timestamp", "Time", "DateTime", "datetime"):
+        text = _normalize_user_match_value(event.get(key))
+        if text:
+            return text
+    ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
+    if ts_value:
+        try:
+            return dt.datetime.fromtimestamp(ts_value, dt.timezone.utc).isoformat()
+        except Exception:
+            return _normalize_user_match_value(event.get("_t"))
+    return ""
+
+
+def _merge_last_access_from_events(
+    events: Iterable[Dict[str, Any]], users: Dict[str, Any]
+) -> Dict[str, str]:
+    match_index = _build_user_match_index(users)
+    merged: Dict[str, str] = {}
+
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        raw_value = None
+        for key in _EVENT_USER_KEYS:
+            raw_value = event.get(key)
+            if raw_value not in (None, ""):
+                break
+        raw_text = _normalize_user_match_value(raw_value)
+        if not raw_text:
+            continue
+        match_id = None
+        for candidate in (normalize_ha_id(raw_text), raw_text):
+            if not candidate:
+                continue
+            match_id = match_index.get(candidate.lower())
+            if match_id:
+                break
+        if not match_id:
+            continue
+
+        timestamp_text = _event_timestamp_text(event)
+        if not timestamp_text:
+            continue
+        current = merged.get(match_id)
+        current_epoch = AccessHistory._coerce_timestamp(current) if current else 0.0
+        candidate_epoch = AccessHistory._coerce_timestamp(timestamp_text)
+        if candidate_epoch >= current_epoch:
+            merged[match_id] = timestamp_text
+
+    return merged
+
+
 def _device_relay_roles(opts: Dict[str, Any], device_type: Any) -> Dict[str, str]:
     raw = opts.get(CONF_RELAY_ROLES)
     if not isinstance(raw, dict):
@@ -2610,6 +2675,18 @@ class AkuvoxUIView(HomeAssistantView):
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
             last_access_by_user = _merge_last_access(root, all_users)
+            event_last_access = _merge_last_access_from_events(aggregated_events, all_users)
+            if event_last_access:
+                for user_id, timestamp in event_last_access.items():
+                    if not timestamp:
+                        continue
+                    current = last_access_by_user.get(user_id)
+                    current_epoch = (
+                        AccessHistory._coerce_timestamp(current) if current else 0.0
+                    )
+                    candidate_epoch = AccessHistory._coerce_timestamp(timestamp)
+                    if candidate_epoch >= current_epoch:
+                        last_access_by_user[user_id] = timestamp
             if last_access_by_user:
                 for entry in registry_users:
                     user_id = entry.get("id")
