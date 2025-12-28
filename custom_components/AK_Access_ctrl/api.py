@@ -483,6 +483,10 @@ class AkuvoxAPI:
                 paths = ("/api/",)
         return await self._request_attempts("POST", paths, payload)
 
+    async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
+        return await self._post_api(payload, rel_paths=("/api/contact/",))
+
     async def _get_api(self, primary: str, *fallbacks: str) -> Dict[str, Any]:
         """GET with fallback paths."""
         rels = (primary, *fallbacks)
@@ -901,9 +905,6 @@ class AkuvoxAPI:
             )
         return await self._post_api(payload, rel_paths=rel_paths)
 
-    async def _api_contact(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
-        return await self._post_api(payload, rel_paths=("/api/contact/",))
 
     # -------------------- diagnostics --------------------
     async def ping_info(self) -> Dict[str, Any]:
@@ -1059,7 +1060,7 @@ class AkuvoxAPI:
         info = await self.ping_info()
         return bool(info.get("ok"))
 
-    # -------------------- public user/event/contact APIs --------------------
+    # -------------------- public user/event APIs --------------------
     @staticmethod
     def _coerce_event_list(value: Any) -> List[Dict[str, Any]]:
         if isinstance(value, dict):
@@ -2019,11 +2020,12 @@ class AkuvoxAPI:
 
         await self.user_delete_bulk(dev_ids, face_user_ids=face_ids)
 
-    async def contact_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return await self._api_contact("add", items)
+    async def contact_delete(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return await self._api_contact("del", items)
 
-    async def contact_set(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return await self._api_contact("set", items)
+    async def contact_get(self) -> Dict[str, Any]:
+        return await self._api_contact("get", [{}])
+
 
     # ---------- Schedules ----------
     def _sched_payload_from_spec(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:

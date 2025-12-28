@@ -2477,6 +2477,7 @@ class SyncManager:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._auto_unsub = None
+        self._contact_sync_unsub = None
         self._integrity_unsub = None
         self._integrity_minutes = 15
         self._apply_integrity_interval(self._integrity_minutes)
@@ -2485,6 +2486,13 @@ class SyncManager:
             hass,
             self._interval_sync_cb,
             timedelta(minutes=30),
+        )
+        self._contact_sync_unsub = async_track_time_change(
+            hass,
+            self._daily_contact_sync_cb,
+            hour=23,
+            minute=0,
+            second=0,
         )
 
     def _apply_integrity_interval(self, minutes: int):
@@ -2554,6 +2562,72 @@ class SyncManager:
             if coord and api:
                 out.append((k, coord, api, opts))
         return out
+
+    @staticmethod
+    def _normalize_phone(value: Any) -> str:
+        text = str(value or "").strip()
+        return "".join(ch for ch in text if ch.isdigit())
+
+    @staticmethod
+    def _extract_contact_items(payload: Any) -> List[Dict[str, Any]]:
+        if not payload:
+            return []
+        if isinstance(payload, dict):
+            for key in ("data", "Data"):
+                data = payload.get(key)
+                if isinstance(data, dict):
+                    items = data.get("item") or data.get("items")
+                    if isinstance(items, list):
+                        return [it for it in items if isinstance(it, dict)]
+            for key in ("item", "items", "Contact", "Contacts", "contact", "contacts"):
+                items = payload.get(key)
+                if isinstance(items, list):
+                    return [it for it in items if isinstance(it, dict)]
+        if isinstance(payload, list):
+            return [it for it in payload if isinstance(it, dict)]
+        return []
+
+    async def _daily_contact_sync_cb(self, now):
+        users_store = self._users_store()
+        if not users_store:
+            return
+
+        raw_profiles = users_store.all()
+        user_phone_raw: set[str] = set()
+        user_phone_norm: set[str] = set()
+        for profile in (raw_profiles or {}).values():
+            if not isinstance(profile, dict):
+                continue
+            phone = str(profile.get("phone") or "").strip()
+            if not phone:
+                continue
+            user_phone_raw.add(phone)
+            normalized = self._normalize_phone(phone)
+            if normalized:
+                user_phone_norm.add(normalized)
+
+        for _, coord, api, _ in self._devices():
+            try:
+                response = await api.contact_get()
+            except Exception:
+                continue
+
+            contacts = self._extract_contact_items(response)
+            for contact in contacts:
+                phone = str(contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or "").strip()
+                if not phone:
+                    continue
+                normalized = self._normalize_phone(phone)
+                if phone in user_phone_raw or (normalized and normalized in user_phone_norm):
+                    continue
+                try:
+                    await api.contact_delete([{"Phone": phone}])
+                except Exception:
+                    continue
+            try:
+                await coord.async_request_refresh()
+            except Exception:
+                pass
 
     def set_auto_sync_time(self, hhmm: str):
         if not isinstance(hhmm, str) or ":" not in hhmm:
@@ -2712,27 +2786,6 @@ class SyncManager:
                     await users_store.delete(canonical)
                 except Exception:
                     continue
-
-    async def _sync_contacts_for_intercom(self, api: AkuvoxAPI, registry_items: List[Dict[str, Any]]):
-        to_set = []
-        to_add = []
-        for prof in registry_items:
-            phone = prof.get("phone")
-            name = prof.get("name") or prof.get("id") or ""
-            if not phone or not name:
-                continue
-            to_set.append({"Name": name, "Phone": str(phone), "DialType": "0"})
-            to_add.append({"Name": name, "Phone": str(phone), "DialType": "0"})
-        if to_set:
-            try:
-                await api.contact_set(to_set)
-            except Exception:
-                pass
-        if to_add:
-            try:
-                await api.contact_add(to_add)
-            except Exception:
-                pass
 
     async def _push_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]):
         if not schedules:
@@ -2957,13 +3010,6 @@ class SyncManager:
                     await users_store.upsert_profile(k, status="active")
         except Exception:
             pass
-
-        if is_intercom:
-            reg_items = [{"id": k, **(registry.get(k) or {})} for k in registry_keys]
-            try:
-                await self._sync_contacts_for_intercom(api, reg_items)
-            except Exception:
-                pass
 
         try:
             await coord.async_request_refresh()
@@ -3454,6 +3500,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         root = hass.data.get(DOMAIN, {})
         users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
+        phone_to_remove: Optional[str] = None
+        if users_store:
+            try:
+                profile = users_store.get(lookup_key) or {}
+                raw_phone = str(profile.get("phone") or "").strip()
+                if raw_phone:
+                    phone_to_remove = raw_phone
+            except Exception:
+                phone_to_remove = None
         if users_store:
             try:
                 await users_store.upsert_profile(
@@ -3471,6 +3526,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if manager:
             for entry_id, coord, api, _ in manager._devices():
                 try:
+                    if phone_to_remove:
+                        try:
+                            await api.contact_delete([{"Phone": phone_to_remove}])
+                        except Exception:
+                            pass
                     id_records = await _lookup_device_user_ids_by_ha_key(api, lookup_key)
                     if id_records:
                         for rec in id_records:
