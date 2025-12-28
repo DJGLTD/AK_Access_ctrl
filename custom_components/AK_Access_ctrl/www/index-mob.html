@@ -1049,7 +1049,7 @@ function renderEvents(devs, aggregated){
 
 /* ===== Users ===== */
 function idMatchesFilter(id){
-  return /^HA\d+$/i.test(id) || /^User\d+$/i.test(id);
+  return /^HA-?\d+$/i.test(id) || /^User\d+$/i.test(id);
 }
 const FACE_URL_FIELDS = ['face_url','faceUrl','FaceUrl','FaceURL'];
 const FACE_STATUS_FIELDS = [
