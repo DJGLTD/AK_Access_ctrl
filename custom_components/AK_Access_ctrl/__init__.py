@@ -559,6 +559,14 @@ def _prepare_user_add_payload(
     if cleaned.get("ScheduleRelay") and "Schedule-Relay" not in cleaned:
         cleaned["Schedule-Relay"] = cleaned["ScheduleRelay"]
 
+    cleaned.setdefault("PriorityCall", "0")
+    cleaned.setdefault("DialAccount", "0")
+    cleaned.setdefault("Group", "Default")
+    cleaned.setdefault("AnalogSystem", "0")
+    cleaned.setdefault("AnalogNumber", "")
+    cleaned.setdefault("AnalogReplace", "")
+    cleaned.setdefault("AnalogProxyAddress", "")
+
     return cleaned
 
 def _migrate_face_storage(hass: HomeAssistant) -> None:
