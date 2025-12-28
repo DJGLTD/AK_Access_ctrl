@@ -550,7 +550,17 @@ function getEventUserLabel(evt){
 }
 
 function classifyEvent(evt){
-  const s = String(getEventStatusText(evt) || '').toLowerCase();
+  const statusPieces = [
+    getEventStatusText(evt),
+    evt?.status_label,
+    evt?.status,
+    evt?.Result,
+    evt?.Event,
+    evt?.action,
+    evt?.Message,
+    evt?.Description,
+  ];
+  const s = statusPieces.filter(Boolean).join(' ').toLowerCase();
   if (s.includes('denied') || s.includes('went offline') || s.includes('alarm') || s.includes('failed')) return 'bad';
   if (s.includes('granted') || s.includes('approved') || s.includes('access ok') || s.includes('success')) return 'ok';
   if (s.includes('warning') || s.includes('reboot') || s.includes('pending') || s.includes('sync requested')) return 'warn';
@@ -676,7 +686,7 @@ function matchesUserFilter(evt, filter){
   if (!filter) return true;
   const candidates = [
     evt.UserID, evt.User, evt.UserName, evt.Name, evt.NameID,
-    evt.user, evt.name
+    evt.user, evt.name, evt.user_id, evt.userId, evt.user_name, evt.userName
   ];
   return candidates.some(candidate => normalizeUserMatch(candidate) === filter);
 }
