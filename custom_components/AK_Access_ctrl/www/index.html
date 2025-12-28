@@ -1561,14 +1561,16 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const editHref = buildHref('users', { id: u.id });
-    const eventsHref = buildHref('event-history', { user: u.id });
+    const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
+    const eventsHref = buildHref('event-history', { user: eventFilter });
     let actions;
     if (u.isCloud) {
       actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
     } else if (/^HA\d{3}$/.test(u.id)) {
       const safeId = escapeHtml(u.id);
+      const safeEventFilter = escapeHtml(eventFilter || u.id);
       actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
-         <a class="btn btn-sm btn-info me-1" data-user-events="${safeId}" href="${escapeHtml(eventsHref)}">Events</a>
+         <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
     } else {
       actions = '';
