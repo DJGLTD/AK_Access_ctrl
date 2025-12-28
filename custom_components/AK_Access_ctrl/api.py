@@ -85,7 +85,7 @@ class AkuvoxAPI:
         self.username = username
         self.password = password
         self.use_https = True
-        self.verify_ssl = verify_ssl
+        self.verify_ssl = False
         self._session = session
         self._rest_ok = True
 
@@ -137,12 +137,8 @@ class AkuvoxAPI:
                 combos.append(combo)
 
         configured_port: Optional[int] = self.port
-        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
-
-        for verify in verify_order:
-            _add_combo(True, configured_port, verify)
+        _add_combo(True, configured_port, False)
         _add_combo(True, 443, False)
-        _add_combo(True, 443, True)
 
         # Deduplicate preserving order
         seen = set()
@@ -296,7 +292,7 @@ class AkuvoxAPI:
 
         def _add_base(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
             normalized_port = _normalize_port(port, use_https)
-            verify_flag = bool(verify) if use_https else True
+            verify_flag = False if use_https else True
             combo = (use_https, normalized_port, verify_flag)
             if combo not in bases:
                 bases.append(combo)
@@ -306,12 +302,8 @@ class AkuvoxAPI:
             _add_base(detected_https, detected_port, detected_verify)
 
         configured_port: Optional[int] = self.port
-        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
-
-        for verify in verify_order:
-            _add_base(True, configured_port, verify)
+        _add_base(True, configured_port, False)
         _add_base(True, 443, False)
-        _add_base(True, 443, True)
 
         # Try all combinations
         last_exc: Optional[Exception] = None
