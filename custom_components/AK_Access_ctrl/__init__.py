@@ -1043,8 +1043,21 @@ def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]
 
     expected_url = _norm(expected.get("FaceUrl") or expected.get("FaceURL"))
     if expected_url:
-        if _norm(local.get("FaceUrl") or local.get("FaceURL")) != expected_url:
+        local_url = _norm(local.get("FaceUrl") or local.get("FaceURL"))
+
+        def _url_basename(value: str) -> str:
+            cleaned = (value or "").strip()
+            if not cleaned:
+                return ""
+            cleaned = cleaned.split("?", 1)[0].split("#", 1)[0]
+            cleaned = cleaned.rstrip("/").replace("\\", "/")
+            return cleaned.rsplit("/", 1)[-1]
+
+        if not local_url:
             diffs.append("face url")
+        elif local_url != expected_url:
+            if _url_basename(local_url) != _url_basename(expected_url):
+                diffs.append("face url")
 
     return diffs
 
