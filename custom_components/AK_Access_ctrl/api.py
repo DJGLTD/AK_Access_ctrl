@@ -1895,6 +1895,73 @@ class AkuvoxAPI:
 
         return result
 
+    async def user_add_missing(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Add only users that do not already exist on the device.
+        This skips preflight deletions to avoid removing existing users.
+        """
+        prepared: List[Dict[str, Any]] = []
+
+        existing_by_user_id: Dict[str, Dict[str, Any]] = {}
+        existing_by_name: Dict[str, Dict[str, Any]] = {}
+        try:
+            existing_records = await self.user_list()
+        except Exception as err:
+            existing_records = []
+            _LOGGER.debug("Preflight user.list failed before user_add_missing: %s", err)
+        for record in existing_records or []:
+            if not isinstance(record, dict):
+                continue
+            user_id_value = str(record.get("UserID") or record.get("UserId") or "").strip()
+            name_value = str(record.get("Name") or "").strip()
+            if user_id_value:
+                existing_by_user_id.setdefault(user_id_value, record)
+            if name_value:
+                existing_by_name.setdefault(name_value.lower(), record)
+
+        for original in items or []:
+            if not isinstance(original, dict):
+                continue
+
+            user_id_value = str(
+                original.get("UserID")
+                or original.get("user_id")
+                or original.get("UserId")
+                or ""
+            ).strip()
+            name_value = str(original.get("Name") or original.get("name") or "").strip()
+
+            if user_id_value and user_id_value in existing_by_user_id:
+                continue
+            if name_value and name_value.lower() in existing_by_name:
+                continue
+
+            prepared.append(self._initial_user_add_payload(dict(original)))
+
+        normalized_items = self._normalize_user_items_for_add_or_set(
+            prepared,
+            allow_face_url=True,
+            drop_schedule=False,
+        )
+
+        if not normalized_items:
+            return {}
+
+        for item in normalized_items:
+            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
+                item["Schedule-Relay"] = item.pop("ScheduleRelay")
+
+        try:
+            result = await self._api_user("add", normalized_items)
+        except Exception:
+            result = await self._api_user("add", normalized_items)
+        retcode, message = self._parse_result_status(result)
+        if not _retcode_is_success(retcode):
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox user.add returned retcode {retcode}{detail}")
+
+        return result
+
     async def user_delete(self, identifier: str) -> None:
         """Delete by device ID or resolve by (ID/UserID/Name) first."""
         if identifier is None:

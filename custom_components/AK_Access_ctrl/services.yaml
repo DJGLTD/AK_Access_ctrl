@@ -137,6 +137,15 @@ sync_now:
       selector:
         text:
 
+add_missing_users:
+  name: Add missing users
+  description: Bulk create only users that do not exist on the device.
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
 force_full_sync:
   name: Force full sync
   fields:
