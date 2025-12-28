@@ -523,23 +523,6 @@ function requestParentNav(view, params = {}, options = {}) {
   } catch (err) {}
   return false;
 }
- catch (err) {
-        return false;
-      }
-      const msg = {
-        type: 'akuvox-nav',
-        view: String(view || ''),
-        slug: String(view || ''),
-        params
-      };
-      if (options.updateHistory === false) msg.updateHistory = false;
-      if (options.replaceState) msg.replaceState = true;
-      window.parent.postMessage(msg, window.location.origin);
-      return true;
-    }
-  } catch (err) {}
-  return false;
-}
 function openInApp(view, params = {}, options = {}) {
   const href = buildHref(view, params);
   const delivered = requestParentNav(view, params, options);
