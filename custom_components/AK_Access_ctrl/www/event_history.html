@@ -682,11 +682,41 @@ function normalizeUserMatch(value){
   return String(value).trim().toLowerCase();
 }
 
+function addUserLookupEntry(map, id, name){
+  const key = normalizeUserMatch(id);
+  if (!key) return;
+  const label = String(name || '').trim();
+  if (!label) return;
+  if (!map.has(key)) map.set(key, label);
+}
+
+function buildUserLookup(devices, registryUsers){
+  const lookup = new Map();
+  (registryUsers || []).forEach(entry => {
+    addUserLookupEntry(
+      lookup,
+      entry.id || entry.UserID || entry.UserId || entry.ID || '',
+      entry.name || entry.Name || entry.user_name || entry.UserName || ''
+    );
+  });
+  (devices || []).forEach(device => {
+    (device?._users || device?.users || []).forEach(user => {
+      addUserLookupEntry(
+        lookup,
+        user.id || user.UserID || user.UserId || user.ID || user.user_id || user.userId || '',
+        user.Name || user.name || user.user_name || user.UserName || ''
+      );
+    });
+  });
+  return lookup;
+}
+
 function matchesUserFilter(evt, filter){
   if (!filter) return true;
   const candidates = [
     evt.UserID, evt.User, evt.UserName, evt.Name, evt.NameID,
-    evt.user, evt.name, evt.user_id, evt.userId, evt.user_name, evt.userName
+    evt.user, evt.name, evt.user_id, evt.userId, evt.user_name, evt.userName,
+    evt._user_name
   ];
   return candidates.some(candidate => normalizeUserMatch(candidate) === filter);
 }
@@ -731,7 +761,20 @@ function eventIdentity(evt){
   return fingerprint || null;
 }
 
-function gatherEvents(devices, aggregated){
+function applyUserLookup(evt, userLookup){
+  if (!evt || !userLookup || userLookup.size === 0) return;
+  const userId = pickEventValue(evt, ['UserID','user_id','userId','User','user','NameID']);
+  const key = normalizeUserMatch(userId);
+  if (!key) return;
+  const mapped = userLookup.get(key);
+  if (!mapped) return;
+  if (!evt.Name && !evt.UserName && !evt.user_name && !evt.name) {
+    evt.Name = mapped;
+  }
+  evt._user_name = mapped;
+}
+
+function gatherEvents(devices, aggregated, userLookup){
   const events = [];
   const seen = new Set();
 
@@ -749,6 +792,7 @@ function gatherEvents(devices, aggregated){
     if (when) normalized._when = when;
     normalized._ts = epoch;
     normalized._device = deviceName;
+    applyUserLookup(normalized, userLookup);
     events.push(normalized);
   }
 
@@ -792,7 +836,8 @@ function renderEvents(events){
       : severity === 'ok' ? 'Info'
       : 'Log';
     const when = formatWhen(evt._when || evt.timestamp || evt.Time);
-    const user = evt.User || evt.user || evt.Name || evt.NameID || '';
+    const user = evt.Name || evt.UserName || evt.user_name || evt._user_name
+      || evt.User || evt.user || evt.NameID || '';
     const method = evt.Method || evt.method || evt.AccessMode || '';
     const device = evt._device || evt.Device || evt.device || '';
 
@@ -820,7 +865,9 @@ async function refresh(){
     const state = await apiGet(stateUrl);
     const devices = state.devices || [];
     const aggregated = Array.isArray(state?.access_events) ? state.access_events : [];
-    const events = gatherEvents(devices, aggregated);
+    const registryUsers = state.registry_users || [];
+    const userLookup = buildUserLookup(devices, registryUsers);
+    const events = gatherEvents(devices, aggregated, userLookup);
     const { filterLabel, events: filtered } = applyUserFilter(events);
     const title = document.querySelector('header.page-header h1');
     if (title && filterLabel) {

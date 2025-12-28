@@ -1360,11 +1360,14 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const editHref = buildHref('users', { id: u.id });
-    const eventsHref = buildHref('event-history', { user: u.id });
+    const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
+    const eventsHref = buildHref('event-history', { user: eventFilter });
+    const safeId = escapeHtml(u.id);
+    const safeEventFilter = escapeHtml(eventFilter || u.id);
     const actions = /^HA\d{3}$/.test(u.id)
-      ? `<a class="btn btn-sm btn-primary me-1" data-edit-user="${u.id}" href="${editHref}">Edit</a>
-         <a class="btn btn-sm btn-info me-1" data-user-events="${u.id}" href="${eventsHref}">Events</a>
-         <button class="btn btn-sm btn-danger" data-user="${u.id}" data-act="delete">Delete</button>`
+      ? `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+         <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+         <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`
       : '';
 
     return `<tr>
