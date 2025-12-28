@@ -1671,6 +1671,15 @@ class AkuvoxAPI:
             schedule_id = sched_fields.get("ScheduleID")
             if schedule_id not in (None, ""):
                 base["ScheduleID"] = str(schedule_id)
+            schedule_list = sched_fields.get("Schedule")
+            if isinstance(schedule_list, (list, tuple, set)):
+                cleaned_schedule = [
+                    str(entry).strip()
+                    for entry in schedule_list
+                    if str(entry or "").strip().isdigit()
+                ]
+                if cleaned_schedule:
+                    base["Schedule"] = cleaned_schedule
         # NOTE: Do not include free-text 'Schedule' in user.add payloads.
         # Some Akuvox firmwares reject this with retcode -100 (error param).
         # Use ScheduleRelay only on user.add; additional scheduling can be
@@ -1872,11 +1881,15 @@ class AkuvoxAPI:
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
             allow_face_url=True,
-            drop_schedule=True,
+            drop_schedule=False,
         )
 
         if not normalized_items:
             return {}
+
+        for item in normalized_items:
+            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
+                item["Schedule-Relay"] = item.pop("ScheduleRelay")
 
         try:
             result = await self._api_user("add", normalized_items)
