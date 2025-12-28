@@ -694,6 +694,29 @@ function buildHref(slug, params = {}) {
 function requestParentNav(view, params = {}, options = {}) {
   try {
     if (window.parent && window.parent !== window) {
+      try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || !parentDoc.getElementById('viewFrame')) return false;
+      } catch (err) {
+        return false;
+      }
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+ catch (err) {
+        return false;
+      }
       const msg = {
         type: 'akuvox-nav',
         view: String(view || ''),
