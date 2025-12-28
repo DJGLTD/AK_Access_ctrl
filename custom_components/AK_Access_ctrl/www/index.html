@@ -955,6 +955,10 @@ const EVENT_CATEGORY_LABELS = { access: 'Access', call: 'Call', system: 'System'
 const EVENT_DEVICE_KEYS = [
   '_device','device_name','device','Device','DoorName','Door','AccessPoint','Reader',
 ];
+const EVENT_CALL_USER_KEYS = [
+  'User','UserName','user_name','user','userName','Name','NameID','UserID','user_id',
+  'CallNumber','CallNum','CallNo','number','digits',
+];
 const EVENT_DETAIL_KEYS = {
   call: [
     'status_label','status','call_type','CallType','CallStatus','CallMode','CallNumber','CallNo','CallNum','number','digits',
@@ -984,6 +988,15 @@ function describeEventForDisplay(event){
   const normalizedCategory = category || 'system';
   const label = EVENT_CATEGORY_LABELS[normalizedCategory] || normalizedCategory.charAt(0).toUpperCase() + normalizedCategory.slice(1);
   const device = pickFirstEventText(event, EVENT_DEVICE_KEYS);
+  if (normalizedCategory === 'call') {
+    const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
+    const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';
+    return {
+      category: normalizedCategory,
+      title: [label, caller].join(' - '),
+      highlight: fallbackMessage || caller || label,
+    };
+  }
   const categoryDetailKeys = EVENT_DETAIL_KEYS[normalizedCategory] || [];
   const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'event';
   const detail = pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
@@ -1006,6 +1019,8 @@ const EVENT_EMPTY_MESSAGES = {
 
 function classifyEvent(txt){
   const s = String(txt || '').toLowerCase();
+  if (s.includes('denied') || s.includes('failed')) return 'bad';
+  if (s.includes('granted') || s.includes('approved') || s.includes('access ok') || s.includes('success')) return 'ok';
   if (s.includes('came online') || s.includes('sync succeeded') || s.includes('user created')) return 'ok';
   if (s.includes('went offline')) return 'bad';
   if (s.includes('reboot') || s.includes('integrity check passed')) return 'dim';

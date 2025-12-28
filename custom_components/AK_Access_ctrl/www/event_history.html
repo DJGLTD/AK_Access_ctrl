@@ -524,9 +524,35 @@ function escapeHtml(value){
   return String(value ?? '').replace(/[&<>"']/g, ch => lookup[ch] ?? ch);
 }
 
-function classifyEvent(txt){
-  const s = String(txt || '').toLowerCase();
+function getEventStatusText(evt){
+  if (!evt || typeof evt !== 'object') return '';
+  return evt.Result || evt.Event || evt.status_label || evt.status || evt.action || evt.Message || evt.Description || '';
+}
+
+function getEventTitle(evt){
+  const category = String(evt?._category || '').toLowerCase();
+  if (category === 'call') {
+    const caller = getEventUserLabel(evt);
+    return `Call - ${caller}`;
+  }
+  return getEventStatusText(evt) || 'Event';
+}
+
+function getEventUserLabel(evt){
+  if (!evt || typeof evt !== 'object') return 'Unknown';
+  const user = evt.User || evt.user || evt.UserName || evt.user_name || evt.userName || evt.Name || evt.NameID;
+  if (typeof user === 'string' && user.trim()) return user.trim();
+  if (user) return String(user);
+  const number = evt.CallNumber || evt.CallNum || evt.CallNo || evt.number || evt.digits;
+  if (typeof number === 'string' && number.trim()) return number.trim();
+  if (number) return String(number);
+  return 'Unknown';
+}
+
+function classifyEvent(evt){
+  const s = String(getEventStatusText(evt) || '').toLowerCase();
   if (s.includes('denied') || s.includes('went offline') || s.includes('alarm') || s.includes('failed')) return 'bad';
+  if (s.includes('granted') || s.includes('approved') || s.includes('access ok') || s.includes('success')) return 'ok';
   if (s.includes('warning') || s.includes('reboot') || s.includes('pending') || s.includes('sync requested')) return 'warn';
   if (s.includes('came online') || s.includes('sync succeeded') || s.includes('created')) return 'ok';
   return 'dim';
@@ -730,7 +756,7 @@ function renderSummary(events){
   const total = events.length;
   const latest = events[0]? formatWhen(events[0]._when || events[0].timestamp) : '—';
   const alerts = events.filter(e => {
-    const severity = classifyEvent(e.Event || e.Result || e.action || e.Message || '');
+    const severity = classifyEvent(e);
     return severity === 'bad';
   }).length;
   document.getElementById('summaryEvents').textContent = String(total);
@@ -749,8 +775,8 @@ function renderEvents(events){
     return;
   }
   events.forEach(evt => {
-    const titleRaw = evt.Event || evt.Result || evt.action || evt.Message || 'Event';
-    const severity = classifyEvent(titleRaw);
+    const titleRaw = getEventTitle(evt);
+    const severity = classifyEvent(evt);
     const pillText = severity === 'bad' ? 'Alert'
       : severity === 'warn' ? 'Notice'
       : severity === 'ok' ? 'Info'
