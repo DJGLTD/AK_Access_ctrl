@@ -2195,6 +2195,82 @@ def _iter_device_buckets(root: Dict[str, Any]):
         yield entry_id, data, coord, opts
 
 
+def _normalize_user_match_value(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        text = str(value).strip()
+    except Exception:
+        return ""
+    return text
+
+
+def _build_user_match_index(users: Dict[str, Any]) -> Dict[str, str]:
+    index: Dict[str, str] = {}
+    if not isinstance(users, dict):
+        return index
+
+    def _add(value: Any, canonical: str) -> None:
+        text = _normalize_user_match_value(value)
+        if not text:
+            return
+        index.setdefault(text.lower(), canonical)
+        normalized = normalize_ha_id(text)
+        if normalized:
+            index.setdefault(normalized.lower(), canonical)
+
+    for key, profile in users.items():
+        canonical = normalize_ha_id(key) or _normalize_user_match_value(key)
+        if not canonical:
+            continue
+        _add(canonical, canonical)
+        if isinstance(profile, Mapping):
+            _add(profile.get("name"), canonical)
+            _add(profile.get("device_id"), canonical)
+            _add(profile.get("UserID"), canonical)
+            _add(profile.get("UserId"), canonical)
+            _add(profile.get("ID"), canonical)
+            _add(profile.get("card_code"), canonical)
+            _add(profile.get("CardCode"), canonical)
+
+    return index
+
+
+def _merge_last_access(root: Dict[str, Any], users: Dict[str, Any]) -> Dict[str, str]:
+    match_index = _build_user_match_index(users)
+    merged: Dict[str, str] = {}
+
+    for _entry_id, _bucket, coord, _opts in _iter_device_buckets(root):
+        storage = getattr(coord, "storage", None)
+        data = getattr(storage, "data", {}) if storage else {}
+        last_access = data.get("last_access")
+        if not isinstance(last_access, dict):
+            continue
+        for raw_id, timestamp in last_access.items():
+            raw_text = _normalize_user_match_value(raw_id)
+            if not raw_text:
+                continue
+            match_id = None
+            for candidate in (normalize_ha_id(raw_text), raw_text):
+                if not candidate:
+                    continue
+                match_id = match_index.get(candidate.lower())
+                if match_id:
+                    break
+            if not match_id:
+                continue
+            timestamp_text = _normalize_user_match_value(timestamp)
+            if not timestamp_text:
+                continue
+            current = merged.get(match_id)
+            current_epoch = AccessHistory._coerce_timestamp(current) if current else 0.0
+            candidate_epoch = AccessHistory._coerce_timestamp(timestamp_text)
+            if candidate_epoch >= current_epoch:
+                merged[match_id] = timestamp_text
+
+    return merged
+
+
 def _device_relay_roles(opts: Dict[str, Any], device_type: Any) -> Dict[str, str]:
     raw = opts.get(CONF_RELAY_ROLES)
     if not isinstance(raw, dict):
@@ -2533,6 +2609,12 @@ class AkuvoxUIView(HomeAssistantView):
                         }
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
+            last_access_by_user = _merge_last_access(root, all_users)
+            if last_access_by_user:
+                for entry in registry_users:
+                    user_id = entry.get("id")
+                    if user_id and user_id in last_access_by_user:
+                        entry["last_access"] = last_access_by_user[user_id]
             response["registry_users"] = registry_users
 
             schedules = {}
