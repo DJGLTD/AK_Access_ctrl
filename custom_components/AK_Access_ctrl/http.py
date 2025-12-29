@@ -2787,7 +2787,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 if not queue:
                     return err(service_err)
                 try:
-                    await queue.sync_now(entry_id, include_all=not entry_id)
+                    await queue.sync_now(entry_id, include_all=not entry_id, full=True)
                     return web.json_response({"ok": True})
                 except Exception as queue_err:
                     return err(queue_err)
@@ -3104,7 +3104,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 name = payload["name"]
                 spec = payload["spec"]
                 await root["schedules_store"].upsert(name, spec)
-                root["sync_queue"].mark_change(None)
+                root["sync_queue"].mark_change(None, full=True)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)
@@ -3113,7 +3113,7 @@ class AkuvoxUIAction(AkuvoxUIView):
             try:
                 name = payload["name"]
                 await root["schedules_store"].delete(name)
-                root["sync_queue"].mark_change(None)
+                root["sync_queue"].mark_change(None, full=True)
                 return web.json_response({"ok": True})
             except Exception as e:
                 return err(e)

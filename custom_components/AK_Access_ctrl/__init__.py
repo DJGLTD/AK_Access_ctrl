@@ -2138,6 +2138,8 @@ class SyncQueue:
         self._lock = asyncio.Lock()
         self._pending_all = False
         self._pending_devices: set[str] = set()
+        self._pending_full = False
+        self._pending_full_devices: set[str] = set()
         self.next_sync_eta: Optional[datetime] = None
         self._last_mark: Optional[datetime] = None
         self._last_delay_from_default = False
@@ -2230,12 +2232,23 @@ class SyncQueue:
             if coord:
                 mark(coord)
 
-    def mark_change(self, entry_id: Optional[str] = None, delay_minutes: Optional[int] = None):
+    def mark_change(
+        self,
+        entry_id: Optional[str] = None,
+        delay_minutes: Optional[int] = None,
+        *,
+        full: bool = False,
+    ):
         self._set_health_status(entry_id, "pending")
         if entry_id:
             self._pending_devices.add(entry_id)
         else:
             self._pending_all = True
+        if full:
+            if entry_id:
+                self._pending_full_devices.add(entry_id)
+            else:
+                self._pending_full = True
 
         if self._handle is not None:
             try:
@@ -2402,7 +2415,7 @@ class SyncQueue:
         self._pending_all = False
         self._pending_devices.clear()
 
-    async def run(self, only_entry: Optional[str] = None):
+    async def run(self, only_entry: Optional[str] = None, full: Optional[bool] = None):
         async with self._lock:
             self.next_sync_eta = None
             self._active = True
@@ -2447,12 +2460,16 @@ class SyncQueue:
                     return
 
                 for entry_id, coord, _api in targets:
+                    if full is None:
+                        full_sync = self._pending_full or entry_id in self._pending_full_devices
+                    else:
+                        full_sync = full
                     try:
                         coord.health["sync_status"] = "in_progress"
                     except Exception:
                         pass
                     try:
-                        await manager.reconcile_device(entry_id, full=True)
+                        await manager.reconcile_device(entry_id, full=full_sync)
                         coord.health["sync_status"] = "in_sync"
                         coord.health["last_sync"] = _now_hh_mm()
                         try:
@@ -2472,17 +2489,25 @@ class SyncQueue:
             finally:
                 self._pending_all = False
                 self._pending_devices.clear()
+                self._pending_full = False
+                self._pending_full_devices.clear()
                 self._handle = None
                 self._active = False
 
     async def sync_now(
-        self, entry_id: Optional[str] = None, *, include_all: bool = False
+        self,
+        entry_id: Optional[str] = None,
+        *,
+        include_all: bool = False,
+        full: Optional[bool] = None,
     ):
         if include_all and entry_id:
             include_all = False
 
         if include_all and not entry_id:
             self._pending_all = True
+            if full:
+                self._pending_full = True
 
         self._set_health_status(entry_id, "in_progress" if entry_id else "pending")
         if self._handle is not None:
@@ -2492,7 +2517,7 @@ class SyncQueue:
                 pass
             self._handle = None
         self.next_sync_eta = None
-        await self.run(only_entry=entry_id)
+        await self.run(only_entry=entry_id, full=full)
 
 
 # ---------------------- Sync manager ---------------------- #
@@ -3224,8 +3249,8 @@ class SyncManager:
                     except Exception:
                         pass
                     if sq:
-                        sq.mark_change(entry_id)
-                        await sq.sync_now(entry_id)
+                        sq.mark_change(entry_id, full=True)
+                        await sq.sync_now(entry_id, full=True)
             except Exception:
                 try:
                     coord._append_event("Integrity check error")  # type: ignore[attr-defined]
@@ -3798,7 +3823,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         include_all = not entry_id
 
         try:
-            await queue.sync_now(entry_id, include_all=include_all)
+            await queue.sync_now(entry_id, include_all=include_all, full=True)
         except Exception:
             pass
 
@@ -3850,12 +3875,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         name = call.data["name"]
         spec = call.data["spec"]
         await hass.data[DOMAIN]["schedules_store"].upsert(name, spec)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, full=True)
 
     async def svc_delete_schedule(call):
         name = call.data["name"]
         await hass.data[DOMAIN]["schedules_store"].delete(name)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, full=True)
 
     hass.services.async_register(DOMAIN, "add_user", svc_add_user)
     hass.services.async_register(DOMAIN, "edit_user", svc_edit_user)
