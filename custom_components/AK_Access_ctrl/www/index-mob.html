@@ -849,6 +849,14 @@ function hasMeaningfulValue(obj, key) {
 function categorizeEvent(event, device) {
   const evt = event || {};
   const textParts = [];
+  const typeValue = evt.Type ?? evt.type ?? '';
+  const normalizedType = String(typeValue).trim().toLowerCase();
+  if (normalizedType === 'dtmf') {
+    return 'call';
+  }
+  if (normalizedType === 'face') {
+    return 'access';
+  }
   const typeKeys = [
     'EventType','Type','EventCategory','Category','LogType','LogTypeName','CallType','SubType',
     'Event','Result','action','Message','Description','Detail',
