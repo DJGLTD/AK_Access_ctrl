@@ -532,6 +532,7 @@ const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face:
 
 let SETTINGS_DATA = {
   integrity_interval_minutes: 1200,
+  face_integrity_enabled: true,
   auto_sync_delay_minutes: 15,
   health_check_interval_seconds: 300,
   alerts: { targets: {} },
@@ -1125,6 +1126,8 @@ function renderIntegrity(){
   if (!input) return;
   const minutes = SETTINGS_DATA.integrity_interval_minutes || 1200;
   input.value = minutesToHHMM(minutes);
+  const toggle = document.getElementById('faceIntegrityToggle');
+  if (toggle) toggle.checked = SETTINGS_DATA.face_integrity_enabled !== false;
   setIntegrityStatus('');
 }
 
@@ -1829,6 +1832,27 @@ async function saveIntegrity(minutes){
   }
 }
 
+async function saveFaceIntegrityEnabled(enabled){
+  if (integritySaving) return;
+  integritySaving = true;
+  try{
+    setIntegrityStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { face_integrity_enabled: !!enabled });
+    if (typeof res.face_integrity_enabled === 'boolean'){
+      SETTINGS_DATA.face_integrity_enabled = res.face_integrity_enabled;
+    } else {
+      SETTINGS_DATA.face_integrity_enabled = !!enabled;
+    }
+    setIntegrityStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setIntegrityStatus('Save failed', 'error');
+    alert('Failed to update face integrity check: ' + (err && err.message ? err.message : err));
+  }finally{
+    integritySaving = false;
+  }
+}
+
 async function saveAutoSyncDelay(minutes){
   if (autoSyncSaving) return;
   autoSyncSaving = true;
@@ -1910,6 +1934,7 @@ async function loadData(){
     ]);
     SETTINGS_DATA = settingsResp || {
       integrity_interval_minutes: 15,
+      face_integrity_enabled: true,
       auto_sync_delay_minutes: 30,
       health_check_interval_seconds: 30,
       access_event_limit: 30,
@@ -1971,6 +1996,9 @@ async function loadData(){
     if (eventLimitValue < safeMinEvents) eventLimitValue = safeMinEvents;
     if (eventLimitValue > safeMaxEvents) eventLimitValue = safeMaxEvents;
     SETTINGS_DATA.access_event_limit = eventLimitValue;
+
+    const faceIntegrityRaw = settingsResp?.face_integrity_enabled;
+    SETTINGS_DATA.face_integrity_enabled = typeof faceIntegrityRaw === 'boolean' ? faceIntegrityRaw : true;
 
     PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
@@ -2145,6 +2173,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   integrityInput?.addEventListener('change', commitIntegrity);
   integrityInput?.addEventListener('blur', commitIntegrity);
 
+  const faceIntegrityToggle = document.getElementById('faceIntegrityToggle');
+  faceIntegrityToggle?.addEventListener('change', async () => {
+    const enabled = !!faceIntegrityToggle.checked;
+    if (enabled === SETTINGS_DATA.face_integrity_enabled) return;
+    SETTINGS_DATA.face_integrity_enabled = enabled;
+    await saveFaceIntegrityEnabled(enabled);
+  });
+
   document.getElementById('addTargetSelect')?.addEventListener('change', async (ev) => {
     const service = ev.target.value;
     if (!service) return;
@@ -2295,6 +2331,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div class="saved-input-wrap">
         <input id="integrityInput" class="form-control" placeholder="HH:MM" />
         <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="faceIntegrityToggle">
+        <label class="form-check-label" for="faceIntegrityToggle">Enable face integrity checks</label>
       </div>
       <div id="integrityStatus" class="visually-hidden small mt-2"></div>
     </div>

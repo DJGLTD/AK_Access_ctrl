@@ -3242,11 +3242,16 @@ class AkuvoxUISettings(HomeAssistantView):
         access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
         access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
         alerts = {"targets": {}}
+        face_integrity_enabled = True
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
             except Exception:
                 interval = None
+            try:
+                face_integrity_enabled = settings.get_face_integrity_enabled()
+            except Exception:
+                face_integrity_enabled = True
             try:
                 delay = settings.get_auto_sync_delay_minutes()
             except Exception:
@@ -3319,6 +3324,7 @@ class AkuvoxUISettings(HomeAssistantView):
             {
                 "ok": True,
                 "integrity_interval_minutes": interval,
+                "face_integrity_enabled": face_integrity_enabled,
                 "auto_sync_delay_minutes": delay,
                 "health_check_interval_seconds": health_interval,
                 "alerts": alerts,
@@ -3374,6 +3380,16 @@ class AkuvoxUISettings(HomeAssistantView):
                     response["integrity_interval_minutes"] = value
                 except Exception as err:
                     return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "face_integrity_enabled" in payload:
+            if not settings or not hasattr(settings, "set_face_integrity_enabled"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            enabled = payload.get("face_integrity_enabled")
+            try:
+                await settings.set_face_integrity_enabled(bool(enabled))
+                response["face_integrity_enabled"] = settings.get_face_integrity_enabled()
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
 
         if "auto_sync_delay_minutes" in payload:
             if not settings or not hasattr(settings, "set_auto_sync_delay_minutes"):
