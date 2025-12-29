@@ -1018,7 +1018,12 @@ def _build_exit_schedule_map(schedules: Optional[Dict[str, Any]]) -> Dict[str, D
     return result
 
 
-def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
+def _integrity_field_differences(
+    local: Dict[str, Any],
+    expected: Dict[str, Any],
+    *,
+    include_face: bool = True,
+) -> List[str]:
     """Return the list of high-level fields that differ between device data and expectations."""
 
     diffs: List[str] = []
@@ -1043,29 +1048,30 @@ def _integrity_field_differences(local: Dict[str, Any], expected: Dict[str, Any]
     if _norm(local.get("PrivatePIN") or local.get("Pin") or local.get("PIN")) != _norm(expected.get("PrivatePIN")):
         diffs.append("pin")
 
-    expected_face = _face_flag_from_record(expected)
-    actual_face = _face_flag_from_record(local)
-    if expected_face is not None:
-        if bool(actual_face) != bool(expected_face):
-            diffs.append("face status")
+    if include_face:
+        expected_face = _face_flag_from_record(expected)
+        actual_face = _face_flag_from_record(local)
+        if expected_face is not None:
+            if bool(actual_face) != bool(expected_face):
+                diffs.append("face status")
 
-    expected_url = _norm(expected.get("FaceUrl") or expected.get("FaceURL"))
-    if expected_url:
-        local_url = _norm(local.get("FaceUrl") or local.get("FaceURL"))
+        expected_url = _norm(expected.get("FaceUrl") or expected.get("FaceURL"))
+        if expected_url:
+            local_url = _norm(local.get("FaceUrl") or local.get("FaceURL"))
 
-        def _url_basename(value: str) -> str:
-            cleaned = (value or "").strip()
-            if not cleaned:
-                return ""
-            cleaned = cleaned.split("?", 1)[0].split("#", 1)[0]
-            cleaned = cleaned.rstrip("/").replace("\\", "/")
-            return cleaned.rsplit("/", 1)[-1]
+            def _url_basename(value: str) -> str:
+                cleaned = (value or "").strip()
+                if not cleaned:
+                    return ""
+                cleaned = cleaned.split("?", 1)[0].split("#", 1)[0]
+                cleaned = cleaned.rstrip("/").replace("\\", "/")
+                return cleaned.rsplit("/", 1)[-1]
 
-        if not local_url:
-            diffs.append("face url")
-        elif local_url != expected_url:
-            if _url_basename(local_url) != _url_basename(expected_url):
+            if not local_url:
                 diffs.append("face url")
+            elif local_url != expected_url:
+                if _url_basename(local_url) != _url_basename(expected_url):
+                    diffs.append("face url")
 
     return diffs
 
@@ -1743,6 +1749,7 @@ class AkuvoxSettingsStore(Store):
     MAX_HEALTH_SECONDS = MAX_HEALTH_CHECK_INTERVAL
 
     DEFAULT_INTEGRITY_MINUTES = 15
+    DEFAULT_FACE_INTEGRITY_ENABLED = True
     DEFAULT_CREDENTIAL_PROMPTS = {
         "code": True,
         "token": True,
@@ -1757,6 +1764,7 @@ class AkuvoxSettingsStore(Store):
             "auto_sync_time": None,
             "auto_reboot": {"time": None, "days": []},
             "integrity_interval_minutes": self.DEFAULT_INTEGRITY_MINUTES,
+            "face_integrity_enabled": self.DEFAULT_FACE_INTEGRITY_ENABLED,
             "auto_sync_delay_minutes": 30,
             "alerts": {"targets": {}},
             "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
@@ -1789,6 +1797,11 @@ class AkuvoxSettingsStore(Store):
         except Exception:
             integ = self.DEFAULT_INTEGRITY_MINUTES
         self.data["integrity_interval_minutes"] = int(integ)
+
+        face_integrity = self.data.get("face_integrity_enabled", self.DEFAULT_FACE_INTEGRITY_ENABLED)
+        if not isinstance(face_integrity, bool):
+            face_integrity = self.DEFAULT_FACE_INTEGRITY_ENABLED
+        self.data["face_integrity_enabled"] = face_integrity
 
         alerts = self.data.get("alerts")
         if not isinstance(alerts, dict):
@@ -1982,6 +1995,14 @@ class AkuvoxSettingsStore(Store):
 
     async def set_integrity_interval_minutes(self, minutes: int):
         self.data["integrity_interval_minutes"] = int(minutes)
+        await self.async_save()
+
+    def get_face_integrity_enabled(self) -> bool:
+        value = self.data.get("face_integrity_enabled", self.DEFAULT_FACE_INTEGRITY_ENABLED)
+        return bool(value)
+
+    async def set_face_integrity_enabled(self, enabled: bool):
+        self.data["face_integrity_enabled"] = bool(enabled)
         await self.async_save()
 
     def _sanitize_alert_targets(self, raw: Any) -> Dict[str, Dict[str, Any]]:
@@ -3091,6 +3112,14 @@ class SyncManager:
         if sq and getattr(sq, "_handle", None) is not None:
             return
 
+        include_face = True
+        settings = self._settings_store()
+        if settings and hasattr(settings, "get_face_integrity_enabled"):
+            try:
+                include_face = settings.get_face_integrity_enabled()
+            except Exception:
+                include_face = True
+
         for _, coord, *_ in self._devices():
             if coord.health.get("sync_status") != "in_sync":
                 return
@@ -3163,7 +3192,7 @@ class SyncManager:
                         face_root_base=face_root_base,
                         device_type_raw=device_type_raw,
                     )
-                    diffs = _integrity_field_differences(local, desired)
+                    diffs = _integrity_field_differences(local, desired, include_face=include_face)
                     if diffs:
                         mismatch_reason = f"{ha_key} mismatch: {', '.join(diffs)}"
                         break
