@@ -117,6 +117,15 @@ def _combined_event_text(event: Optional[Dict[str, Any]], device: Optional[Dict[
 def categorize_event(event: Optional[Dict[str, Any]], device: Optional[Dict[str, Any]] = None) -> str:
     """Return the UI category for *event* (access, call, or system)."""
 
+    if event:
+        type_value = event.get("Type") or event.get("type")
+        if type_value is not None:
+            normalized = str(type_value).strip().lower()
+            if normalized == "dtmf":
+                return "call"
+            if normalized == "face":
+                return "access"
+
     combined = _combined_event_text(event, device)
 
     call_detected = any(_has_meaningful_value(event, key) for key in _CALL_KEYS)
