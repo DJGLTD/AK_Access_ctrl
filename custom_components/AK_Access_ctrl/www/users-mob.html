@@ -44,7 +44,7 @@
 (function () {
   const qs = new URLSearchParams(location.search);
   const qsToken = qs.get('token');
-  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+  if (qsToken) persistTokens(qsToken);
 })();
 function persistTokens(access, refresh) {
   if (!access) return null;

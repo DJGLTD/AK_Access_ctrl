@@ -90,7 +90,7 @@
   try {
     const params = new URLSearchParams(location.search);
     const token = params.get('token');
-    if (token) sessionStorage.setItem('akuvox_ll_token', token);
+    if (token) persistTokens(token);
   } catch (err) {}
 })();
 
@@ -808,7 +808,12 @@ function compileUsers(devices, registryUsers, kpis){
       const key = deviceUserKey(u);
       if (!key) return;
       const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
-      const accessAllowed = !(String(u.WebRelay) === '0' || u.AccessEnabled === false);
+      const accessEnabled = u.AccessEnabled !== false;
+      const userGroups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
+      const hasGroupAccess = userGroups.some(g => String(g).trim().toLowerCase() !== 'no access');
+      const relayValue = canonicalString(u.WebRelay || u.web_relay);
+      const hasRelayAccess = !!relayValue && relayValue !== '0';
+      const accessAllowed = accessEnabled && (hasRelayAccess || hasGroupAccess);
       const last = u.LastAccess || u.last_access || '—';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
@@ -817,7 +822,7 @@ function compileUsers(devices, registryUsers, kpis){
         by.set(key, {
           id: key,
           name: u.Name || key,
-          groups: normalizeGroupsList(u.Groups || u.groups || deviceGroups),
+          groups: userGroups,
           access: accessAllowed ? 'Allowed' : 'Denied',
           isCloud,
           last,
