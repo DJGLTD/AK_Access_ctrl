@@ -1370,10 +1370,11 @@ function renderUsers(devs, registryUsers, kpis){
     else accessBadge = badge(accessStr, 'in_sync');
     const faceStatusLower = String(u.face_status || '').toLowerCase();
     let faceBadge;
+    const hasFaceProfile = !!u.face_url || u.face_active;
     if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Active', 'in_sync');
     } else if (faceStatusLower === 'pending') {
-      faceBadge = badge('Pending', 'pending');
+      faceBadge = hasFaceProfile ? badge('Pending', 'pending') : '<span class="text-muted">---</span>';
     } else {
       faceBadge = badge('Inactive', 'inactive');
     }

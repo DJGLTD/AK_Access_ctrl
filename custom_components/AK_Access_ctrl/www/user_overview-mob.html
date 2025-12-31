@@ -1080,10 +1080,11 @@ function renderUsers(list){
 
     const faceStatusLower = String(u.face_status || '').toLowerCase();
     let faceBadge;
+    const hasFaceProfile = !!u.face_url || u.face_active;
     if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Face active', 'in_sync');
     } else if (faceStatusLower === 'pending') {
-      faceBadge = badge('Face pending', 'pending');
+      faceBadge = hasFaceProfile ? badge('Face pending', 'pending') : '<span class="text-muted">---</span>';
     } else {
       faceBadge = badge('Face inactive', 'inactive');
     }
