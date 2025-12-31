@@ -439,7 +439,60 @@ async function callService(domain, service, data = {}) {
   }
   return res.json().catch(() => ({}));
 }
+async function updateUserSchedule(items){
+  const res = await fetchWithAuth('/api/user/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target: 'user', action: 'set', data: { item: items || [] } })
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return res.json().catch(() => ({}));
+}
 const UI_ROOT = '/akuvox-ac';
+const PAUSED_USERS_KEY = 'akuvox_paused_users';
+const PAUSE_SCHEDULE_RELAY = '1002,12';
+
+function loadPausedUsers(){
+  try {
+    const raw = sessionStorage.getItem(PAUSED_USERS_KEY) || localStorage.getItem(PAUSED_USERS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch (err) {}
+  return {};
+}
+
+function savePausedUsers(map){
+  try {
+    const payload = JSON.stringify(map || {});
+    sessionStorage.setItem(PAUSED_USERS_KEY, payload);
+    localStorage.setItem(PAUSED_USERS_KEY, payload);
+  } catch (err) {}
+}
+
+let PAUSED_USERS = loadPausedUsers();
+
+function scheduleRelayFromUser(user){
+  if (!user || typeof user !== 'object') return '';
+  const scheduleId = String(user.schedule_id || '').trim();
+  if (scheduleId && /^\d+$/.test(scheduleId)) {
+    return `${scheduleId}-1`;
+  }
+  const scheduleName = String(user.access_level || user.schedule_name || '').trim();
+  if (scheduleName && scheduleName.toLowerCase() === 'no access') {
+    return '1002-1';
+  }
+  return '1001-1';
+}
+
+function isUserPaused(userId){
+  return !!(userId && PAUSED_USERS && PAUSED_USERS[userId]);
+}
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -1550,6 +1603,7 @@ function renderUsers(devs, registryUsers, kpis){
     dedupedByName.push(entry);
   });
 
+  const listById = new Map(list.map(user => [String(user.id || ''), user]));
   const rows = dedupedByName.map(u => {
     const scheduleRaw = u.access_schedule
       || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
@@ -1584,8 +1638,13 @@ function renderUsers(devs, registryUsers, kpis){
     } else if (/^HA\d{3}$/.test(u.id)) {
       const safeId = escapeHtml(u.id);
       const safeEventFilter = escapeHtml(eventFilter || u.id);
+      const paused = isUserPaused(u.id);
       actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
          <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+         <button class="btn btn-sm btn-outline-warning me-1" data-toggle-access="${safeId}">
+           <i class="bi ${paused ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
+           ${paused ? 'Resume' : 'Pause'}
+         </button>
          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
     } else {
       actions = '';
@@ -1632,6 +1691,33 @@ function renderUsers(devs, registryUsers, kpis){
       ev.preventDefault();
       const uid = link.dataset.userEvents || '';
       openInApp('event-history', uid ? { user: uid } : {});
+    });
+  });
+
+  tableBody.querySelectorAll('button[data-toggle-access]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.toggleAccess || '';
+      const user = listById.get(id);
+      if (!id || !user) return;
+      const name = user.name || id;
+      const wasPaused = isUserPaused(id);
+      const nextRelay = wasPaused ? (PAUSED_USERS[id] || scheduleRelayFromUser(user)) : PAUSE_SCHEDULE_RELAY;
+      const payload = [{ Name: name, UserID: id, ScheduleRelay: nextRelay }];
+      try {
+        btn.setAttribute('disabled', 'disabled');
+        await updateUserSchedule(payload);
+        if (wasPaused) {
+          delete PAUSED_USERS[id];
+        } else {
+          PAUSED_USERS[id] = scheduleRelayFromUser(user);
+        }
+        savePausedUsers(PAUSED_USERS);
+        refresh();
+      } catch (err) {
+        alert(`Access update failed: ${escapeHtml(err.message || err)}`);
+      } finally {
+        btn.removeAttribute('disabled');
+      }
     });
   });
 
