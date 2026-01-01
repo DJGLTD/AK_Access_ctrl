@@ -125,6 +125,8 @@ def categorize_event(event: Optional[Dict[str, Any]], device: Optional[Dict[str,
                 return "call"
             if normalized == "face":
                 return "access"
+            if normalized in {"private pin", "privatepin", "pin", "passcode"}:
+                return "access"
 
     combined = _combined_event_text(event, device)
 

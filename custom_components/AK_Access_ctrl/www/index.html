@@ -967,6 +967,9 @@ function categorizeEvent(event, device) {
   if (normalizedType === 'face') {
     return 'access';
   }
+  if (['private pin','privatepin','pin','passcode'].includes(normalizedType)) {
+    return 'access';
+  }
   const typeKeys = [
     'EventType','Type','EventCategory','Category','LogType','LogTypeName','CallType','SubType',
     'Event','Result','action','Message','Description','Detail',
@@ -1033,11 +1036,44 @@ const EVENT_DETAIL_KEYS = {
   ],
   access: [
     'AccessType','AccessMode','Method','OpenType','AccessResult','AccessStatus','OpenResult','CredentialType','Credential',
-    'CardNumber','CardNo','Pin','PIN','Passcode','Password','UserName','User','UserID','Name',
+    'CardNumber','CardNo','Pin','PIN','Passcode','Password','UserName','User','UserID','Name','Type',
   ],
   system: ['Event','Result','status_label','Description','Detail','Message'],
   default: ['Event','Result','status_label','action','Description','Detail','Message'],
 };
+
+function normalizeEventTypeLabel(value){
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return text ? text : '';
+}
+
+function getEventTypeLabel(event){
+  if (!event || typeof event !== 'object') return '';
+  return (
+    normalizeEventTypeLabel(event.Type)
+    || normalizeEventTypeLabel(event.type)
+  );
+}
+
+function normalizeStatusLabel(value){
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return text ? text.toLowerCase() : '';
+}
+
+function classifyEvent(event, fallbackText){
+  const statusValue = normalizeStatusLabel(event?.Status ?? event?.status ?? event?.StatusCode ?? event?.status_code);
+  if (statusValue === '0' || statusValue === 'succ' || statusValue === 'success' || statusValue === 'ok') return 'ok';
+  if (statusValue === '1' || statusValue === 'failed' || statusValue === 'fail' || statusValue === 'denied') return 'bad';
+  const s = String(fallbackText || '').toLowerCase();
+  if (s.includes('denied') || s.includes('failed')) return 'bad';
+  if (s.includes('granted') || s.includes('approved') || s.includes('access ok') || s.includes('success')) return 'ok';
+  if (s.includes('came online') || s.includes('sync succeeded') || s.includes('user created')) return 'ok';
+  if (s.includes('went offline')) return 'bad';
+  if (s.includes('reboot') || s.includes('integrity check passed')) return 'dim';
+  return 'dim';
+}
 
 function pickFirstEventText(event, keys){
   if (!event || typeof event !== 'object') return '';
@@ -1056,18 +1092,20 @@ function describeEventForDisplay(event){
   const normalizedCategory = category || 'system';
   const label = EVENT_CATEGORY_LABELS[normalizedCategory] || normalizedCategory.charAt(0).toUpperCase() + normalizedCategory.slice(1);
   const device = pickFirstEventText(event, EVENT_DEVICE_KEYS);
+  const typeLabel = getEventTypeLabel(event);
   if (normalizedCategory === 'call') {
     const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
+    const callDetail = typeLabel || caller;
     const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';
     return {
       category: normalizedCategory,
-      title: [label, caller].join(' - '),
-      highlight: fallbackMessage || caller || label,
+      title: [label, callDetail].join(' - '),
+      highlight: fallbackMessage || typeLabel || caller || label,
     };
   }
   const categoryDetailKeys = EVENT_DETAIL_KEYS[normalizedCategory] || [];
   const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'event';
-  const detail = pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
+  const detail = typeLabel || pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
   const parts = [label];
   if (device) parts.push(device);
   if (detail) parts.push(detail);
@@ -1084,16 +1122,6 @@ const EVENT_EMPTY_MESSAGES = {
   access: 'No access events',
   call: 'No call events',
 };
-
-function classifyEvent(txt){
-  const s = String(txt || '').toLowerCase();
-  if (s.includes('denied') || s.includes('failed')) return 'bad';
-  if (s.includes('granted') || s.includes('approved') || s.includes('access ok') || s.includes('success')) return 'ok';
-  if (s.includes('came online') || s.includes('sync succeeded') || s.includes('user created')) return 'ok';
-  if (s.includes('went offline')) return 'bad';
-  if (s.includes('reboot') || s.includes('integrity check passed')) return 'dim';
-  return 'dim';
-}
 function formatWhen(ts){
   if (!ts) return '—';
   let d = ts instanceof Date ? ts : new Date(ts);
@@ -1116,7 +1144,7 @@ function applyEventFilter(){
   const html = list.map(e => {
     const when = formatWhen(e.timestamp || e.Time || '');
     const info = describeEventForDisplay(e);
-    const cls  = classifyEvent(info.highlight);
+    const cls  = classifyEvent(e, info.highlight);
     return `<li class="event-item" data-category="${info.category}">
       <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
       <div class="event-time">${when}</div>

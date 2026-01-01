@@ -533,11 +533,23 @@ function getEventStatusText(evt){
   return evt.Result || evt.Event || evt.status_label || evt.status || evt.action || evt.Message || evt.Description || '';
 }
 
+function getEventTypeLabel(evt){
+  if (!evt || typeof evt !== 'object') return '';
+  const value = evt.Type ?? evt.type;
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return text ? text : '';
+}
+
 function getEventTitle(evt){
   const category = String(evt?._category || '').toLowerCase();
+  const typeLabel = getEventTypeLabel(evt);
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
-    return `Call - ${caller}`;
+    return `Call - ${typeLabel || caller}`;
+  }
+  if (category === 'access' && typeLabel) {
+    return `Access - ${typeLabel}`;
   }
   return getEventStatusText(evt) || 'Event';
 }
@@ -554,6 +566,14 @@ function getEventUserLabel(evt){
 }
 
 function classifyEvent(evt){
+  const statusValue = (() => {
+    const raw = evt?.Status ?? evt?.status ?? evt?.StatusCode ?? evt?.status_code;
+    if (raw === null || raw === undefined) return '';
+    const text = String(raw).trim().toLowerCase();
+    return text;
+  })();
+  if (statusValue === '0' || statusValue === 'succ' || statusValue === 'success' || statusValue === 'ok') return 'ok';
+  if (statusValue === '1' || statusValue === 'failed' || statusValue === 'fail' || statusValue === 'denied') return 'bad';
   const statusPieces = [
     getEventStatusText(evt),
     evt?.status_label,
