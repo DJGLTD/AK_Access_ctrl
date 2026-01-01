@@ -1944,9 +1944,7 @@ class AkuvoxAPI:
         for original in items or []:
             if not isinstance(original, dict):
                 continue
-            payload_source = dict(original)
-            payload_source.pop("ID", None)
-            prepared.append(payload_source)
+            prepared.append(dict(original))
 
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
