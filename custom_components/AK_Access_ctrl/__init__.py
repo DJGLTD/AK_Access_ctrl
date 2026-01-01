@@ -2647,18 +2647,20 @@ class SyncManager:
             return
 
         raw_profiles = users_store.all()
-        user_phone_raw: set[str] = set()
-        user_phone_norm: set[str] = set()
+        deleted_profiles: list[tuple[str, str, str]] = []
         for profile in (raw_profiles or {}).values():
             if not isinstance(profile, dict):
                 continue
-            phone = str(profile.get("phone") or "").strip()
-            if not phone:
+            status = str(profile.get("status") or "").strip().lower()
+            if status != "deleted":
                 continue
-            user_phone_raw.add(phone)
+            name = str(profile.get("name") or "").strip()
+            phone = str(profile.get("phone") or "").strip()
             normalized = self._normalize_phone(phone)
-            if normalized:
-                user_phone_norm.add(normalized)
+            deleted_profiles.append((name, phone, normalized))
+
+        if not deleted_profiles:
+            return
 
         for _, coord, api, _ in self._devices():
             try:
@@ -2667,15 +2669,33 @@ class SyncManager:
                 continue
 
             contacts = self._extract_contact_items(response)
+            delete_items: list[dict[str, Any]] = []
+            seen_names: set[str] = set()
             for contact in contacts:
-                phone = str(contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or "").strip()
-                if not phone:
+                contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
+                if not contact_name:
                     continue
-                normalized = self._normalize_phone(phone)
-                if phone in user_phone_raw or (normalized and normalized in user_phone_norm):
-                    continue
+                contact_phone = str(
+                    contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
+                ).strip()
+                contact_normalized = self._normalize_phone(contact_phone)
+                for deleted_name, deleted_phone, deleted_normalized in deleted_profiles:
+                    match = False
+                    if deleted_name and contact_name == deleted_name:
+                        match = True
+                    elif deleted_phone and contact_phone == deleted_phone:
+                        match = True
+                    elif deleted_normalized and contact_normalized and deleted_normalized == contact_normalized:
+                        match = True
+
+                    if match:
+                        if contact_name not in seen_names:
+                            delete_items.append({"Name": contact_name})
+                            seen_names.add(contact_name)
+                        break
+            if delete_items:
                 try:
-                    await api.contact_delete([{"Phone": phone}])
+                    await api.contact_delete(delete_items)
                 except Exception:
                     continue
             try:
@@ -3573,14 +3593,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         root = hass.data.get(DOMAIN, {})
         users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
         phone_to_remove: Optional[str] = None
+        name_to_remove: Optional[str] = None
         if users_store:
             try:
                 profile = users_store.get(lookup_key) or {}
                 raw_phone = str(profile.get("phone") or "").strip()
                 if raw_phone:
                     phone_to_remove = raw_phone
+                raw_name = str(profile.get("name") or "").strip()
+                if raw_name:
+                    name_to_remove = raw_name
             except Exception:
                 phone_to_remove = None
+                name_to_remove = None
         if users_store:
             try:
                 await users_store.upsert_profile(
@@ -3598,9 +3623,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if manager:
             for entry_id, coord, api, _ in manager._devices():
                 try:
-                    if phone_to_remove:
+                    if phone_to_remove or name_to_remove:
                         try:
-                            await api.contact_delete([{"Phone": phone_to_remove}])
+                            response = await api.contact_get()
+                            contacts = manager._extract_contact_items(response)
+                            delete_items: list[dict[str, Any]] = []
+                            seen_names: set[str] = set()
+                            for contact in contacts:
+                                contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
+                                if not contact_name:
+                                    continue
+                                contact_phone = str(
+                                    contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
+                                ).strip()
+                                if name_to_remove and contact_name == name_to_remove:
+                                    if contact_name not in seen_names:
+                                        delete_items.append({"Name": contact_name})
+                                        seen_names.add(contact_name)
+                                    continue
+                                if phone_to_remove and contact_phone == phone_to_remove:
+                                    if contact_name not in seen_names:
+                                        delete_items.append({"Name": contact_name})
+                                        seen_names.add(contact_name)
+                            if delete_items:
+                                await api.contact_delete(delete_items)
                         except Exception:
                             pass
                     id_records = await _lookup_device_user_ids_by_ha_key(api, lookup_key)
