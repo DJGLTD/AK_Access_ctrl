@@ -513,27 +513,18 @@ class AkuvoxAPI:
         Map our schedule fields to what the device expects:
         - "24/7 Access" / variants -> ScheduleID=1001
         - "No Access" / variants    -> ScheduleID=1002
-        - Anything else by explicit name -> Schedule=<name>
-        Preserve Schedule lists when provided so we can mirror the native payloads.
 
         NOTE: We pass ScheduleRelay through untouched (except light normalization below).
         """
 
         out = dict(d)
 
-        schedule_list: Optional[List[str]] = None
         schedule_name: Optional[str] = None
 
         def _consume_schedule_value(value: Any) -> None:
-            nonlocal schedule_list, schedule_name
+            nonlocal schedule_name
             if isinstance(value, (list, tuple, set)):
-                cleaned: List[str] = []
-                for entry in value:
-                    text = str(entry or "").strip()
-                    if text:
-                        cleaned.append(text)
-                if cleaned:
-                    schedule_list = cleaned
+                return
             elif value not in (None, ""):
                 text = str(value).strip()
                 if text:
@@ -552,27 +543,14 @@ class AkuvoxAPI:
                 out["ScheduleID"] = "1002"
             else:
                 out["ScheduleID"] = explicit_id
-            if schedule_list is None and out["ScheduleID"].isdigit():
-                schedule_list = [out["ScheduleID"]]
         elif schedule_name:
             low = schedule_name.lower()
             if low in ("24/7 access", "24/7", "24x7", "always"):
                 out["ScheduleID"] = "1001"
-                if schedule_list is None:
-                    schedule_list = ["1001"]
             elif low in ("no access", "never"):
                 out["ScheduleID"] = "1002"
-                if schedule_list is None:
-                    schedule_list = ["1002"]
             elif schedule_name.isdigit():
                 out["ScheduleID"] = schedule_name
-                if schedule_list is None:
-                    schedule_list = [schedule_name]
-            else:
-                out["Schedule"] = schedule_name  # custom schedule by name
-
-        if schedule_list is not None:
-            out["Schedule"] = schedule_list
 
         return out
 
@@ -730,7 +708,6 @@ class AkuvoxAPI:
         items: List[Dict[str, Any]],
         *,
         allow_face_url: bool = False,
-        drop_schedule: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
@@ -746,7 +723,6 @@ class AkuvoxAPI:
             "C4EventNo",
             "AuthMode",
             "FaceRegister",
-            "FaceRegisterStatus",
             "KeyHolder",
             "SourceType",
         }
@@ -754,20 +730,17 @@ class AkuvoxAPI:
         norm: List[Dict[str, Any]] = []
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
-
-            if drop_schedule:
-                # Some Akuvox firmwares reject user.add payloads that include
-                # the free-text Schedule list (retcode -100 error param).
-                schedule_list = it2.get("Schedule")
-                if "ScheduleID" not in it2 and isinstance(schedule_list, (list, tuple, set)):
-                    for entry in schedule_list:
-                        text = str(entry or "").strip()
-                        if text.isdigit():
-                            it2["ScheduleID"] = text
-                            break
-                it2.pop("Schedule", None)
+            # Some Akuvox firmwares reject user.add payloads that include
+            # the free-text Schedule list (retcode -100 error param).
+            schedule_list = it2.get("Schedule")
+            if "ScheduleID" not in it2 and isinstance(schedule_list, (list, tuple, set)):
+                for entry in schedule_list:
+                    text = str(entry or "").strip()
+                    if text.isdigit():
+                        it2["ScheduleID"] = text
+                        break
+            it2.pop("Schedule", None)
             if not allow_face_url:
-                it2.pop("Schedule", None)
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
             else:
@@ -808,10 +781,6 @@ class AkuvoxAPI:
                         d[k] = "1" if v else "0"
                     else:
                         d[k] = "1" if v else "0"
-                    continue
-                if k == "Schedule" and isinstance(v, (list, tuple, set)):
-                    cleaned = [str(entry or "").strip() for entry in v if str(entry or "").strip()]
-                    d[k] = cleaned
                     continue
                 if k in (
                     "ID",
@@ -1688,15 +1657,6 @@ class AkuvoxAPI:
             schedule_id = sched_fields.get("ScheduleID")
             if schedule_id not in (None, ""):
                 base["ScheduleID"] = str(schedule_id)
-            schedule_list = sched_fields.get("Schedule")
-            if isinstance(schedule_list, (list, tuple, set)):
-                cleaned_schedule = [
-                    str(entry).strip()
-                    for entry in schedule_list
-                    if str(entry or "").strip().isdigit()
-                ]
-                if cleaned_schedule:
-                    base["Schedule"] = cleaned_schedule
         # NOTE: Do not include free-text 'Schedule' in user.add payloads.
         # Some Akuvox firmwares reject this with retcode -100 (error param).
         # Use ScheduleRelay only on user.add; additional scheduling can be
@@ -1731,7 +1691,6 @@ class AkuvoxAPI:
             "PriorityCall": ("priority_call",),
             "AuthMode": ("auth_mode",),
             "C4EventNo": ("c4_event_no",),
-            "FaceRegisterStatus": ("face_register_status",),
         }
 
         for target, aliases in optional_numeric.items():
@@ -1898,15 +1857,10 @@ class AkuvoxAPI:
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
             allow_face_url=True,
-            drop_schedule=False,
         )
 
         if not normalized_items:
             return {}
-
-        for item in normalized_items:
-            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
-                item["Schedule-Relay"] = item.pop("ScheduleRelay")
 
         try:
             result = await self._api_user("add", normalized_items)
@@ -1966,15 +1920,10 @@ class AkuvoxAPI:
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
             allow_face_url=True,
-            drop_schedule=False,
         )
 
         if not normalized_items:
             return {}
-
-        for item in normalized_items:
-            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
-                item["Schedule-Relay"] = item.pop("ScheduleRelay")
 
         try:
             result = await self._api_user("add", normalized_items)
@@ -2002,15 +1951,10 @@ class AkuvoxAPI:
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
             allow_face_url=True,
-            drop_schedule=False,
         )
 
         if not normalized_items:
             return {}
-
-        for item in normalized_items:
-            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
-                item["Schedule-Relay"] = item.pop("ScheduleRelay")
 
         try:
             result = await self._api_user("set", normalized_items)

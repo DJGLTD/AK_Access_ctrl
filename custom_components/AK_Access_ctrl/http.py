@@ -388,7 +388,6 @@ def _build_face_upload_payload(
         payload.pop(key, None)
     payload.pop("faceInfo", None)
     payload["FaceRegister"] = 1
-    payload["FaceRegisterStatus"] = "0"
     payload.setdefault("Type", "0")
 
     return payload
@@ -1674,9 +1673,6 @@ _FACE_FLAG_KEYS = (
     "has_face",
     "hasFace",
     "HasFace",
-    "FaceRegisterStatus",
-    "faceRegisterStatus",
-    "face_register_status",
     "FaceRegister",
     "faceRegister",
     "face_register",

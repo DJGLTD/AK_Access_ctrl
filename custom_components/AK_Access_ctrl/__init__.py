@@ -439,23 +439,6 @@ _FACE_REGISTER_KEYS = (
 )
 
 
-_FACE_STATUS_KEYS = (
-    "FaceRegisterStatus",
-    "face_register_status",
-)
-
-
-def _face_status_from_record(record: Dict[str, Any]) -> Optional[bool]:
-    if not isinstance(record, dict):
-        return None
-    for key in _FACE_STATUS_KEYS:
-        if key in record:
-            flag = _normalize_boolish(record.get(key))
-            if flag is not None:
-                return flag
-    return None
-
-
 def _ensure_face_payload_fields(
     payload: Dict[str, Any],
     *,
@@ -546,26 +529,6 @@ def _prepare_user_add_payload(
         ha_key=str(cleaned.get("UserID") or canonical_key or ""),
         sources=source_tuple,
     )
-
-    face_status: Optional[bool] = None
-    for source in source_tuple:
-        candidate = _face_status_from_record(source or {})
-        if candidate is not None:
-            face_status = candidate
-            break
-    if face_status is None:
-        for source in source_tuple:
-            candidate = _face_flag_from_record(source or {})
-            if candidate is not None:
-                face_status = candidate
-                break
-    if face_status is None:
-        face_status = False
-
-    cleaned["FaceRegisterStatus"] = "1" if face_status else "0"
-
-    if cleaned.get("ScheduleRelay") and "Schedule-Relay" not in cleaned:
-        cleaned["Schedule-Relay"] = cleaned["ScheduleRelay"]
 
     cleaned.setdefault("PriorityCall", "0")
     cleaned.setdefault("DialAccount", "0")
@@ -796,37 +759,6 @@ def _desired_device_user_payload(
                     return text
         return "Default"
 
-    def _schedule_list_from_local() -> List[str]:
-        schedule_list: List[str] = []
-
-        def _append_token(value: str) -> None:
-            token = value.strip()
-            if token.endswith(";"):
-                token = token.rstrip(";")
-            if token and token not in schedule_list:
-                schedule_list.append(token)
-
-        local_schedule = local.get("Schedule")
-        if isinstance(local_schedule, (list, tuple, set)):
-            for entry in local_schedule:
-                text = _string_or_default(entry, default="")
-                if text:
-                    _append_token(text)
-        elif local_schedule not in (None, ""):
-            text = _string_or_default(local_schedule, default="")
-            if text:
-                _append_token(text)
-
-        local_schedule_id = _string_or_default(local.get("ScheduleID"), default="")
-        if local_schedule_id:
-            cleaned_id = local_schedule_id.rstrip(";") or local_schedule_id
-            if not schedule_list:
-                schedule_list.append(cleaned_id)
-            elif cleaned_id not in schedule_list:
-                schedule_list.insert(0, cleaned_id)
-
-        return schedule_list
-
     def _normalise_license_plate() -> List[Dict[str, Any]]:
         source = profile.get("license_plate")
         if not isinstance(source, (list, tuple)):
@@ -899,30 +831,6 @@ def _desired_device_user_payload(
         default="0",
     )
 
-    schedule_list = _schedule_list_from_local()
-    if not schedule_list:
-        if schedule_id:
-            schedule_list = [schedule_id]
-        else:
-            schedule_list = ["1001"]
-    elif schedule_id and schedule_id not in schedule_list:
-        schedule_list.insert(0, schedule_id)
-
-    schedule_value = schedule_id or "1001"
-    fallback_schedule: Optional[str] = None
-    for token in schedule_list:
-        candidate = str(token or "").strip().rstrip(";")
-        if not candidate:
-            continue
-        if candidate.isdigit():
-            schedule_value = candidate
-            break
-        if fallback_schedule is None:
-            fallback_schedule = candidate
-    else:
-        if fallback_schedule:
-            schedule_value = fallback_schedule
-
     web_relay = _string_or_default(profile.get("web_relay"), local.get("WebRelay"), default="0")
     priority_call = _string_or_default(profile.get("priority_call"), local.get("PriorityCall"), default="0")
     dial_account = _string_or_default(profile.get("dial_account"), local.get("DialAccount"), default="0")
@@ -937,7 +845,6 @@ def _desired_device_user_payload(
         "DoorNum": door_num,
         "LiftFloorNum": lift_floor,
         "ScheduleID": schedule_id,
-        "Schedule": schedule_value,
         "ScheduleRelay": schedule_relay,
         "WebRelay": web_relay,
         "Group": group_value,
@@ -950,9 +857,6 @@ def _desired_device_user_payload(
         "BLEAuthCode": ble_auth,
         "Type": "0",
     }
-
-    if schedule_relay:
-        desired["Schedule-Relay"] = schedule_relay
 
     device_id = _string_or_default(profile.get("device_id"), local.get("ID"), default="")
     if device_id:
@@ -1021,26 +925,6 @@ def _desired_device_user_payload(
                 desired["FaceRegister"] = 1
         else:
             desired["FaceRegister"] = "0"
-
-    register_flag = _normalize_boolish(desired.get("FaceRegister"))
-    if register_flag:
-        status_flag: Optional[bool] = None
-        for source in (profile, local):
-            candidate = _face_status_from_record(source or {})
-            if candidate is not None:
-                status_flag = candidate
-                break
-        if status_flag is None:
-            for source in (local, profile):
-                candidate = _face_flag_from_record(source or {})
-                if candidate is not None:
-                    status_flag = candidate
-                    break
-        if status_flag is None:
-            status_flag = False
-        desired["FaceRegisterStatus"] = "1" if status_flag else "0"
-    else:
-        desired["FaceRegisterStatus"] = "0"
 
     return desired
 
