@@ -3046,8 +3046,13 @@ class SyncManager:
             ha_groups = list(prof.get("groups") or ["Default"])
             should_have_access = any(g in device_groups for g in ha_groups)
             local = _find_local_by_key(ha_key)
+            needs_group_move = False
             if local and not _is_ha_group_record(local):
-                continue
+                if should_have_access and not add_missing_only:
+                    needs_group_move = True
+                    local = {**local, "Group": HA_CONTACT_GROUP_NAME}
+                else:
+                    continue
 
             desired_base = _desired_device_user_payload(
                 self.hass,
@@ -3071,7 +3076,7 @@ class SyncManager:
                     replace = full or str(prof.get("status") or "").lower() == "pending" or any(
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
-                    if replace:
+                    if replace or needs_group_move:
                         update_batch.append((ha_key, desired_base, local))
             else:
                 if local and not add_missing_only:
