@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Callable, Set
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set
 
 from homeassistant.const import Platform
 
@@ -168,6 +168,57 @@ def _key_of_user(u: Dict[str, Any]) -> str:
         or u.get("Name")
         or ""
     )
+
+
+async def _store_device_user_ids(storage: Any, users: Iterable[Dict[str, Any]]) -> None:
+    if not storage:
+        return
+    data = getattr(storage, "data", None)
+    if not isinstance(data, dict):
+        return
+    mapping = data.get("user_ids")
+    if not isinstance(mapping, dict):
+        mapping = {}
+        data["user_ids"] = mapping
+    changed = False
+    for record in users or []:
+        if not isinstance(record, dict):
+            continue
+        ha_ref = record.get("UserID") or record.get("UserId") or record.get("Name")
+        if ha_ref in (None, ""):
+            continue
+        canonical = normalize_ha_id(ha_ref) or str(ha_ref).strip()
+        if not canonical:
+            continue
+        device_id = str(record.get("ID") or "").strip()
+        if not device_id:
+            continue
+        if mapping.get(canonical) != device_id:
+            mapping[canonical] = device_id
+            changed = True
+    if changed:
+        try:
+            await storage.async_save()
+        except Exception:
+            pass
+
+
+def _device_user_id(storage: Any, ha_key: str) -> Optional[str]:
+    if not storage:
+        return None
+    data = getattr(storage, "data", None)
+    if not isinstance(data, dict):
+        return None
+    mapping = data.get("user_ids")
+    if not isinstance(mapping, dict):
+        return None
+    canonical = normalize_ha_id(ha_key) or str(ha_key or "").strip()
+    if not canonical:
+        return None
+    device_id = mapping.get(canonical)
+    if device_id in (None, ""):
+        return None
+    return str(device_id).strip()
 
 
 def _name_matches_user_id(name: Any, user_id: Any) -> bool:
@@ -736,6 +787,14 @@ def _desired_device_user_payload(
 
     device_type = str(device_type_raw or "").strip().lower()
     is_keypad = device_type == "keypad"
+    root = hass.data.get(DOMAIN, {}) if hass else {}
+    settings_store = root.get("settings_store")
+    anpr_enabled = False
+    if settings_store and hasattr(settings_store, "get_credential_prompts"):
+        try:
+            anpr_enabled = bool(settings_store.get_credential_prompts().get("anpr"))
+        except Exception:
+            anpr_enabled = False
 
     def _string_or_default(*values: Any, default: str) -> str:
         for value in values:
@@ -760,6 +819,8 @@ def _desired_device_user_payload(
         return "Default"
 
     def _normalise_license_plate() -> List[Dict[str, Any]]:
+        if not anpr_enabled:
+            return []
         source = profile.get("license_plate")
         if not isinstance(source, (list, tuple)):
             source = profile.get("LicensePlate")
@@ -798,13 +859,8 @@ def _desired_device_user_payload(
                     seen.add(lowered)
                     cleaned["Plate"] = normalized
                     result.append(cleaned)
-                elif cleaned:
-                    result.append(cleaned)
-
-                if len(result) >= 5:
-                    break
-        while len(result) < 5:
-            result.append({})
+                    if len(result) >= 5:
+                        break
         if len(result) > 5:
             result = result[:5]
         return result
@@ -2783,8 +2839,15 @@ class SyncManager:
         desired: Dict[str, Any],
         ha_key: str,
         existing: Optional[Dict[str, Any]] = None,
+        *,
+        storage: Any = None,
     ):
         """Update the device record for ha_key in-place via user.set."""
+
+        if "ID" not in desired and (not existing or not existing.get("ID")):
+            device_id = _device_user_id(storage, ha_key)
+            if device_id:
+                desired = {**desired, "ID": device_id}
 
         payload = _prepare_user_set_payload(ha_key, desired, existing)
 
@@ -2908,6 +2971,7 @@ class SyncManager:
             coord.users = local_users
         except Exception:
             pass
+        await _store_device_user_ids(getattr(coord, "storage", None), local_users)
 
         try:
             await api.ensure_group_exists(HA_CONTACT_GROUP_NAME)
@@ -3068,12 +3132,24 @@ class SyncManager:
                 await api.user_add_missing(prepared_add_batch)
             except Exception:
                 pass
+            try:
+                local_users = await api.user_list()
+                coord.users = local_users
+                await _store_device_user_ids(getattr(coord, "storage", None), local_users)
+            except Exception:
+                pass
 
         # 3) Update changed users (update in place)
         if not add_missing_only:
             for ha_key, desired, existing in update_batch:
                 try:
-                    await self._set_user_on_device(api, desired, ha_key, existing)
+                    await self._set_user_on_device(
+                        api,
+                        desired,
+                        ha_key,
+                        existing,
+                        storage=getattr(coord, "storage", None),
+                    )
                 except Exception:
                     pass
 
@@ -3138,6 +3214,7 @@ class SyncManager:
                 opts = opts or {}
                 dev_users = await api.user_list()
                 coord.users = dev_users or []
+                await _store_device_user_ids(getattr(coord, "storage", None), coord.users)
                 device_records: Dict[str, List[Dict[str, Any]]] = {}
                 for record in coord.users or []:
                     key = _key_of_user(record)
