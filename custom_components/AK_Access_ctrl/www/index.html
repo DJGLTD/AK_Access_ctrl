@@ -1397,7 +1397,7 @@ function renderUsers(devs, registryUsers, kpis){
       const relayValue = canonicalString(u.WebRelay || u.web_relay);
       const hasRelayAccess = !!relayValue && relayValue !== '0';
       const accessAllowed = accessEnabled && (hasRelayAccess || hasGroupAccess);
-      const last = u.LastAccess || u.last_access || '—';
+      const last = u.LastAccess || u.last_access || '';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
       const devicePin = extractPin(u);
@@ -1409,7 +1409,7 @@ function renderUsers(devs, registryUsers, kpis){
           groups: userGroups,
           access: accessAllowed ? 'Allowed' : 'Denied',
           isCloud,
-          last,
+          last: last || '—',
           pin: devicePin,
           presentOnDevice: true,
           fromRegistry: false,
@@ -1429,7 +1429,9 @@ function renderUsers(devs, registryUsers, kpis){
       if (!cur.groups || cur.groups.length === 0) {
         cur.groups = userGroups;
       }
-      cur.last = last || cur.last;
+      if (last) {
+        cur.last = last;
+      }
       if (cur.fromRegistry && cur._seenOn instanceof Set && entryId) {
         cur._seenOn.add(entryId);
       }
@@ -1526,7 +1528,7 @@ function renderUsers(devs, registryUsers, kpis){
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
       : !requiredIds.length || !needsSync;
-    const pendingDevices = needsSync
+    const pendingDevices = needsSync && !syncActive
       ? outOfSyncDevices.filter(dev => !dev.entryId || !seenIds.includes(dev.entryId))
       : [];
 
