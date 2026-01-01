@@ -732,6 +732,7 @@ let scheduleRefreshPromise = null;
 let scheduleRefreshTimer = null;
 let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
+let DEVICES = [];       // [{entry_id, name, users}, ...] from /ui/state
 let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
 let ANY_ALARM_CAPABLE = true;
@@ -844,6 +845,68 @@ function escapeHtml(value){
     '"': '&quot;',
     "'": '&#39;'
   }[ch] || ch));
+}
+
+function normalizedUserKey(value){
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function isRegistryUser(userId){
+  const key = normalizedUserKey(userId);
+  if (!key) return false;
+  return (REGISTRY || []).some((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const entryKey = normalizedUserKey(entry.id || entry.UserID || entry.UserId || entry.ID || '');
+    return entryKey === key;
+  });
+}
+
+function deviceUserIdFor(device, userId){
+  const target = normalizedUserKey(userId);
+  if (!target || !device || typeof device !== 'object') return '';
+  const records = Array.isArray(device.users)
+    ? device.users
+    : Array.isArray(device._users)
+    ? device._users
+    : [];
+  for (const record of records){
+    if (!record || typeof record !== 'object') continue;
+    const recordKey = normalizedUserKey(record.UserID || record.UserId || record.Name || record.ID || record.id || '');
+    if (recordKey && recordKey === target){
+      const deviceId = record.ID || record.Id || record.id || '';
+      return String(deviceId || '').trim();
+    }
+  }
+  return '';
+}
+
+function updateDeviceIdsDisplay(){
+  const row = document.getElementById('deviceIdsRow');
+  const list = document.getElementById('deviceIdsList');
+  if (!row || !list) return;
+  const userId = CURRENT && CURRENT.id ? String(CURRENT.id).trim() : '';
+  if (!userId || !isRegistryUser(userId)){
+    row.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  const devices = Array.isArray(DEVICES) ? DEVICES : [];
+  row.style.display = 'block';
+  if (!devices.length){
+    list.innerHTML = '<div class="muted">No devices available.</div>';
+    return;
+  }
+  list.innerHTML = devices.map((device) => {
+    const name = device && typeof device === 'object'
+      ? (device.name || device.entry_id || 'Device')
+      : 'Device';
+    const deviceId = deviceUserIdFor(device, userId);
+    return `
+      <div class="d-flex justify-content-between align-items-center border-bottom py-1">
+        <span>${escapeHtml(name)}</span>
+        <span class="text-monospace">${escapeHtml(deviceId || '—')}</span>
+      </div>`;
+  }).join('');
 }
 
 function normalizedScheduleKey(name){
@@ -1515,6 +1578,7 @@ async function load(){
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     applySchedulesUpdate(state?.schedules || {});
     REGISTRY = state.registry_users || [];
+    DEVICES = state.devices || [];
 
     // Load phones (notify services from HA mobile app)
     try {
@@ -1681,6 +1745,7 @@ function fillForm(){
       localHelp.innerHTML = `<span class="muted">ID reserve failed. You can still press <b>Save</b> to create a user, then return to upload a face.</span>`;
     }
   }
+  updateDeviceIdsDisplay();
   applyCredentialPrompts();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
@@ -2004,6 +2069,12 @@ function showPanel(which){
       <label class="form-label">User ID</label>
       <input id="user_id" class="form-control" readonly />
       <div class="form-text muted">ID is reserved locally so your selected photo can upload when you press <b>Save</b>.</div>
+    </div>
+
+    <div id="deviceIdsRow" class="mb-3" style="display:none;">
+      <label class="form-label">Device User IDs</label>
+      <div id="deviceIdsList" class="border rounded p-2 bg-dark-subtle"></div>
+      <div class="form-text muted">IDs shown are unique to each Akuvox device.</div>
     </div>
 
     <div class="mb-3"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
