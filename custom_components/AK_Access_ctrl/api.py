@@ -913,11 +913,13 @@ class AkuvoxAPI:
             rel_paths = ("/api/user/",)
         elif action == "add":
             rel_paths = (f"/api/user/{action}",)
-        else:
+        elif action == "set":
             rel_paths = (
-                f"/api/user/{action}",
-                f"/api/web/user/{action}",
+                "/api/user/",
+                f"/api/user/{action}/",
             )
+        else:
+            rel_paths = (f"/api/user/{action}",)
         return await self._post_api(payload, rel_paths=rel_paths)
 
 
@@ -1180,9 +1182,9 @@ class AkuvoxAPI:
         return []
 
     async def events_last(self) -> List[Dict[str, Any]]:
-        # GET door log; limited variations in practice but allow fallbacks
+        # GET door log; limited variations in practice
         try:
-            result = await self._get_api("/api/doorlog/get", "/api/doorlog/last")
+            result = await self._get_api("/api/doorlog/get/")
         except Exception:
             return []
 
