@@ -636,8 +636,15 @@ def _prepare_user_set_payload(
     if ha_key:
         payload["UserID"] = str(ha_key)
 
+    _ensure_face_payload_fields(
+        payload,
+        ha_key=str(payload.get("UserID") or ha_key or ""),
+        sources=(desired, existing),
+    )
+
     register_flag = _normalize_boolish(payload.get("FaceRegister"))
-    if not register_flag:
+    face_url = str(payload.get("FaceUrl") or "").strip()
+    if not register_flag and not face_url:
         payload["FaceRegister"] = "0"
         payload["FaceUrl"] = ""
 
