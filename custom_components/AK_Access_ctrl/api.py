@@ -717,9 +717,7 @@ class AkuvoxAPI:
         """
         numeric_fields = {
             "DialAccount",
-            "DoorNum",
             "LiftFloorNum",
-            "PriorityCall",
             "C4EventNo",
             "AuthMode",
             "FaceRegister",
@@ -740,6 +738,18 @@ class AkuvoxAPI:
                         it2["ScheduleID"] = text
                         break
             it2.pop("Schedule", None)
+            it2.pop("ScheduleID", None)
+            for key in (
+                "DoorNum",
+                "door_num",
+                "PriorityCall",
+                "priority_call",
+                "Type",
+                "type",
+                "Id",
+                "id",
+            ):
+                it2.pop(key, None)
             if not allow_face_url:
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
@@ -788,11 +798,8 @@ class AkuvoxAPI:
                     "Name",
                     "PrivatePIN",
                     "WebRelay",
-                    "ScheduleID",
                     "PhoneNum",
-                    "DoorNum",
                     "LiftFloorNum",
-                    "PriorityCall",
                     "DialAccount",
                     "C4EventNo",
                     "AuthMode",
@@ -861,12 +868,6 @@ class AkuvoxAPI:
                 current = d.get("FaceRegister")
                 if self._coerce_int(current) != 1:
                     d["FaceRegister"] = 1
-
-            type_value = d.get("Type")
-            if type_value in (None, ""):
-                d["Type"] = "0"
-            else:
-                d["Type"] = str(type_value)
             norm.append(d)
         return norm
 
@@ -1632,7 +1633,6 @@ class AkuvoxAPI:
 
         base: Dict[str, Any] = {
             "Name": name or (user_id or "HA User"),
-            "Type": str(item.get("Type") or item.get("type") or "0"),
         }
 
         if group and group.strip().lower() != "default":
@@ -1641,22 +1641,6 @@ class AkuvoxAPI:
         if user_id:
             base["UserID"] = user_id
 
-        # Only pass through schedule metadata when the caller explicitly
-        # supplied it. X912 firmwares reject cosmetic defaults such as
-        # ScheduleID=1001 when not required.
-        schedule_keys = (
-            "ScheduleID",
-            "schedule_id",
-            "Schedule",
-            "schedule",
-            "schedule_name",
-        )
-        include_schedule = any(key in item for key in schedule_keys)
-        if include_schedule:
-            sched_fields = self._map_schedule_fields(item)
-            schedule_id = sched_fields.get("ScheduleID")
-            if schedule_id not in (None, ""):
-                base["ScheduleID"] = str(schedule_id)
         # NOTE: Do not include free-text 'Schedule' in user.add payloads.
         # Some Akuvox firmwares reject this with retcode -100 (error param).
         # Use ScheduleRelay only on user.add; additional scheduling can be
@@ -1686,9 +1670,7 @@ class AkuvoxAPI:
 
         optional_numeric: Dict[str, Tuple[str, ...]] = {
             "DialAccount": ("dial_account",),
-            "DoorNum": ("door_num",),
             "LiftFloorNum": ("lift_floor_num", "lift_floor"),
-            "PriorityCall": ("priority_call",),
             "AuthMode": ("auth_mode",),
             "C4EventNo": ("c4_event_no",),
         }

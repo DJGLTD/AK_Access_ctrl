@@ -552,9 +552,6 @@ def _ensure_face_payload_fields(
         if key != "FaceRegister":
             payload.pop(key, None)
 
-    payload.setdefault("Type", "0")
-
-
 def _prepare_user_add_payload(
     ha_key: str,
     payload: Dict[str, Any],
@@ -572,7 +569,10 @@ def _prepare_user_add_payload(
     if canonical_key:
         cleaned.setdefault("UserID", canonical_key)
 
-    cleaned.pop("ID", None)
+    for key in ("ID", "Id", "id", "Schedule-Relay"):
+        cleaned.pop(key, None)
+    for key in ("DoorNum", "ScheduleID", "PriorityCall", "Type"):
+        cleaned.pop(key, None)
 
     source_tuple: Tuple[Optional[Dict[str, Any]], ...] = sources or (payload,)
 
@@ -582,7 +582,6 @@ def _prepare_user_add_payload(
         sources=source_tuple,
     )
 
-    cleaned.setdefault("PriorityCall", "0")
     cleaned.setdefault("DialAccount", "0")
     cleaned.setdefault("Group", HA_CONTACT_GROUP_NAME)
     cleaned.setdefault("AnalogSystem", "0")
@@ -636,6 +635,9 @@ def _prepare_user_set_payload(
 
     if ha_key:
         payload["UserID"] = str(ha_key)
+
+    for key in ("DoorNum", "ScheduleID", "PriorityCall", "Type", "Schedule-Relay", "Id", "id"):
+        payload.pop(key, None)
 
     _ensure_face_payload_fields(
         payload,
