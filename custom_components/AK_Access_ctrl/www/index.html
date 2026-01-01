@@ -477,6 +477,31 @@ function scheduleSnapshotFromUser(user){
   };
 }
 
+function pausedScheduleInfo(user){
+  const stored = user && PAUSED_USERS ? PAUSED_USERS[user.id] : null;
+  if (stored && typeof stored === 'object') {
+    const scheduleId = String(stored.schedule_id || '').trim();
+    const scheduleName = String(stored.schedule_name || '').trim();
+    if (scheduleId || scheduleName) {
+      return { schedule_id: scheduleId, schedule_name: scheduleName };
+    }
+  }
+  if (typeof stored === 'string' && stored.trim()) {
+    const match = stored.match(/^(\d+)/);
+    if (match) {
+      return { schedule_id: match[1], schedule_name: '' };
+    }
+  }
+  return null;
+}
+
+function pausedScheduleDisplay(user){
+  const info = pausedScheduleInfo(user);
+  if (!info) return '';
+  const display = formatScheduleDisplay(info.schedule_id, info.schedule_name);
+  return display || info.schedule_name || '';
+}
+
 function resumeScheduleFromUser(user){
   const stored = user && PAUSED_USERS ? PAUSED_USERS[user.id] : null;
   if (stored && typeof stored === 'object') {
@@ -1388,11 +1413,11 @@ function renderUsers(devs, registryUsers, kpis){
     const groups = normalizeGroupsList(r.groups || []);
     const statusHint = extractFaceStatus(r);
     const pin = extractPin(r);
-    by.set(key, {
-      id: key,
-      name: r.name || key,
-      groups,
-      access: 'Pending',
+      by.set(key, {
+        id: key,
+        name: r.name || key,
+        groups,
+        access: 'Pending',
       isCloud: false,
       last: r.last_access || '—',
       pin,
@@ -1415,7 +1440,8 @@ function renderUsers(devs, registryUsers, kpis){
         : (statusHint === 'active' ? true : computeFaceActive(r)),
       face_error_count: Number(r.face_error_count || 0),
       _seenOn: new Set(),
-      _denied: false
+      _denied: false,
+      _pinOnDevice: false
     });
   });
 
@@ -1454,7 +1480,8 @@ function renderUsers(devs, registryUsers, kpis){
           face_error_count: 0,
           schedule_name: u.ScheduleName || u.schedule_name || '',
           schedule_id: u.ScheduleId || u.schedule_id || '',
-          access_level: u.AccessLevel || u.access_level || ''
+          access_level: u.AccessLevel || u.access_level || '',
+          _pinOnDevice: !!devicePin
         });
         return;
       }
@@ -1482,6 +1509,7 @@ function renderUsers(devs, registryUsers, kpis){
         } else if (!cur.fromRegistry) {
           cur.pin = devicePin;
         }
+        cur._pinOnDevice = true;
       }
       const deviceScheduleName = u.ScheduleName || u.schedule_name || '';
       const deviceScheduleId = u.ScheduleId || u.schedule_id || '';
@@ -1521,7 +1549,11 @@ function renderUsers(devs, registryUsers, kpis){
 
   const list = Array.from(by.values()).map(item => {
     const baseScheduleName = item.access_level || item.schedule_name || '24/7 Access';
-    const scheduleDisplay = formatScheduleDisplay(item.schedule_id, baseScheduleName) || baseScheduleName;
+    const isPaused = isUserPaused(item.id);
+    const pausedDisplay = isPaused ? pausedScheduleDisplay(item) : '';
+    const scheduleDisplay = pausedDisplay
+      || formatScheduleDisplay(item.schedule_id, baseScheduleName)
+      || baseScheduleName;
     if (!item.fromRegistry) {
       return { ...item, access_schedule: scheduleDisplay };
     }
@@ -1538,7 +1570,7 @@ function renderUsers(devs, registryUsers, kpis){
     const expired = item.access_expired || accessState.expired;
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLower = String(baseScheduleName).toLowerCase();
-    const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
+    const { _seenOn, _denied, _deviceFaceActive, _pinOnDevice, ...rest } = item;
     const statusLower = String(rest.face_status || '').trim().toLowerCase();
     let faceStatusFinal = statusLower;
     let faceActiveFinal;
@@ -1558,7 +1590,9 @@ function renderUsers(devs, registryUsers, kpis){
       faceStatusFinal = faceActiveFinal ? 'active' : '';
     }
 
-    const userPending = String(item.status || '').toLowerCase() === 'pending';
+    const rawUserPending = String(item.status || '').toLowerCase() === 'pending';
+    const pinOnDevice = !!_pinOnDevice && item.presentOnDevice;
+    const userPending = rawUserPending && !pinOnDevice;
     const facePendingFinal = faceStatusFinal === 'pending';
     const hasFaceProfile = !!rest.face_url || faceActiveFinal;
     const needsSync = userPending || facePendingFinal;
@@ -1570,12 +1604,14 @@ function renderUsers(devs, registryUsers, kpis){
       : [];
 
     let accessText = 'Pending';
-    if (expired) {
+    if (String(item.status || '').toLowerCase() === 'deleted') {
+      accessText = 'Deleted';
+    } else if (isPaused) {
+      accessText = 'Paused';
+    } else if (expired) {
       accessText = 'Expired';
     } else if (item._denied && baseLower !== 'no access') {
       accessText = 'Denied';
-    } else if (String(item.status || '').toLowerCase() === 'deleted') {
-      accessText = 'Deleted';
     } else if (userPending || facePendingFinal) {
       accessText = 'Pending';
     } else if (pendingDevices.length) {
@@ -1658,6 +1694,7 @@ function renderUsers(devs, registryUsers, kpis){
     let accessBadge = '';
     if (accessStr === '---') accessBadge = '<span class="text-muted">---</span>';
     else if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
+    else if (accessLower === 'paused') accessBadge = badge('Paused', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
     else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
     else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
@@ -1665,7 +1702,9 @@ function renderUsers(devs, registryUsers, kpis){
     const faceStatusLower = String(u.face_status || '').toLowerCase();
     let faceBadge;
     const hasFaceProfile = !!u.face_url || u.face_active;
-    if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
+    if (accessLower === 'deleted') {
+      faceBadge = badge('Deleted', 'inactive');
+    } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Active', 'in_sync');
     } else if (faceStatusLower === 'pending') {
       faceBadge = hasFaceProfile ? badge('Pending', 'pending') : '<span class="text-muted">---</span>';
