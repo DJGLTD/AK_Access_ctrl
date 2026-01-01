@@ -2113,7 +2113,12 @@ class AkuvoxSettingsStore(Store):
 
 
 # ---------------------- Robust device user lookup + delete ---------------------- #
-async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List[Dict[str, str]]:
+async def _lookup_device_user_ids_by_ha_key(
+    api: AkuvoxAPI,
+    ha_key: str,
+    *,
+    allow_non_ha_group: bool = False,
+) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     target = str(ha_key or "").strip()
     if not target:
@@ -2127,7 +2132,7 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
 
     seen: set[Tuple[str, str, str]] = set()
     for u in dev_users or []:
-        if not _is_ha_group_record(u):
+        if not allow_non_ha_group and not _is_ha_group_record(u):
             continue
         dev_id = str(u.get("ID") or "")
         user_id = str(u.get("UserID") or u.get("UserId") or "")
@@ -3855,7 +3860,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                                 await api.contact_delete(delete_items)
                         except Exception:
                             pass
-                    id_records = await _lookup_device_user_ids_by_ha_key(api, lookup_key)
+                    id_records = await _lookup_device_user_ids_by_ha_key(
+                        api,
+                        lookup_key,
+                        allow_non_ha_group=True,
+                    )
                     if id_records:
                         for rec in id_records:
                             await _delete_user_every_way(api, rec)

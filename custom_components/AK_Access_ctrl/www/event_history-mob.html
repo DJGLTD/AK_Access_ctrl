@@ -542,6 +542,25 @@ function getEventTypeLabel(evt){
   return text ? text : '';
 }
 
+function getEventPinLabel(evt){
+  if (!evt || typeof evt !== 'object') return '';
+  const value = pickEventValue(evt, ['Pin','PIN','Passcode','Password','Credential','CardNo','CardNumber','digits']);
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return text ? text : '';
+}
+
+function hasLinkedUser(evt){
+  if (!evt || typeof evt !== 'object') return false;
+  const userValue = pickEventValue(evt, [
+    'UserID','user_id','userId',
+    'User','user',
+    'UserName','user_name','userName',
+    'Name','NameID'
+  ]);
+  return userValue !== null && userValue !== undefined && String(userValue).trim() !== '';
+}
+
 function getEventTitle(evt){
   const category = String(evt?._category || '').toLowerCase();
   const typeLabel = getEventTypeLabel(evt);
@@ -550,9 +569,15 @@ function getEventTitle(evt){
     return `Call - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
-    if (typeLabel.toLowerCase().includes('face')) {
+    const typeLower = typeLabel.toLowerCase();
+    if (typeLower.includes('face')) {
       const person = getEventUserLabel(evt);
       return person ? `Face Recognition - ${person}` : 'Face Recognition';
+    }
+    if (typeLower.includes('private pin') && !hasLinkedUser(evt)) {
+      const deviceName = resolveDeviceName(evt, evt?._device);
+      const pinLabel = getEventPinLabel(evt);
+      return `${deviceName} - ${pinLabel || 'Pin tried'}`;
     }
     return `Access - ${typeLabel}`;
   }
