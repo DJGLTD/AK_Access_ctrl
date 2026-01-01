@@ -46,6 +46,7 @@ from .const import (
     DEFAULT_ACCESS_HISTORY_LIMIT,
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
+    HA_CONTACT_GROUP_NAME,
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
@@ -119,6 +120,13 @@ def _remove_admin_dashboard(hass: HomeAssistant) -> None:
         frontend.async_remove_panel(hass, ADMIN_DASHBOARD_URL_PATH)
     except Exception:
         return
+
+
+def _is_ha_group_record(record: Mapping[str, Any]) -> bool:
+    if not isinstance(record, Mapping):
+        return False
+    group = str(record.get("Group") or record.get("group") or "").strip()
+    return group.lower() == HA_CONTACT_GROUP_NAME.lower()
 
 
 # ---------------------- Helpers ---------------------- #
@@ -561,7 +569,7 @@ def _prepare_user_add_payload(
 
     cleaned.setdefault("PriorityCall", "0")
     cleaned.setdefault("DialAccount", "0")
-    cleaned.setdefault("Group", "Default")
+    cleaned.setdefault("Group", HA_CONTACT_GROUP_NAME)
     cleaned.setdefault("AnalogSystem", "0")
     cleaned.setdefault("AnalogNumber", "")
     cleaned.setdefault("AnalogReplace", "")
@@ -823,11 +831,7 @@ def _desired_device_user_payload(
         name_value = local.get("Name") or ha_key
     name = str(name_value)
 
-    group_value = _first_group(
-        profile.get("groups"),
-        local.get("Groups"),
-        local.get("Group"),
-    )
+    group_value = HA_CONTACT_GROUP_NAME
 
     door_num = _string_or_default(
         profile.get("door_num"),
@@ -2092,6 +2096,8 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
 
     seen: set[Tuple[str, str, str]] = set()
     for u in dev_users or []:
+        if not _is_ha_group_record(u):
+            continue
         dev_id = str(u.get("ID") or "")
         user_id = str(u.get("UserID") or u.get("UserId") or "")
         name = str(u.get("Name") or "")
@@ -2107,7 +2113,14 @@ async def _lookup_device_user_ids_by_ha_key(api: AkuvoxAPI, ha_key: str) -> List
         if key_tuple in seen:
             continue
         seen.add(key_tuple)
-        out.append({"ID": dev_id, "UserID": user_id or user_id_alt, "Name": name})
+        out.append(
+            {
+                "ID": dev_id,
+                "UserID": user_id or user_id_alt,
+                "Name": name,
+                "Group": str(u.get("Group") or u.get("group") or ""),
+            }
+        )
 
     return out
 
@@ -2675,6 +2688,8 @@ class SyncManager:
                 contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
                 if not contact_name:
                     continue
+                if not _is_ha_group_record(contact):
+                    continue
                 contact_phone = str(
                     contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
                 ).strip()
@@ -2690,7 +2705,9 @@ class SyncManager:
 
                     if match:
                         if contact_name not in seen_names:
-                            delete_items.append({"Name": contact_name})
+                            delete_items.append(
+                                {"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME}
+                            )
                             seen_names.add(contact_name)
                         break
             if delete_items:
@@ -2887,6 +2904,8 @@ class SyncManager:
     async def _remove_missing_users(self, api: AkuvoxAPI, local_users: List[Dict[str, Any]], registry_keys_set: set):
         rogue_keys: List[str] = []
         for u in local_users or []:
+            if not _is_ha_group_record(u):
+                continue
             kid = _key_of_user(u)
             canonical_kid = normalize_ha_id(kid)
             if canonical_kid and canonical_kid not in registry_keys_set:
@@ -2933,6 +2952,11 @@ class SyncManager:
         except Exception:
             pass
 
+        try:
+            await api.ensure_group_exists(HA_CONTACT_GROUP_NAME)
+        except Exception:
+            pass
+
         if not opts.get("sync_groups"):
             opts["sync_groups"] = ["Default"]
 
@@ -2962,6 +2986,8 @@ class SyncManager:
         auto_delete_keys: Set[str] = set()
         if not add_missing_only:
             for record in local_users or []:
+                if not _is_ha_group_record(record):
+                    continue
                 name_value = record.get("Name")
                 user_id_value = (
                     record.get("UserID")
@@ -3020,6 +3046,8 @@ class SyncManager:
             ha_groups = list(prof.get("groups") or ["Default"])
             should_have_access = any(g in device_groups for g in ha_groups)
             local = _find_local_by_key(ha_key)
+            if local and not _is_ha_group_record(local):
+                continue
 
             desired_base = _desired_device_user_payload(
                 self.hass,
@@ -3633,17 +3661,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                                 contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
                                 if not contact_name:
                                     continue
+                                if not _is_ha_group_record(contact):
+                                    continue
                                 contact_phone = str(
                                     contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
                                 ).strip()
                                 if name_to_remove and contact_name == name_to_remove:
                                     if contact_name not in seen_names:
-                                        delete_items.append({"Name": contact_name})
+                                        delete_items.append(
+                                            {"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME}
+                                        )
                                         seen_names.add(contact_name)
                                     continue
                                 if phone_to_remove and contact_phone == phone_to_remove:
                                     if contact_name not in seen_names:
-                                        delete_items.append({"Name": contact_name})
+                                        delete_items.append(
+                                            {"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME}
+                                        )
                                         seen_names.add(contact_name)
                             if delete_items:
                                 await api.contact_delete(delete_items)
@@ -3653,16 +3687,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     if id_records:
                         for rec in id_records:
                             await _delete_user_every_way(api, rec)
-                    else:
-                        await _delete_user_every_way(
-                            api,
-                            {
-                                "ID": lookup_key,
-                                "UserID": lookup_key,
-                                "UserId": lookup_key,
-                                "Name": lookup_key,
-                            },
-                        )
                     try:
                         await coord.async_request_refresh()
                     except Exception:

@@ -479,6 +479,29 @@ class AkuvoxAPI:
         payload: Dict[str, Any] = {"target": "contact", "action": action, "data": {"item": items}}
         return await self._post_api(payload, rel_paths=("/api/contact/",))
 
+    async def _api_group(self, action: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"target": "group", "action": action, "data": {"item": items}}
+        return await self._post_api(payload, rel_paths=("/api/group/",))
+
+    @staticmethod
+    def _extract_group_items(payload: Any) -> List[Dict[str, Any]]:
+        if not payload:
+            return []
+        if isinstance(payload, dict):
+            for key in ("data", "Data"):
+                data = payload.get(key)
+                if isinstance(data, dict):
+                    items = data.get("item") or data.get("items")
+                    if isinstance(items, list):
+                        return [it for it in items if isinstance(it, dict)]
+            for key in ("item", "items", "Group", "Groups", "group", "groups"):
+                items = payload.get(key)
+                if isinstance(items, list):
+                    return [it for it in items if isinstance(it, dict)]
+        if isinstance(payload, list):
+            return [it for it in payload if isinstance(it, dict)]
+        return []
+
     async def _get_api(self, primary: str, *fallbacks: str) -> Dict[str, Any]:
         """GET with fallback paths."""
         rels = (primary, *fallbacks)
@@ -2152,6 +2175,39 @@ class AkuvoxAPI:
 
     async def contact_get(self) -> Dict[str, Any]:
         return await self._api_contact("get", [{}])
+
+    async def group_get(self) -> Dict[str, Any]:
+        return await self._get_api("/api/group/get/")
+
+    async def group_add(self, name: str) -> Dict[str, Any]:
+        group_name = str(name or "").strip()
+        if not group_name:
+            return {}
+        return await self._api_group("add", [{"Name": group_name}])
+
+    async def ensure_group_exists(self, name: str) -> bool:
+        group_name = str(name or "").strip()
+        if not group_name:
+            return False
+        try:
+            response = await self.group_get()
+        except Exception as err:
+            _LOGGER.debug("Group list lookup failed: %s", err)
+            response = {}
+        groups = self._extract_group_items(response)
+        existing = {
+            str(item.get("Name") or item.get("name") or "").strip().lower()
+            for item in groups
+            if isinstance(item, dict)
+        }
+        if group_name.lower() in existing:
+            return True
+        try:
+            await self.group_add(group_name)
+            return True
+        except Exception as err:
+            _LOGGER.debug("Group add failed for %s: %s", group_name, err)
+            return False
 
 
     # ---------- Schedules ----------
