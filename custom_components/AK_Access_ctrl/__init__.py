@@ -577,6 +577,57 @@ def _prepare_user_add_payload(
 
     return cleaned
 
+
+def _prepare_user_set_payload(
+    ha_key: str,
+    desired: Dict[str, Any],
+    existing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return a device-friendly payload for user.set."""
+
+    payload: Dict[str, Any] = {
+        "BLE_KEY_ID": -1,
+        "AnalogNumber": "",
+        "AnalogProxyAddress": "",
+        "AnalogReplace": "",
+        "AnalogSystem": "0",
+        "AuthMode": "0",
+        "BLE_AuthCode": "",
+        "BLE_Expired": "N/A",
+        "BLE_Status": "Unpaired",
+        "C4EventNo": "0",
+        "CardCode": "",
+        "ContactID": "-1",
+        "DialAccount": "0",
+        "FaceRegister": "0",
+        "FaceUrl": "",
+        "Group": "Default",
+        "LiftFloorNum": "0",
+        "Name": "",
+        "PhoneNum": "",
+        "Priority": "0",
+        "PrivatePIN": "",
+        "ScheduleRelay": "",
+        "Source": "Local",
+        "UserID": str(ha_key or "").strip(),
+        "WebRelay": "0",
+        "LicensePlate": [],
+    }
+
+    if isinstance(existing, dict):
+        payload.update(existing)
+    if isinstance(desired, dict):
+        payload.update({k: v for k, v in desired.items() if v is not None})
+
+    if ha_key:
+        payload["UserID"] = str(ha_key)
+
+    register_flag = _normalize_boolish(payload.get("FaceRegister"))
+    if not register_flag:
+        payload["FaceRegister"] = "0"
+        payload["FaceUrl"] = ""
+
+    return payload
 def _migrate_face_storage(hass: HomeAssistant) -> None:
     """Copy face assets from legacy locations into the persistent store."""
 
@@ -933,8 +984,24 @@ def _desired_device_user_payload(
             desired["PhoneNum"] = str(phone_value)
 
         face_url = profile.get("face_url") or local.get("FaceUrl") or local.get("FaceURL")
+        face_asset_exists: Optional[bool] = None
         if face_url in (None, ""):
-            face_url = f"{face_root_base}/{ha_key}.jpg"
+            try:
+                face_asset_exists = _face_asset_exists(hass, ha_key)
+            except Exception:
+                face_asset_exists = None
+            if face_asset_exists:
+                face_url = f"{face_root_base}/{ha_key}.jpg"
+        else:
+            face_url_str = str(face_url)
+            if face_url_str.startswith(face_root_base):
+                try:
+                    face_asset_exists = _face_asset_exists(hass, ha_key)
+                except Exception:
+                    face_asset_exists = None
+                if face_asset_exists is False:
+                    face_url = None
+
         if face_url not in (None, ""):
             face_url_str = str(face_url)
             desired["FaceUrl"] = face_url_str
@@ -943,14 +1010,20 @@ def _desired_device_user_payload(
             if face_active is None:
                 face_active = _face_flag_from_record(local)
             if face_active is None:
-                try:
-                    face_active = _face_asset_exists(hass, ha_key)
-                except Exception:
-                    face_active = None
+                if face_asset_exists is not None:
+                    face_active = face_asset_exists
+                else:
+                    try:
+                        face_active = _face_asset_exists(hass, ha_key)
+                    except Exception:
+                        face_active = None
             if face_active:
                 desired["FaceRegister"] = 1
+        else:
+            desired["FaceRegister"] = "0"
 
-    if desired.get("FaceRegister"):
+    register_flag = _normalize_boolish(desired.get("FaceRegister"))
+    if register_flag:
         status_flag: Optional[bool] = None
         for source in (profile, local):
             candidate = _face_status_from_record(source or {})
@@ -2829,7 +2902,7 @@ class SyncManager:
     ):
         """Update the device record for ha_key in-place via user.set."""
 
-        payload = _prepare_user_add_payload(ha_key, desired, sources=(desired, existing))
+        payload = _prepare_user_set_payload(ha_key, desired, existing)
 
         try:
             await api.user_set([payload])
