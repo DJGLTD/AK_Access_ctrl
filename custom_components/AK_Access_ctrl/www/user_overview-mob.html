@@ -405,32 +405,18 @@ async function callService(domain, service, data = {}) {
   return res.json().catch(() => ({}));
 }
 
-async function updateUserSchedule(items){
-  const res = await fetchWithAuth('/api/user/set', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target: 'user', action: 'set', data: { item: items || [] } })
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    const err = buildError(res, text);
-    handleAuthError(err);
-    throw err;
-  }
-  return res.json().catch(() => ({}));
+async function updateUserSchedule(payload){
+  return callService('akuvox_ac', 'edit_user', payload || {});
 }
 
-function scheduleRelayFromUser(user){
+function scheduleSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return '';
+  const scheduleName = String(user.access_level || user.schedule_name || '24/7 Access').trim() || '24/7 Access';
   const scheduleId = String(user.schedule_id || '').trim();
-  if (scheduleId && /^\d+$/.test(scheduleId)) {
-    return `${scheduleId}-1`;
-  }
-  const scheduleName = String(user.access_level || user.schedule_name || '').trim();
-  if (scheduleName && scheduleName.toLowerCase() === 'no access') {
-    return '1002-1';
-  }
-  return '1001-1';
+  return {
+    schedule_id: scheduleId,
+    schedule_name: scheduleName,
+  };
 }
 
 function isUserPaused(userId){
@@ -481,7 +467,8 @@ const UI_ROOT   = '/akuvox-ac';
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 const PAUSED_USERS_KEY = 'akuvox_paused_users';
-const PAUSE_SCHEDULE_RELAY = '1002,12';
+const PAUSE_SCHEDULE_ID = '1002';
+const PAUSE_SCHEDULE_NAME = 'No Access';
 
 function loadPausedUsers(){
   try {
@@ -502,6 +489,25 @@ function savePausedUsers(map){
 }
 
 let PAUSED_USERS = loadPausedUsers();
+
+function resumeScheduleFromUser(user){
+  const stored = user && PAUSED_USERS ? PAUSED_USERS[user.id] : null;
+  if (stored && typeof stored === 'object') {
+    const scheduleId = String(stored.schedule_id || '').trim();
+    const scheduleName = String(stored.schedule_name || '').trim();
+    if (scheduleId || scheduleName) {
+      return { schedule_id: scheduleId, schedule_name: scheduleName };
+    }
+  }
+  if (typeof stored === 'string' && stored.trim()) {
+    const match = stored.match(/^(\d+)/);
+    if (match) {
+      const fallback = scheduleSnapshotFromUser(user) || {};
+      return { schedule_id: match[1], schedule_name: fallback.schedule_name || '' };
+    }
+  }
+  return scheduleSnapshotFromUser(user);
+}
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -850,6 +856,7 @@ function compileUsers(devices, registryUsers, kpis){
       face_active: typeof r.face_active === 'boolean'
         ? r.face_active
         : (statusHint === 'active' ? true : computeFaceActive(r)),
+      face_error_count: Number(r.face_error_count || 0),
       _seenOn: new Set(),
       _denied: false
     });
@@ -890,6 +897,7 @@ function compileUsers(devices, registryUsers, kpis){
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
           face_active: deviceFaceActive,
+          face_error_count: 0,
           _seenOn: new Set(entryId ? [entryId] : [])
         });
         return;
@@ -1106,6 +1114,8 @@ function renderUsers(list){
     const seenNote = coverage.required && coverage.seen
       ? `Seen on ${coverage.seen} device${coverage.seen === 1 ? '' : 's'}`
       : '';
+    const errorCount = Number(u.face_error_count || 0);
+    const errorText = errorCount > 0 ? `${errorCount} face sync error${errorCount === 1 ? '' : 's'}` : '0 face sync errors';
 
     const actions = (!u.isCloud && idMatchesFilter(u.id))
       ? `
@@ -1133,6 +1143,7 @@ function renderUsers(list){
         <div><i class="bi bi-clock-history"></i>Last access: ${escapeHtml(u.last || '—')}</div>
         <div><i class="bi bi-calendar2-week"></i>Schedule: ${schedule}</div>
         <div><i class="bi bi-hdd-network"></i>${escapeHtml(coverageText)}${seenNote ? ` • ${escapeHtml(seenNote)}` : ''}</div>
+        <div><i class="bi bi-exclamation-triangle"></i>${escapeHtml(errorText)}</div>
       </div>
       ${actions ? `<div class="user-actions">${actions}</div>` : ''}
     `;
@@ -1155,15 +1166,20 @@ function renderUsers(list){
       if (!id || !user) return;
       const name = user.name || id;
       const wasPaused = isUserPaused(id);
-      const nextRelay = wasPaused ? (PAUSED_USERS[id] || scheduleRelayFromUser(user)) : PAUSE_SCHEDULE_RELAY;
-      const payload = [{ Name: name, UserID: id, ScheduleRelay: nextRelay }];
+      const resumeSchedule = resumeScheduleFromUser(user);
+      const payload = {
+        id,
+        name,
+        schedule_id: wasPaused ? resumeSchedule.schedule_id : PAUSE_SCHEDULE_ID,
+        schedule_name: wasPaused ? resumeSchedule.schedule_name : PAUSE_SCHEDULE_NAME,
+      };
       try {
         btn.setAttribute('disabled', 'disabled');
         await updateUserSchedule(payload);
         if (wasPaused) {
           delete PAUSED_USERS[id];
         } else {
-          PAUSED_USERS[id] = scheduleRelayFromUser(user);
+          PAUSED_USERS[id] = scheduleSnapshotFromUser(user);
         }
         savePausedUsers(PAUSED_USERS);
         refresh();

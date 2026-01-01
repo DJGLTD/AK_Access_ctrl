@@ -1214,6 +1214,7 @@ function renderUsers(devs, registryUsers, kpis){
       face_active: typeof r.face_active === 'boolean'
         ? r.face_active
         : (statusHint === 'active' ? true : computeFaceActive(r)),
+      face_error_count: Number(r.face_error_count || 0),
       _seenOn: new Set(),
       _denied: false
     });
@@ -1251,7 +1252,8 @@ function renderUsers(devs, registryUsers, kpis){
           access_level: u.AccessLevel || u.access_level || '',
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
-          face_active: deviceFaceActive
+          face_active: deviceFaceActive,
+          face_error_count: 0
         });
         return;
       }
@@ -1405,7 +1407,7 @@ function renderUsers(devs, registryUsers, kpis){
     if (u.isCloud) {
       return `<tr>
         <td>${u.name}</td>
-        <td colspan="5" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
+        <td colspan="6" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
       </tr>`;
     }
     const chips = (u.groups || []).map(g => `<span class="chip">${g}</span>`).join(' ');
@@ -1428,6 +1430,10 @@ function renderUsers(devs, registryUsers, kpis){
     } else {
       faceBadge = badge('Inactive', 'inactive');
     }
+    const errorCount = Number(u.face_error_count || 0);
+    const errorCell = errorCount > 0
+      ? `<span class="text-danger fw-semibold">${errorCount}</span>`
+      : '<span class="text-muted">0</span>';
 
     const editHref = buildHref('users', { id: u.id });
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
@@ -1445,12 +1451,13 @@ function renderUsers(devs, registryUsers, kpis){
       <td>${chips || '—'}</td>
       <td>${accessBadge}</td>
       <td>${faceBadge}</td>
+      <td>${errorCell}</td>
       <td>${u.last || '—'}</td>
       <td>${actions}</td>
     </tr>`;
   }).join('');
 
-  $('#tblUsers').innerHTML = rows || '<tr><td colspan="6" class="text-muted">No users</td></tr>';
+  $('#tblUsers').innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
 
   $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1986,9 +1993,9 @@ setInterval(refresh, 5000);
           <div id="usersTableWrap">
             <table class="table table-sm table-dark mb-0 table-center">
               <thead>
-                <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Last Access</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Errors</th><th>Last Access</th><th>Actions</th></tr>
               </thead>
-              <tbody id="tblUsers"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
+              <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
