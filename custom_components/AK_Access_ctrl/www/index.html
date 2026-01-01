@@ -1524,6 +1524,7 @@ function renderUsers(devs, registryUsers, kpis){
 
     const userPending = String(item.status || '').toLowerCase() === 'pending';
     const facePendingFinal = faceStatusFinal === 'pending';
+    const hasFaceProfile = !!rest.face_url || faceActiveFinal;
     const needsSync = userPending || facePendingFinal;
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
@@ -1547,6 +1548,9 @@ function renderUsers(devs, registryUsers, kpis){
       accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     } else if (allVerified) {
       accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
+    }
+    if (accessText === 'Pending' && !hasFaceProfile) {
+      accessText = '---';
     }
 
     return {
@@ -1616,7 +1620,8 @@ function renderUsers(devs, registryUsers, kpis){
     const accessStr = String(u.access || '').trim();
     const accessLower = accessStr.toLowerCase();
     let accessBadge = '';
-    if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
+    if (accessStr === '---') accessBadge = '<span class="text-muted">---</span>';
+    else if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
     else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
     else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');

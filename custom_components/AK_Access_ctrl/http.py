@@ -3973,8 +3973,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 class AkuvoxUIReserveId(HomeAssistantView):
     """
     GET → { ok: true, id: "HAxyz" }
-    Pre-allocates the next free HA id with status='pending', reserved_at,
-    and pre-fills face_url (public URL).
+    Pre-allocates the next free HA id with status='pending' and reserved_at.
     """
     url = "/api/akuvox_ac/ui/reserve_id"
     name = "api:akuvox_ac:ui_reserve_id"
@@ -4004,11 +4003,7 @@ class AkuvoxUIReserveId(HomeAssistantView):
                 profile = dict(existing_profile)
             else:
                 profile = {}
-            face_url = profile.get("face_url") if isinstance(profile, dict) else None
-            if not isinstance(face_url, str) or not face_url.strip():
-                face_url = f"{face_base_url(hass, request)}/{candidate}.jpg"
             profile["status"] = "pending"
-            profile["face_url"] = face_url
             profile["reserved_at"] = _now_iso()
             store_data[store_key] = profile
             _prune_inactive_reservations(store_data, keep_key=store_key)
@@ -4051,17 +4046,15 @@ class AkuvoxUIReserveId(HomeAssistantView):
                     break
                 n += 1
 
-        # Reserve pending profile; set reserved_at and prefill face_url
+        # Reserve pending profile; set reserved_at
         try:
-            face_url = f"{face_base_url(hass, request)}/{candidate}.jpg"
             if hasattr(users_store, "upsert_profile"):
-                await users_store.upsert_profile(candidate, status="pending", face_url=face_url)
+                await users_store.upsert_profile(candidate, status="pending")
                 users_store.data.setdefault("users", {}).setdefault(candidate, {})["reserved_at"] = _now_iso()  # type: ignore[attr-defined]
                 await users_store.async_save()  # type: ignore[attr-defined]
             else:
                 data = users_store.data  # type: ignore[attr-defined]
                 data.setdefault("users", {}).setdefault(candidate, {})["status"] = "pending"
-                data["users"][candidate]["face_url"] = face_url
                 data["users"][candidate]["reserved_at"] = _now_iso()
                 await users_store.async_save()  # type: ignore[attr-defined]
         except Exception:
@@ -4310,7 +4303,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
       }
 
     Sends a push notification to the selected HA mobile app with a deep link to the
-    enrol page, marks user pending, and ensures face_url is set.
+    enrol page, marks user pending, and preserves face_url if already present.
     Also leaves a persistent notification as a fallback.
     """
     url = "/api/akuvox_ac/ui/remote_enrol"
@@ -4394,13 +4387,12 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         except Exception:
             pass
 
-        # Ensure profile is pending and has a canonical face_url
+        # Ensure profile is pending
         if users_store:
             try:
                 await users_store.upsert_profile(
                     user_id,
                     status="pending",
-                    face_url=f"{face_base_url(hass, request)}/{user_id}.jpg",
                     name=profile_name or provided_name or None,
                 )
             except Exception:
