@@ -2783,50 +2783,21 @@ class SyncManager:
             pass
         return name_to_id
 
-    async def _replace_user_on_device(
+    async def _set_user_on_device(
         self,
         api: AkuvoxAPI,
         desired: Dict[str, Any],
         ha_key: str,
         existing: Optional[Dict[str, Any]] = None,
     ):
-        """Recreate the device record for ha_key via delete + add."""
+        """Update the device record for ha_key in-place via user.set."""
 
         payload = _prepare_user_add_payload(ha_key, desired, sources=(desired, existing))
 
-        delete_candidates: List[Dict[str, Any]] = []
-        if isinstance(existing, dict):
-            delete_candidates.append(existing)
-
         try:
-            lookup_records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-        except Exception:
-            lookup_records = []
-        for rec in lookup_records:
-            if rec:
-                delete_candidates.append(rec)
-
-        seen_delete_keys: set[Tuple[str, str, str]] = set()
-        for rec in delete_candidates:
-            if not isinstance(rec, dict):
-                continue
-            key_tuple = (
-                str(rec.get("ID") or ""),
-                str(rec.get("UserID") or rec.get("UserId") or ""),
-                str(rec.get("Name") or ""),
-            )
-            if key_tuple in seen_delete_keys:
-                continue
-            seen_delete_keys.add(key_tuple)
-            try:
-                await _delete_user_every_way(api, rec)
-            except Exception:
-                continue
-
-        try:
-            await api.user_add([payload])
+            await api.user_set([payload])
         except Exception as err:
-            _LOGGER.warning("Failed to replace user %s via delete+add: %s", ha_key, err)
+            _LOGGER.warning("Failed to update user %s via user.set: %s", ha_key, err)
             raise
 
     async def reconcile(self, full: bool = True):
@@ -3015,8 +2986,7 @@ class SyncManager:
             return None
 
         add_batch: List[Dict[str, Any]] = []
-        replace_list: List[Tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]] = []
-        full_sync_batch: List[Dict[str, Any]] = []
+        update_batch: List[Tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]] = []
         delete_only_keys: List[str] = []
         face_root_base = face_base_url(self.hass)
 
@@ -3047,16 +3017,14 @@ class SyncManager:
                 if add_missing_only:
                     if not local:
                         add_batch.append(desired_base)
-                elif full:
-                    full_sync_batch.append(desired_base)
                 elif not local:
                     add_batch.append(desired_base)
                 else:
-                    replace = str(prof.get("status") or "").lower() == "pending" or any(
+                    replace = full or str(prof.get("status") or "").lower() == "pending" or any(
                         str(local.get(k)) != str(v) for k, v in desired_base.items()
                     )
                     if replace:
-                        replace_list.append((ha_key, desired_base, local))
+                        update_batch.append((ha_key, desired_base, local))
             else:
                 if local and not add_missing_only:
                     delete_only_keys.append(ha_key)
@@ -3078,20 +3046,7 @@ class SyncManager:
                 except Exception:
                     pass
 
-        # 2) Full sync bulk add
-        if full and full_sync_batch and not add_missing_only:
-            prepared_add_batch: List[Dict[str, Any]] = []
-            for candidate in full_sync_batch:
-                ha_candidate = _key_of_user(candidate)
-                prepared_add_batch.append(
-                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
-                )
-            try:
-                await api.user_add(prepared_add_batch)
-            except Exception:
-                pass
-
-        # 3) Add new users
+        # 2) Add new users
         if add_batch:
             prepared_add_batch = []
             for candidate in add_batch:
@@ -3100,18 +3055,15 @@ class SyncManager:
                     _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
                 )
             try:
-                if add_missing_only:
-                    await api.user_add_missing(prepared_add_batch)
-                else:
-                    await api.user_add(prepared_add_batch)
+                await api.user_add_missing(prepared_add_batch)
             except Exception:
                 pass
 
-        # 4) Replace changed users (update in place)
+        # 3) Update changed users (update in place)
         if not add_missing_only:
-            for ha_key, desired, existing in replace_list:
+            for ha_key, desired, existing in update_batch:
                 try:
-                    await self._replace_user_on_device(api, desired, ha_key, existing)
+                    await self._set_user_on_device(api, desired, ha_key, existing)
                 except Exception:
                     pass
 

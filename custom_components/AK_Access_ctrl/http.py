@@ -3035,6 +3035,27 @@ class AkuvoxUIAction(AkuvoxUIView):
             except Exception as e:
                 return err(e)
 
+        if action == "wipe_device_records":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                api = bucket.get("api")
+                coord = bucket.get("coordinator")
+                if not api:
+                    return err("device api not ready", code=409)
+                await api.user_delete_all()
+                if coord:
+                    try:
+                        coord.users = []
+                    except Exception:
+                        pass
+                return web.json_response({"ok": True})
+            except Exception as e:
+                return err(e)
+
         # Groups
         if action == "create_group":
             name = str(payload.get("name") or "").strip()
