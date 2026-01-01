@@ -439,23 +439,13 @@ async function callService(domain, service, data = {}) {
   }
   return res.json().catch(() => ({}));
 }
-async function updateUserSchedule(items){
-  const res = await fetchWithAuth('/api/user/set', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target: 'user', action: 'set', data: { item: items || [] } })
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    const err = buildError(res, text);
-    handleAuthError(err);
-    throw err;
-  }
-  return res.json().catch(() => ({}));
+async function updateUserSchedule(payload){
+  return callService('akuvox_ac', 'edit_user', payload || {});
 }
 const UI_ROOT = '/akuvox-ac';
 const PAUSED_USERS_KEY = 'akuvox_paused_users';
-const PAUSE_SCHEDULE_RELAY = '1002,12';
+const PAUSE_SCHEDULE_ID = '1002';
+const PAUSE_SCHEDULE_NAME = 'No Access';
 
 function loadPausedUsers(){
   try {
@@ -477,17 +467,33 @@ function savePausedUsers(map){
 
 let PAUSED_USERS = loadPausedUsers();
 
-function scheduleRelayFromUser(user){
+function scheduleSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return '';
+  const scheduleName = String(user.access_level || user.schedule_name || '24/7 Access').trim() || '24/7 Access';
   const scheduleId = String(user.schedule_id || '').trim();
-  if (scheduleId && /^\d+$/.test(scheduleId)) {
-    return `${scheduleId}-1`;
+  return {
+    schedule_id: scheduleId,
+    schedule_name: scheduleName,
+  };
+}
+
+function resumeScheduleFromUser(user){
+  const stored = user && PAUSED_USERS ? PAUSED_USERS[user.id] : null;
+  if (stored && typeof stored === 'object') {
+    const scheduleId = String(stored.schedule_id || '').trim();
+    const scheduleName = String(stored.schedule_name || '').trim();
+    if (scheduleId || scheduleName) {
+      return { schedule_id: scheduleId, schedule_name: scheduleName };
+    }
   }
-  const scheduleName = String(user.access_level || user.schedule_name || '').trim();
-  if (scheduleName && scheduleName.toLowerCase() === 'no access') {
-    return '1002-1';
+  if (typeof stored === 'string' && stored.trim()) {
+    const match = stored.match(/^(\d+)/);
+    if (match) {
+      const fallback = scheduleSnapshotFromUser(user) || {};
+      return { schedule_id: match[1], schedule_name: fallback.schedule_name || '' };
+    }
   }
-  return '1001-1';
+  return scheduleSnapshotFromUser(user);
 }
 
 function isUserPaused(userId){
@@ -1407,6 +1413,7 @@ function renderUsers(devs, registryUsers, kpis){
       face_active: typeof r.face_active === 'boolean'
         ? r.face_active
         : (statusHint === 'active' ? true : computeFaceActive(r)),
+      face_error_count: Number(r.face_error_count || 0),
       _seenOn: new Set(),
       _denied: false
     });
@@ -1444,6 +1451,7 @@ function renderUsers(devs, registryUsers, kpis){
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
           face_active: deviceFaceActive,
+          face_error_count: 0,
           schedule_name: u.ScheduleName || u.schedule_name || '',
           schedule_id: u.ScheduleId || u.schedule_id || '',
           access_level: u.AccessLevel || u.access_level || ''
@@ -1664,6 +1672,10 @@ function renderUsers(devs, registryUsers, kpis){
     } else {
       faceBadge = badge('Inactive', 'inactive');
     }
+    const errorCount = Number(u.face_error_count || 0);
+    const errorCell = errorCount > 0
+      ? `<span class="text-danger fw-semibold">${errorCount}</span>`
+      : '<span class="text-muted">0</span>';
 
     const editHref = buildHref('users', { id: u.id });
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
@@ -1692,6 +1704,7 @@ function renderUsers(devs, registryUsers, kpis){
       <td>${escapeHtml(u.name)}</td>
       <td>${pinCell}</td>
       <td>${faceBadge}</td>
+      <td>${errorCell}</td>
       <td>${accessBadge}</td>
       <td>${escapeHtml(u.last || '—')}</td>
       <td>${scheduleChip}</td>
@@ -1699,7 +1712,7 @@ function renderUsers(devs, registryUsers, kpis){
     </tr>`;
   }).join('');
 
-  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
+  tableBody.innerHTML = rows || '<tr><td colspan="8" class="text-muted">No users</td></tr>';
 
   tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1737,15 +1750,20 @@ function renderUsers(devs, registryUsers, kpis){
       if (!id || !user) return;
       const name = user.name || id;
       const wasPaused = isUserPaused(id);
-      const nextRelay = wasPaused ? (PAUSED_USERS[id] || scheduleRelayFromUser(user)) : PAUSE_SCHEDULE_RELAY;
-      const payload = [{ Name: name, UserID: id, ScheduleRelay: nextRelay }];
+      const resumeSchedule = resumeScheduleFromUser(user);
+      const payload = {
+        id,
+        name,
+        schedule_id: wasPaused ? resumeSchedule.schedule_id : PAUSE_SCHEDULE_ID,
+        schedule_name: wasPaused ? resumeSchedule.schedule_name : PAUSE_SCHEDULE_NAME,
+      };
       try {
         btn.setAttribute('disabled', 'disabled');
         await updateUserSchedule(payload);
         if (wasPaused) {
           delete PAUSED_USERS[id];
         } else {
-          PAUSED_USERS[id] = scheduleRelayFromUser(user);
+          PAUSED_USERS[id] = scheduleSnapshotFromUser(user);
         }
         savePausedUsers(PAUSED_USERS);
         refresh();
@@ -2269,9 +2287,9 @@ setInterval(refresh, 5000);
           <div id="usersTableWrap">
             <table class="table table-sm table-dark mb-0 table-center">
               <thead>
-                <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Errors</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
               </thead>
-              <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
+              <tbody id="tblUsers"><tr><td colspan="8" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>

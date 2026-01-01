@@ -79,6 +79,7 @@ HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit overr
 
 
 _LOGGER = logging.getLogger(__name__)
+FACE_SYNC_ERROR_THRESHOLD = 5
 
 
 def _register_admin_dashboard(hass: HomeAssistant) -> bool:
@@ -1653,6 +1654,7 @@ class AkuvoxUsersStore(Store):
         source: Optional[str] = None,
         license_plate: Optional[List[Any]] = None,
         exit_permission: Optional[str] = None,
+        face_error_count: Optional[int] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1741,6 +1743,15 @@ class AkuvoxUsersStore(Store):
                 u["exit_permission"] = normalized_exit
             else:
                 u.pop("exit_permission", None)
+        if face_error_count is not None:
+            try:
+                count = int(face_error_count)
+            except (TypeError, ValueError):
+                count = 0
+            if count > 0:
+                u["face_error_count"] = count
+            else:
+                u.pop("face_error_count", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -2650,6 +2661,63 @@ class SyncManager:
                 out.append((k, coord, api, opts))
         return out
 
+    async def _bump_face_error_count(self, ha_key: str) -> int:
+        users_store = self._users_store()
+        if not users_store:
+            return 0
+        try:
+            profile = users_store.get(ha_key) or {}
+        except Exception:
+            profile = {}
+        try:
+            count = int(profile.get("face_error_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        count += 1
+        try:
+            await users_store.upsert_profile(ha_key, face_error_count=count)
+        except Exception:
+            return count
+        return count
+
+    async def _reset_face_error_count(self, ha_key: str) -> None:
+        users_store = self._users_store()
+        if not users_store:
+            return
+        try:
+            await users_store.upsert_profile(ha_key, face_error_count=0)
+        except Exception:
+            return
+
+    async def _recreate_user_for_face_mismatch(
+        self,
+        api: AkuvoxAPI,
+        ha_key: str,
+        desired: Dict[str, Any],
+        existing: Optional[Dict[str, Any]],
+    ) -> None:
+        records = []
+        if isinstance(existing, dict):
+            records = [existing]
+        else:
+            try:
+                records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+            except Exception:
+                records = []
+
+        for rec in records:
+            try:
+                await _delete_user_every_way(api, rec)
+            except Exception:
+                pass
+
+        payload = _prepare_user_add_payload(
+            ha_key,
+            desired,
+            sources=(desired, existing),
+        )
+        await api.user_add([payload])
+
     @staticmethod
     def _normalize_phone(value: Any) -> str:
         text = str(value or "").strip()
@@ -3265,6 +3333,38 @@ class SyncManager:
                     )
                     diffs = _integrity_field_differences(local, desired, include_face=include_face)
                     if diffs:
+                        face_mismatch = (
+                            include_face
+                            and any(diff in ("face status", "face url") for diff in diffs)
+                        )
+                        if face_mismatch and device_type_raw.lower() == "intercom":
+                            expected_face = _face_flag_from_record(desired)
+                            expected_url = str(
+                                desired.get("FaceUrl") or desired.get("FaceURL") or ""
+                            ).strip()
+                            if expected_url or expected_face:
+                                error_count = await self._bump_face_error_count(ha_key)
+                                if error_count >= FACE_SYNC_ERROR_THRESHOLD:
+                                    try:
+                                        await self._recreate_user_for_face_mismatch(
+                                            api,
+                                            ha_key,
+                                            desired,
+                                            local,
+                                        )
+                                        await self._reset_face_error_count(ha_key)
+                                        try:
+                                            coord._append_event(
+                                                f"Recreated {ha_key} after {error_count} face sync errors"
+                                            )  # type: ignore[attr-defined]
+                                        except Exception:
+                                            pass
+                                    except Exception as err:
+                                        _LOGGER.warning(
+                                            "Failed to recreate user %s after face sync errors: %s",
+                                            ha_key,
+                                            err,
+                                        )
                         mismatch_reason = f"{ha_key} mismatch: {', '.join(diffs)}"
                         break
 

@@ -1874,13 +1874,20 @@ async def _refresh_face_statuses(
 
         status_for_store = desired_status if desired_status in {"pending", "active"} else ""
         stored_status_norm = stored_status if stored_status else ""
+        stored_errors = stored.get("face_error_count")
+        clear_errors = bool(stored_errors) and desired_status == "active"
 
-        if status_for_store != stored_status_norm or desired_synced_at != stored_synced_at:
+        if (
+            status_for_store != stored_status_norm
+            or desired_synced_at != stored_synced_at
+            or clear_errors
+        ):
             try:
                 await users_store.upsert_profile(
                     user_id,
                     face_status=status_for_store,
                     face_synced_at=desired_synced_at or "",
+                    face_error_count=0 if clear_errors else None,
                 )
                 updated = dict(stored)
                 if status_for_store:
@@ -1891,6 +1898,8 @@ async def _refresh_face_statuses(
                     updated["face_synced_at"] = desired_synced_at
                 else:
                     updated.pop("face_synced_at", None)
+                if clear_errors:
+                    updated.pop("face_error_count", None)
                 profile_lookup[user_id] = updated
             except Exception:
                 pass
@@ -2661,6 +2670,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "face_synced_at": face_synced_at,
                             "face_active": face_status == "active"
                             or _face_image_exists(hass, canonical),
+                            "face_error_count": int(prof.get("face_error_count") or 0),
                             "phone": prof.get("phone") or "",
                             "status": prof.get("status") or "active",
                             "schedule_name": prof.get("schedule_name")

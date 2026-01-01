@@ -1310,6 +1310,7 @@ function blankProfile(id = ''){
     face_status: '',
     face_active: false,
     face_removed: false,
+    face_error_count: 0,
     schedule_name: '24/7 Access',
     schedule_id: '1001',
     key_holder: false,
@@ -1439,6 +1440,10 @@ function applyCredentialPrompts(){
   const faceSection = document.getElementById('faceSection');
   if (faceSection){
     faceSection.style.display = CREDENTIAL_PROMPTS.face ? '' : 'none';
+  }
+  const faceErrorRow = document.getElementById('faceErrorRow');
+  if (faceErrorRow){
+    faceErrorRow.style.display = CREDENTIAL_PROMPTS.face ? '' : 'none';
   }
   if (!CREDENTIAL_PROMPTS.face){
     const local = document.getElementById('pLocal');
@@ -1748,6 +1753,15 @@ function fillForm(){
   applyCredentialPrompts();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
+  }
+  const faceErrorRow = document.getElementById('faceErrorRow');
+  const faceErrorCount = document.getElementById('faceErrorCount');
+  if (faceErrorCount){
+    const count = Number(CURRENT.face_error_count || 0);
+    faceErrorCount.textContent = Number.isFinite(count) ? String(count) : '0';
+  }
+  if (faceErrorRow){
+    faceErrorRow.style.display = '';
   }
   bindFaceFileInput();
   bindRemoveFaceButton();
@@ -2121,6 +2135,7 @@ function showPanel(which){
       </div>
       <div class="mt-2 muted" id="remoteResult"></div>
     </div>
+    <div id="faceErrorRow" class="form-text muted mt-2">Face sync errors: <span id="faceErrorCount">0</span></div>
 
     <div class="mb-3" id="phoneRow"><label class="form-label">Phone number</label><input id="phone" class="form-control"/></div>
 

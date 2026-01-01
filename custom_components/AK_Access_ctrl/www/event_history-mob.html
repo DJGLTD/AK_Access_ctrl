@@ -547,9 +547,13 @@ function getEventTitle(evt){
   const typeLabel = getEventTypeLabel(evt);
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
-    return `Call - ${typeLabel || caller}`;
+    return `Call - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
+    if (typeLabel.toLowerCase().includes('face')) {
+      const person = getEventUserLabel(evt);
+      return person ? `Face Recognition - ${person}` : 'Face Recognition';
+    }
     return `Access - ${typeLabel}`;
   }
   return getEventStatusText(evt) || 'Event';
