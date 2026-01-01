@@ -115,6 +115,9 @@
           <button id="btnSave" class="btn btn-success">
             <i class="bi bi-check2"></i> Save
           </button>
+          <button id="btnWipeDeviceRecords" class="btn btn-outline-danger">
+            <i class="bi bi-exclamation-triangle"></i> Wipe device records
+          </button>
           <button id="btnDeleteDevice" class="btn btn-outline-danger">
             <i class="bi bi-trash"></i> Remove device
           </button>
@@ -972,6 +975,22 @@ async function init(){
       }catch(e){
         if (handleAuthError(e)) return;
         showError('Remove failed: ' + (e.message || e));
+      }
+    });
+
+    document.getElementById('btnWipeDeviceRecords').addEventListener('click', async () => {
+      if (!ENTRY_ID) {
+        showError('Device entry not found.');
+        return;
+      }
+      const ok = confirm('Wipe all records from this device? This deletes users and face data stored on the device.');
+      if (!ok) return;
+      try{
+        await apiPost(actionUrl, { action: 'wipe_device_records', entry_id: ENTRY_ID });
+        showOK('Device records wiped ✓');
+      }catch(e){
+        if (handleAuthError(e)) return;
+        showError('Wipe failed: ' + (e.message || e));
       }
     });
 

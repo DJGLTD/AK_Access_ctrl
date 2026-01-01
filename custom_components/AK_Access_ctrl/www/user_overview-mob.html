@@ -406,7 +406,7 @@ async function callService(domain, service, data = {}) {
 }
 
 async function updateUserSchedule(items){
-  const res = await fetchWithAuth('/api/user/', {
+  const res = await fetchWithAuth('/api/user/set', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target: 'user', action: 'set', data: { item: items || [] } })

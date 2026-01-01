@@ -1962,6 +1962,42 @@ class AkuvoxAPI:
 
         return result
 
+    async def user_set(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Update existing users in-place without deleting/re-adding them.
+        """
+        prepared: List[Dict[str, Any]] = []
+        for original in items or []:
+            if not isinstance(original, dict):
+                continue
+            payload_source = dict(original)
+            payload_source.pop("ID", None)
+            prepared.append(payload_source)
+
+        normalized_items = self._normalize_user_items_for_add_or_set(
+            prepared,
+            allow_face_url=True,
+            drop_schedule=False,
+        )
+
+        if not normalized_items:
+            return {}
+
+        for item in normalized_items:
+            if "ScheduleRelay" in item and "Schedule-Relay" not in item:
+                item["Schedule-Relay"] = item.pop("ScheduleRelay")
+
+        try:
+            result = await self._api_user("set", normalized_items)
+        except Exception:
+            result = await self._api_user("set", normalized_items)
+        retcode, message = self._parse_result_status(result)
+        if not _retcode_is_success(retcode):
+            detail = f" (message: {message})" if message else ""
+            raise RuntimeError(f"Akuvox user.set returned retcode {retcode}{detail}")
+
+        return result
+
     async def user_delete(self, identifier: str) -> None:
         """Delete by device ID or resolve by (ID/UserID/Name) first."""
         if identifier is None:
@@ -2054,6 +2090,25 @@ class AkuvoxAPI:
 
         if face_targets:
             await self.face_delete_bulk(face_targets)
+
+    async def user_delete_all(self) -> None:
+        try:
+            users = await self.user_list()
+        except Exception:
+            users = []
+
+        device_ids: List[str] = []
+        face_ids: Set[str] = set()
+        for u in users or []:
+            dev_id = str(u.get("ID") or "").strip()
+            user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
+            if dev_id:
+                device_ids.append(dev_id)
+            if user_id:
+                face_ids.add(user_id)
+
+        if device_ids:
+            await self.user_delete_bulk(device_ids, face_user_ids=face_ids)
 
     async def user_delete_by_key(self, key: str) -> None:
         await self.user_delete(key)
