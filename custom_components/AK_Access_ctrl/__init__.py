@@ -3534,11 +3534,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 face_reference = face_image_path
                 face_reference_supplied = True
 
-        face_filename = _normalise_face_filename(face_reference or f"{ha_id}.jpg", ha_id)
-        if face_bytes:
-            _store_face_bytes(face_filename, face_bytes, source=face_source_path)
-
-        face_url = f"{face_base_url(hass)}/{face_filename}"
+        face_url: Optional[str] = None
+        if face_reference_supplied:
+            face_filename = _normalise_face_filename(face_reference or f"{ha_id}.jpg", ha_id)
+            if face_bytes:
+                _store_face_bytes(face_filename, face_bytes, source=face_source_path)
+            face_url = f"{face_base_url(hass)}/{face_filename}"
 
         pin_payload: Optional[str] = None
         if "pin" in d:
@@ -3547,6 +3548,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 pin_payload = ""
             else:
                 pin_payload = str(raw_pin)
+
+        pin_only = (
+            pin_payload not in (None, "")
+            and not face_reference_supplied
+            and not face_bytes
+            and not d.get("phone")
+        )
+        status_value = "active" if pin_only else "pending"
 
         await users_store.upsert_profile(
             ha_id,
@@ -3560,7 +3569,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             face_url=face_url,
             face_status="pending" if face_reference_supplied else None,
             face_synced_at="" if face_reference_supplied else None,
-            status="pending",
+            status=status_value,
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
             access_start=d.get("access_start") if "access_start" in d else date.today().isoformat(),
             access_end=d.get("access_end") if "access_end" in d else None,
@@ -3578,7 +3587,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
         effective_id = canonical_key or key
-        new_face_url = d.get("face_url") if "face_url" in d else None
+        face_reference_supplied = False
+        new_face_url = None
+        if "face_url" in d:
+            new_face_url = str(d.get("face_url") or "").strip()
+            face_reference_supplied = bool(new_face_url)
+            if not face_reference_supplied:
+                new_face_url = ""
 
         lp_payload = d.get("license_plate") if "license_plate" in d else None
 
@@ -3590,6 +3605,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             else:
                 pin_payload_edit = str(raw_pin)
 
+        pin_only = (
+            pin_payload_edit not in (None, "")
+            and not face_reference_supplied
+            and not d.get("phone")
+        )
+        status_value = "active" if pin_only else "pending"
+        face_status = "pending" if face_reference_supplied else None
+        face_synced_at = "" if face_reference_supplied else None
+
         await users_store.upsert_profile(
             effective_id,
             name=d.get("name"),
@@ -3600,7 +3624,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             key_holder=bool(d.get("key_holder")) if "key_holder" in d else None,
             access_level=d.get("access_level") if "access_level" in d else None,
             face_url=new_face_url,
-            status="pending",
+            face_status=face_status,
+            face_synced_at=face_synced_at,
+            status=status_value,
             schedule_id=str(d.get("schedule_id")) if d.get("schedule_id") else None,
             access_start=d.get("access_start") if "access_start" in d else None,
             access_end=d.get("access_end") if "access_end" in d else None,

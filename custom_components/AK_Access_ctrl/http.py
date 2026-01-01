@@ -1795,9 +1795,8 @@ def _evaluate_face_status(
     if not user_id:
         return "none"
 
-    face_url = str(user.get("face_url") or "").strip()
     has_face_asset = _face_image_exists(hass, user_id)
-    wants_face = bool(face_url) or stored_status in {"pending", "active"} or has_face_asset
+    wants_face = stored_status in {"pending", "active"} or has_face_asset
     if not wants_face:
         return "none"
 
