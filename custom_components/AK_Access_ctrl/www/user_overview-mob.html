@@ -63,6 +63,8 @@
     <div class="header-actions">
       <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
       <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
+      <button class="btn btn-outline-warning btn-sm" id="forceFullSyncBtn"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button>
+      <button class="btn btn-outline-secondary btn-sm" id="syncNowBtn"><i class="bi bi-arrow-repeat"></i> Sync Now</button>
     </div>
   </header>
   <section class="summary-grid" aria-label="User summary">
@@ -419,6 +421,31 @@ function scheduleSnapshotFromUser(user){
   };
 }
 
+function pausedScheduleInfo(user){
+  const stored = user && PAUSED_USERS ? PAUSED_USERS[user.id] : null;
+  if (stored && typeof stored === 'object') {
+    const scheduleId = String(stored.schedule_id || '').trim();
+    const scheduleName = String(stored.schedule_name || '').trim();
+    if (scheduleId || scheduleName) {
+      return { schedule_id: scheduleId, schedule_name: scheduleName };
+    }
+  }
+  if (typeof stored === 'string' && stored.trim()) {
+    const match = stored.match(/^(\d+)/);
+    if (match) {
+      return { schedule_id: match[1], schedule_name: '' };
+    }
+  }
+  return null;
+}
+
+function pausedScheduleDisplay(user){
+  const info = pausedScheduleInfo(user);
+  if (!info) return '';
+  const display = formatScheduleDisplay(info.schedule_id, info.schedule_name);
+  return display || info.schedule_name || '';
+}
+
 function isUserPaused(userId){
   return !!(userId && PAUSED_USERS && PAUSED_USERS[userId]);
 }
@@ -601,6 +628,36 @@ function handleAuthError(err) {
 const refreshBtn = document.getElementById('refreshBtn');
 if (refreshBtn) {
   refreshBtn.addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+}
+const forceFullSyncBtn = document.getElementById('forceFullSyncBtn');
+if (forceFullSyncBtn) {
+  forceFullSyncBtn.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    try {
+      forceFullSyncBtn.setAttribute('disabled', 'disabled');
+      await callService('akuvox_ac', 'force_full_sync', {});
+      refresh();
+    } catch (err) {
+      alert(`Force full sync failed: ${escapeHtml(err.message || err)}`);
+    } finally {
+      forceFullSyncBtn.removeAttribute('disabled');
+    }
+  });
+}
+const syncNowBtn = document.getElementById('syncNowBtn');
+if (syncNowBtn) {
+  syncNowBtn.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    try {
+      syncNowBtn.setAttribute('disabled', 'disabled');
+      await callService('akuvox_ac', 'sync_now', {});
+      refresh();
+    } catch (err) {
+      alert(`Sync failed: ${escapeHtml(err.message || err)}`);
+    } finally {
+      syncNowBtn.removeAttribute('disabled');
+    }
+  });
 }
 
 const mobileAddUser = document.getElementById('btnMobileAddUser');
@@ -958,7 +1015,11 @@ function compileUsers(devices, registryUsers, kpis){
 
   const list = Array.from(by.values()).map(item => {
     const baseScheduleName = item.access_level || item.schedule_name || '24/7 Access';
-    const scheduleDisplay = formatScheduleDisplay(item.schedule_id, baseScheduleName) || baseScheduleName;
+    const isPaused = isUserPaused(item.id);
+    const pausedDisplay = isPaused ? pausedScheduleDisplay(item) : '';
+    const scheduleDisplay = pausedDisplay
+      || formatScheduleDisplay(item.schedule_id, baseScheduleName)
+      || baseScheduleName;
     if (!item.fromRegistry) {
       return {
         ...item,
@@ -1001,6 +1062,7 @@ function compileUsers(devices, registryUsers, kpis){
 
     const userPending = String(item.status || '').toLowerCase() === 'pending';
     const facePendingFinal = faceStatusFinal === 'pending';
+    const hasFaceProfile = !!rest.face_url || faceActiveFinal;
     const needsSync = userPending || facePendingFinal;
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
@@ -1010,12 +1072,14 @@ function compileUsers(devices, registryUsers, kpis){
       : [];
 
     let accessText = 'Pending';
-    if (expired) {
+    if (String(item.status || '').toLowerCase() === 'deleted') {
+      accessText = 'Deleted';
+    } else if (isPaused) {
+      accessText = 'Paused';
+    } else if (expired) {
       accessText = 'Expired';
     } else if (item._denied && baseLower !== 'no access') {
       accessText = 'Denied';
-    } else if (String(item.status || '').toLowerCase() === 'deleted') {
-      accessText = 'Deleted';
     } else if (userPending || facePendingFinal) {
       accessText = 'Pending';
     } else if (pendingDevices.length) {
@@ -1024,6 +1088,9 @@ function compileUsers(devices, registryUsers, kpis){
       accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     } else if (allVerified) {
       accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
+    }
+    if (accessText === 'Pending' && !hasFaceProfile) {
+      accessText = '---';
     }
 
     return {
@@ -1124,6 +1191,7 @@ function renderUsers(list){
           <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
           ${isUserPaused(u.id) ? 'Resume access' : 'Pause access'}
         </button>
+        <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
       `
       : '';
 
@@ -1185,6 +1253,28 @@ function renderUsers(list){
         refresh();
       } catch (err) {
         alert(`Access update failed: ${escapeHtml(err.message || err)}`);
+      } finally {
+        btn.removeAttribute('disabled');
+      }
+    });
+  });
+
+  host.querySelectorAll('[data-delete-user]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      const id = btn.dataset.deleteUser || '';
+      const user = list.find(entry => String(entry.id || '') === id);
+      if (!id || !user) return;
+      const name = user.name || id;
+      if (!confirm(`Delete ${name}?`)) return;
+      try {
+        btn.setAttribute('disabled', 'disabled');
+        await callService('akuvox_ac', 'delete_user', { id });
+        delete PAUSED_USERS[id];
+        savePausedUsers(PAUSED_USERS);
+        refresh();
+      } catch (err) {
+        alert(`Delete failed: ${escapeHtml(err.message || err)}`);
       } finally {
         btn.removeAttribute('disabled');
       }
