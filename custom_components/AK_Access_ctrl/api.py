@@ -2560,6 +2560,8 @@ class AkuvoxAPI:
 
         start_time = _clean_time(start_input, default="00:00")
         end_time = _clean_time(end_input, default="23:59")
+        display_start = str(start_input) if start_input not in (None, "") else start_time
+        display_end = str(end_input) if end_input not in (None, "") else end_time
         start_compact = start_time.replace(":", "")
         end_compact = end_time.replace(":", "")
 
@@ -2570,8 +2572,8 @@ class AkuvoxAPI:
             "DateEnd": date_end,
             "TimeStart": start_compact,
             "TimeEnd": end_compact,
-            "Start": start_time,
-            "End": end_time,
+            "Start": display_start,
+            "End": display_end,
         }
 
         for low_key, api_key in day_map.items():
@@ -2591,7 +2593,7 @@ class AkuvoxAPI:
             week_lookup[day] for day in ("sun", "mon", "tue", "wed", "thu", "fri", "sat") if day in selected_days
         )
         item["Week"] = ordered_week
-        item["Daily"] = f"{start_time}-{end_time}"
+        item["Daily"] = f"{display_start}-{display_end}"
         if not date_range:
             if date_start or date_end:
                 date_range = f"{date_start}-{date_end}".strip("-")
@@ -2625,9 +2627,7 @@ class AkuvoxAPI:
         payload = self._sched_payload_from_spec(name, spec)
         start_time = str(payload.get("Start") or "00:00")
         end_time = str(payload.get("End") or "23:59")
-        start_compact = str(payload.get("TimeStart") or start_time.replace(":", ""))
-        end_compact = str(payload.get("TimeEnd") or end_time.replace(":", ""))
-        payload["Daily"] = f"{start_compact}-{end_compact}"
+        payload["Daily"] = f"{start_time}-{end_time}"
         for key in (
             "Start",
             "End",
@@ -2650,9 +2650,7 @@ class AkuvoxAPI:
         payload = self._sched_payload_from_spec(name, spec)
         start_time = str(payload.get("Start") or "00:00")
         end_time = str(payload.get("End") or "23:59")
-        start_compact = str(payload.get("TimeStart") or start_time.replace(":", ""))
-        end_compact = str(payload.get("TimeEnd") or end_time.replace(":", ""))
-        payload["Daily"] = f"{start_compact}-{end_compact}"
+        payload["Daily"] = f"{start_time}-{end_time}"
         for key in (
             "Start",
             "End",
