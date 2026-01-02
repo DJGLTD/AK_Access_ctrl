@@ -2521,6 +2521,7 @@ class AkuvoxAPI:
         sched_type = str(spec.get("type") or spec.get("Type") or "0")
         date_start = str(spec.get("date_start") or spec.get("DateStart") or "").strip()
         date_end = str(spec.get("date_end") or spec.get("DateEnd") or "").strip()
+        date_range = str(spec.get("date") or spec.get("Date") or "").strip()
 
         start_time = _clean_time(
             spec.get("start")
@@ -2549,6 +2550,24 @@ class AkuvoxAPI:
         for low_key, api_key in day_map.items():
             item[api_key] = "1" if low_key in selected_days else "0"
 
+        # Legacy schedule fields (some devices expect Date/Week/Daily)
+        week_lookup = {
+            "mon": "1",
+            "tue": "2",
+            "wed": "3",
+            "thu": "4",
+            "fri": "5",
+            "sat": "6",
+            "sun": "7",
+        }
+        ordered_week = "".join(week_lookup[day] for day in day_map if day in selected_days)
+        item["Week"] = ordered_week
+        item["Daily"] = f"{start_time}-{end_time}"
+        if not date_range:
+            if date_start or date_end:
+                date_range = f"{date_start}-{date_end}".strip("-")
+        item["Date"] = date_range or "-"
+
         return item
 
     async def schedule_get(self) -> List[Dict[str, Any]]:
@@ -2575,6 +2594,8 @@ class AkuvoxAPI:
 
     async def schedule_add(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         payload = self._sched_payload_from_spec(name, spec)
+        if "ID" not in payload:
+            payload["ID"] = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "-1")
         return await self._post_api({"target": "schedule", "action": "add", "data": {"item": [payload]}})
 
     async def schedule_set(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -2582,7 +2603,32 @@ class AkuvoxAPI:
         return await self._post_api({"target": "schedule", "action": "set", "data": {"item": [payload]}})
 
     async def schedule_del(self, name: str) -> Dict[str, Any]:
-        item = {"Name": name}
+        item: Dict[str, Any] = {}
+        schedule_name = str(name or "").strip()
+        schedule_id = ""
+        if schedule_name:
+            try:
+                schedules = await self.schedule_get()
+            except Exception:
+                schedules = []
+            lowered = schedule_name.lower()
+            for sched in schedules:
+                if not isinstance(sched, dict):
+                    continue
+                if str(sched.get("Name") or "").strip().lower() == lowered:
+                    schedule_id = str(sched.get("ID") or "").strip()
+                    if schedule_id:
+                        break
+            if not schedule_id and schedule_name.isdigit():
+                schedule_id = schedule_name
+
+        if schedule_id:
+            item["ID"] = schedule_id
+        elif schedule_name:
+            item["Name"] = schedule_name
+        else:
+            item["Name"] = name
+
         return await self._post_api({"target": "schedule", "action": "del", "data": {"item": [item]}})
 
     async def system_reboot(self) -> Dict[str, Any]:
