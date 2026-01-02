@@ -3022,10 +3022,10 @@ class SyncManager:
             else:
                 sanitized = {}
             try:
-                await api.schedule_set(name, sanitized)
+                await api.schedule_add(name, sanitized)
             except Exception:
                 try:
-                    await api.schedule_add(name, sanitized)
+                    await api.schedule_set(name, sanitized)
                 except Exception:
                     pass
 
