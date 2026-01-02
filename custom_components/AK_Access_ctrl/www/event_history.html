@@ -562,21 +562,21 @@ function hasLinkedUser(evt){
 
 function getEventTitle(evt){
   const category = String(evt?._category || '').toLowerCase();
+  const deviceName = resolveDeviceName(evt, evt?._device);
   const typeLabel = getEventTypeLabel(evt);
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
-    return `Call - ${caller}`;
+    return `${deviceName} - Call - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
     const typeLower = typeLabel.toLowerCase();
     if (typeLower.includes('face')) {
       const person = getEventUserLabel(evt);
-      return person ? `Face Recognition - ${person}` : 'Face Recognition';
+      return `${deviceName} - Face Rec - ${person}`;
     }
-    if (typeLower.includes('private pin') && !hasLinkedUser(evt)) {
-      const deviceName = resolveDeviceName(evt, evt?._device);
-      const pinLabel = getEventPinLabel(evt);
-      return `${deviceName} - ${pinLabel || 'Pin tried'}`;
+    if (typeLower.includes('private pin') || typeLower.includes('privatepin')) {
+      const person = getEventUserLabel(evt);
+      return `${deviceName} - Private Pin - ${person}`;
     }
     return `Access - ${typeLabel}`;
   }
