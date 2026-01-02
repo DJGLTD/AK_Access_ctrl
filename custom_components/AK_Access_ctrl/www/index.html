@@ -1061,6 +1061,9 @@ const EVENT_CALL_USER_KEYS = [
   'User','UserName','user_name','user','userName','Name','NameID','UserID','user_id',
   'CallNumber','CallNum','CallNo','number','digits',
 ];
+const EVENT_PIN_KEYS = [
+  'Pin','PIN','Passcode','Password','Credential','CardNumber','CardNo','digits',
+];
 const EVENT_DETAIL_KEYS = {
   call: [
     'status_label','status','call_type','CallType','CallStatus','CallMode','CallNumber','CallNo','CallNum','number','digits',
@@ -1138,20 +1141,22 @@ function describeEventForDisplay(event){
   const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'event';
   const detail = typeLabel || pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
   const typeLower = String(typeLabel || '').toLowerCase();
-  const userLabel = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
+  const userLabel = pickFirstEventText(event, EVENT_CALL_USER_KEYS);
+  const pinLabel = pickFirstEventText(event, EVENT_PIN_KEYS);
+  const resolvedUserLabel = userLabel || pinLabel || 'Unknown';
   if (normalizedCategory === 'access' && typeLabel) {
     if (typeLower.includes('face')) {
       return {
         category: normalizedCategory,
-        title: `${deviceLabel} - Face Rec - ${userLabel}`,
-        highlight: userLabel || typeLabel || label,
+        title: `${deviceLabel} - Face Rec - ${resolvedUserLabel}`,
+        highlight: resolvedUserLabel || typeLabel || label,
       };
     }
     if (typeLower.includes('private pin') || typeLower.includes('privatepin')) {
       return {
         category: normalizedCategory,
-        title: `${deviceLabel} - Private Pin - ${userLabel}`,
-        highlight: userLabel || typeLabel || label,
+        title: `${deviceLabel} - Private Pin - ${resolvedUserLabel}`,
+        highlight: resolvedUserLabel || typeLabel || label,
       };
     }
   }
