@@ -1123,20 +1123,38 @@ function describeEventForDisplay(event){
   const normalizedCategory = category || 'system';
   const label = EVENT_CATEGORY_LABELS[normalizedCategory] || normalizedCategory.charAt(0).toUpperCase() + normalizedCategory.slice(1);
   const device = pickFirstEventText(event, EVENT_DEVICE_KEYS);
+  const deviceLabel = device || label;
   const typeLabel = getEventTypeLabel(event);
   if (normalizedCategory === 'call') {
     const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
-    const callDetail = typeLabel || caller;
     const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';
     return {
       category: normalizedCategory,
-      title: [label, callDetail].join(' - '),
-      highlight: fallbackMessage || typeLabel || caller || label,
+      title: `${deviceLabel} - Call - ${caller}`,
+      highlight: caller || fallbackMessage || typeLabel || label,
     };
   }
   const categoryDetailKeys = EVENT_DETAIL_KEYS[normalizedCategory] || [];
   const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'event';
   const detail = typeLabel || pickFirstEventText(event, categoryDetailKeys) || fallbackMessage;
+  const typeLower = String(typeLabel || '').toLowerCase();
+  const userLabel = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
+  if (normalizedCategory === 'access' && typeLabel) {
+    if (typeLower.includes('face')) {
+      return {
+        category: normalizedCategory,
+        title: `${deviceLabel} - Face Rec - ${userLabel}`,
+        highlight: userLabel || typeLabel || label,
+      };
+    }
+    if (typeLower.includes('private pin') || typeLower.includes('privatepin')) {
+      return {
+        category: normalizedCategory,
+        title: `${deviceLabel} - Private Pin - ${userLabel}`,
+        highlight: userLabel || typeLabel || label,
+      };
+    }
+  }
   const parts = [label];
   if (device) parts.push(device);
   if (detail) parts.push(detail);
