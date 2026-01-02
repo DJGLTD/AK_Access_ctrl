@@ -742,6 +742,9 @@ class AkuvoxAPI:
             for key in (
                 "DoorNum",
                 "door_num",
+                "AnalogNumber",
+                "AnalogProxyAddress",
+                "AnalogReplace",
                 "PriorityCall",
                 "priority_call",
                 "Type",
