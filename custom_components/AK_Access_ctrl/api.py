@@ -816,6 +816,14 @@ class AkuvoxAPI:
                             if text:
                                 d[k] = text
                         continue
+                    if k == "ScheduleRelay":
+                        if v == "":
+                            d[k] = ""
+                        else:
+                            text = str(v).strip()
+                            if text:
+                                d[k] = text
+                        continue
                     if k in numeric_fields:
                         coerced = self._coerce_int(v)
                         if coerced is not None:
@@ -1948,7 +1956,7 @@ class AkuvoxAPI:
         return result
 
     async def user_delete(self, identifier: str) -> None:
-        """Delete by device ID or resolve by (ID/UserID/Name) first."""
+        """Delete by device ID or resolve by (ID/UserID/Name) first (ID-only delete)."""
         if identifier is None:
             return
 
@@ -1988,12 +1996,6 @@ class AkuvoxAPI:
             if text.isdigit():
                 try:
                     await self._api_user("delete", [{"ID": text}])
-                    deletion_attempted = True
-                except Exception:
-                    pass
-            if not deletion_attempted:
-                try:
-                    await self._api_user("delete", [{"UserID": text, "UserId": text}])
                     deletion_attempted = True
                 except Exception:
                     pass
@@ -2086,11 +2088,6 @@ class AkuvoxAPI:
 
         if not dev_ids:
             if face_ids:
-                for uid in face_ids:
-                    try:
-                        await self._api_user("delete", [{"UserID": uid, "UserId": uid}])
-                    except Exception:
-                        pass
                 await self.face_delete_bulk(face_ids)
             return
 
