@@ -728,16 +728,18 @@ class AkuvoxAPI:
         norm: List[Dict[str, Any]] = []
         for it in items or []:
             it2 = self._map_schedule_fields(it or {})
-            # Some Akuvox firmwares reject user.add payloads that include
-            # the free-text Schedule list (retcode -100 error param).
             schedule_list = it2.get("Schedule")
-            if "ScheduleID" not in it2 and isinstance(schedule_list, (list, tuple, set)):
+            schedule_id = str(it2.get("ScheduleID") or "").strip()
+            if not schedule_id and isinstance(schedule_list, (list, tuple, set)):
                 for entry in schedule_list:
                     text = str(entry or "").strip()
                     if text.isdigit():
-                        it2["ScheduleID"] = text
+                        schedule_id = text
                         break
-            it2.pop("Schedule", None)
+            if schedule_id:
+                it2["Schedule"] = [schedule_id]
+            else:
+                it2.pop("Schedule", None)
             it2.pop("ScheduleID", None)
             for key in (
                 "DoorNum",
