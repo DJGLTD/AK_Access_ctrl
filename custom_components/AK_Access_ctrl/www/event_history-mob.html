@@ -592,6 +592,9 @@ function getEventUserLabel(evt){
   const number = evt.CallNumber || evt.CallNum || evt.CallNo || evt.number || evt.digits;
   if (typeof number === 'string' && number.trim()) return number.trim();
   if (number) return String(number);
+  const pin = evt.Pin || evt.PIN || evt.Passcode || evt.Password || evt.Credential || evt.CardNumber || evt.CardNo;
+  if (typeof pin === 'string' && pin.trim()) return pin.trim();
+  if (pin) return String(pin);
   return 'Unknown';
 }
 
