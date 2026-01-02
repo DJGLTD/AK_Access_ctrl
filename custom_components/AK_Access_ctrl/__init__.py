@@ -793,6 +793,10 @@ def _desired_device_user_payload(
         key_holder_flag = _key_holder_from_record(local)
     key_holder = bool(key_holder_flag)
     explicit_id = str(profile.get("schedule_id") or "").strip()
+    if explicit_id and explicit_id.isdigit():
+        mapped_id = sched_map.get(schedule_lower, "")
+        if mapped_id and mapped_id != explicit_id:
+            explicit_id = ""
 
     exit_override = bool(opts.get("exit_device"))
     exit_schedule_id: Optional[str] = None
