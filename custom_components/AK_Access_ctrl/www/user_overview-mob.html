@@ -1126,7 +1126,8 @@ function compileUsers(devices, registryUsers, kpis){
 }
 
 function renderSummary(kpis, users){
-  const total = Number(kpis?.users ?? users.length ?? 0);
+  const userCount = Array.isArray(users) ? users.length : Number(kpis?.users ?? 0);
+  const total = Number.isFinite(userCount) ? userCount : Number(kpis?.users ?? 0);
   const pending = Number(kpis?.pending ?? 0);
   const faces = users.reduce((acc, u) => acc + (u.face_active ? 1 : 0), 0);
   document.getElementById('summaryUsers').textContent = Number.isFinite(total) ? String(total) : '—';

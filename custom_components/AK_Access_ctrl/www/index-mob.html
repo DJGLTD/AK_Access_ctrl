@@ -1564,6 +1564,11 @@ function renderUsers(devs, registryUsers, kpis){
     </tr>`;
   }).join('');
 
+  const kpiUsers = document.getElementById('kpiUsers');
+  if (kpiUsers) {
+    kpiUsers.textContent = String(listSorted.length);
+  }
+
   $('#tblUsers').innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
 
   $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {

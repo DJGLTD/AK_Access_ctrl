@@ -2539,14 +2539,18 @@ class AkuvoxAPI:
             or spec.get("TimeEnd"),
             default="23:59",
         )
+        start_compact = start_time.replace(":", "")
+        end_compact = end_time.replace(":", "")
 
         item: Dict[str, Any] = {
             "Name": name,
             "Type": sched_type,
             "DateStart": date_start,
             "DateEnd": date_end,
-            "TimeStart": start_time,
-            "TimeEnd": end_time,
+            "TimeStart": start_compact,
+            "TimeEnd": end_compact,
+            "Start": start_time,
+            "End": end_time,
         }
 
         for low_key, api_key in day_map.items():
