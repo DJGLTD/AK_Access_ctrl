@@ -2625,10 +2625,10 @@ class AkuvoxAPI:
         payload = self._sched_payload_from_spec(name, spec)
         start_time = str(payload.get("Start") or "00:00")
         end_time = str(payload.get("End") or "23:59")
-        payload["Daily"] = f"{start_time}-{end_time}"
+        start_compact = str(payload.get("TimeStart") or start_time.replace(":", ""))
+        end_compact = str(payload.get("TimeEnd") or end_time.replace(":", ""))
+        payload["Daily"] = f"{start_compact}-{end_compact}"
         for key in (
-            "TimeStart",
-            "TimeEnd",
             "Start",
             "End",
             "Mon",
@@ -2650,10 +2650,10 @@ class AkuvoxAPI:
         payload = self._sched_payload_from_spec(name, spec)
         start_time = str(payload.get("Start") or "00:00")
         end_time = str(payload.get("End") or "23:59")
-        payload["Daily"] = f"{start_time}-{end_time}"
+        start_compact = str(payload.get("TimeStart") or start_time.replace(":", ""))
+        end_compact = str(payload.get("TimeEnd") or end_time.replace(":", ""))
+        payload["Daily"] = f"{start_compact}-{end_compact}"
         for key in (
-            "TimeStart",
-            "TimeEnd",
             "Start",
             "End",
             "Mon",
