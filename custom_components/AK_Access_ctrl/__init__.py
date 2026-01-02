@@ -3043,6 +3043,40 @@ class SyncManager:
                 except Exception:
                     pass
 
+    async def _ensure_device_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]) -> None:
+        if not schedules:
+            return
+        device_schedule_names: Optional[set[str]] = None
+        try:
+            device_schedule_names = {
+                str(it.get("Name") or "").strip().lower()
+                for it in (await api.schedule_get()) or []
+                if isinstance(it, dict)
+            }
+        except Exception:
+            device_schedule_names = None
+
+        for name, spec in (schedules or {}).items():
+            if name in ("24/7 Access", "No Access"):
+                continue
+            if isinstance(spec, dict) and (spec.get("system_exit_clone") or spec.get("exit_clone_for")):
+                continue
+            if device_schedule_names is not None and name.strip().lower() in device_schedule_names:
+                continue
+            sanitized: Dict[str, Any]
+            if isinstance(spec, dict):
+                sanitized = dict(spec)
+                sanitized["days"] = list(spec.get("days") or [])
+            else:
+                sanitized = {}
+            try:
+                await api.schedule_add(name, sanitized)
+            except Exception:
+                try:
+                    await api.schedule_set(name, sanitized)
+                except Exception:
+                    pass
+
     async def _remove_missing_users(self, api: AkuvoxAPI, local_users: List[Dict[str, Any]], registry_keys_set: set):
         rogue_keys: List[str] = []
         for u in local_users or []:
@@ -3085,6 +3119,18 @@ class SyncManager:
         if not coord or not api:
             return
 
+        schedules_store = self._schedules_store()
+        schedules_all: Dict[str, Any] = {}
+        if schedules_store:
+            try:
+                schedules_all = schedules_store.all()
+            except Exception:
+                schedules_all = {}
+        try:
+            await self._ensure_device_schedules(api, schedules_all)
+        except Exception:
+            pass
+
         try:
             local_users: List[Dict[str, Any]] = await api.user_list()
         except Exception:
@@ -3105,14 +3151,6 @@ class SyncManager:
 
         device_groups: List[str] = list(opts.get("sync_groups", ["Default"]))
         users_store = self._users_store()
-        schedules_store = self._schedules_store()
-        schedules_all: Dict[str, Any] = {}
-        if schedules_store:
-            try:
-                schedules_all = schedules_store.all()
-            except Exception:
-                schedules_all = {}
-
         device_type_raw = (coord.health.get("device_type") or "").strip()
         device_type = device_type_raw.lower()
         is_intercom = device_type == "intercom"
