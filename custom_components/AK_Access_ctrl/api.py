@@ -2542,20 +2542,24 @@ class AkuvoxAPI:
         if sched_type in {"", "0"} and (date_range or date_start or date_end):
             sched_type = "1"
 
-        start_time = _clean_time(
+        start_input = (
             spec.get("start")
             or spec.get("Start")
             or spec.get("time_start")
-            or spec.get("TimeStart"),
-            default="00:00",
+            or spec.get("TimeStart")
         )
-        end_time = _clean_time(
-            spec.get("end")
-            or spec.get("End")
-            or spec.get("time_end")
-            or spec.get("TimeEnd"),
-            default="23:59",
-        )
+        end_input = spec.get("end") or spec.get("End") or spec.get("time_end") or spec.get("TimeEnd")
+        daily_range = spec.get("daily") or spec.get("Daily")
+        if (start_input is None or end_input is None) and isinstance(daily_range, str) and "-" in daily_range:
+            parts = [chunk.strip() for chunk in daily_range.split("-", 1)]
+            if len(parts) == 2:
+                if start_input is None and parts[0]:
+                    start_input = parts[0]
+                if end_input is None and parts[1]:
+                    end_input = parts[1]
+
+        start_time = _clean_time(start_input, default="00:00")
+        end_time = _clean_time(end_input, default="23:59")
         start_compact = start_time.replace(":", "")
         end_compact = end_time.replace(":", "")
 
@@ -2647,6 +2651,22 @@ class AkuvoxAPI:
         start_time = str(payload.get("Start") or "00:00")
         end_time = str(payload.get("End") or "23:59")
         payload["Daily"] = f"{start_time}-{end_time}"
+        for key in (
+            "TimeStart",
+            "TimeEnd",
+            "Start",
+            "End",
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thur",
+            "Fri",
+            "Sat",
+            "Sun",
+        ):
+            payload.pop(key, None)
+        if payload.get("Date") == "00000000-00000000":
+            payload.pop("Date", None)
         schedule_id = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "").strip()
         display_id = str(spec.get("DisplayID") or spec.get("display_id") or "").strip()
         if not schedule_id or not display_id:
