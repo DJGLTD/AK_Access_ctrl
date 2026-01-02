@@ -2199,6 +2199,40 @@ def _iter_device_buckets(root: Dict[str, Any]):
         yield entry_id, data, coord, opts
 
 
+async def _fetch_device_schedule_ids(root: Dict[str, Any]) -> Dict[str, str]:
+    schedule_ids: Dict[str, str] = {
+        "24/7 Access": "1001",
+        "No Access": "1002",
+    }
+    for _, data, _, _ in _iter_device_buckets(root):
+        api = data.get("api")
+        if not api:
+            continue
+        try:
+            items = await api.schedule_get()
+        except Exception:
+            continue
+        if not isinstance(items, list):
+            continue
+        matched = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or "").strip()
+            schedule_id = str(
+                item.get("ScheduleID")
+                or item.get("ScheduleId")
+                or item.get("ID")
+                or ""
+            ).strip()
+            if name and schedule_id:
+                schedule_ids[name] = schedule_id
+                matched = True
+        if matched:
+            break
+    return schedule_ids
+
+
 def _normalize_user_match_value(value: Any) -> str:
     if value is None:
         return ""
@@ -2523,6 +2557,7 @@ class AkuvoxUIView(HomeAssistantView):
             "access_event_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "registry_users": [],
             "schedules": {},
+            "schedule_ids": {},
             "groups": [],
             "all_groups": [],
             "capabilities": {"alarm_relay": False},
@@ -2720,6 +2755,13 @@ class AkuvoxUIView(HomeAssistantView):
                 except Exception:
                     schedules = {}
             response["schedules"] = schedules
+            try:
+                response["schedule_ids"] = await _fetch_device_schedule_ids(root)
+            except Exception:
+                response["schedule_ids"] = {
+                    "24/7 Access": "1001",
+                    "No Access": "1002",
+                }
 
             groups: List[str] = []
             gs = root.get("groups_store")

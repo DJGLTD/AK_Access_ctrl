@@ -771,6 +771,7 @@ function openInApp(view, params = {}, options = {}) {
 
 /* -------------------- app state -------------------- */
 let SCHEDULES = {};     // { name: weekSpec, ... }
+let SCHEDULE_IDS = {};  // { name: scheduleId, ... }
 let EXIT_CLONES = {};   // { normalizedName: cloneName }
 let scheduleRefreshPromise = null;
 let scheduleRefreshTimer = null;
@@ -1000,7 +1001,7 @@ function scheduleHasWorkingExitClone(scheduleName){
   return !!(clone && SCHEDULES && SCHEDULES[clone]);
 }
 
-function applySchedulesUpdate(nextSchedules){
+function applySchedulesUpdate(nextSchedules, nextScheduleIds){
   const scheduleSelect = document.getElementById('schedule');
   const previousId = scheduleSelect ? scheduleSelect.value : (CURRENT && CURRENT.schedule_id ? CURRENT.schedule_id : '');
   const previousName = CURRENT && CURRENT.schedule_name ? CURRENT.schedule_name : '';
@@ -1011,6 +1012,15 @@ function applySchedulesUpdate(nextSchedules){
     });
   }
   SCHEDULES = sanitized;
+  const ids = {};
+  if (nextScheduleIds && typeof nextScheduleIds === 'object'){
+    Object.entries(nextScheduleIds).forEach(([name, value]) => {
+      if (!name) return;
+      if (value === null || value === undefined) return;
+      ids[String(name)] = String(value);
+    });
+  }
+  SCHEDULE_IDS = ids;
   buildScheduleMap();
   if (scheduleSelect){
     const optionsHtml = scheduleOptionsHtml();
@@ -1049,7 +1059,7 @@ async function refreshSchedulesFromServer(){
     try {
       const state = await apiGet(API_STATE);
       if (state && typeof state === 'object' && state.schedules){
-        applySchedulesUpdate(state.schedules);
+        applySchedulesUpdate(state.schedules, state.schedule_ids);
       }
     } catch (err) {
       if (handleAuthError(err)) return;
@@ -1506,9 +1516,20 @@ function applyCredentialPrompts(){
 
 function buildScheduleMap(){
   EXIT_CLONES = buildExitCloneMap(SCHEDULES);
+  const idForName = (name) => {
+    if (!name) return '';
+    if (SCHEDULE_IDS && typeof SCHEDULE_IDS === 'object'){
+      const direct = SCHEDULE_IDS[name];
+      if (direct) return String(direct);
+      const lower = String(name).toLowerCase();
+      const match = Object.keys(SCHEDULE_IDS).find(key => key.toLowerCase() === lower);
+      if (match) return String(SCHEDULE_IDS[match]);
+    }
+    return '';
+  };
   const out = [
-    { id: '1001', name: '24/7 Access', label: '24/7 Access' },
-    { id: '1002', name: 'No Access',   label: 'No Access' }
+    { id: idForName('24/7 Access') || '1001', name: '24/7 Access', label: '24/7 Access' },
+    { id: idForName('No Access') || '1002',   name: 'No Access',   label: 'No Access' }
   ];
   const entries = Object.entries(SCHEDULES || {})
     .filter(([name, spec]) => name !== '24/7 Access' && name !== 'No Access' && !scheduleIsExitClone(name, spec))
@@ -1516,7 +1537,7 @@ function buildScheduleMap(){
     .sort((a, b) => a.localeCompare(b));
   const base = 1003;
   entries.forEach((name, i) => {
-    const id = String(base + i);
+    const id = idForName(name) || String(base + i);
     out.push({ id, name, label: name });
   });
   SCHED_MAP = out.map(item => ({ ...item, display: formatScheduleDisplay(item.id, item.label) }));
@@ -1626,7 +1647,7 @@ async function load(){
     }
     updateKeyHolderAvailability();
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
-    applySchedulesUpdate(state?.schedules || {});
+    applySchedulesUpdate(state?.schedules || {}, state?.schedule_ids || {});
     REGISTRY = state.registry_users || [];
     DEVICES = state.devices || [];
 
