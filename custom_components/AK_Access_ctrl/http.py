@@ -2654,6 +2654,8 @@ class AkuvoxUIView(HomeAssistantView):
                     canonical = normalize_ha_id(key)
                     if not canonical or _profile_is_empty_reserved(prof):
                         continue
+                    if str(prof.get("status") or "").strip().lower() == "deleted":
+                        continue
                     groups = _normalize_groups(prof.get("groups"))
                     face_status = str(prof.get("face_status") or "").strip().lower()
                     face_synced_at = prof.get("face_synced_at")
