@@ -2522,6 +2522,8 @@ class AkuvoxAPI:
         date_start = str(spec.get("date_start") or spec.get("DateStart") or "").strip()
         date_end = str(spec.get("date_end") or spec.get("DateEnd") or "").strip()
         date_range = str(spec.get("date") or spec.get("Date") or "").strip()
+        if sched_type in {"", "0"} and (date_range or date_start or date_end):
+            sched_type = "1"
 
         start_time = _clean_time(
             spec.get("start")
@@ -2552,15 +2554,17 @@ class AkuvoxAPI:
 
         # Legacy schedule fields (some devices expect Date/Week/Daily)
         week_lookup = {
+            "sun": "0",
             "mon": "1",
             "tue": "2",
             "wed": "3",
             "thu": "4",
             "fri": "5",
             "sat": "6",
-            "sun": "7",
         }
-        ordered_week = "".join(week_lookup[day] for day in day_map if day in selected_days)
+        ordered_week = "".join(
+            week_lookup[day] for day in ("sun", "mon", "tue", "wed", "thu", "fri", "sat") if day in selected_days
+        )
         item["Week"] = ordered_week
         item["Daily"] = f"{start_time}-{end_time}"
         if not date_range:

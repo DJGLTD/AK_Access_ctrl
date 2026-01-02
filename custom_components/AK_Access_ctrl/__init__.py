@@ -3012,17 +3012,31 @@ class SyncManager:
     async def _push_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]):
         if not schedules:
             return
+        device_schedule_names: Optional[set[str]] = None
+        try:
+            device_schedule_names = {
+                str(it.get("Name") or "").strip().lower()
+                for it in (await api.schedule_get()) or []
+                if isinstance(it, dict)
+            }
+        except Exception:
+            device_schedule_names = None
         for name, spec in (schedules or {}).items():
             if name in ("24/7 Access", "No Access"):
                 continue
             sanitized: Dict[str, Any]
             if isinstance(spec, dict):
+                if spec.get("system_exit_clone") or spec.get("exit_clone_for"):
+                    continue
                 sanitized = dict(spec)
                 sanitized["days"] = list(spec.get("days") or [])
             else:
                 sanitized = {}
             try:
-                await api.schedule_add(name, sanitized)
+                if device_schedule_names is not None and name.strip().lower() in device_schedule_names:
+                    await api.schedule_set(name, sanitized)
+                else:
+                    await api.schedule_add(name, sanitized)
             except Exception:
                 try:
                     await api.schedule_set(name, sanitized)
