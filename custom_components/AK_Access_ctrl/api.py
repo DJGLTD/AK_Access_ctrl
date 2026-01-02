@@ -736,6 +736,12 @@ class AkuvoxAPI:
                     if text.isdigit():
                         schedule_id = text
                         break
+            if not schedule_id:
+                schedule_id = self._schedule_id_from_relay(
+                    it2.get("ScheduleRelay") or it2.get("Schedule-Relay")
+                ) or ""
+            if not schedule_id:
+                schedule_id = "1002"
             if schedule_id:
                 it2["Schedule"] = [schedule_id]
             else:
