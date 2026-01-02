@@ -1129,6 +1129,23 @@ def _integrity_field_differences(
     return diffs
 
 
+def _schedule_times_out_of_order(spec: Mapping[str, Any]) -> bool:
+    start = AkuvoxSchedulesStore._time_to_minutes(spec.get("start"))
+    end = AkuvoxSchedulesStore._time_to_minutes(spec.get("end"))
+    if start is None or end is None:
+        return False
+    return start > end
+
+
+def _normalize_schedule_for_integrity(
+    schedules_store: AkuvoxSchedulesStore,
+    name: str,
+    spec: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    payload = dict(spec) if isinstance(spec, Mapping) else {}
+    return schedules_store._normalize_payload(name, payload)
+
+
 def _ha_id_from_int(n: int) -> str:
     return ha_id_from_int(n)
 
@@ -1415,6 +1432,14 @@ class AkuvoxSchedulesStore(Store):
                 or payload.get("time_end")
                 or payload.get("TimeEnd")
             )
+            daily_range = payload.get("daily") or payload.get("Daily")
+            if (raw_start is None or raw_end is None) and isinstance(daily_range, str) and "-" in daily_range:
+                parts = [chunk.strip() for chunk in daily_range.split("-", 1)]
+                if len(parts) == 2:
+                    if raw_start is None and parts[0]:
+                        raw_start = parts[0]
+                    if raw_end is None and parts[1]:
+                        raw_end = parts[1]
 
             if raw_start is not None:
                 normalized["start"] = self._clean_time(raw_start, default=normalized["start"])
@@ -3463,6 +3488,58 @@ class SyncManager:
                         if records:
                             mismatch_reason = f"rogue user {key}"
                             break
+
+                if mismatch_reason is None and schedules_store:
+                    try:
+                        device_schedules = await api.schedule_get()
+                    except Exception:
+                        device_schedules = None
+
+                    if device_schedules is not None:
+                        device_map: Dict[str, Dict[str, Any]] = {}
+                        for sched in device_schedules or []:
+                            if not isinstance(sched, dict):
+                                continue
+                            name = str(sched.get("Name") or "").strip()
+                            if not name:
+                                continue
+                            device_map[name.lower()] = _normalize_schedule_for_integrity(
+                                schedules_store,
+                                name,
+                                sched,
+                            )
+
+                        for name, spec in (schedules_all or {}).items():
+                            if not isinstance(spec, dict):
+                                continue
+                            if name in ("24/7 Access", "No Access"):
+                                continue
+                            if schedules_store._is_exit_clone(name, spec):
+                                continue
+                            expected_spec = _normalize_schedule_for_integrity(
+                                schedules_store,
+                                name,
+                                spec,
+                            )
+                            if _schedule_times_out_of_order(expected_spec):
+                                mismatch_reason = f"schedule {name} times out of order"
+                                break
+                            device_spec = device_map.get(name.strip().lower())
+                            if not device_spec:
+                                mismatch_reason = f"missing schedule {name}"
+                                break
+                            if _schedule_times_out_of_order(device_spec):
+                                mismatch_reason = f"schedule {name} times out of order"
+                                break
+                            if expected_spec.get("days") != device_spec.get("days"):
+                                mismatch_reason = f"schedule {name} days mismatch"
+                                break
+                            if (
+                                expected_spec.get("start") != device_spec.get("start")
+                                or expected_spec.get("end") != device_spec.get("end")
+                            ):
+                                mismatch_reason = f"schedule {name} time mismatch"
+                                break
 
                 if mismatch_reason is None:
                     try:
