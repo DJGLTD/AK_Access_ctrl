@@ -1247,6 +1247,7 @@ function scheduleDisplayId(rawId){
 
 function formatScheduleDisplay(rawId, label){
   const name = String(label ?? '').trim();
+  if (name === '24/7 Access' || name === 'No Access') return name;
   const displayId = scheduleDisplayId(rawId);
   if (displayId && name) return `${displayId} - ${name}`;
   return displayId || name;
