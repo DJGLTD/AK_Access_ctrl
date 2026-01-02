@@ -633,8 +633,15 @@ def _prepare_user_set_payload(
     if isinstance(desired, dict):
         payload.update({k: v for k, v in desired.items() if v is not None})
 
+    priority_value = str(payload.get("Priority") or "").strip()
+    if not priority_value or priority_value == "-1":
+        payload["Priority"] = "0"
+
     if ha_key:
         payload["UserID"] = str(ha_key)
+
+    for key in ("AnalogNumber", "AnalogProxyAddress", "AnalogReplace"):
+        payload.pop(key, None)
 
     for key in ("DoorNum", "ScheduleID", "PriorityCall", "Type", "Schedule-Relay", "Id", "id"):
         payload.pop(key, None)
@@ -1076,29 +1083,10 @@ def _integrity_field_differences(
         diffs.append("pin")
 
     if include_face:
-        expected_face = _face_flag_from_record(expected)
-        actual_face = _face_flag_from_record(local)
-        if expected_face is not None:
-            if bool(actual_face) != bool(expected_face):
-                diffs.append("face status")
-
-        expected_url = _norm(expected.get("FaceUrl") or expected.get("FaceURL"))
-        if expected_url:
-            local_url = _norm(local.get("FaceUrl") or local.get("FaceURL"))
-
-            def _url_basename(value: str) -> str:
-                cleaned = (value or "").strip()
-                if not cleaned:
-                    return ""
-                cleaned = cleaned.split("?", 1)[0].split("#", 1)[0]
-                cleaned = cleaned.rstrip("/").replace("\\", "/")
-                return cleaned.rsplit("/", 1)[-1]
-
-            if not local_url:
-                diffs.append("face url")
-            elif local_url != expected_url:
-                if _url_basename(local_url) != _url_basename(expected_url):
-                    diffs.append("face url")
+        expected_face = _normalize_boolish(expected.get("FaceRegister"))
+        actual_face = _normalize_boolish(local.get("FaceRegister"))
+        if expected_face is True and actual_face is not True:
+            diffs.append("face status")
 
     return diffs
 
