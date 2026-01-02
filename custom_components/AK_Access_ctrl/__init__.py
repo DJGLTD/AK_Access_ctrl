@@ -2959,10 +2959,18 @@ class SyncManager:
             "no access": "1002",
         }
         try:
-            dev_scheds = await api.schedule_get()  # [{"Name": "...", "ScheduleID":"1xxx"}, ...]
+            dev_scheds = await api.schedule_get()  # [{"Name": "...", "DisplayID":"1"}, ...]
             for it in dev_scheds or []:
                 n = str(it.get("Name") or "").strip()
-                sid = str(it.get("ScheduleID") or "").strip()
+                sid = str(it.get("DisplayID") or it.get("display_id") or "").strip()
+                if not sid:
+                    sid = str(
+                        it.get("ScheduleID")
+                        or it.get("ScheduleId")
+                        or it.get("ID")
+                        or it.get("Id")
+                        or ""
+                    ).strip()
                 if n and sid:
                     name_to_id[n.lower()] = sid
         except Exception:
