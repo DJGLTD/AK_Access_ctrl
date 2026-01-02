@@ -708,6 +708,7 @@ class AkuvoxAPI:
         items: List[Dict[str, Any]],
         *,
         allow_face_url: bool = False,
+        for_set: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         - Map schedule names to device IDs where applicable (24/7 -> 1001, No Access -> 1002)
@@ -724,10 +725,61 @@ class AkuvoxAPI:
             "KeyHolder",
             "SourceType",
         }
+        string_fields = {
+            "BLE_KEY_ID",
+            "FaceRegisterStatus",
+            "AuthMode",
+            "AnalogSystem",
+            "DialAccount",
+            "LiftFloorNum",
+            "WebRelay",
+            "C4EventNo",
+            "PriorityCall",
+            "DoorNum",
+            "ContactID",
+            "BLEAuthCode",
+            "BLE_Expired",
+            "BLE_Status",
+            "PrivatePIN",
+            "AnalogNumber",
+            "AnalogReplace",
+            "AnalogProxyAddress",
+            "CardCode",
+            "BleKeyDelete",
+            "Schedule-Relay",
+            "ID",
+        }
+        user_set_key_map = {
+            "BLE_AuthCode": "BLEAuthCode",
+            "FaceRegister": "FaceRegisterStatus",
+            "Priority": "PriorityCall",
+            "ScheduleRelay": "Schedule-Relay",
+            "Id": "ID",
+            "id": "ID",
+        }
+
+        def _normalize_fixed_plate(value: Any) -> List[Dict[str, Any]]:
+            items: List[Dict[str, Any]] = []
+            if isinstance(value, list):
+                for entry in value:
+                    items.append(entry if isinstance(entry, dict) else {})
+            while len(items) < 5:
+                items.append({})
+            return items[:5]
 
         norm: List[Dict[str, Any]] = []
         for it in items or []:
-            it2 = self._map_schedule_fields(it or {})
+            it2 = dict(it or {})
+            if for_set:
+                remapped: Dict[str, Any] = {}
+                for key, value in it2.items():
+                    if key in user_set_key_map:
+                        key = user_set_key_map[key]
+                    if key in ("ScheduleRelay", "BLE_AuthCode", "FaceRegister", "Priority"):
+                        continue
+                    remapped[key] = value
+                it2 = remapped
+            it2 = self._map_schedule_fields(it2 or {})
             schedule_list = it2.get("Schedule")
             schedule_id = str(it2.get("ScheduleID") or "").strip()
             if not schedule_id and isinstance(schedule_list, (list, tuple, set)):
@@ -741,26 +793,27 @@ class AkuvoxAPI:
                     it2.get("ScheduleRelay") or it2.get("Schedule-Relay")
                 ) or ""
             if not schedule_id:
-                schedule_id = "1002"
+                schedule_id = "1001" if for_set else "1002"
             if schedule_id:
                 it2["Schedule"] = [schedule_id]
             else:
                 it2.pop("Schedule", None)
             it2.pop("ScheduleID", None)
-            for key in (
-                "DoorNum",
-                "door_num",
-                "AnalogNumber",
-                "AnalogProxyAddress",
-                "AnalogReplace",
-                "PriorityCall",
-                "priority_call",
-                "Type",
-                "type",
-                "Id",
-                "id",
-            ):
-                it2.pop(key, None)
+            if not for_set:
+                for key in (
+                    "DoorNum",
+                    "door_num",
+                    "AnalogNumber",
+                    "AnalogProxyAddress",
+                    "AnalogReplace",
+                    "PriorityCall",
+                    "priority_call",
+                    "Type",
+                    "type",
+                    "Id",
+                    "id",
+                ):
+                    it2.pop(key, None)
             if not allow_face_url:
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
@@ -789,13 +842,32 @@ class AkuvoxAPI:
                 relay_value = it2.pop("Schedule-Relay")
             normalized_relay = self._normalize_schedule_relay(relay_value)
             if normalized_relay is not None:
-                it2["ScheduleRelay"] = normalized_relay
+                relay_key = "Schedule-Relay" if for_set else "ScheduleRelay"
+                it2[relay_key] = normalized_relay
             else:
                 it2.pop("ScheduleRelay", None)
 
             d: Dict[str, Any] = {}
             for k, v in (it2 or {}).items():
                 if v is None:
+                    continue
+                if for_set:
+                    if k in ("LicensePlate", "LicensePlateTime"):
+                        d[k] = _normalize_fixed_plate(v)
+                        continue
+                    if isinstance(v, bool):
+                        d[k] = "1" if v else "0"
+                        continue
+                    if k in string_fields:
+                        d[k] = "" if v is None else str(v)
+                        continue
+                    if k == "Schedule":
+                        if isinstance(v, (list, tuple, set)):
+                            d[k] = [str(entry) for entry in v]
+                        else:
+                            d[k] = [str(v)]
+                        continue
+                    d[k] = v
                     continue
                 if isinstance(v, bool):
                     if k in numeric_fields:
@@ -884,11 +956,183 @@ class AkuvoxAPI:
                     face_source = d.get("FaceUrl")
 
             if self._should_force_face_register(face_source):
-                current = d.get("FaceRegister")
-                if self._coerce_int(current) != 1:
-                    d["FaceRegister"] = 1
+                if for_set:
+                    current = d.get("FaceRegisterStatus")
+                    if self._coerce_int(current) != 1:
+                        d["FaceRegisterStatus"] = "1"
+                else:
+                    current = d.get("FaceRegister")
+                    if self._coerce_int(current) != 1:
+                        d["FaceRegister"] = 1
+            if for_set:
+                d.setdefault("PrivatePIN", "")
+                d.setdefault("AnalogNumber", "")
+                d.setdefault("AnalogReplace", "")
+                d.setdefault("AnalogProxyAddress", "")
+                d.setdefault("CardCode", "")
+                d.setdefault("BLEAuthCode", "")
+                d.setdefault("BLE_Expired", "")
+                d.setdefault("BLE_Status", "")
+                d.setdefault("BleKeyDelete", "0")
+                d.setdefault("DoorNum", "1")
+                d.setdefault("Schedule", ["1001"])
+                d.setdefault("Schedule-Relay", "1001-1;")
+                d.setdefault("LicensePlate", _normalize_fixed_plate(None))
+                d.setdefault("LicensePlateTime", _normalize_fixed_plate(None))
             norm.append(d)
         return norm
+
+    @staticmethod
+    def _user_set_working_template() -> Dict[str, Any]:
+        return {
+            "ID": "",
+            "UserID": "",
+            "Name": "",
+            "Group": "Default",
+            "DoorNum": "1",
+            "Schedule": ["1001"],
+            "Schedule-Relay": "1001-1;",
+            "PrivatePIN": "",
+            "AnalogNumber": "",
+            "AnalogProxyAddress": "",
+            "AnalogReplace": "",
+            "AnalogSystem": "0",
+            "AuthMode": "0",
+            "BLE_KEY_ID": "-1",
+            "BLEAuthCode": "",
+            "BLE_Expired": "",
+            "BLE_Status": "",
+            "BleKeyDelete": "0",
+            "C4EventNo": "0",
+            "CardCode": "",
+            "ContactID": "-1",
+            "DialAccount": "0",
+            "FaceRegisterStatus": "0",
+            "LiftFloorNum": "0",
+            "PhoneNum": "",
+            "PriorityCall": "0",
+            "Source": "Local",
+            "WebRelay": "0",
+            "LicensePlate": [{}, {}, {}, {}, {}],
+            "LicensePlateTime": [{}, {}, {}, {}, {}],
+        }
+
+    @classmethod
+    def validateUserSetPayload(cls, user_obj: Dict[str, Any]) -> Dict[str, Any]:
+        errors: List[str] = []
+        if not isinstance(user_obj, dict):
+            return {"ok": False, "errors": ["Payload item is not an object"]}
+
+        template = cls._user_set_working_template()
+        optional_keys = {"ID"}
+        required_keys = set(template.keys()) - optional_keys
+        forbidden_keys = {"ScheduleRelay", "BLE_AuthCode", "FaceRegister", "Priority"}
+        string_fields = {
+            "ID",
+            "BLE_KEY_ID",
+            "FaceRegisterStatus",
+            "AuthMode",
+            "AnalogSystem",
+            "DialAccount",
+            "LiftFloorNum",
+            "WebRelay",
+            "C4EventNo",
+            "PriorityCall",
+            "DoorNum",
+            "ContactID",
+            "BLEAuthCode",
+            "BLE_Expired",
+            "BLE_Status",
+            "PrivatePIN",
+            "AnalogNumber",
+            "AnalogReplace",
+            "AnalogProxyAddress",
+            "CardCode",
+            "BleKeyDelete",
+            "Schedule-Relay",
+        }
+
+        for key in required_keys:
+            if key not in user_obj:
+                errors.append(f"Missing key: {key}")
+
+        for key in forbidden_keys:
+            if key in user_obj:
+                errors.append(f"Forbidden key present: {key}")
+
+        for key in string_fields:
+            if key in user_obj and not isinstance(user_obj.get(key), str):
+                errors.append(f"Expected string for {key}")
+
+        for key in ("LicensePlate", "LicensePlateTime"):
+            value = user_obj.get(key)
+            if not isinstance(value, list):
+                errors.append(f"{key} must be an array")
+            elif len(value) != 5:
+                errors.append(f"{key} must have length 5")
+
+        if "ScheduleRelay" in user_obj:
+            errors.append("Use Schedule-Relay instead of ScheduleRelay")
+
+        return {"ok": not errors, "errors": errors}
+
+    @classmethod
+    def diffAgainstWorkingSchema(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        record: Any = payload
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                items = data.get("item")
+                if isinstance(items, list) and items:
+                    record = items[0]
+                elif isinstance(items, dict):
+                    record = items
+
+        if not isinstance(record, dict):
+            return {"missing": [], "unexpected": [], "type_mismatches": []}
+
+        template = cls._user_set_working_template()
+        optional_keys = {"ID"}
+        missing = [key for key in template if key not in record and key not in optional_keys]
+        unexpected = [key for key in record if key not in template]
+        type_mismatches: List[Dict[str, str]] = []
+
+        for key, expected_value in template.items():
+            if key not in record:
+                continue
+            actual_value = record.get(key)
+            expected_type = type(expected_value)
+            if expected_type is list:
+                if not isinstance(actual_value, list):
+                    type_mismatches.append(
+                        {
+                            "key": key,
+                            "expected": "list",
+                            "actual": type(actual_value).__name__,
+                        }
+                    )
+                elif key in ("LicensePlate", "LicensePlateTime") and len(actual_value) != 5:
+                    type_mismatches.append(
+                        {
+                            "key": key,
+                            "expected": "list(length=5)",
+                            "actual": f"list(length={len(actual_value)})",
+                        }
+                    )
+            elif not isinstance(actual_value, expected_type):
+                type_mismatches.append(
+                    {
+                        "key": key,
+                        "expected": expected_type.__name__,
+                        "actual": type(actual_value).__name__,
+                    }
+                )
+
+        return {
+            "missing": missing,
+            "unexpected": unexpected,
+            "type_mismatches": type_mismatches,
+        }
 
     # -------------------- Unified API call helpers --------------------
     async def _api_user(self, action: str, items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -1949,19 +2193,45 @@ class AkuvoxAPI:
 
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
-            allow_face_url=True,
+            allow_face_url=False,
+            for_set=True,
         )
 
         if not normalized_items:
             return {}
 
+        payload = {"target": "user", "action": "set", "data": {"item": normalized_items}}
+        validation_errors: List[str] = []
+        for idx, item in enumerate(normalized_items):
+            validation = self.validateUserSetPayload(item)
+            if not validation.get("ok"):
+                for err in validation.get("errors", []):
+                    validation_errors.append(f"item[{idx}]: {err}")
+
         try:
             result = await self._api_user("set", normalized_items)
-        except Exception:
-            result = await self._api_user("set", normalized_items)
+        except Exception as err:
+            try:
+                result = await self._api_user("set", normalized_items)
+            except Exception as retry_err:
+                _LOGGER.warning("Akuvox user.set request failed: %s", retry_err)
+                _LOGGER.warning(
+                    "Akuvox user.set payload diff: %s",
+                    self.diffAgainstWorkingSchema(payload),
+                )
+                raise
+            _LOGGER.debug("Akuvox user.set retry succeeded after: %s", err)
         retcode, message = self._parse_result_status(result)
         if not _retcode_is_success(retcode):
             detail = f" (message: {message})" if message else ""
+            if validation_errors:
+                _LOGGER.warning(
+                    "Akuvox user.set payload validation errors: %s", validation_errors
+                )
+            _LOGGER.warning(
+                "Akuvox user.set payload diff: %s",
+                self.diffAgainstWorkingSchema(payload),
+            )
             raise RuntimeError(f"Akuvox user.set returned retcode {retcode}{detail}")
 
         return result

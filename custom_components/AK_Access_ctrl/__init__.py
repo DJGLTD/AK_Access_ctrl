@@ -599,66 +599,104 @@ def _prepare_user_set_payload(
 ) -> Dict[str, Any]:
     """Return a device-friendly payload for user.set."""
 
+    def _normalize_fixed_plate(value: Any) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        if isinstance(value, list):
+            for entry in value:
+                items.append(entry if isinstance(entry, dict) else {})
+        while len(items) < 5:
+            items.append({})
+        return items[:5]
+
+    def _remap_user_set_keys(source: Dict[str, Any]) -> Dict[str, Any]:
+        mapping = {
+            "BLE_AuthCode": "BLEAuthCode",
+            "FaceRegister": "FaceRegisterStatus",
+            "Priority": "PriorityCall",
+            "ScheduleRelay": "Schedule-Relay",
+            "Id": "ID",
+            "id": "ID",
+        }
+        forbidden = set(mapping.keys())
+        cleaned: Dict[str, Any] = {}
+        for key, value in source.items():
+            if key in _FACE_URL_KEYS or key in _FACE_FILENAME_KEYS:
+                continue
+            if key in forbidden:
+                key = mapping[key]
+            if key in ("ScheduleRelay", "BLE_AuthCode", "FaceRegister", "Priority"):
+                continue
+            cleaned[key] = value
+        return cleaned
+
     payload: Dict[str, Any] = {
-        "BLE_KEY_ID": -1,
+        "UserID": str(ha_key or "").strip(),
+        "Name": "",
+        "Group": "Default",
+        "DoorNum": "1",
+        "Schedule": ["1001"],
+        "Schedule-Relay": "1001-1;",
+        "PrivatePIN": "",
         "AnalogNumber": "",
         "AnalogProxyAddress": "",
         "AnalogReplace": "",
         "AnalogSystem": "0",
         "AuthMode": "0",
-        "BLE_AuthCode": "",
-        "BLE_Expired": "N/A",
-        "BLE_Status": "Unpaired",
+        "BLE_KEY_ID": "-1",
+        "BLEAuthCode": "",
+        "BLE_Expired": "",
+        "BLE_Status": "",
+        "BleKeyDelete": "0",
         "C4EventNo": "0",
         "CardCode": "",
         "ContactID": "-1",
         "DialAccount": "0",
-        "FaceRegister": "0",
-        "FaceUrl": "",
-        "Group": "Default",
+        "FaceRegisterStatus": "0",
         "LiftFloorNum": "0",
-        "Name": "",
         "PhoneNum": "",
-        "Priority": "0",
-        "PrivatePIN": "",
-        "ScheduleRelay": "",
+        "PriorityCall": "0",
         "Source": "Local",
-        "UserID": str(ha_key or "").strip(),
         "WebRelay": "0",
-        "LicensePlate": [],
+        "LicensePlate": [{}, {}, {}, {}, {}],
+        "LicensePlateTime": [{}, {}, {}, {}, {}],
     }
+    base_keys = set(payload.keys()) | {"ID"}
 
     if isinstance(existing, dict):
-        payload.update(existing)
+        payload.update({k: v for k, v in _remap_user_set_keys(existing).items() if v is not None})
     if isinstance(desired, dict):
-        payload.update({k: v for k, v in desired.items() if v is not None})
+        payload.update({k: v for k, v in _remap_user_set_keys(desired).items() if v is not None})
 
-    priority_value = str(payload.get("Priority") or "").strip()
+    for key in list(payload.keys()):
+        if key not in base_keys:
+            payload.pop(key, None)
+
+    priority_value = str(payload.get("PriorityCall") or "").strip()
     if not priority_value or priority_value == "-1":
-        payload["Priority"] = "0"
+        payload["PriorityCall"] = "0"
 
     if ha_key:
         payload["UserID"] = str(ha_key)
 
-    for key in ("AnalogNumber", "AnalogProxyAddress", "AnalogReplace"):
+    for key in _FACE_URL_KEYS:
         payload.pop(key, None)
 
-    for key in ("DoorNum", "ScheduleID", "PriorityCall", "Type", "Schedule-Relay", "Id", "id"):
+    for key in ("ScheduleID", "Type", "Id", "id"):
         payload.pop(key, None)
 
-    _ensure_face_payload_fields(
-        payload,
-        ha_key=str(payload.get("UserID") or ha_key or ""),
-        sources=(desired, existing),
-    )
+    if "FaceRegisterStatus" not in payload:
+        face_flag = _face_flag_from_record(desired or {})
+        if face_flag is None:
+            face_flag = _face_flag_from_record(existing or {})
+        if face_flag is not None:
+            payload["FaceRegisterStatus"] = "1" if face_flag else "0"
 
-    register_flag = _normalize_boolish(payload.get("FaceRegister"))
-    face_url = str(payload.get("FaceUrl") or "").strip()
-    if not register_flag and not face_url:
-        payload["FaceRegister"] = "0"
-        payload["FaceUrl"] = ""
+    payload["LicensePlate"] = _normalize_fixed_plate(payload.get("LicensePlate"))
+    payload["LicensePlateTime"] = _normalize_fixed_plate(payload.get("LicensePlateTime"))
 
     return payload
+
+
 def _migrate_face_storage(hass: HomeAssistant) -> None:
     """Copy face assets from legacy locations into the persistent store."""
 
