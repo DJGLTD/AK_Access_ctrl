@@ -2479,35 +2479,52 @@ class AkuvoxAPI:
         }
 
         selected_days: set[str] = set()
-        raw_days = spec.get("days")
-        if isinstance(raw_days, (list, tuple, set)):
-            for entry in raw_days:
-                key = str(entry or "").strip().lower()
-                if key in day_map:
-                    selected_days.add(key)
-                else:
-                    short = key[:3]
-                    if short in day_map:
-                        selected_days.add(short)
-        elif isinstance(raw_days, dict):
-            for key, value in raw_days.items():
-                normalized = str(key or "").strip().lower()
-                if normalized in day_map and _truthy(value):
-                    selected_days.add(normalized)
+        week_text = str(spec.get("Week") or spec.get("week") or "").strip()
+        week_map = {
+            "0": "sun",
+            "1": "mon",
+            "2": "tue",
+            "3": "wed",
+            "4": "thu",
+            "5": "fri",
+            "6": "sat",
+        }
+        if week_text:
+            for ch in week_text:
+                mapped = week_map.get(ch)
+                if mapped:
+                    selected_days.add(mapped)
 
-        for low_key, api_key in day_map.items():
-            if api_key in spec and _truthy(spec.get(api_key)):
-                selected_days.add(low_key)
-            elif low_key in spec and isinstance(spec.get(low_key), (list, tuple)):
-                spans = spec.get(low_key) or []
-                for span in spans:
-                    if not isinstance(span, (list, tuple)) or len(span) < 2:
-                        continue
-                    start = _minutes(span[0])
-                    end = _minutes(span[1])
-                    if start is not None and end is not None:
-                        selected_days.add(low_key)
-                        break
+        if not selected_days:
+            raw_days = spec.get("days")
+            if isinstance(raw_days, (list, tuple, set)):
+                for entry in raw_days:
+                    key = str(entry or "").strip().lower()
+                    if key in day_map:
+                        selected_days.add(key)
+                    else:
+                        short = key[:3]
+                        if short in day_map:
+                            selected_days.add(short)
+            elif isinstance(raw_days, dict):
+                for key, value in raw_days.items():
+                    normalized = str(key or "").strip().lower()
+                    if normalized in day_map and _truthy(value):
+                        selected_days.add(normalized)
+
+            for low_key, api_key in day_map.items():
+                if api_key in spec and _truthy(spec.get(api_key)):
+                    selected_days.add(low_key)
+                elif low_key in spec and isinstance(spec.get(low_key), (list, tuple)):
+                    spans = spec.get(low_key) or []
+                    for span in spans:
+                        if not isinstance(span, (list, tuple)) or len(span) < 2:
+                            continue
+                        start = _minutes(span[0])
+                        end = _minutes(span[1])
+                        if start is not None and end is not None:
+                            selected_days.add(low_key)
+                            break
 
         if not selected_days:
             lowered = name.strip().lower()
@@ -2518,7 +2535,7 @@ class AkuvoxAPI:
             else:
                 selected_days = {"mon", "tue", "wed", "thu", "fri"}
 
-        sched_type = str(spec.get("type") or spec.get("Type") or "0")
+        sched_type = str(spec.get("type") or spec.get("Type") or "1")
         date_start = str(spec.get("date_start") or spec.get("DateStart") or "").strip()
         date_end = str(spec.get("date_end") or spec.get("DateEnd") or "").strip()
         date_range = str(spec.get("date") or spec.get("Date") or "").strip()
@@ -2574,7 +2591,7 @@ class AkuvoxAPI:
         if not date_range:
             if date_start or date_end:
                 date_range = f"{date_start}-{date_end}".strip("-")
-        item["Date"] = date_range or "-"
+        item["Date"] = date_range or "00000000-00000000"
 
         return item
 
@@ -2602,12 +2619,50 @@ class AkuvoxAPI:
 
     async def schedule_add(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         payload = self._sched_payload_from_spec(name, spec)
+        for key in (
+            "TimeStart",
+            "TimeEnd",
+            "Start",
+            "End",
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thur",
+            "Fri",
+            "Sat",
+            "Sun",
+        ):
+            payload.pop(key, None)
         if "ID" not in payload:
             payload["ID"] = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "-1")
         return await self._post_api({"target": "schedule", "action": "add", "data": {"item": [payload]}})
 
     async def schedule_set(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         payload = self._sched_payload_from_spec(name, spec)
+        schedule_id = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "").strip()
+        display_id = str(spec.get("DisplayID") or spec.get("display_id") or "").strip()
+        if not schedule_id or not display_id:
+            try:
+                schedules = await self.schedule_get()
+            except Exception:
+                schedules = []
+            lowered = str(name or "").strip().lower()
+            for sched in schedules:
+                if not isinstance(sched, dict):
+                    continue
+                if str(sched.get("Name") or "").strip().lower() != lowered:
+                    continue
+                if not schedule_id:
+                    schedule_id = str(
+                        sched.get("ID") or sched.get("ScheduleID") or sched.get("ScheduleId") or ""
+                    ).strip()
+                if not display_id:
+                    display_id = str(sched.get("DisplayID") or sched.get("display_id") or "").strip()
+                break
+        if schedule_id:
+            payload["ID"] = schedule_id
+        if display_id:
+            payload["DisplayID"] = display_id
         return await self._post_api({"target": "schedule", "action": "set", "data": {"item": [payload]}})
 
     async def schedule_del(self, name: str) -> Dict[str, Any]:
