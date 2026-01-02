@@ -2619,6 +2619,9 @@ class AkuvoxAPI:
 
     async def schedule_add(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         payload = self._sched_payload_from_spec(name, spec)
+        start_time = str(payload.get("Start") or "00:00")
+        end_time = str(payload.get("End") or "23:59")
+        payload["Daily"] = f"{start_time}-{end_time}"
         for key in (
             "TimeStart",
             "TimeEnd",
@@ -2633,12 +2636,17 @@ class AkuvoxAPI:
             "Sun",
         ):
             payload.pop(key, None)
+        if payload.get("Date") == "00000000-00000000":
+            payload.pop("Date", None)
         if "ID" not in payload:
             payload["ID"] = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "-1")
         return await self._post_api({"target": "schedule", "action": "add", "data": {"item": [payload]}})
 
     async def schedule_set(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         payload = self._sched_payload_from_spec(name, spec)
+        start_time = str(payload.get("Start") or "00:00")
+        end_time = str(payload.get("End") or "23:59")
+        payload["Daily"] = f"{start_time}-{end_time}"
         schedule_id = str(spec.get("ID") or spec.get("Id") or spec.get("id") or "").strip()
         display_id = str(spec.get("DisplayID") or spec.get("display_id") or "").strip()
         if not schedule_id or not display_id:
