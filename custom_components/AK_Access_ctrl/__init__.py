@@ -74,7 +74,14 @@ from .http import (
     register_ui,
     FACE_FILE_EXTENSIONS,
 )  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
-from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_temp_id, temp_id_from_int
+from .ha_id import (
+    ha_id_from_int,
+    is_ha_id,
+    normalize_ha_id,
+    normalize_temp_id,
+    normalize_user_id,
+    temp_id_from_int,
+)
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
@@ -189,7 +196,7 @@ async def _store_device_user_ids(storage: Any, users: Iterable[Dict[str, Any]]) 
         ha_ref = record.get("UserID") or record.get("UserId") or record.get("Name")
         if ha_ref in (None, ""):
             continue
-        canonical = normalize_ha_id(ha_ref) or str(ha_ref).strip()
+        canonical = normalize_user_id(ha_ref) or str(ha_ref).strip()
         if not canonical:
             continue
         device_id = str(record.get("ID") or "").strip()
@@ -214,7 +221,7 @@ def _device_user_id(storage: Any, ha_key: str) -> Optional[str]:
     mapping = data.get("user_ids")
     if not isinstance(mapping, dict):
         return None
-    canonical = normalize_ha_id(ha_key) or str(ha_key or "").strip()
+    canonical = normalize_user_id(ha_key) or str(ha_key or "").strip()
     if not canonical:
         return None
     device_id = mapping.get(canonical)
@@ -236,8 +243,8 @@ def _name_matches_user_id(name: Any, user_id: Any) -> bool:
         user_id_text = ""
     if not name_text or not user_id_text:
         return False
-    name_norm = normalize_ha_id(name_text) or name_text
-    user_norm = normalize_ha_id(user_id_text) or user_id_text
+    name_norm = normalize_user_id(name_text) or name_text
+    user_norm = normalize_user_id(user_id_text) or user_id_text
     return name_norm == user_norm
 
 
@@ -1696,7 +1703,7 @@ class AkuvoxUsersStore(Store):
         users = self.data.setdefault("users", {})
         changed = False
         for key in list(users.keys()):
-            canonical = normalize_ha_id(key)
+            canonical = normalize_user_id(key)
             if not canonical or canonical == key:
                 continue
             entry = users.pop(key)
@@ -1714,7 +1721,7 @@ class AkuvoxUsersStore(Store):
 
     def get(self, key: str, default=None):
         users = self.data.get("users") or {}
-        canonical = normalize_ha_id(key)
+        canonical = normalize_user_id(key)
         if canonical and canonical in users:
             return users.get(canonical, default)
         return users.get(key, default)
@@ -1823,7 +1830,7 @@ class AkuvoxUsersStore(Store):
         temporary_used_at: Optional[str] = None,
         temporary_created_at: Optional[str] = None,
     ):
-        canonical = normalize_ha_id(key) or str(key)
+        canonical = normalize_user_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
         if name is not None:
             u["name"] = name
@@ -1959,7 +1966,7 @@ class AkuvoxUsersStore(Store):
             users = {}
             self.data["users"] = users
 
-        canonical = normalize_ha_id(raw)
+        canonical = normalize_user_id(raw)
         removal_keys = {raw}
         if canonical:
             removal_keys.add(canonical)
@@ -1968,7 +1975,7 @@ class AkuvoxUsersStore(Store):
             if stored_key in removal_keys:
                 users.pop(stored_key, None)
                 continue
-            if canonical and normalize_ha_id(stored_key) == canonical:
+            if canonical and normalize_user_id(stored_key) == canonical:
                 users.pop(stored_key, None)
         await self.async_save()
 
@@ -2318,7 +2325,7 @@ async def _lookup_device_user_ids_by_ha_key(
     target = str(ha_key or "").strip()
     if not target:
         return out
-    target_norm = normalize_ha_id(target)
+    target_norm = normalize_user_id(target)
 
     try:
         dev_users = await api.user_list()
@@ -2336,7 +2343,9 @@ async def _lookup_device_user_ids_by_ha_key(
         candidates = {
             c for c in (dev_id, user_id, user_id_alt, name, _key_of_user(u)) if c
         }
-        candidate_norms = {normalize_ha_id(c) for c in candidates if normalize_ha_id(c)}
+        candidate_norms = {
+            normalize_user_id(c) for c in candidates if normalize_user_id(c)
+        }
         if target not in candidates and (not target_norm or target_norm not in candidate_norms):
             continue
 
@@ -2897,8 +2906,8 @@ class SyncManager:
         if not user_id and not user_name:
             return False
 
-        canonical_key = normalize_ha_id(profile_key) or profile_key
-        canonical_user = normalize_ha_id(user_id) if user_id else None
+        canonical_key = normalize_user_id(profile_key) or profile_key
+        canonical_user = normalize_user_id(user_id) if user_id else None
         if canonical_user and canonical_key and canonical_user == canonical_key:
             return True
         if user_id:
@@ -3320,7 +3329,7 @@ class SyncManager:
                     _key_of_user(record),
                 }
                 for candidate in candidates:
-                    canonical = normalize_ha_id(candidate)
+                    canonical = normalize_user_id(candidate)
                     if canonical:
                         active_device_keys.add(canonical)
 
@@ -3338,7 +3347,7 @@ class SyncManager:
             if status_raw != "deleted":
                 continue
 
-            canonical = normalize_ha_id(key) or str(key)
+            canonical = normalize_user_id(key) or str(key)
             if canonical and canonical not in active_device_keys:
                 try:
                     await users_store.delete(canonical)
@@ -3419,7 +3428,7 @@ class SyncManager:
             if not _is_ha_group_record(u):
                 continue
             kid = _key_of_user(u)
-            canonical_kid = normalize_ha_id(kid)
+            canonical_kid = normalize_user_id(kid)
             if canonical_kid and canonical_kid not in registry_keys_set:
                 rogue_keys.append(kid)
         if not rogue_keys:
@@ -3496,7 +3505,7 @@ class SyncManager:
         for key, value in (raw_registry or {}).items():
             if _profile_is_empty_reserved(value or {}):
                 continue
-            canonical = normalize_ha_id(key)
+            canonical = normalize_user_id(key)
             if canonical:
                 registry[canonical] = value
         registry_keys = list(registry.keys())
@@ -3514,7 +3523,7 @@ class SyncManager:
                     or record.get("ID")
                 )
                 if _name_matches_user_id(name_value, user_id_value):
-                    key = normalize_ha_id(user_id_value) or str(user_id_value or "").strip()
+                    key = normalize_user_id(user_id_value) or str(user_id_value or "").strip()
                     if key and key not in reg_key_set:
                         auto_delete_keys.add(key)
 
@@ -3692,7 +3701,7 @@ class SyncManager:
         for key, value in (raw_registry or {}).items():
             if _profile_is_empty_reserved(value or {}):
                 continue
-            canonical = normalize_ha_id(key)
+            canonical = normalize_user_id(key)
             if canonical:
                 registry.setdefault(canonical, value)
                 reg_keys.append(canonical)
@@ -3718,7 +3727,7 @@ class SyncManager:
                 device_records: Dict[str, List[Dict[str, Any]]] = {}
                 for record in coord.users or []:
                     key = _key_of_user(record)
-                    canonical_key = normalize_ha_id(key)
+                    canonical_key = normalize_user_id(key)
                     if canonical_key:
                         device_records.setdefault(canonical_key, []).append(record)
                     else:
@@ -3795,7 +3804,7 @@ class SyncManager:
 
                 if mismatch_reason is None:
                     for key, records in device_records.items():
-                        canonical_key = normalize_ha_id(key)
+                        canonical_key = normalize_user_id(key)
                         if not canonical_key:
                             continue
                         if canonical_key in should_have:
@@ -4244,7 +4253,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     async def svc_edit_user(call):
         d = call.data
         raw_key = d.get("id")
-        canonical_key = normalize_ha_id(raw_key)
+        canonical_key = normalize_user_id(raw_key)
         key = canonical_key or str(raw_key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
 
@@ -4305,7 +4314,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if not key:
             return
 
-        canonical = normalize_ha_id(key)
+        canonical = normalize_user_id(key)
         effective_id = canonical or key
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         today = date.today().isoformat()
@@ -4329,7 +4338,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if not key:
             return
 
-        canonical = normalize_ha_id(key)
+        canonical = normalize_user_id(key)
         lookup_key = canonical or key
         removal_keys = {key}
         if canonical:
@@ -4460,7 +4469,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         """
         d = call.data
         raw_key = d.get("id")
-        canonical = normalize_ha_id(raw_key)
+        canonical = normalize_user_id(raw_key)
         key = canonical or str(raw_key)
         face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]

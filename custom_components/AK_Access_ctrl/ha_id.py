@@ -60,6 +60,12 @@ def normalize_temp_id(value: Any) -> Optional[str]:
     return f"TMP{suffix}"
 
 
+def normalize_user_id(value: Any) -> Optional[str]:
+    """Return the canonical identifier for HA or temporary users."""
+
+    return normalize_ha_id(value) or normalize_temp_id(value)
+
+
 def is_ha_id(value: Any) -> bool:
     """Return True if the value looks like a valid HA identifier."""
 
