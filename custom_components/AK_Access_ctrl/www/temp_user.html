@@ -288,7 +288,7 @@ window.addEventListener('DOMContentLoaded', () => {
       };
 
       try {
-        await callService('add_temporary_user', payload);
+        await callService('akuvox_ac', 'add_temporary_user', payload);
         setStatus('Temporary user created. Syncing to devices shortly.', true);
         form.reset();
         if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
