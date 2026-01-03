@@ -294,6 +294,7 @@ window.addEventListener('DOMContentLoaded', () => {
         if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
         toggleOneTime();
         resetGeneratedPin();
+        openInApp('index', {}, { replaceState: true });
       } catch (err) {
         setStatus(err?.message || 'Failed to create temporary user.', false);
       }

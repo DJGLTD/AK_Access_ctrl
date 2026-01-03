@@ -4212,8 +4212,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             return
 
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-        ha_id = users_store.next_free_ha_id()
-        users_store.reserve_id(ha_id)
+        temp_id = users_store.next_free_temp_id()
+        users_store.reserve_temp_id(temp_id)
         await users_store.async_save()
 
         one_time = bool(d.get("one_time") or d.get("one_time_use") or d.get("one_time_code"))
@@ -4222,7 +4222,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         expires_at = d.get("expires_at") or d.get("temporary_expires_at")
 
         await users_store.upsert_profile(
-            ha_id,
+            temp_id,
             name=name,
             groups=[],
             pin=pin_payload,

@@ -163,7 +163,8 @@
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 0.6rem;
     }
-    .mobile-group.expanded .mobile-subgrid { display: grid; }
+    .mobile-group.expanded .mobile-subgrid[data-subgrid="users-primary"] { display: grid; }
+    .mobile-group.expanded .mobile-subgrid:not([data-subgrid]) { display: grid; }
     .mobile-group.show-add-options .mobile-subgrid[data-subgrid="users-primary"] { display: none; }
     .mobile-group.show-add-options .mobile-subgrid[data-subgrid="users-add"] { display: grid; }
     .mobile-group [data-group-toggle] {
