@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
+    data = hass.data[DOMAIN][entry.entry_id]
+    coord = data["coordinator"]
+
+    entities: List[SensorEntity] = [
+        AkuvoxOnlineSensor(coord, entry),
+        AkuvoxSyncStatusSensor(coord, entry),
+        AkuvoxLastSyncSensor(coord, entry),
+        AkuvoxUsersCountSensor(coord, entry),
+        AkuvoxEventsCountSensor(coord, entry),
+        AkuvoxLastAccessUserSensor(coord, entry),
+        AkuvoxCurrentCallerSensor(coord, entry),
+    ]
+    async_add_entities(entities, update_before_add=True)
+
+class _Base(AkuvoxOnlineSensor := object):
+    _attr_should_poll = False
+
+    def __init__(self, coord, entry: ConfigEntry):
+        self._coord = coord
+        self._entry = entry
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": coord.device_name,
+            "manufacturer": "Akuvox",
+            "model": coord.health.get("device_type") or "Device",
+        }
+        coord.async_add_listener(self._coord_updated)
+
+    def _base_state_attributes(self) -> Dict[str, Any]:
+        return {
+            "akuvox_entry_id": self._entry.entry_id,
+            "akuvox_device_name": self._coord.device_name,
+            "akuvox_device_type": (self._coord.health.get("device_type") or ""),
+        }
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def async_added_to_hass(self):
+        pass
+
+    def _coord_updated(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        return dict(self._base_state_attributes())
+
+class AkuvoxOnlineSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Online"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_online"
+
+    @property
+    def native_value(self):
+        return "Online" if self._coord.health.get("online") else "Offline"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "online"
+        return attrs
+
+class AkuvoxSyncStatusSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Sync"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_sync"
+
+    @property
+    def native_value(self):
+        if not self._coord.health.get("online"):
+            return "Offline"
+        return self._coord.health.get("sync_status") or "pending"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "sync_status"
+        return attrs
+
+class AkuvoxLastSyncSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Last Sync"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_last_sync"
+
+    @property
+    def native_value(self):
+        if not self._coord.health.get("online"):
+            return None
+        return self._coord.health.get("last_sync")
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "last_sync"
+        return attrs
+
+class AkuvoxUsersCountSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Users"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_users_count"
+
+    @property
+    def native_value(self):
+        return len(self._coord.users or [])
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "users_count"
+        return attrs
+
+class AkuvoxEventsCountSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Events"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_events_count"
+
+    @property
+    def native_value(self):
+        return len(self._coord.events or [])
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        attrs = super().extra_state_attributes
+        attrs["akuvox_metric"] = "events_count"
+        return attrs
+
+
+class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Last Access User"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_last_access_user"
+
+    @property
+    def native_value(self):
+        state = getattr(self._coord, "event_state", {}) or {}
+        return state.get("last_user_name")
+
+    @property
+    def extra_state_attributes(self):
+        state = getattr(self._coord, "event_state", {}) or {}
+        attrs = super().extra_state_attributes
+        attrs.update(
+            {
+                "akuvox_metric": "last_access_user",
+                "user_id": state.get("last_user_id"),
+                "event_type": state.get("last_event_type"),
+                "event_summary": state.get("last_event_summary"),
+                "event_timestamp": state.get("last_event_timestamp"),
+                "key_holder": state.get("last_event_key_holder"),
+            }
+        )
+        return attrs
+
+
+class AkuvoxCurrentCallerSensor(_Base, SensorEntity):
+    @property
+    def name(self) -> str:
+        return f"{self._coord.device_name} Caller ID"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry.entry_id}_current_caller"
+
+    @property
+    def native_value(self):
+        state = getattr(self._coord, "caller_state", {}) or {}
+        value = state.get("caller_id") or state.get("caller_number")
+        return value or None
+
+    @property
+    def extra_state_attributes(self):
+        state = getattr(self._coord, "caller_state", {}) or {}
+        attrs = super().extra_state_attributes
+        attrs.update(
+            {
+                "akuvox_metric": "current_caller",
+                "caller_id": state.get("caller_id"),
+                "caller_name": state.get("caller_name"),
+                "caller_number": state.get("caller_number"),
+                "raw_number": state.get("raw_number"),
+                "digits": state.get("digits"),
+                "call_id": state.get("call_id"),
+                "call_type": state.get("call_type"),
+                "timestamp": state.get("timestamp"),
+                "age_seconds": state.get("age_seconds"),
+                "key_holder": state.get("key_holder"),
+                "status": state.get("status"),
+                "error": state.get("error"),
+                "source": state.get("source"),
+            }
+        )
+        return attrs

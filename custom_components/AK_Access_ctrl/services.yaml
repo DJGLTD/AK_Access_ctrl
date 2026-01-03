@@ -1,0 +1,224 @@
+add_user:
+  name: Add user
+  fields:
+    name:
+      required: true
+      example: "Steve"
+      selector:
+        text:
+    groups:
+      required: false
+      example: ["Front Gate", "Back Gate"]
+      selector:
+        object:
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
+    exit_permission:
+      required: false
+      selector:
+        select:
+          options:
+            - match
+            - working_days
+            - always
+    relays:
+      required: false
+      example: "3"
+      selector:
+        select:
+          options:
+            - "0"
+            - "1"
+            - "2"
+            - "3"
+    face_image_path:
+      required: false
+      example: "/config/www/faces/steve.jpg"
+      selector:
+        text:
+
+add_temporary_user:
+  name: Add temporary user
+  description: Create a temporary user with a passcode that can expire or be one-time use.
+  fields:
+    name:
+      required: true
+      example: "Contractor - Plumbing"
+      selector:
+        text:
+    pin:
+      required: true
+      example: "12345"
+      selector:
+        text:
+    one_time:
+      required: false
+      selector:
+        boolean:
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
+    expires_at:
+      required: false
+      example: "2024-07-08T17:00:00-04:00"
+      selector:
+        text:
+
+edit_user:
+  name: Edit user
+  fields:
+    id:
+      required: true
+      example: "HA-003"
+      selector:
+        text:
+    name:
+      required: false
+      selector:
+        text:
+    pin:
+      required: false
+      selector:
+        text:
+    card_code:
+      required: false
+      selector:
+        text:
+    groups:
+      required: false
+      selector:
+        object:
+    relays:
+      required: false
+      selector:
+        select:
+          options: ["0","1","2","3"]
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
+    exit_permission:
+      required: false
+      selector:
+        select:
+          options:
+            - match
+            - working_days
+            - always
+    face_image_path:
+      required: false
+      selector:
+        text:
+
+delete_user:
+  name: Delete user
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+
+reactivate_temporary_user:
+  name: Reactivate temporary user
+  description: Reactivate an expired temporary user code.
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+
+upload_face:
+  name: Upload face image for user
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+    face_image_path:
+      required: true
+      selector:
+        text:
+
+refresh_events:
+  name: Refresh device events
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+reboot_device:
+  name: Reboot device
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+sync_now:
+  name: Sync now
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+add_missing_users:
+  name: Add missing users
+  description: Bulk create only users that do not exist on the device.
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+force_full_sync:
+  name: Force full sync
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+create_group:
+  name: Create sync group
+  fields:
+    name:
+      required: true
+      selector:
+        text:
+
+delete_groups:
+  name: Delete sync groups
+  fields:
+    names:
+      required: true
+      selector:
+        object:
+
+set_user_groups:
+  name: Set groups for user
+  fields:
+    key:
+      required: true
+      selector:
+        text:
+    groups:
+      required: true
+      selector:
+        object:
