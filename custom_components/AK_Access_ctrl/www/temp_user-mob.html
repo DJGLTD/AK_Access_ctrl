@@ -167,6 +167,39 @@ function toggleOneTime() {
   }
 }
 
+function generatePin(length) {
+  const digits = '0123456789';
+  const values = new Uint32Array(length);
+  if (window.crypto && window.crypto.getRandomValues) {
+    window.crypto.getRandomValues(values);
+  } else {
+    for (let i = 0; i < length; i += 1) {
+      values[i] = Math.floor(Math.random() * 10);
+    }
+  }
+  return Array.from(values, (value) => digits[value % 10]).join('');
+}
+
+function setGeneratedPin(length) {
+  const pinInput = document.getElementById('temp_pin');
+  const buttons = document.getElementById('pinButtons');
+  const display = document.getElementById('pinDisplay');
+  if (!pinInput || !buttons || !display) return;
+  pinInput.value = generatePin(length);
+  buttons.classList.add('d-none');
+  display.classList.remove('d-none');
+}
+
+function resetGeneratedPin() {
+  const pinInput = document.getElementById('temp_pin');
+  const buttons = document.getElementById('pinButtons');
+  const display = document.getElementById('pinDisplay');
+  if (!pinInput || !buttons || !display) return;
+  pinInput.value = '';
+  buttons.classList.remove('d-none');
+  display.classList.add('d-none');
+}
+
 function updateEndTimeRequirement() {
   const endDate = document.getElementById('end_date');
   const endTime = document.getElementById('end_time');
@@ -190,6 +223,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const endDate = document.getElementById('end_date');
   const oneTime = document.getElementById('one_time');
   const backBtn = document.getElementById('btnBack');
+  const pinButtons = document.getElementById('pinButtons');
 
   if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
   if (oneTime) oneTime.addEventListener('change', toggleOneTime);
@@ -219,6 +253,15 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  if (pinButtons) {
+    pinButtons.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-pin-length]');
+      if (!button) return;
+      const length = Number(button.dataset.pinLength || 0);
+      if (length) setGeneratedPin(length);
+    });
+  }
+
   if (form) {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -226,7 +269,7 @@ window.addEventListener('DOMContentLoaded', () => {
       const name = document.getElementById('temp_name').value.trim();
       const pin = document.getElementById('temp_pin').value.trim();
       if (!name || !pin) {
-        setStatus('Name and passcode are required.', false);
+        setStatus('Name and generated passcode are required.', false);
         return;
       }
       const startValue = document.getElementById('start_date').value;
@@ -249,6 +292,7 @@ window.addEventListener('DOMContentLoaded', () => {
         form.reset();
         if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
         toggleOneTime();
+        resetGeneratedPin();
       } catch (err) {
         setStatus(err?.message || 'Failed to create temporary user.', false);
       }
@@ -274,7 +318,14 @@ window.addEventListener('DOMContentLoaded', () => {
       </div>
       <div class="mb-3">
         <label class="form-label" for="temp_pin">Passcode</label>
-        <input class="form-control" id="temp_pin" type="text" placeholder="12345" required />
+        <div class="d-flex flex-wrap gap-2" id="pinButtons">
+          <button class="btn btn-outline-accent" type="button" data-pin-length="4">Generate 4-digit</button>
+          <button class="btn btn-outline-accent" type="button" data-pin-length="6">Generate 6-digit</button>
+        </div>
+        <div class="mt-2 d-none" id="pinDisplay">
+          <input class="form-control" id="temp_pin" type="text" readonly />
+          <div class="muted mt-1">Generated passcode</div>
+        </div>
       </div>
 
       <div class="form-check form-switch mb-3">
