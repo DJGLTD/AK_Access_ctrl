@@ -16,11 +16,13 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     coord = data["coordinator"]
 
+    device_type = (coord.health.get("device_type") or "").lower()
+    if device_type != "intercom":
+        return
+
     entities: list[ButtonEntity] = [
         AkuvoxAccessPermittedButton(coord, entry),
-        AkuvoxAccessDeniedButton(coord, entry),
         AkuvoxCallEndButton(coord, entry),
-        AkuvoxCallerIdRefreshButton(coord, entry),
     ]
     async_add_entities(entities)
 
@@ -52,40 +54,14 @@ class AkuvoxAccessPermittedButton(_Base):
         await self._coord.async_refresh_access_history()
 
 
-class AkuvoxAccessDeniedButton(_Base):
-    @property
-    def name(self) -> str:
-        return f"{self._coord.device_name} Access Denied"
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_access_denied"
-
-    async def async_press(self) -> None:
-        await self._coord.async_refresh_access_history()
-
-
 class AkuvoxCallEndButton(_Base):
     @property
     def name(self) -> str:
-        return f"{self._coord.device_name} Call End"
+        return f"{self._coord.device_name} Call Ended"
 
     @property
     def unique_id(self) -> str:
         return f"{self._entry.entry_id}_call_end"
-
-    async def async_press(self) -> None:
-        await self._coord.async_refresh_inbound_call_history()
-
-
-class AkuvoxCallerIdRefreshButton(_Base):
-    @property
-    def name(self) -> str:
-        return f"{self._coord.device_name} Refresh Caller ID"
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_refresh_caller_id"
 
     async def async_press(self) -> None:
         await self._coord.async_refresh_caller_via_button()
