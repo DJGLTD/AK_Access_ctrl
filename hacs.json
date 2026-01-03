@@ -1,9 +1,5 @@
 {
   "name": "Akuvox Access Control",
   "content_in_root": false,
-  "domain": "akuvox_ac",
-  "domains": [
-    "akuvox_ac"
-  ],
   "homeassistant": "2024.1.0"
 }
