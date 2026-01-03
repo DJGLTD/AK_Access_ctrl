@@ -1,0 +1,2429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Global Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; }
+    body{ background:var(--bg); color:var(--text); font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .card{ background:#111a2b; border:1px solid #1b2942; }
+    label{ color:#fff; }
+    .muted{ color:var(--muted); }
+    .small-mono{ font-family: ui-monospace, SFMono-Regular, SFMono, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .saved-input-wrap{ position:relative; max-width:220px; width:100%; }
+    .saved-input-wrap input{ width:100%; }
+    .saved-overlay{
+      position:absolute;
+      inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:0.375rem;
+      background:rgba(25,135,84,0.85);
+      color:#fff;
+      font-weight:600;
+      letter-spacing:0.05em;
+      text-transform:uppercase;
+      pointer-events:none;
+      opacity:0;
+      transition:opacity 0.2s ease-in-out;
+    }
+    .saved-overlay.visible{ opacity:1; }
+    .schedule-card{ overflow:hidden; }
+    .schedule-window{
+      background:#0d1729;
+      border:1px solid var(--border);
+      border-radius:0.75rem;
+      padding:1rem;
+      margin-bottom:1rem;
+    }
+    .schedule-window-header{
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      justify-content:space-between;
+      gap:0.75rem;
+      margin-bottom:0.75rem;
+    }
+    .schedule-window-days{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.5rem;
+    }
+    .schedule-window-days .btn{
+      min-width:3rem;
+    }
+    .schedule-window-empty{
+      color:var(--muted);
+      font-style:italic;
+      font-size:0.9rem;
+      display:none;
+    }
+    .schedule-time-input{ font-family:inherit; }
+    .device-option{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:1rem; }
+    .device-option + .device-option{ margin-top:1rem; }
+    .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
+    .device-meta{ color:var(--muted); font-size:0.9rem; }
+    @media (max-width: 576px){
+      .schedule-window-header{ flex-direction:column; align-items:flex-start; }
+      .schedule-window-header .btn{ width:100%; }
+    }
+  </style>
+</head>
+<body>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
+function findHaToken(){
+  const existing = sessionStorage.getItem('akuvox_ll_token');
+  if (existing) return existing;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
+}
+const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      const parent = window.parent;
+      try { parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  const fromUrl = readAuthSigFrom();
+  if (fromUrl) {
+    rememberAuthSig(fromUrl);
+    return fromUrl;
+  }
+
+  const sources = [
+    () => {
+      try { return sessionStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return localStorage.getItem(AUTH_SIG_KEY); } catch (err) { return null; }
+    },
+    () => {
+      try { return window.AK_AC_AUTH_SIG || null; } catch (err) { return null; }
+    },
+    () => {
+      try {
+        if (window.parent && window.parent !== window) {
+          const parent = window.parent;
+          return parent.AK_AC_AUTH_SIG
+            || (parent.sessionStorage && parent.sessionStorage.getItem(AUTH_SIG_KEY))
+            || (parent.localStorage && parent.localStorage.getItem(AUTH_SIG_KEY));
+        }
+      } catch (err) {}
+      return null;
+    }
+  ];
+
+  for (const getter of sources) {
+    const value = getter();
+    if (value) {
+      rememberAuthSig(value);
+      return value;
+    }
+  }
+
+  return '';
+}
+
+rememberAuthSig(readAuthSigFrom());
+
+function nextBearerToken(){
+  const token = findHaToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const originalHeaders = { ...(options.headers || {}) };
+  let bearer = allowRetry ? nextBearerToken() : null;
+  let usedBearer = !!bearer;
+  const headers = { ...originalHeaders };
+  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
+
+  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+
+  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
+    REJECTED_TOKENS.add(bearer);
+    const retryToken = nextBearerToken();
+    if (retryToken && retryToken !== bearer){
+      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
+    }
+    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
+  }
+
+  return response;
+}
+
+function buildError(res, text){
+  const message = `${res.status}: ${text || res.statusText || 'Request failed'}`;
+  const err = new Error(message);
+  err.status = res.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  if (err.status === 401 || err.status === 403) return true;
+  const msg = String(err.message || err || '').toLowerCase();
+  return msg.includes('401') || msg.includes('403') || msg.includes('unauthor');
+}
+
+function redirectToUnauthorized(params = {}){
+  try {
+    const path = (window.location.pathname || '').toLowerCase();
+    if (path.endsWith('/unauthorized') || path.endsWith('/unauthorized.html')) {
+      return true;
+    }
+  } catch (err) {}
+
+  const targetParams = params && typeof params === 'object' ? params : {};
+  let href = '/akuvox-ac/unauthorized';
+  try {
+    href = buildHref('unauthorized', targetParams);
+  } catch (err) {
+    try {
+      const search = new URLSearchParams();
+      Object.entries(targetParams).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') search.set(key, value);
+      });
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
+      if (authSig && !search.has('authSig')) search.set('authSig', authSig);
+      const query = search.toString();
+      if (query) href = `/akuvox-ac/unauthorized?${query}`;
+    } catch (err2) {}
+  }
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', targetParams, { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+async function apiGet(url){
+  const r = await fetchWithAuth(url);
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+async function apiPost(url, body){
+  const r = await fetchWithAuth(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}) });
+  if (!r.ok){
+    const text = await r.text();
+    const err = buildError(r, text);
+    handleAuthError(err);
+    throw err;
+  }
+  return r.json();
+}
+const UI_ROOT = '/akuvox-ac';
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || !parentDoc.getElementById('viewFrame')) return false;
+      } catch (err) {
+        return false;
+      }
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+
+const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
+const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
+const AUTO_UPDATE_CONFIG = '/api/config/automation/config';
+const AUTO_UPDATE_ID = 'akuvox_ac_auto_update';
+const AUTO_UPDATE_UPDATE_ENTITY = 'update.akuvox_access_control';
+const AUTO_UPDATE_REPOSITORY = 'Akuvox Access Control';
+const AUTO_UPDATE_DEFAULT_TIME = '03:00';
+
+const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
+
+let SETTINGS_DATA = {
+  integrity_interval_minutes: 1200,
+  face_integrity_enabled: true,
+  auto_sync_delay_minutes: 15,
+  health_check_interval_seconds: 300,
+  alerts: { targets: {} },
+  registry_users: [],
+  capabilities: { alarm_relay: false },
+  min_health_check_interval_seconds: 10,
+  max_health_check_interval_seconds: 300,
+  access_event_limit: 200,
+  min_access_event_limit: 5,
+  max_access_event_limit: 200,
+  credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
+};
+let PHONES = [];
+let USERS = [];
+let ALERT_TARGETS = {};
+let alertsSaving = false;
+let integritySaving = false;
+let credentialSaving = false;
+let credentialQueued = null;
+let integritySavedTimer = null;
+let autoSyncSaving = false;
+let autoSyncSavedTimer = null;
+let healthSaving = false;
+let healthSavedTimer = null;
+let eventLimitSaving = false;
+let eventLimitSavedTimer = null;
+let autoUpdateSaving = false;
+const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
+const EXIT_CLONE_SUFFIX = ' - EP';
+const SCHEDULE_DAY_ORDER = [
+  { key: 'mon', label: 'Monday' },
+  { key: 'tue', label: 'Tuesday' },
+  { key: 'wed', label: 'Wednesday' },
+  { key: 'thu', label: 'Thursday' },
+  { key: 'fri', label: 'Friday' },
+  { key: 'sat', label: 'Saturday' },
+  { key: 'sun', label: 'Sunday' }
+];
+let SCHEDULES = {};
+let SELECTED_SCHEDULE = '';
+let EDITING_SCHEDULE_NAME = '';
+let scheduleSaving = false;
+let scheduleDeleting = false;
+let scheduleStatusTimer = null;
+let scheduleReadOnly = false;
+
+function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+function normalizeAutoUpdateTime(value){
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return AUTO_UPDATE_DEFAULT_TIME;
+  let hours = Number(match[1]);
+  let minutes = Number(match[2]);
+  if (!Number.isFinite(hours)) hours = 0;
+  if (!Number.isFinite(minutes)) minutes = 0;
+  hours = Math.min(23, Math.max(0, Math.round(hours)));
+  minutes = Math.min(59, Math.max(0, Math.round(minutes)));
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function setAutoUpdateStatus(text, tone = 'muted'){
+  const el = document.getElementById('autoUpdateStatus');
+  if (!el) return;
+  const base = 'form-text mt-2';
+  let cls = base + ' text-white';
+  if (tone === 'success') cls = base + ' text-success';
+  else if (tone === 'error') cls = base + ' text-danger';
+  el.className = cls;
+  el.textContent = text;
+}
+
+function setAutoUpdateControlsDisabled(disabled){
+  ['autoUpdateToggle', 'autoUpdateTimeInput', 'autoUpdateRestartToggle'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+function getAutoUpdateInputs(){
+  const timeInput = document.getElementById('autoUpdateTimeInput');
+  const restartToggle = document.getElementById('autoUpdateRestartToggle');
+  const time = normalizeAutoUpdateTime(timeInput?.value);
+  return { time, allowRestart: !!restartToggle?.checked };
+}
+
+function hasServiceAction(actions, service){
+  const list = Array.isArray(actions) ? actions : (actions ? [actions] : []);
+  for (const action of list){
+    if (!action) continue;
+    if (action.service === service) return true;
+    if (action.sequence && hasServiceAction(action.sequence, service)) return true;
+    if (Array.isArray(action.choose)){
+      for (const choice of action.choose){
+        if (hasServiceAction(choice?.sequence, service)) return true;
+      }
+    }
+    if (action.default && hasServiceAction(action.default, service)) return true;
+  }
+  return false;
+}
+
+function extractAutoUpdateOptions(config){
+  const triggers = Array.isArray(config?.trigger) ? config.trigger : (config?.trigger ? [config.trigger] : []);
+  const timeTrigger = triggers.find((trigger) => trigger && trigger.platform === 'time' && trigger.at);
+  const time = normalizeAutoUpdateTime(timeTrigger?.at);
+  const actions = Array.isArray(config?.action) ? config.action : (config?.action ? [config.action] : []);
+  const allowRestart = hasServiceAction(actions, 'homeassistant.restart');
+  return { time, allowRestart };
+}
+
+function buildAutoUpdateAutomation({ time, allowRestart }){
+  const installSequence = [
+    {
+      service: 'update.install',
+      target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] },
+      data: { backup: false }
+    }
+  ];
+  if (allowRestart) {
+    installSequence.push({ service: 'homeassistant.restart' });
+  }
+  return {
+    id: AUTO_UPDATE_ID,
+    alias: 'Akuvox Access Control • Auto update',
+    description: 'Automatically install updates for the Akuvox Access Control integration when they are available.',
+    mode: 'single',
+    trigger: [
+      { platform: 'time', at: normalizeAutoUpdateTime(time) }
+    ],
+    action: [
+      { service: 'hacs.update', data: { repository: AUTO_UPDATE_REPOSITORY } },
+      { delay: { minutes: 1 } },
+      { service: 'homeassistant.update_entity', target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] } },
+      { delay: { seconds: 5 } },
+      {
+        choose: [
+          {
+            conditions: [ { condition: 'state', entity_id: AUTO_UPDATE_UPDATE_ENTITY, state: 'on' } ],
+            sequence: installSequence
+          }
+        ],
+        default: []
+      }
+    ],
+  };
+}
+
+async function fetchAutoUpdateConfig(){
+  try {
+    const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text();
+      throw buildError(res, text);
+    }
+    return res.json();
+  } catch (err) {
+    if (handleAuthError(err)) return null;
+    throw err;
+  }
+}
+
+async function setAutoUpdateEnabled(desired, { updating = false } = {}){
+  if (autoUpdateSaving) return;
+  autoUpdateSaving = true;
+  setAutoUpdateControlsDisabled(true);
+  setAutoUpdateStatus(desired ? (updating ? 'Updating automation…' : 'Creating automation…') : 'Removing automation…');
+  try {
+    if (desired){
+      const { time, allowRestart } = getAutoUpdateInputs();
+      const config = buildAutoUpdateAutomation({ time, allowRestart });
+      const timeInput = document.getElementById('autoUpdateTimeInput');
+      if (timeInput) timeInput.value = normalizeAutoUpdateTime(time);
+      let res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      if (res.status === 404){
+        res = await fetchWithAuth(AUTO_UPDATE_CONFIG, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
+      }
+      if (!res.ok){
+        const text = await res.text();
+        throw buildError(res, text);
+      }
+      const status = `Automation enabled. Updates will check daily at ${normalizeAutoUpdateTime(time)}.`
+        + (allowRestart ? ' Home Assistant will restart after installation.' : '');
+      setAutoUpdateStatus(status, 'success');
+      const toggle = document.getElementById('autoUpdateToggle');
+      if (toggle) toggle.checked = true;
+    } else {
+      const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, { method: 'DELETE' });
+      if (res.status !== 200 && res.status !== 404){
+        const text = await res.text();
+        throw buildError(res, text);
+      }
+      setAutoUpdateStatus('Automation removed. Updates will no longer install automatically.', 'muted');
+      const toggle = document.getElementById('autoUpdateToggle');
+      if (toggle) toggle.checked = false;
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setAutoUpdateStatus('Automation change failed: ' + (err && err.message ? err.message : err), 'error');
+    alert('Failed to update automation: ' + (err && err.message ? err.message : err));
+  } finally {
+    autoUpdateSaving = false;
+    setAutoUpdateControlsDisabled(false);
+  }
+}
+
+async function refreshAutoUpdateToggle(){
+  setAutoUpdateControlsDisabled(true);
+  setAutoUpdateStatus('Checking current automation…');
+  try {
+    const cfg = await fetchAutoUpdateConfig();
+    const toggle = document.getElementById('autoUpdateToggle');
+    const timeInput = document.getElementById('autoUpdateTimeInput');
+    const restartToggle = document.getElementById('autoUpdateRestartToggle');
+    if (cfg){
+      const options = extractAutoUpdateOptions(cfg);
+      if (toggle) toggle.checked = true;
+      if (timeInput) timeInput.value = options.time;
+      if (restartToggle) restartToggle.checked = options.allowRestart;
+      const status = `Automation is enabled and will check daily at ${options.time}.`
+        + (options.allowRestart ? ' Home Assistant will restart after installation.' : '');
+      setAutoUpdateStatus(status, 'success');
+    } else {
+      if (toggle) toggle.checked = false;
+      if (timeInput) timeInput.value = normalizeAutoUpdateTime(timeInput?.value);
+      if (restartToggle) restartToggle.checked = false;
+      setAutoUpdateStatus('No automation is configured. Enable the toggle to create one.', 'muted');
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setAutoUpdateStatus('Could not verify automation: ' + (err && err.message ? err.message : err), 'error');
+  } finally {
+    setAutoUpdateControlsDisabled(false);
+  }
+}
+
+async function updateAutoUpdateOptions(){
+  const toggle = document.getElementById('autoUpdateToggle');
+  if (!toggle || !toggle.checked) {
+    setAutoUpdateStatus('Enable auto updates to create the automation.', 'muted');
+    return;
+  }
+  await setAutoUpdateEnabled(true, { updating: true });
+}
+function hideIntegritySavedOverlay(){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+    integritySavedTimer = null;
+  }
+}
+function showIntegritySavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('integritySavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (integritySavedTimer){
+    clearTimeout(integritySavedTimer);
+  }
+  integritySavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    integritySavedTimer = null;
+  }, 5000);
+}
+function hideAutoSyncSavedOverlay(){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+    autoSyncSavedTimer = null;
+  }
+}
+function showAutoSyncSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('autoSyncSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (autoSyncSavedTimer){
+    clearTimeout(autoSyncSavedTimer);
+  }
+  autoSyncSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    autoSyncSavedTimer = null;
+  }, 5000);
+}
+function hideHealthSavedOverlay(){
+  const overlay = document.getElementById('healthSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (healthSavedTimer){
+    clearTimeout(healthSavedTimer);
+    healthSavedTimer = null;
+  }
+}
+function showHealthSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('healthSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (healthSavedTimer){
+    clearTimeout(healthSavedTimer);
+  }
+  healthSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    healthSavedTimer = null;
+  }, 5000);
+}
+function hideEventLimitSavedOverlay(){
+  const overlay = document.getElementById('eventLimitSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (eventLimitSavedTimer){
+    clearTimeout(eventLimitSavedTimer);
+    eventLimitSavedTimer = null;
+  }
+}
+function showEventLimitSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('eventLimitSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (eventLimitSavedTimer){
+    clearTimeout(eventLimitSavedTimer);
+  }
+  eventLimitSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    eventLimitSavedTimer = null;
+  }, 5000);
+}
+function setIntegrityStatus(text, tone = 'muted') {
+  const el = document.getElementById('integrityStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showIntegritySavedOverlay(text || 'Saved');
+    return;
+  }
+  hideIntegritySavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setAutoSyncStatus(text, tone = 'muted') {
+  const el = document.getElementById('autoSyncStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showAutoSyncSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideAutoSyncSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setHealthStatus(text, tone = 'muted') {
+  const el = document.getElementById('healthStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showHealthSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideHealthSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setEventLimitStatus(text, tone = 'muted') {
+  const el = document.getElementById('eventLimitStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showEventLimitSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideEventLimitSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
+function setAlertsStatus(text, tone = 'muted') {
+  const el = document.getElementById('alertsStatus');
+  if (!el) return;
+  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
+  el.textContent = text;
+  el.className = tone === 'error' ? 'text-danger small' : tone === 'success' ? 'text-success small' : 'muted small';
+  el.classList.remove('visually-hidden');
+}
+
+function autoSyncRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_auto_sync_delay_minutes);
+  const maxRaw = Number(SETTINGS_DATA?.max_auto_sync_delay_minutes);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 60;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function healthRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_health_check_interval_seconds);
+  const maxRaw = Number(SETTINGS_DATA?.max_health_check_interval_seconds);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 10;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 300;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function eventLimitRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_access_event_limit);
+  const maxRaw = Number(SETTINGS_DATA?.max_access_event_limit);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 200;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function renderAutoSyncDelay(){
+  const input = document.getElementById('autoSyncDelayInput');
+  if (!input) return;
+  const { min, max } = autoSyncRange();
+  let minutes = Number(SETTINGS_DATA.auto_sync_delay_minutes);
+  if (!Number.isFinite(minutes)) minutes = 30;
+  minutes = Math.round(minutes);
+  if (minutes < min) minutes = min;
+  if (minutes > max) minutes = max;
+  SETTINGS_DATA.auto_sync_delay_minutes = minutes;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(minutes);
+  setAutoSyncStatus('');
+}
+
+function renderHealthInterval(){
+  const input = document.getElementById('healthIntervalInput');
+  if (!input) return;
+  const { min, max } = healthRange();
+  let seconds = Number(SETTINGS_DATA.health_check_interval_seconds);
+  if (!Number.isFinite(seconds)) seconds = 30;
+  seconds = Math.round(seconds);
+  if (seconds < min) seconds = min;
+  if (seconds > max) seconds = max;
+  SETTINGS_DATA.health_check_interval_seconds = seconds;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(seconds);
+  setHealthStatus('');
+}
+
+function renderEventLimit(){
+  const input = document.getElementById('accessEventLimitInput');
+  if (!input) return;
+  const { min, max } = eventLimitRange();
+  let value = Number(SETTINGS_DATA.access_event_limit);
+  if (!Number.isFinite(value)) value = 30;
+  value = Math.round(value);
+  if (value < min) value = min;
+  if (value > max) value = max;
+  SETTINGS_DATA.access_event_limit = value;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(value);
+  setEventLimitStatus('');
+}
+
+async function saveEventLimit(){
+  if (eventLimitSaving) return;
+  const input = document.getElementById('accessEventLimitInput');
+  if (!input) return;
+  const { min, max } = eventLimitRange();
+  let raw = Number(input.value);
+  if (!Number.isFinite(raw)) raw = SETTINGS_DATA.access_event_limit;
+  let value = Math.round(raw);
+  if (value < min) value = min;
+  if (value > max) value = max;
+
+  eventLimitSaving = true;
+  hideEventLimitSavedOverlay();
+
+  try {
+    const res = await apiPost(API_SETTINGS, { access_event_limit: value });
+    const returned = Number(res?.access_event_limit);
+    if (Number.isFinite(returned)) {
+      SETTINGS_DATA.access_event_limit = returned;
+    } else {
+      SETTINGS_DATA.access_event_limit = value;
+    }
+    renderEventLimit();
+    showEventLimitSavedOverlay();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to update event history limit: ' + (err && err.message ? err.message : err));
+  } finally {
+    eventLimitSaving = false;
+  }
+}
+
+function minutesToHHMM(minutes){
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const hrs = Math.floor(value / 60);
+  const mins = value % 60;
+  return `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}`;
+}
+function hhmmToMinutes(str){
+  if (!str || typeof str !== 'string') return null;
+  const clean = str.trim();
+  if (!/^\d{1,2}:\d{2}$/.test(clean)) return null;
+  const [h, m] = clean.split(':');
+  const hours = Number(h);
+  const mins = Number(m);
+  if (!Number.isInteger(hours) || !Number.isInteger(mins)) return null;
+  const total = hours * 60 + mins;
+  if (mins >= 60) return null;
+  return Math.max(5, Math.min(1440, total));
+}
+
+function friendlyName(service){
+  const found = PHONES.find(p => p.service === service);
+  if (found) return found.name || found.service;
+  return service;
+}
+
+function ensureTargetDefaults(target){
+  if (!ALERT_TARGETS[target] || typeof ALERT_TARGETS[target] !== 'object'){
+    ALERT_TARGETS[target] = {
+      device_offline: false,
+      integrity_failed: false,
+      any_denied: false,
+      granted: { any: false, users: [] }
+    };
+  } else {
+    const cfg = ALERT_TARGETS[target];
+    if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
+    if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
+    if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
+    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+    if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
+    if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
+    cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u))));
+  }
+}
+
+function escapeSelector(value){
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+  return String(value || '').replace(/([\W])/g, '\\$1');
+}
+
+function renderIntegrity(){
+  const input = document.getElementById('integrityInput');
+  if (!input) return;
+  const minutes = SETTINGS_DATA.integrity_interval_minutes || 1200;
+  input.value = minutesToHHMM(minutes);
+  const toggle = document.getElementById('faceIntegrityToggle');
+  if (toggle) toggle.checked = SETTINGS_DATA.face_integrity_enabled !== false;
+  setIntegrityStatus('');
+}
+
+function availablePhonesForSelect(){
+  const configured = new Set(Object.keys(ALERT_TARGETS || {}));
+  return PHONES.filter(p => !configured.has(p.service));
+}
+
+function renderAlerts(){
+  const wrap = document.getElementById('alertsContainer');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const targets = Object.keys(ALERT_TARGETS || {});
+
+  const addSel = document.getElementById('addTargetSelect');
+  if (addSel){
+    addSel.innerHTML = '';
+    const opts = availablePhonesForSelect();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = opts.length ? 'Add device…' : '(no additional devices)';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    addSel.appendChild(placeholder);
+    opts.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.service;
+      opt.textContent = friendlyName(p.service);
+      addSel.appendChild(opt);
+    });
+    addSel.disabled = opts.length === 0;
+  }
+
+  if (!targets.length){
+    const empty = document.createElement('div');
+    empty.className = 'text-muted';
+    empty.textContent = PHONES.length ? 'No alert targets configured yet.' : 'No Home Assistant mobile app notify targets were found.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  targets.sort((a,b) => friendlyName(a).localeCompare(friendlyName(b))).forEach(service => {
+    ensureTargetDefaults(service);
+    const cfg = ALERT_TARGETS[service];
+    const card = document.createElement('div');
+    card.className = 'card mb-3';
+    card.innerHTML = `
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-phone"></i> ${friendlyName(service)}</span>
+        <button class="btn btn-sm btn-outline-danger" data-remove="${service}"><i class="bi bi-x-lg"></i> Remove</button>
+      </div>
+      <div class="card-body">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="device_offline" ${cfg.device_offline ? 'checked' : ''}>
+          <label class="form-check-label">Device Offline (5 minute delay)</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="integrity_failed" ${cfg.integrity_failed ? 'checked' : ''}>
+          <label class="form-check-label">Device Integrity Check Failed</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="any_denied" ${cfg.any_denied ? 'checked' : ''}>
+          <label class="form-check-label">Any User Denied Access</label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_any" ${cfg.granted.any ? 'checked' : ''}>
+          <label class="form-check-label">Any User Granted Access</label>
+        </div>
+        <div class="mt-3">
+          <label class="form-label">Specific users to notify on grant</label>
+          <select class="form-select" multiple size="5" data-target="${service}" data-field="granted_users"></select>
+          <div class="form-text">Hold Ctrl/Cmd to select multiple users.</div>
+        </div>
+      </div>`;
+    const select = card.querySelector('select[data-field="granted_users"]');
+    if (select){
+      USERS.forEach(user => {
+        const opt = document.createElement('option');
+        opt.value = user.id;
+        opt.textContent = `${user.name} (${user.id})`;
+        if (cfg.granted.users.includes(user.id)) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+    wrap.appendChild(card);
+  });
+
+  wrap.querySelectorAll('button[data-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const service = btn.getAttribute('data-remove');
+      if (!service) return;
+      delete ALERT_TARGETS[service];
+      SETTINGS_DATA.alerts = SETTINGS_DATA.alerts || { targets: {} };
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      renderAlerts();
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('input[data-field]').forEach(input => {
+    input.addEventListener('change', async () => {
+      const service = input.getAttribute('data-target');
+      const field = input.getAttribute('data-field');
+      if (!service || !field) return;
+      ensureTargetDefaults(service);
+      const cfg = ALERT_TARGETS[service];
+      const checked = input.checked;
+      if (field === 'device_offline') cfg.device_offline = checked;
+      else if (field === 'integrity_failed') cfg.integrity_failed = checked;
+      else if (field === 'any_denied') cfg.any_denied = checked;
+      else if (field === 'granted_any') cfg.granted.any = checked;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+
+  wrap.querySelectorAll('select[data-field="granted_users"]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const service = sel.getAttribute('data-target');
+      if (!service) return;
+      ensureTargetDefaults(service);
+      const values = Array.from(sel.selectedOptions).map(opt => opt.value);
+      ALERT_TARGETS[service].granted.users = values;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      await saveAlerts();
+    });
+  });
+}
+
+function sanitizeCredentialPrompts(raw){
+  const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
+  if (!raw || typeof raw !== 'object') return base;
+  Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
+    if (typeof raw[key] === 'boolean') base[key] = raw[key];
+  });
+  if (typeof raw.phone !== 'boolean' && typeof raw.token === 'boolean') {
+    base.phone = raw.token;
+  }
+  return base;
+}
+
+function renderCredentialPrompts(){
+  const data = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+  SETTINGS_DATA.credential_prompts = data;
+  Object.keys(DEFAULT_CREDENTIAL_PROMPTS).forEach((key) => {
+    const input = document.querySelector(`input[data-credential="${key}"]`);
+    if (input) input.checked = !!data[key];
+  });
+}
+
+function setCredentialStatus(message, tone = ''){
+  const status = document.getElementById('credentialStatus');
+  if (!status) return;
+  if (!message){
+    status.textContent = '';
+    status.className = 'visually-hidden small mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' text-info';
+  status.className = cls;
+  status.textContent = message;
+}
+
+async function saveCredentialPrompts(){
+  const latest = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+  SETTINGS_DATA.credential_prompts = latest;
+  if (credentialSaving){
+    credentialQueued = { ...latest };
+    return;
+  }
+  credentialSaving = true;
+  credentialQueued = null;
+  setCredentialStatus('Saving…');
+  try {
+    const res = await apiPost(API_SETTINGS, { credential_prompts: latest });
+    if (res && res.credential_prompts){
+      SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(res.credential_prompts);
+      renderCredentialPrompts();
+    }
+    setCredentialStatus('Saved', 'success');
+  } catch (err){
+    console.error('Failed to save credential prompts', err);
+    const msg = err && err.message ? err.message : 'Failed to save credential prompts';
+    setCredentialStatus(msg, 'error');
+  } finally {
+    credentialSaving = false;
+    if (credentialQueued){
+      SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(credentialQueued);
+      credentialQueued = null;
+      renderCredentialPrompts();
+      await saveCredentialPrompts();
+    }
+  }
+}
+
+const SCHEDULE_DAY_LOOKUP = (() => {
+  const map = new Map();
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    map.set(key, key);
+    map.set(label.toLowerCase(), key);
+    map.set(label.slice(0, 3).toLowerCase(), key);
+  });
+  map.set('tues', 'tue');
+  map.set('thur', 'thu');
+  map.set('thurs', 'thu');
+  map.set('weds', 'wed');
+  return map;
+})();
+
+function truthy(value){
+  if (typeof value === 'string'){
+    return ['1','true','yes','y','on','enable','enabled'].includes(value.trim().toLowerCase());
+  }
+  return !!value;
+}
+
+function normalizeScheduleDay(value){
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return null;
+  if (SCHEDULE_DAY_LOOKUP.has(text)) return SCHEDULE_DAY_LOOKUP.get(text);
+  const short = text.slice(0, 3);
+  if (SCHEDULE_DAY_LOOKUP.has(short)) return SCHEDULE_DAY_LOOKUP.get(short);
+  return null;
+}
+
+function minutesFromTime(value){
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value)){
+    let mins = Math.floor(value);
+    if (mins < 0) mins = 0;
+    if (mins > 1439) mins = 1439;
+    return mins;
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  const parts = text.split(':');
+  if (parts.length >= 2){
+    const hh = Number(parts[0]);
+    const mm = Number(parts[1]);
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, Math.floor(hh)));
+      const clampedM = Math.max(0, Math.min(59, Math.floor(mm)));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  const digits = text.replace(/[^0-9]/g, '');
+  if (digits.length === 3 || digits.length === 4){
+    const padded = digits.length === 3 ? `0${digits}` : digits;
+    const hh = Number(padded.slice(0, 2));
+    const mm = Number(padded.slice(2, 4));
+    if (Number.isFinite(hh) && Number.isFinite(mm)){
+      const clampedH = Math.max(0, Math.min(23, hh));
+      const clampedM = Math.max(0, Math.min(59, mm));
+      return clampedH * 60 + clampedM;
+    }
+  }
+  return null;
+}
+
+function formatMinutes(minutes){
+  const safe = Math.max(0, Math.min(1439, Math.floor(minutes)));
+  const hh = String(Math.floor(safe / 60)).padStart(2, '0');
+  const mm = String(safe % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function blankScheduleSpec(){
+  return { start: '', end: '', days: [], always_permit_exit: false, type: '0', date_start: '', date_end: '' };
+}
+
+function cloneScheduleSpec(spec){
+  const base = blankScheduleSpec();
+  if (!spec || typeof spec !== 'object') return base;
+
+  if (spec.type !== undefined) base.type = String(spec.type);
+  else if (spec.Type !== undefined) base.type = String(spec.Type);
+
+  if (spec.date_start !== undefined || spec.DateStart !== undefined){
+    base.date_start = String(spec.date_start ?? spec.DateStart ?? '').trim();
+  }
+  if (spec.date_end !== undefined || spec.DateEnd !== undefined){
+    base.date_end = String(spec.date_end ?? spec.DateEnd ?? '').trim();
+  }
+
+  if ('always_permit_exit' in spec){
+    base.always_permit_exit = truthy(spec.always_permit_exit);
+  }
+
+  let explicitStart = minutesFromTime(spec.start ?? spec.Start ?? spec.time_start ?? spec.TimeStart);
+  let explicitEnd = minutesFromTime(spec.end ?? spec.End ?? spec.time_end ?? spec.TimeEnd);
+
+  let earliest = null;
+  let latest = null;
+
+  const selected = new Set();
+  const addDay = (value) => {
+    const normalized = normalizeScheduleDay(value);
+    if (normalized) selected.add(normalized);
+  };
+
+  const rawDays = spec.days;
+  if (Array.isArray(rawDays)){
+    rawDays.forEach(addDay);
+  } else if (rawDays && typeof rawDays === 'object'){
+    Object.entries(rawDays).forEach(([key, value]) => {
+      if (truthy(value)) addDay(key);
+    });
+  }
+
+  const boolDayMap = { Mon: 'mon', Tue: 'tue', Wed: 'wed', Thur: 'thu', Fri: 'fri', Sat: 'sat', Sun: 'sun' };
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    if (apiKey in spec && truthy(spec[apiKey])) selected.add(key);
+  });
+
+  const recordSpan = (start, end, key) => {
+    if (start === null || end === null) return;
+    selected.add(key);
+    earliest = earliest === null ? start : Math.min(earliest, start);
+    latest = latest === null ? end : Math.max(latest, end);
+  };
+
+  SCHEDULE_DAY_ORDER.forEach(({ key }) => {
+    const spans = Array.isArray(spec[key]) ? spec[key] : [];
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
+  });
+
+  Object.entries(boolDayMap).forEach(([apiKey, key]) => {
+    const spans = Array.isArray(spec[apiKey]) ? spec[apiKey] : [];
+    spans.forEach(span => {
+      if (!Array.isArray(span) || span.length < 2) return;
+      recordSpan(minutesFromTime(span[0]), minutesFromTime(span[1]), key);
+    });
+  });
+
+  if (explicitStart !== null) base.start = formatMinutes(explicitStart);
+  else if (earliest !== null) base.start = formatMinutes(earliest);
+
+  if (explicitEnd !== null) base.end = formatMinutes(explicitEnd);
+  else if (latest !== null) base.end = formatMinutes(latest);
+
+  base.days = SCHEDULE_DAY_ORDER.map(({ key }) => key).filter(key => selected.has(key));
+  return base;
+}
+
+function scheduleNames(){
+  return Object.entries(SCHEDULES || {})
+    .filter(([name, spec]) => !scheduleIsExitClone(name, spec))
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function scheduleIsBuiltin(name){
+  return BUILTIN_SCHEDULES.has(String(name || '').trim());
+}
+
+function scheduleCloneSuffix(){
+  return EXIT_CLONE_SUFFIX;
+}
+
+function normalizedScheduleKey(name){
+  return String(name || '').trim().toLowerCase();
+}
+
+function scheduleIsExitClone(name, spec){
+  const normalized = normalizedScheduleKey(name);
+  if (!normalized) return false;
+  const specObj = spec && typeof spec === 'object' ? spec : {};
+  if (specObj.system_exit_clone) return true;
+  if (specObj.exit_clone_for){
+    const base = normalizedScheduleKey(specObj.exit_clone_for);
+    if (base && base !== normalized) return true;
+  }
+  return normalized.endsWith(scheduleCloneSuffix().toLowerCase());
+}
+
+function setScheduleStatus(text, tone = 'muted'){
+  const el = document.getElementById('scheduleStatus');
+  if (!el) return;
+  if (scheduleStatusTimer){
+    clearTimeout(scheduleStatusTimer);
+    scheduleStatusTimer = null;
+  }
+  if (!text){
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  let cls = 'small mt-2';
+  if (tone === 'error') cls += ' text-danger';
+  else if (tone === 'success') cls += ' text-success';
+  else cls += ' muted';
+  el.className = cls;
+  el.textContent = text;
+  if (tone === 'success'){
+    scheduleStatusTimer = setTimeout(() => {
+      const node = document.getElementById('scheduleStatus');
+      if (!node) return;
+      node.textContent = '';
+      node.className = 'visually-hidden small mt-2';
+      scheduleStatusTimer = null;
+    }, 4000);
+  }
+}
+
+function populateScheduleSelect(preferred = ''){
+  const select = document.getElementById('scheduleSelect');
+  if (!select) return '';
+  const names = scheduleNames();
+  select.innerHTML = '';
+  const newOpt = document.createElement('option');
+  newOpt.value = '';
+  newOpt.textContent = 'Create new schedule…';
+  select.appendChild(newOpt);
+  names.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+  let chosen = '';
+  if (preferred && (preferred === '' || names.includes(preferred))){
+    chosen = preferred;
+  } else if (names.includes(SELECTED_SCHEDULE)){
+    chosen = SELECTED_SCHEDULE;
+  } else if (names.includes('24/7 Access')){
+    chosen = '24/7 Access';
+  } else if (names.length){
+    chosen = names[0];
+  }
+  select.value = chosen;
+  return chosen;
+}
+
+function updateScheduleSelection(value){
+  SELECTED_SCHEDULE = value || '';
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    scheduleReadOnly = true;
+    EDITING_SCHEDULE_NAME = SELECTED_SCHEDULE;
+  } else {
+    scheduleReadOnly = false;
+    EDITING_SCHEDULE_NAME = value ? value : '';
+  }
+  setScheduleStatus('');
+  renderScheduleEditor();
+}
+
+function applyAutoColonFormatting(input){
+  if (!input || input.dataset.autoColonApplied === '1') return;
+  const enforceFormat = () => {
+    const digits = String(input.value || '').replace(/[^0-9]/g, '').slice(0, 4);
+    if (digits.length <= 2) return;
+    const hours = digits.slice(0, 2);
+    const minutes = digits.slice(2);
+    const formatted = minutes ? `${hours}:${minutes}` : `${hours}:`;
+    if (input.value !== formatted) {
+      input.value = formatted;
+    }
+  };
+  const handleBlur = () => {
+    const parsed = parseTimeValue(input.value);
+    if (parsed) {
+      input.value = parsed.text;
+    }
+  };
+  input.addEventListener('input', enforceFormat);
+  input.addEventListener('blur', handleBlur);
+  input.dataset.autoColonApplied = '1';
+}
+
+function parseTimeValue(value){
+  const minutes = minutesFromTime(value);
+  if (minutes === null) return null;
+  return { minutes, text: formatMinutes(minutes) };
+}
+
+function renderScheduleDayButtons(selectedDays = [], disabled = false){
+  const container = document.getElementById('scheduleDayButtons');
+  if (!container) return;
+  container.innerHTML = '';
+  const selected = new Set((selectedDays || []).map(day => normalizeScheduleDay(day)).filter(Boolean));
+  SCHEDULE_DAY_ORDER.forEach(({ key, label }) => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'btn-check';
+    input.autocomplete = 'off';
+    input.dataset.dayCheck = key;
+    input.id = `schedule-day-${key}`;
+    input.disabled = !!disabled;
+    if (selected.has(key)) input.checked = true;
+    const btn = document.createElement('label');
+    btn.className = 'btn btn-outline-light btn-sm';
+    btn.htmlFor = input.id;
+    btn.textContent = label.slice(0, 3);
+    container.append(input, btn);
+  });
+}
+
+function renderScheduleEditor(){
+  const spec = SELECTED_SCHEDULE && SCHEDULES[SELECTED_SCHEDULE]
+    ? cloneScheduleSpec(SCHEDULES[SELECTED_SCHEDULE])
+    : blankScheduleSpec();
+  const nameInput = document.getElementById('scheduleNameInput');
+  if (nameInput){
+    nameInput.value = EDITING_SCHEDULE_NAME || '';
+    nameInput.disabled = scheduleReadOnly;
+  }
+  const helper = document.getElementById('scheduleHelper');
+  if (helper){
+    if (scheduleReadOnly){
+      helper.textContent = 'Built-in schedules show the default behaviour. Use "Create new schedule…" to customise the time window.';
+    } else {
+      helper.textContent = 'Choose a HH:MM start and end time, then select the days the schedule permits access.';
+    }
+  }
+  const saveBtn = document.getElementById('scheduleSaveBtn');
+  if (saveBtn){
+    saveBtn.disabled = scheduleReadOnly;
+  }
+  const deleteBtn = document.getElementById('scheduleDeleteBtn');
+  if (deleteBtn){
+    deleteBtn.disabled = scheduleReadOnly || !SELECTED_SCHEDULE;
+  }
+
+  const startInput = document.getElementById('scheduleStartInput');
+  if (startInput){
+    startInput.value = spec.start;
+    startInput.disabled = scheduleReadOnly;
+    applyAutoColonFormatting(startInput);
+  }
+  const endInput = document.getElementById('scheduleEndInput');
+  if (endInput){
+    endInput.value = spec.end;
+    endInput.disabled = scheduleReadOnly;
+    applyAutoColonFormatting(endInput);
+  }
+
+  renderScheduleDayButtons(spec.days, scheduleReadOnly);
+}
+
+function gatherScheduleSpec(){
+  const base = SELECTED_SCHEDULE && SCHEDULES[SELECTED_SCHEDULE]
+    ? cloneScheduleSpec(SCHEDULES[SELECTED_SCHEDULE])
+    : blankScheduleSpec();
+  const startInput = document.getElementById('scheduleStartInput');
+  const endInput = document.getElementById('scheduleEndInput');
+  const parsedStart = parseTimeValue(startInput ? startInput.value : '');
+  const parsedEnd = parseTimeValue(endInput ? endInput.value : '');
+  base.start = parsedStart ? parsedStart.text : '';
+  base.end = parsedEnd ? parsedEnd.text : '';
+  const days = [];
+  document.querySelectorAll('#scheduleDayButtons input[data-day-check]').forEach(input => {
+    if (input.checked){
+      const day = input.getAttribute('data-day-check');
+      if (day) days.push(day);
+    }
+  });
+  base.days = days;
+  if (!base.type) base.type = '1';
+  if (base.date_start === undefined || base.date_start === null) base.date_start = '';
+  if (base.date_end === undefined || base.date_end === null) base.date_end = '';
+  return base;
+}
+
+async function callAction(actionName, payload){
+  const res = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: actionName, payload })
+  });
+  if (!res.ok){
+    const text = await res.text();
+    const err = buildError(res, text);
+    handleAuthError(err);
+    throw err;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (body && body.ok === false){
+    throw new Error(body.error || 'Action failed');
+  }
+  return body;
+}
+
+function broadcastScheduleRevision(){
+  const stamp = `${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  try { localStorage.setItem('akuvox_schedule_revision', stamp); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_schedule_revision', stamp); } catch (err) {}
+  try { window.dispatchEvent(new CustomEvent('akuvox-schedules-updated', { detail: { revision: stamp } })); } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'akuvox-schedules-updated', revision: stamp }, window.location.origin);
+    }
+  } catch (err) {}
+}
+
+async function saveSchedule(){
+  if (scheduleSaving || scheduleReadOnly) return;
+  const input = document.getElementById('scheduleNameInput');
+  const name = (input && typeof input.value === 'string') ? input.value.trim() : '';
+  if (!name){
+    setScheduleStatus('Enter a schedule name.', 'error');
+    input?.focus();
+    return;
+  }
+  if (scheduleIsBuiltin(name) && !scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedule names are reserved. Choose a different name.', 'error');
+    return;
+  }
+  const spec = gatherScheduleSpec();
+  if (!spec.start || !spec.end){
+    setScheduleStatus('Enter start and end times in HH:MM.', 'error');
+    return;
+  }
+  if (!Array.isArray(spec.days) || !spec.days.length){
+    setScheduleStatus('Select at least one day.', 'error');
+    return;
+  }
+  scheduleSaving = true;
+  try{
+    setScheduleStatus('Saving…');
+    await callAction('upsert_schedule', { name, spec });
+    broadcastScheduleRevision();
+    SCHEDULES[name] = spec;
+    const next = populateScheduleSelect(name);
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Save failed', 'error');
+    alert('Failed to save schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleSaving = false;
+  }
+}
+
+async function deleteSchedule(){
+  if (scheduleDeleting) return;
+  if (!SELECTED_SCHEDULE){
+    setScheduleStatus('Choose a schedule to delete.', 'error');
+    return;
+  }
+  if (scheduleIsBuiltin(SELECTED_SCHEDULE)){
+    setScheduleStatus('Built-in schedules cannot be deleted.', 'error');
+    return;
+  }
+  const confirmed = window.confirm(`Delete schedule "${SELECTED_SCHEDULE}"?`);
+  if (!confirmed) return;
+  scheduleDeleting = true;
+  try{
+    setScheduleStatus('Deleting…');
+    await callAction('delete_schedule', { name: SELECTED_SCHEDULE });
+    broadcastScheduleRevision();
+    delete SCHEDULES[SELECTED_SCHEDULE];
+    const next = populateScheduleSelect('');
+    updateScheduleSelection(next);
+    setScheduleStatus('Schedule deleted', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setScheduleStatus('Delete failed', 'error');
+    alert('Failed to delete schedule: ' + (err && err.message ? err.message : err));
+  }finally{
+    scheduleDeleting = false;
+  }
+}
+
+function startNewSchedule(){
+  const select = document.getElementById('scheduleSelect');
+  if (select){
+    select.value = '';
+  }
+  updateScheduleSelection('');
+  const input = document.getElementById('scheduleNameInput');
+  if (input && !input.disabled){
+    input.focus();
+  }
+}
+
+async function saveIntegrity(minutes){
+  if (integritySaving) return;
+  integritySaving = true;
+  try{
+    setIntegrityStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { integrity_interval_minutes: minutes });
+    if (res.integrity_interval_minutes){
+      SETTINGS_DATA.integrity_interval_minutes = res.integrity_interval_minutes;
+      setIntegrityStatus('Saved', 'success');
+    } else {
+      setIntegrityStatus('Saved', 'success');
+    }
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setIntegrityStatus('Save failed', 'error');
+    alert('Failed to update integrity interval: ' + (err && err.message ? err.message : err));
+  }finally{
+    integritySaving = false;
+  }
+}
+
+async function saveFaceIntegrityEnabled(enabled){
+  if (integritySaving) return;
+  integritySaving = true;
+  try{
+    setIntegrityStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { face_integrity_enabled: !!enabled });
+    if (typeof res.face_integrity_enabled === 'boolean'){
+      SETTINGS_DATA.face_integrity_enabled = res.face_integrity_enabled;
+    } else {
+      SETTINGS_DATA.face_integrity_enabled = !!enabled;
+    }
+    setIntegrityStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setIntegrityStatus('Save failed', 'error');
+    alert('Failed to update face integrity check: ' + (err && err.message ? err.message : err));
+  }finally{
+    integritySaving = false;
+  }
+}
+
+async function saveAutoSyncDelay(minutes){
+  if (autoSyncSaving) return;
+  autoSyncSaving = true;
+  try{
+    setAutoSyncStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { auto_sync_delay_minutes: minutes });
+    const returned = Number(res.auto_sync_delay_minutes);
+    if (Number.isFinite(returned)){
+      const { min, max } = autoSyncRange();
+      const normalized = Math.min(max, Math.max(min, Math.round(returned)));
+      SETTINGS_DATA.auto_sync_delay_minutes = normalized;
+      const input = document.getElementById('autoSyncDelayInput');
+      if (input) input.value = String(normalized);
+    }
+    setAutoSyncStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setAutoSyncStatus('Save failed', 'error');
+    alert('Failed to update automatic sync delay: ' + (err && err.message ? err.message : err));
+  }finally{
+    autoSyncSaving = false;
+  }
+}
+
+async function saveHealthInterval(seconds){
+  if (healthSaving) return;
+  healthSaving = true;
+  try{
+    setHealthStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { health_check_interval_seconds: seconds });
+    const returned = Number(res.health_check_interval_seconds);
+    if (Number.isFinite(returned)){
+      const { min, max } = healthRange();
+      const normalized = Math.min(max, Math.max(min, Math.round(returned)));
+      SETTINGS_DATA.health_check_interval_seconds = normalized;
+      const input = document.getElementById('healthIntervalInput');
+      if (input) input.value = String(normalized);
+    }
+    setHealthStatus('Saved', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setHealthStatus('Save failed', 'error');
+    alert('Failed to update health check interval: ' + (err && err.message ? err.message : err));
+  }finally{
+    healthSaving = false;
+  }
+}
+
+async function saveAlerts(){
+  if (alertsSaving) return;
+  alertsSaving = true;
+  try{
+    setAlertsStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
+    if (res.alerts && res.alerts.targets){
+      ALERT_TARGETS = res.alerts.targets;
+      SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+      Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    }
+    setAlertsStatus('Saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setAlertsStatus('Save failed', 'error');
+    alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
+  }finally{
+    alertsSaving = false;
+  }
+}
+
+async function loadData(){
+  setBusy(true);
+  try{
+    const [settingsResp, phonesResp] = await Promise.all([
+      apiGet(API_SETTINGS),
+      apiGet(API_PHONES).catch((err) => {
+        handleAuthError(err);
+        return { phones: [] };
+      })
+    ]);
+    SETTINGS_DATA = settingsResp || {
+      integrity_interval_minutes: 15,
+      face_integrity_enabled: true,
+      auto_sync_delay_minutes: 30,
+      health_check_interval_seconds: 30,
+      access_event_limit: 30,
+      alerts: { targets: {} },
+      registry_users: [],
+    };
+
+    const minDelay = Number(settingsResp?.min_auto_sync_delay_minutes);
+    const maxDelay = Number(settingsResp?.max_auto_sync_delay_minutes);
+    const safeMinDelay = Number.isFinite(minDelay) ? Math.max(1, Math.round(minDelay)) : 5;
+    const safeMaxDelay = Number.isFinite(maxDelay) ? Math.max(safeMinDelay, Math.round(maxDelay)) : Math.max(safeMinDelay, 60);
+    SETTINGS_DATA.min_auto_sync_delay_minutes = safeMinDelay;
+    SETTINGS_DATA.max_auto_sync_delay_minutes = safeMaxDelay;
+    const rawDelayValue = SETTINGS_DATA.auto_sync_delay_minutes;
+    let delayValue = Number(rawDelayValue);
+    if (!Number.isFinite(delayValue) || rawDelayValue === null || rawDelayValue === undefined || rawDelayValue === '') delayValue = 30;
+    delayValue = Math.round(delayValue);
+    if (delayValue < safeMinDelay) delayValue = safeMinDelay;
+    if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;
+    SETTINGS_DATA.auto_sync_delay_minutes = delayValue;
+
+    const minHealth = Number(settingsResp?.min_health_check_interval_seconds);
+    const maxHealth = Number(settingsResp?.max_health_check_interval_seconds);
+    const safeMinHealth = Number.isFinite(minHealth) ? Math.max(1, Math.round(minHealth)) : 10;
+    const safeMaxHealth = Number.isFinite(maxHealth)
+      ? Math.max(safeMinHealth, Math.round(maxHealth))
+      : Math.max(safeMinHealth, 300);
+    SETTINGS_DATA.min_health_check_interval_seconds = safeMinHealth;
+    SETTINGS_DATA.max_health_check_interval_seconds = safeMaxHealth;
+    const rawHealthValue = SETTINGS_DATA.health_check_interval_seconds;
+    let healthValue = Number(rawHealthValue);
+    if (
+      !Number.isFinite(healthValue) ||
+      rawHealthValue === null ||
+      rawHealthValue === undefined ||
+      rawHealthValue === ''
+    ) {
+      healthValue = 30;
+    }
+    healthValue = Math.round(healthValue);
+    if (healthValue < safeMinHealth) healthValue = safeMinHealth;
+    if (healthValue > safeMaxHealth) healthValue = safeMaxHealth;
+    SETTINGS_DATA.health_check_interval_seconds = healthValue;
+
+    const minEvents = Number(settingsResp?.min_access_event_limit);
+    const maxEvents = Number(settingsResp?.max_access_event_limit);
+    const safeMinEvents = Number.isFinite(minEvents) ? Math.max(1, Math.round(minEvents)) : 5;
+    const safeMaxEvents = Number.isFinite(maxEvents)
+      ? Math.max(safeMinEvents, Math.round(maxEvents))
+      : Math.max(safeMinEvents, 200);
+    SETTINGS_DATA.min_access_event_limit = safeMinEvents;
+    SETTINGS_DATA.max_access_event_limit = safeMaxEvents;
+    const rawEventLimit = SETTINGS_DATA.access_event_limit;
+    let eventLimitValue = Number(rawEventLimit);
+    if (!Number.isFinite(eventLimitValue) || rawEventLimit === null || rawEventLimit === undefined || rawEventLimit === '') {
+      eventLimitValue = 30;
+    }
+    eventLimitValue = Math.round(eventLimitValue);
+    if (eventLimitValue < safeMinEvents) eventLimitValue = safeMinEvents;
+    if (eventLimitValue > safeMaxEvents) eventLimitValue = safeMaxEvents;
+    SETTINGS_DATA.access_event_limit = eventLimitValue;
+
+    const faceIntegrityRaw = settingsResp?.face_integrity_enabled;
+    SETTINGS_DATA.face_integrity_enabled = typeof faceIntegrityRaw === 'boolean' ? faceIntegrityRaw : true;
+
+    PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
+    USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+    ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
+    Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
+    SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
+      ? { ...settingsResp.capabilities }
+      : { alarm_relay: false };
+    SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(settingsResp?.credential_prompts);
+    const rawSchedules = settingsResp?.schedules;
+    if (rawSchedules && typeof rawSchedules === 'object'){
+      SCHEDULES = {};
+      Object.entries(rawSchedules).forEach(([name, spec]) => {
+        SCHEDULES[name] = cloneScheduleSpec(spec);
+      });
+    } else {
+      SCHEDULES = {};
+    }
+    const nextSchedule = populateScheduleSelect(SELECTED_SCHEDULE);
+    updateScheduleSelection(nextSchedule);
+    renderAutoSyncDelay();
+    renderHealthInterval();
+    renderEventLimit();
+    renderIntegrity();
+    renderCredentialPrompts();
+    renderAlerts();
+  } catch (err){
+    if (handleAuthError(err)) return;
+    alert('Failed to load settings: ' + (err && err.message ? err.message : err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const backBtn = document.getElementById('btnBack');
+  if (backBtn) {
+    backBtn.href = buildHref('index');
+    backBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('index', {}, { replaceState: true });
+    });
+  }
+
+  const diagnosticsBtn = document.getElementById('openDiagnosticsBtn');
+  if (diagnosticsBtn) {
+    diagnosticsBtn.href = buildHref('diagnostics');
+    diagnosticsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('diagnostics');
+    });
+  }
+
+  const autoSyncInput = document.getElementById('autoSyncDelayInput');
+  const commitAutoSyncDelay = async () => {
+    if (!autoSyncInput) return;
+    const { min, max } = autoSyncRange();
+    const rawStr = (autoSyncInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setAutoSyncStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    if (val === SETTINGS_DATA.auto_sync_delay_minutes){
+      setAutoSyncStatus('');
+      return;
+    }
+    SETTINGS_DATA.auto_sync_delay_minutes = val;
+    autoSyncInput.value = String(val);
+    await saveAutoSyncDelay(val);
+  };
+  autoSyncInput?.addEventListener('input', () => {
+    hideAutoSyncSavedOverlay();
+    setAutoSyncStatus('');
+  });
+  autoSyncInput?.addEventListener('change', commitAutoSyncDelay);
+  autoSyncInput?.addEventListener('blur', commitAutoSyncDelay);
+
+  const eventLimitInput = document.getElementById('accessEventLimitInput');
+  const commitEventLimit = async () => {
+    if (!eventLimitInput) return;
+    const { min, max } = eventLimitRange();
+    const rawStr = (eventLimitInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setEventLimitStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    if (val === SETTINGS_DATA.access_event_limit){
+      setEventLimitStatus('');
+      return;
+    }
+    SETTINGS_DATA.access_event_limit = val;
+    eventLimitInput.value = String(val);
+    await saveEventLimit();
+  };
+  eventLimitInput?.addEventListener('input', () => {
+    hideEventLimitSavedOverlay();
+    setEventLimitStatus('');
+  });
+  eventLimitInput?.addEventListener('change', commitEventLimit);
+  eventLimitInput?.addEventListener('blur', commitEventLimit);
+
+  const healthInput = document.getElementById('healthIntervalInput');
+  const commitHealthInterval = async () => {
+    if (!healthInput) return;
+    const { min, max } = healthRange();
+    const rawStr = (healthInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setHealthStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    if (val === SETTINGS_DATA.health_check_interval_seconds){
+      setHealthStatus('');
+      return;
+    }
+    SETTINGS_DATA.health_check_interval_seconds = val;
+    healthInput.value = String(val);
+    await saveHealthInterval(val);
+  };
+  healthInput?.addEventListener('input', () => {
+    hideHealthSavedOverlay();
+    setHealthStatus('');
+  });
+  healthInput?.addEventListener('change', commitHealthInterval);
+  healthInput?.addEventListener('blur', commitHealthInterval);
+
+  const integrityInput = document.getElementById('integrityInput');
+  const commitIntegrity = async () => {
+    if (!integrityInput) return;
+    const val = hhmmToMinutes(integrityInput.value);
+    if (val === null){
+      setIntegrityStatus('Enter a valid HH:MM between 00:05 and 24:00', 'error');
+      return;
+    }
+    if (val === SETTINGS_DATA.integrity_interval_minutes){
+      setIntegrityStatus('');
+      return;
+    }
+    SETTINGS_DATA.integrity_interval_minutes = val;
+    await saveIntegrity(val);
+  };
+  integrityInput?.addEventListener('input', hideIntegritySavedOverlay);
+  integrityInput?.addEventListener('change', commitIntegrity);
+  integrityInput?.addEventListener('blur', commitIntegrity);
+
+  const faceIntegrityToggle = document.getElementById('faceIntegrityToggle');
+  faceIntegrityToggle?.addEventListener('change', async () => {
+    const enabled = !!faceIntegrityToggle.checked;
+    if (enabled === SETTINGS_DATA.face_integrity_enabled) return;
+    SETTINGS_DATA.face_integrity_enabled = enabled;
+    await saveFaceIntegrityEnabled(enabled);
+  });
+
+  document.getElementById('addTargetSelect')?.addEventListener('change', async (ev) => {
+    const service = ev.target.value;
+    if (!service) return;
+    ensureTargetDefaults(service);
+    ALERT_TARGETS[service] = ALERT_TARGETS[service];
+    SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
+    ev.target.value = '';
+    renderAlerts();
+    await saveAlerts();
+  });
+
+  const scheduleSelect = document.getElementById('scheduleSelect');
+  scheduleSelect?.addEventListener('change', (ev) => {
+    updateScheduleSelection(ev.target.value);
+  });
+  document.getElementById('scheduleCreateBtn')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    startNewSchedule();
+  });
+  document.getElementById('scheduleSaveBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await saveSchedule();
+  });
+  document.getElementById('scheduleDeleteBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await deleteSchedule();
+  });
+  const scheduleNameInput = document.getElementById('scheduleNameInput');
+  scheduleNameInput?.addEventListener('input', (ev) => {
+    EDITING_SCHEDULE_NAME = ev.target.value;
+    setScheduleStatus('');
+  });
+  const scheduleStartInput = document.getElementById('scheduleStartInput');
+  applyAutoColonFormatting(scheduleStartInput);
+  scheduleStartInput?.addEventListener('input', () => { setScheduleStatus(''); });
+  const scheduleEndInput = document.getElementById('scheduleEndInput');
+  applyAutoColonFormatting(scheduleEndInput);
+  scheduleEndInput?.addEventListener('input', () => { setScheduleStatus(''); });
+  const scheduleDayButtons = document.getElementById('scheduleDayButtons');
+  scheduleDayButtons?.addEventListener('change', () => { if (!scheduleReadOnly) setScheduleStatus(''); });
+
+  document.getElementById('credentialOptions')?.addEventListener('change', (ev) => {
+    const target = ev.target;
+    if (!target || target.type !== 'checkbox') return;
+    const key = target.dataset.credential;
+    if (!key) return;
+    const current = sanitizeCredentialPrompts(SETTINGS_DATA.credential_prompts);
+    current[key] = !!target.checked;
+    SETTINGS_DATA.credential_prompts = current;
+    renderCredentialPrompts();
+    setCredentialStatus('');
+    saveCredentialPrompts();
+  });
+
+  document.getElementById('autoUpdateToggle')?.addEventListener('change', (ev) => {
+    setAutoUpdateEnabled(ev.target.checked);
+  });
+  document.getElementById('autoUpdateTimeInput')?.addEventListener('change', () => {
+    updateAutoUpdateOptions();
+  });
+  document.getElementById('autoUpdateRestartToggle')?.addEventListener('change', () => {
+    updateAutoUpdateOptions();
+  });
+
+  renderCredentialPrompts();
+  await loadData();
+  await refreshAutoUpdateToggle();
+});
+</script>
+
+<div class="container py-3">
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-outline-light" id="btnBack" href="/akuvox-ac/index"><i class="bi bi-arrow-left"></i> Back</a>
+    <h2 class="m-0">Global Settings</h2>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <div>
+        <div class="fw-semibold">Device diagnostics</div>
+        <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
+      </div>
+      <a class="btn btn-outline-info" id="openDiagnosticsBtn" href="/akuvox-ac/diagnostics"><i class="bi bi-activity me-1"></i>Open diagnostics</a>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Integration Auto Update</div>
+    <div class="card-body">
+      <p class="muted">Create a Home Assistant automation to check for Akuvox Access Control updates at a set time each day.</p>
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="autoUpdateToggle">
+        <label class="form-check-label" for="autoUpdateToggle">Enable auto updates</label>
+      </div>
+      <div class="mt-3">
+        <label class="form-label" for="autoUpdateTimeInput">Check time</label>
+        <input class="form-control" type="time" id="autoUpdateTimeInput" step="60" />
+      </div>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="autoUpdateRestartToggle">
+        <label class="form-check-label" for="autoUpdateRestartToggle">Allow restart after update installs</label>
+      </div>
+      <div class="form-text text-white mt-2" id="autoUpdateStatus">Checking current automation…</div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Automatic Change Sync Delay</div>
+    <div class="card-body">
+      <p class="muted">Set how long to wait before automatically syncing user updates to every participating device. Lower values push changes out sooner, while higher values batch multiple edits together. Choose between 5 and 60 minutes.</p>
+      <div class="saved-input-wrap">
+        <input id="autoSyncDelayInput" class="form-control" type="number" min="5" max="60" step="1" />
+        <div id="autoSyncSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="autoSyncStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Event History Limit</div>
+    <div class="card-body">
+      <p class="muted">Choose how many access events the dashboard keeps at once. Newer events appear first, and older entries are removed once the limit is reached.</p>
+      <div class="saved-input-wrap">
+        <input id="accessEventLimitInput" class="form-control" type="number" min="5" max="200" step="1" />
+        <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Health Check Interval</div>
+    <div class="card-body">
+      <p class="muted">Control how often the integration pings each device to confirm it is online. Shorter intervals detect offline devices faster but increase network traffic. Choose between 10 and 300 seconds.</p>
+      <div class="saved-input-wrap">
+        <input id="healthIntervalInput" class="form-control" type="number" min="10" max="300" step="1" />
+        <div id="healthSavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div id="healthStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Integrity Check Interval</div>
+    <div class="card-body">
+      <p class="muted">Integrity checks automatically compare each device's data with the server so everything stays accurate and up to date. Choose how often to run them (minimum 5 minutes, maximum 24 hours).</p>
+      <div class="saved-input-wrap">
+        <input id="integrityInput" class="form-control" placeholder="HH:MM" />
+        <div id="integritySavedOverlay" class="saved-overlay">Saved</div>
+      </div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="faceIntegrityToggle">
+        <label class="form-check-label" for="faceIntegrityToggle">Enable face integrity checks</label>
+      </div>
+      <div id="integrityStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">User Credential Prompts</div>
+    <div class="card-body">
+      <p class="muted">Toggle which credential types are shown during user setup. Turn off any you do not need.</p>
+      <div id="credentialOptions" class="d-flex flex-column gap-2">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialCode" data-credential="code">
+          <label class="form-check-label" for="credentialCode">Code (PIN)</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialToken" data-credential="token">
+          <label class="form-check-label" for="credentialToken">Token</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialPhone" data-credential="phone">
+          <label class="form-check-label" for="credentialPhone">Phone number</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialAnpr" data-credential="anpr">
+          <label class="form-check-label" for="credentialAnpr">ANPR (License plate recognition)</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="credentialFace" data-credential="face">
+          <label class="form-check-label" for="credentialFace">Face</label>
+        </div>
+      </div>
+      <div id="credentialStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3 schedule-card" id="access-schedules">
+    <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
+      <div>
+        <div class="fw-semibold">Access Schedules</div>
+        <div class="muted small">Create custom access windows that you can assign to users. Built-in schedules remain available for quick selection.</div>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <label class="form-label m-0 small text-uppercase muted" for="scheduleSelect">Schedule</label>
+        <select id="scheduleSelect" class="form-select form-select-sm" style="min-width:220px;"></select>
+        <button class="btn btn-sm btn-outline-light" id="scheduleCreateBtn"><i class="bi bi-plus-lg me-1"></i>New</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="mb-3">
+        <label class="form-label" for="scheduleNameInput">Schedule name</label>
+        <input id="scheduleNameInput" class="form-control" placeholder="e.g. Weekdays 09:00-17:00" />
+        <div id="scheduleHelper" class="form-text muted mt-1"></div>
+      </div>
+      <div class="schedule-window mt-3" id="scheduleEditor">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-md-4 col-lg-3">
+            <label class="form-label small text-uppercase muted" for="scheduleStartInput">Start time</label>
+            <input id="scheduleStartInput" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+          </div>
+          <div class="col-12 col-md-4 col-lg-3">
+            <label class="form-label small text-uppercase muted" for="scheduleEndInput">End time</label>
+            <input id="scheduleEndInput" class="form-control form-control-sm schedule-time-input" placeholder="HH:MM" />
+          </div>
+        </div>
+        <div class="mt-3">
+          <div class="muted small mb-1">Applies on days</div>
+          <div class="schedule-window-days" id="scheduleDayButtons"></div>
+        </div>
+      </div>
+      <div class="form-text muted mt-2">Exit-only devices automatically receive all-day access on the selected days.</div>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-success" id="scheduleSaveBtn"><i class="bi bi-check2 me-1"></i>Save schedule</button>
+        <button class="btn btn-outline-danger" id="scheduleDeleteBtn"><i class="bi bi-trash3 me-1"></i>Delete</button>
+      </div>
+      <div id="scheduleStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Alert Targets</span>
+      <select id="addTargetSelect" class="form-select form-select-sm" style="width:auto;"></select>
+    </div>
+    <div class="card-body">
+      <p class="muted">Choose which Home Assistant mobile app devices receive alerts. Configure per-device notification rules below.</p>
+      <div id="alertsContainer"></div>
+      <div id="alertsStatus" class="visually-hidden mt-3"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

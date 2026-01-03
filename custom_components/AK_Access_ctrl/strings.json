@@ -1,0 +1,34 @@
+{
+  "title": "Akuvox Access Control",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add an Akuvox device",
+        "description": "Enter connection details.",
+        "data": {
+          "device_name": "Device Name",
+          "host": "IP Address",
+          "device_type": "Device Type",
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {},
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "participate_in_sync": "Participate in sync",
+          "poll_interval": "Poll interval (seconds)",
+          "device_groups": "Sync groups for this device"
+        }
+      }
+    }
+  }
+}

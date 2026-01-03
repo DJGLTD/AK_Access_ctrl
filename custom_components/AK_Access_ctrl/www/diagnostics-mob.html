@@ -1,0 +1,1842 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Akuvox Device Diagnostics</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+  <style>
+    :root{
+      --bg:#0b1320;
+      --panel:#111a2b;
+      --border:#1b2942;
+      --text:#e6edf3;
+      --muted:#a5b5cc;
+      --accent:#2ff0c4;
+    }
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .diag-container{ max-width: 960px; }
+    .muted{ color: var(--muted); }
+    .card{ background:var(--panel); border:1px solid var(--border); }
+    .diag-card{ margin-top:1rem; border-radius:1rem; overflow:hidden; }
+    .diag-toggle{
+      width:100%;
+      border:0;
+      background:transparent;
+      color:inherit;
+      text-align:left;
+      padding:1rem 1.25rem;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:1rem;
+      cursor:pointer;
+      font-size:1rem;
+    }
+    .diag-toggle:focus{ outline:2px solid rgba(47,240,196,0.35); outline-offset:2px; }
+    .diag-toggle:hover{ background:rgba(47,240,196,0.08); }
+    .diag-toggle .bi{ transition:transform 0.2s ease; }
+    .diag-toggle[aria-expanded="true"] .bi{ transform:rotate(180deg); }
+    .diag-name{ font-weight:600; color:var(--text); }
+    .diag-meta{ font-size:0.9rem; color:var(--muted); margin-top:0.25rem; }
+    .diag-body{ background:#0d1729; border-top:1px solid var(--border); padding:1.25rem; }
+    .diag-summary-meta{ font-size:0.85rem; color:var(--muted); display:flex; gap:0.75rem; flex-wrap:wrap; }
+    .diag-request{ background:#0b172d; border:1px solid #1c2e4f; border-radius:0.75rem; margin-bottom:0.75rem; padding:0.75rem 1rem; }
+    .diag-request:last-child{ margin-bottom:0; }
+    .diag-request summary{
+      cursor:pointer;
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:0.5rem;
+      font-size:0.95rem;
+      list-style:none;
+    }
+    .diag-request summary::-webkit-details-marker{ display:none; }
+    .diag-request summary:focus{ outline:2px solid rgba(47,240,196,0.35); outline-offset:2px; }
+    .diag-request-body{ margin-top:0.75rem; font-size:0.9rem; }
+    .diag-request-body .diag-row{ display:flex; flex-wrap:wrap; gap:0.75rem; margin-bottom:0.5rem; color:var(--muted); }
+    .diag-request-body .diag-row strong{ color:var(--text); font-weight:600; }
+    .diag-section{ margin-top:0.75rem; }
+    .diag-section-title{ font-weight:600; margin-bottom:0.35rem; }
+    pre{
+      background:#091021;
+      border:1px solid #15233b;
+      border-radius:0.5rem;
+      padding:0.75rem;
+      color:var(--text);
+      font-size:0.85rem;
+      line-height:1.35;
+      max-height:320px;
+      overflow:auto;
+    }
+    code{ font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .badge.method{
+      background:rgba(47,240,196,0.12);
+      color:var(--accent);
+      letter-spacing:0.05em;
+      text-transform:uppercase;
+      font-size:0.7rem;
+    }
+    .badge.method.get{ background:rgba(13,202,240,0.18); color:#0dcaf0; }
+    .badge.method.post{ background:rgba(111,66,193,0.22); color:#d5b7ff; }
+    .badge.diag-type-badge{
+      background:rgba(13,110,253,0.18);
+      color:#9bbcff;
+      letter-spacing:0.04em;
+      text-transform:uppercase;
+      font-size:0.7rem;
+    }
+    .diag-status-badge{ font-size:0.7rem; text-transform:uppercase; letter-spacing:0.04em; }
+    .diag-status-ok{ background:rgba(25,135,84,0.22); color:#2ff0c4; }
+    .diag-status-error{ background:rgba(220,53,69,0.25); color:#ff7d8a; }
+    .diag-error-text{ color:#ff7d8a; font-weight:500; }
+    .alert.d-none{ display:none !important; }
+    .diag-settings-card{ background:var(--panel); border:1px solid var(--border); border-radius:1rem; margin-top:1rem; }
+    .diag-settings-card .card-body{ padding:1.25rem; }
+    .diag-settings-card .form-control{ background:#0d1729; border:1px solid #1c2e4f; color:var(--text); }
+    .diag-settings-card .form-control:focus{ background:#0d1729; color:var(--text); border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(47,240,196,0.25); }
+    .diag-settings-card .form-select{ background:#0d1729; border:1px solid #1c2e4f; color:var(--text); }
+    .diag-settings-card .form-select:focus{ background:#0d1729; color:var(--text); border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(47,240,196,0.25); }
+    .diag-settings-card .form-text{ color:var(--muted); }
+    .diag-settings-status{ font-size:0.85rem; margin-top:0.75rem; }
+    .diag-settings-status.success{ color:#2ff0c4; }
+    .diag-settings-status.error{ color:#ff7d8a; }
+    .diag-tabs{ margin-top:1.5rem; }
+    .diag-tabs .nav-link{
+      color:var(--muted);
+      border:1px solid transparent;
+      border-bottom:none;
+      background:transparent;
+      border-radius:0.75rem 0.75rem 0 0;
+      margin-right:0.25rem;
+    }
+    .diag-tabs .nav-link:hover{ color:var(--text); background:rgba(47,240,196,0.08); }
+    .diag-tabs .nav-link.active{
+      color:var(--text);
+      background:var(--panel);
+      border-color:var(--border) var(--border) var(--panel);
+      font-weight:600;
+    }
+    .diag-tab-content{ padding-top:1rem; }
+    .diag-tab-pane{ display:none; }
+    .diag-tab-pane.active{ display:block; }
+    .diag-tab-pane[hidden]{ display:none !important; }
+    .diag-command-card textarea{ min-height:160px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .diag-command-card pre{ max-height:240px; }
+    .diag-command-actions{ display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; margin-top:0.85rem; }
+    .diag-command-status{ font-size:0.85rem; }
+    .diag-command-status.success{ color:#2ff0c4; }
+    .diag-command-status.error{ color:#ff7d8a; }
+    .diag-command-status.muted{ color:var(--muted); }
+    .diag-suppressed-note{ font-size:0.75rem; color:var(--muted); margin-top:0.5rem; }
+    .diag-face-attempt{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; margin-bottom:0.85rem; background:#0b172d; }
+    .diag-face-attempt:last-child{ margin-bottom:0; }
+    .diag-face-attempt .attempt-header{ display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:space-between; align-items:center; }
+    .diag-face-attempt .attempt-path{ font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:0.85rem; }
+    .diag-face-attempt .attempt-meta{ font-size:0.8rem; color:var(--muted); margin-top:0.5rem; }
+    .diag-face-attempt .badge{ font-size:0.7rem; text-transform:uppercase; letter-spacing:0.04em; }
+    .diag-face-attempt .attempt-devices{ margin-top:0.35rem; font-size:0.8rem; color:var(--muted); }
+    .diag-face-attempt .attempt-devices strong{ color:var(--text); font-weight:600; }
+    .diag-face-attempt .btn-sm{ font-size:0.75rem; }
+    .diag-command-card .form-text{ color:var(--muted); }
+    .diag-events-list{ display:flex; flex-direction:column; gap:0.75rem; }
+    .diag-event{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; background:#0b172d; }
+    .diag-event-title{ display:flex; align-items:center; gap:0.5rem; font-weight:600; }
+    .diag-event-badge{ display:inline-flex; align-items:center; gap:0.35rem; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; border-radius:999px; padding:0.15rem 0.65rem; background:rgba(13,110,253,0.15); color:#9bbcff; }
+    .diag-event-badge.access{ background:rgba(46,204,113,0.18); color:#5ef3a8; }
+    .diag-event-badge.system{ background:rgba(255,193,7,0.15); color:#ffd86b; }
+    .diag-event-badge.call{ background:rgba(13,202,240,0.2); color:#9ee7ff; }
+    .diag-event-meta{ margin-top:0.35rem; color:var(--muted); font-size:0.85rem; display:flex; flex-wrap:wrap; gap:0.65rem; }
+    .diag-event-meta span{ display:inline-flex; align-items:center; gap:0.35rem; }
+    .diag-event-empty{ color:var(--muted); font-style:italic; }
+    .diag-event-filters .btn{ min-width:72px; }
+    @media (max-width: 768px){
+      .diag-container{ max-width:100%; padding:0 1rem; }
+      .diag-toggle{ padding:0.85rem 1rem; }
+      .diag-body{ padding:1rem; }
+      .diag-request{ padding:0.65rem 0.85rem; }
+      pre{ font-size:0.8rem; }
+      .diag-command-actions{ flex-direction:column; align-items:stretch; }
+    }
+  </style>
+</head>
+<body>
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+function persistTokens(access, refresh) {
+  if (!access) return null;
+  const payload = { access_token: access };
+  if (refresh) payload.refresh_token = refresh;
+  const serialized = JSON.stringify(payload);
+  try { sessionStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { localStorage.setItem('akuvox_ll_token', access); } catch (err) {}
+  try { sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { localStorage.setItem('akuvox_hassTokens', serialized); } catch (err) {}
+  try { window.AK_AC_HASS_TOKEN = access; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_ll_token', access); } catch (err2) {}
+      try { window.parent.sessionStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.localStorage.setItem('akuvox_hassTokens', serialized); } catch (err2) {}
+      try { window.parent.AK_AC_HASS_TOKEN = access; } catch (err2) {}
+    }
+  } catch (err) {}
+  return access;
+}
+
+function extractTokenFromAuth(auth) {
+  if (!auth || typeof auth !== 'object') return null;
+  const access = auth.accessToken
+    || auth.access_token
+    || auth?.token?.access_token
+    || auth?.data?.access_token
+    || null;
+  const refresh = auth.refreshToken
+    || auth.refresh_token
+    || auth?.token?.refresh_token
+    || auth?.data?.refresh_token
+    || null;
+  if (access) {
+    return persistTokens(access, refresh);
+  }
+  return null;
+}
+
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) {
+          return persistTokens(raw.trim());
+        }
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = extractTokenFromAuth(parsed);
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function tokenFromWindow(win) {
+  if (!win) return null;
+  let token = null;
+  token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+  if (token) return token;
+
+  token = extractTokenFromAuth(win.hassAuth)
+    || extractTokenFromAuth(win.auth)
+    || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+    || null;
+  if (token) return token;
+
+  try {
+    const conn = win.hassConnection;
+    if (conn && typeof conn.then === 'function') {
+      conn.then((resolved) => {
+        try {
+          extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+        } catch (err) {}
+      }).catch(() => {});
+    } else if (conn) {
+      token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
+  } catch (err) {}
+
+  return null;
+}
+
+function walkAuthWindows(start) {
+  const visited = new Set();
+  let current = start;
+  while (current && !visited.has(current)) {
+    const token = tokenFromWindow(current);
+    if (token) return token;
+    visited.add(current);
+
+    let next = null;
+    try {
+      next = current.parent;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    try {
+      next = current.opener;
+    } catch (err) {
+      next = null;
+    }
+    if (next && next !== current && !visited.has(next)) {
+      current = next;
+      continue;
+    }
+
+    break;
+  }
+  return null;
+}
+
+(function bootstrapAuthWatchers() {
+  const seen = new WeakSet();
+  function attach(win) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    try { extractTokenFromAuth(win.hassAuth || win.auth || win.AK_AC_HA_AUTH); } catch (err) {}
+    try {
+      const conn = win.hassConnection;
+      if (conn && typeof conn.then === 'function') {
+        conn.then((resolved) => {
+          try {
+            extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+          } catch (err) {}
+        }).catch(() => {});
+      } else if (conn) {
+        extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      }
+    } catch (err) {}
+    try {
+      if (win.parent && win.parent !== win) attach(win.parent);
+    } catch (err) {}
+    try {
+      if (win.opener) attach(win.opener);
+    } catch (err) {}
+  }
+  attach(window);
+})();
+
+function findHaToken(){
+  const existing = sessionStorage.getItem('akuvox_ll_token');
+  if (existing) return existing;
+  const token = walkAuthWindows(window);
+  if (token) {
+    try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+  }
+  return token;
+}
+const SAME_ORIGIN = { credentials: 'same-origin' };
+const REJECTED_TOKENS = new Set();
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function readAuthSigFrom(search = location.search){
+  try {
+    const params = new URLSearchParams(search);
+    const value = params.get('authSig');
+    return value || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function currentAuthSig(){
+  const stored = sessionStorage.getItem(AUTH_SIG_KEY) || localStorage.getItem(AUTH_SIG_KEY) || '';
+  if (stored) return stored;
+  const fromQuery = readAuthSigFrom();
+  if (fromQuery) {
+    try { sessionStorage.setItem(AUTH_SIG_KEY, fromQuery); } catch (err) {}
+    try { localStorage.setItem(AUTH_SIG_KEY, fromQuery); } catch (err) {}
+    return fromQuery;
+  }
+  return '';
+}
+
+async function fetchWithAuth(url, options = {}) {
+  const token = findHaToken();
+  const headers = new Headers(options.headers || {});
+  if (token && !REJECTED_TOKENS.has(token)) {
+    headers.set('Authorization', 'Bearer ' + token);
+  }
+  const merged = { ...options, headers, ...SAME_ORIGIN };
+  try {
+    const response = await fetch(url, merged);
+    if (response.status === 401 || response.status === 403) {
+      if (token) REJECTED_TOKENS.add(token);
+    }
+    return response;
+  } catch (err) {
+    throw err;
+  }
+}
+
+function buildError(response, text) {
+  const err = new Error(response.statusText || 'Request failed');
+  err.status = response.status;
+  err.body = text;
+  return err;
+}
+
+function isAuthError(err){
+  if (!err) return false;
+  const status = err.status || err.code || err.error || null;
+  if (!status) return false;
+  return status === 401 || status === 403;
+}
+
+function redirectToUnauthorized(){
+  const params = new URLSearchParams(location.search);
+  const targetParams = new URLSearchParams();
+  params.forEach((value, key) => {
+    if (key === 'view' || key === 'authSig') return;
+    targetParams.set(key, value);
+  });
+  const authSig = currentAuthSig();
+  if (authSig) targetParams.set('authSig', authSig);
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) targetParams.set('token', token);
+  const query = targetParams.toString();
+  let href = `/akuvox-ac/unauthorized${query ? `?${query}` : ''}`;
+  try {
+    if (window.parent && window.parent !== window) {
+      const search = new URLSearchParams(targetParams);
+      if (authSig) search.set('authSig', authSig);
+      if (token) search.set('token', token);
+      const clean = search.toString();
+      if (clean) href = `/akuvox-ac/unauthorized?${clean}`;
+    }
+  } catch (err) {}
+
+  let delivered = false;
+  try {
+    delivered = requestParentNav('unauthorized', Object.fromEntries(targetParams), { replaceState: true });
+  } catch (err) {}
+
+  if (!delivered) {
+    try { window.location.replace(href); }
+    catch (err) { window.location.href = href; }
+  }
+  return true;
+}
+
+function handleAuthError(err){
+  if (!isAuthError(err)) return false;
+  redirectToUnauthorized();
+  return true;
+}
+
+function collectSignedPaths(){
+  const result = {};
+  const merge = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return;
+    for (const [key, value] of Object.entries(candidate)) {
+      if (typeof value === 'string' && value) result[key] = value;
+    }
+  };
+  const read = (storage) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem('akuvox_signed_paths');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        merge(parsed);
+      }
+    } catch (err) {}
+  };
+
+  try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
+  try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
+  try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
+
+  try {
+    if (window.parent && window.parent !== window) {
+      try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
+      try { read(window.parent.sessionStorage); } catch (err) {}
+      try { read(window.parent.localStorage); } catch (err) {}
+    }
+  } catch (err) {}
+
+  return result;
+}
+
+const SIGNED_PATHS = collectSignedPaths();
+
+function signedPath(key, fallback){
+  if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
+    return SIGNED_PATHS[key];
+  }
+  return fallback;
+}
+
+const UI_ROOT = '/akuvox-ac';
+function buildHref(slug, params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+}
+function requestParentNav(view, params = {}, options = {}) {
+  try {
+    if (window.parent && window.parent !== window) {
+      try {
+        const parentDoc = window.parent.document;
+        if (!parentDoc || !parentDoc.getElementById('viewFrame')) return false;
+      } catch (err) {
+        return false;
+      }
+      const msg = {
+        type: 'akuvox-nav',
+        view: String(view || ''),
+        slug: String(view || ''),
+        params
+      };
+      if (options.updateHistory === false) msg.updateHistory = false;
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+function openInApp(view, params = {}, options = {}) {
+  const href = buildHref(view, params);
+  const delivered = requestParentNav(view, params, options);
+  if (!delivered) {
+    window.location.href = href;
+  }
+  return delivered;
+}
+</script>
+
+<div class="diag-container container py-3">
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
+    <h2 class="m-0 flex-grow-1">Device Diagnostics</h2>
+    <button class="btn btn-outline-info" id="btnRefresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+    <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
+  </div>
+  <p class="muted mt-2">Review the most recent HTTP requests sent from Home Assistant to each Akuvox device. Entries include the request payload, status and timing so you can validate what was delivered.</p>
+  <div id="statusMessage" class="alert alert-danger d-none" role="alert"></div>
+  <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
+    <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
+    <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
+    <button class="nav-link" type="button" data-tab-target="face">Face diagnostics</button>
+  </div>
+  <div class="diag-tab-content">
+    <div class="diag-tab-pane active" id="tabRequests" data-tab="requests">
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <form id="historyLimitForm" class="row g-3 align-items-end">
+            <div class="col-12 col-md-7 col-lg-6">
+              <label class="form-label text-uppercase small muted" for="historyLimitInput">Stored request history</label>
+              <input id="historyLimitInput" class="form-control" type="number" min="10" max="200" step="1" />
+              <div id="historyLimitHelper" class="form-text mt-1">Store between 10 and 200 requests per device. Higher values preserve more history but use more memory.</div>
+            </div>
+            <div class="col-12 col-md-auto">
+              <button class="btn btn-info w-100" id="historyLimitSaveBtn" type="submit"><i class="bi bi-save me-1"></i>Save</button>
+            </div>
+          </form>
+          <div id="historyLimitStatus" class="diag-settings-status muted"></div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-7 col-lg-6">
+              <label class="form-label text-uppercase small muted" for="typeFilterSelect">Filter events</label>
+              <select id="typeFilterSelect" class="form-select"></select>
+              <div id="typeFilterHelper" class="form-text mt-1">Limit the visible events by request type.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="diagnosticDevices" class="mt-3"></div>
+    </div>
+    <div class="diag-tab-pane" id="tabEvents" data-tab="events" hidden>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+              <div class="form-label text-uppercase small muted mb-1">Stored access events</div>
+              <div class="h3 mb-0" id="eventsCount">—</div>
+              <div class="form-text" id="eventsMeta">—</div>
+              <div class="form-text" id="eventsLimitHelper"></div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+              <button class="btn btn-outline-light" type="button" id="btnOpenEventHistory"><i class="bi bi-journal-text me-1"></i>Full history</button>
+              <button class="btn btn-info" type="button" id="btnRefreshEvents"><i class="bi bi-arrow-clockwise me-1"></i>Refresh events</button>
+            </div>
+          </div>
+          <div id="eventsStatus" class="diag-settings-status muted mt-3"></div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="diag-event-filters btn-group" role="group" aria-label="Filter events">
+            <button class="btn btn-sm btn-outline-info active" type="button" data-event-filter="all">All</button>
+            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="access">Access</button>
+            <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="call">Call</button>
+          </div>
+          <div id="eventsList" class="diag-events-list mt-3"></div>
+        </div>
+      </div>
+    </div>
+    <div class="diag-tab-pane" id="tabFace" data-tab="face" hidden>
+      <div class="diag-settings-card card diag-command-card">
+        <div class="card-body">
+          <h5 class="mb-3">Manual command tester</h5>
+          <div class="row g-3">
+            <div class="col-12 col-md-6 col-lg-4">
+              <label class="form-label text-uppercase small muted" for="commandDeviceSelect">Device</label>
+              <select id="commandDeviceSelect" class="form-select"></select>
+              <div class="form-text">Choose the Akuvox device that should receive the request.</div>
+            </div>
+            <div class="col-6 col-md-3 col-lg-2">
+              <label class="form-label text-uppercase small muted" for="commandMethodSelect">Method</label>
+              <select id="commandMethodSelect" class="form-select">
+                <option value="POST">POST</option>
+                <option value="GET">GET</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-6 col-lg-4">
+              <label class="form-label text-uppercase small muted" for="commandPathInput">Request path</label>
+              <input id="commandPathInput" class="form-control" type="text" placeholder="/api/user/add" />
+              <div class="form-text">Relative path sent to the device (leading slash optional).</div>
+            </div>
+          </div>
+          <div class="mt-3">
+            <label class="form-label text-uppercase small muted" for="commandPayloadInput">JSON payload</label>
+            <textarea id="commandPayloadInput" class="form-control" spellcheck="false" placeholder="{}"></textarea>
+            <div class="form-text">Prefill a payload from the history below or craft your own JSON body.</div>
+          </div>
+          <div class="diag-command-actions">
+            <button class="btn btn-info" id="commandSendBtn" type="button"><i class="bi bi-send me-1"></i>Send command</button>
+            <button class="btn btn-outline-light" id="commandClearBtn" type="button"><i class="bi bi-eraser me-1"></i>Clear</button>
+            <span class="diag-command-status muted" id="commandStatus"></span>
+          </div>
+          <div class="mt-3">
+            <div class="diag-section-title">Device response</div>
+            <pre id="commandResponse">—</pre>
+          </div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <h5 class="mb-3">Face provisioning attempts</h5>
+          <p class="muted small mb-3">Unique request patterns recorded when faces were uploaded or linked. Click <b>Prefill</b> to copy the payload into the tester above.</p>
+          <div id="faceAttemptsList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_DIAGNOSTICS = signedPath('diagnostics', '/api/akuvox_ac/ui/diagnostics');
+const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
+const busyEl = document.getElementById('busy');
+const statusEl = document.getElementById('statusMessage');
+const devicesEl = document.getElementById('diagnosticDevices');
+const faceAttemptsEl = document.getElementById('faceAttemptsList');
+const commandDeviceSelect = document.getElementById('commandDeviceSelect');
+const commandMethodSelect = document.getElementById('commandMethodSelect');
+const commandPathInput = document.getElementById('commandPathInput');
+const commandPayloadInput = document.getElementById('commandPayloadInput');
+const COMMAND_PAYLOAD_PLACEHOLDER = commandPayloadInput ? commandPayloadInput.getAttribute('placeholder') || '' : '';
+const commandStatusEl = document.getElementById('commandStatus');
+const commandResponseEl = document.getElementById('commandResponse');
+const commandSendBtn = document.getElementById('commandSendBtn');
+const commandClearBtn = document.getElementById('commandClearBtn');
+const eventsListEl = document.getElementById('eventsList');
+const eventsCountEl = document.getElementById('eventsCount');
+const eventsMetaEl = document.getElementById('eventsMeta');
+const eventsLimitHelperEl = document.getElementById('eventsLimitHelper');
+const eventsStatusEl = document.getElementById('eventsStatus');
+const btnRefreshEvents = document.getElementById('btnRefreshEvents');
+const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
+let DIAG_DATA = [];
+let FACE_ATTEMPTS = [];
+let ACTIVE_TAB = 'requests';
+let HISTORY_LIMIT = 50;
+let MIN_HISTORY_LIMIT = 10;
+let MAX_HISTORY_LIMIT = 200;
+let historyLimitSaving = false;
+let ACCESS_EVENTS = [];
+let ACCESS_EVENT_LIMIT = 30;
+let MIN_ACCESS_EVENT_LIMIT = 5;
+let MAX_ACCESS_EVENT_LIMIT = 200;
+let EVENTS_LAST_SYNC = null;
+let EVENT_FILTER_MODE = 'all';
+const TYPE_FILTER_OTHER = '__other__';
+const TYPE_FILTER_ALL = '__all__';
+let activeTypeFilter = TYPE_FILTER_ALL;
+const EXCLUDED_REQUEST_PATHS = Object.freeze([
+  '/api/web/face/del',
+  '/api/web/user/get',
+]);
+const EVENT_EMPTY_MESSAGES = Object.freeze({
+  all: 'No recorded events yet.',
+  access: 'No access events recorded yet.',
+  call: 'No call events recorded yet.',
+});
+const EVENT_FILTERS = Object.freeze(['all', 'access', 'call']);
+
+function normalizeRequestPath(req){
+  if (!req || typeof req !== 'object') return '';
+  const pathCandidate = typeof req.path === 'string' ? req.path.trim() : '';
+  let candidate = pathCandidate;
+  if (!candidate){
+    const urlCandidate = typeof req.url === 'string' ? req.url.trim() : '';
+    if (urlCandidate){
+      try {
+        const parsed = new URL(urlCandidate, window.location.origin);
+        candidate = parsed.pathname || '';
+      } catch (err) {
+        const withoutQuery = urlCandidate.split('?')[0].split('#')[0].trim();
+        candidate = withoutQuery;
+      }
+    }
+  }
+  if (!candidate) return '';
+  const stripped = candidate.split('?')[0].split('#')[0].trim();
+  if (!stripped) return '';
+  return (stripped.startsWith('/') ? stripped : '/' + stripped).toLowerCase();
+}
+
+function requestShouldBeHidden(req){
+  const normalized = normalizeRequestPath(req);
+  if (!normalized) return false;
+  return EXCLUDED_REQUEST_PATHS.includes(normalized);
+}
+
+function getTypeFilterSelect(){
+  return document.getElementById('typeFilterSelect');
+}
+
+function setTypeFilter(value, options = {}){
+  const select = getTypeFilterSelect();
+  activeTypeFilter = value && value !== TYPE_FILTER_ALL ? value : TYPE_FILTER_ALL;
+  if (select && select.value !== activeTypeFilter){
+    select.value = activeTypeFilter;
+  }
+  refreshTypeFilterOptions(DIAG_DATA, { skipOptions: true });
+  if (!options.skipRender){
+    renderDevices(DIAG_DATA, { preserveExpansion: true });
+  }
+}
+
+function setActiveTab(tabId){
+  const target = tabId === 'face' ? 'face' : 'requests';
+  ACTIVE_TAB = target;
+  document.querySelectorAll('[data-tab-target]').forEach((btn) => {
+    if (!btn || !btn.classList) return;
+    const match = btn.dataset.tabTarget === target;
+    btn.classList.toggle('active', match);
+  });
+  document.querySelectorAll('.diag-tab-pane').forEach((pane) => {
+    if (!pane || !pane.dataset) return;
+    const match = pane.dataset.tab === target;
+    pane.classList.toggle('active', match);
+    if (match) {
+      pane.removeAttribute('hidden');
+    } else {
+      pane.setAttribute('hidden', 'true');
+    }
+  });
+}
+
+function updateCommandDeviceOptions(devices){
+  if (!commandDeviceSelect) return;
+  const current = commandDeviceSelect.value;
+  const opts = Array.isArray(devices) ? devices : [];
+  const options = opts
+    .map((device) => ({
+      value: device?.entry_id ? String(device.entry_id) : '',
+      label: device?.name ? String(device.name) : (device?.entry_id ? String(device.entry_id) : ''),
+    }))
+    .filter((opt) => opt.value);
+  if (!options.length){
+    commandDeviceSelect.innerHTML = '<option value="">No devices available</option>';
+    return;
+  }
+  const html = ['<option value="">Select device…</option>'];
+  options.forEach((opt) => {
+    html.push(`<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label || opt.value)}</option>`);
+  });
+  commandDeviceSelect.innerHTML = html.join('');
+  if (options.some((opt) => opt.value === current)){
+    commandDeviceSelect.value = current;
+  } else if (!commandDeviceSelect.value && options.length === 1){
+    commandDeviceSelect.value = options[0].value;
+  }
+}
+
+function payloadToText(value){
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (err) {
+    return String(value);
+  }
+}
+
+function setCommandStatus(message, tone = 'muted'){
+  if (!commandStatusEl) return;
+  if (!message){
+    commandStatusEl.textContent = '';
+    commandStatusEl.className = 'diag-command-status muted';
+    return;
+  }
+  const classes = ['diag-command-status'];
+  if (tone === 'success') classes.push('success');
+  else if (tone === 'error') classes.push('error');
+  else classes.push('muted');
+  commandStatusEl.className = classes.join(' ');
+  commandStatusEl.textContent = message;
+}
+
+function renderFaceAttempts(attempts = FACE_ATTEMPTS){
+  if (!faceAttemptsEl) return;
+  faceAttemptsEl.innerHTML = '';
+  if (!attempts || !attempts.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No face-related requests have been recorded yet.';
+    faceAttemptsEl.appendChild(empty);
+    return;
+  }
+  attempts.forEach((attempt) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'diag-face-attempt';
+    const method = String(attempt?.method || 'POST').toUpperCase();
+    const path = attempt?.path || '';
+    const methodBadge = `<span class="badge method ${method.toLowerCase()}">${escapeHtml(method)}</span>`;
+    const typeBadge = attempt?.diag_type ? `<span class="badge diag-type-badge">${escapeHtml(String(attempt.diag_type))}</span>` : '';
+    const header = document.createElement('div');
+    header.className = 'attempt-header';
+    header.innerHTML = `
+      <div>
+        ${methodBadge}
+        ${typeBadge}
+        <div class="attempt-path">${escapeHtml(path)}</div>
+      </div>
+      <button class="btn btn-outline-info btn-sm" type="button"><i class="bi bi-clipboard-plus me-1"></i>Prefill</button>
+    `;
+    const prefillBtn = header.querySelector('button');
+    prefillBtn?.addEventListener('click', () => prefillCommandFromAttempt(attempt));
+    wrapper.appendChild(header);
+
+    const metaParts = [];
+    const count = Number(attempt?.count || 0);
+    if (count){
+      metaParts.push(`${count} ${count === 1 ? 'event' : 'events'}`);
+    }
+    if (attempt?.last_seen){
+      metaParts.push(`Last ${formatDateTime(attempt.last_seen)}`);
+    }
+    if (attempt?.first_seen && attempt.first_seen !== attempt.last_seen){
+      metaParts.push(`First ${formatDateTime(attempt.first_seen)}`);
+    }
+    const typeBits = [];
+    if (attempt?.target) typeBits.push(`target=${String(attempt.target)}`);
+    if (attempt?.action) typeBits.push(`action=${String(attempt.action)}`);
+    if (typeBits.length) metaParts.push(typeBits.join(', '));
+    if (Array.isArray(attempt?.payload_keys) && attempt.payload_keys.length){
+      metaParts.push(`payload keys: ${attempt.payload_keys.join(', ')}`);
+    }
+    if (Array.isArray(attempt?.data_keys) && attempt.data_keys.length){
+      metaParts.push(`data keys: ${attempt.data_keys.join(', ')}`);
+    }
+    if (attempt?.last_status != null){
+      metaParts.push(`Status ${attempt.last_status}`);
+    }
+    if (metaParts.length){
+      const meta = document.createElement('div');
+      meta.className = 'attempt-meta';
+      meta.textContent = metaParts.join(' • ');
+      wrapper.appendChild(meta);
+    }
+    if (attempt?.last_error){
+      const err = document.createElement('div');
+      err.className = 'attempt-meta diag-error-text';
+      err.textContent = `Last error: ${attempt.last_error}`;
+      wrapper.appendChild(err);
+    }
+    if (Array.isArray(attempt?.devices) && attempt.devices.length){
+      const devicesLine = document.createElement('div');
+      devicesLine.className = 'attempt-devices';
+      const names = attempt.devices.map((dev) => escapeHtml(dev?.name || dev?.entry_id || 'Device'));
+      devicesLine.innerHTML = `<strong>Devices:</strong> ${names.join(', ')}`;
+      wrapper.appendChild(devicesLine);
+    }
+    faceAttemptsEl.appendChild(wrapper);
+  });
+}
+
+function prefillCommandFromAttempt(attempt){
+  if (!attempt || typeof attempt !== 'object') return;
+  const method = String(attempt.method || 'POST').toUpperCase();
+  if (commandMethodSelect) commandMethodSelect.value = method === 'GET' ? 'GET' : 'POST';
+  if (commandPathInput && attempt.path) commandPathInput.value = String(attempt.path);
+  if (commandPayloadInput){
+    const text = payloadToText(attempt.payload);
+    commandPayloadInput.value = text || (method === 'GET' ? '' : '{}');
+  }
+  if (commandDeviceSelect && attempt.last_entry_id){
+    const desired = String(attempt.last_entry_id);
+    const match = Array.from(commandDeviceSelect.options || []).some((opt) => opt.value === desired);
+    if (match) commandDeviceSelect.value = desired;
+  }
+  syncCommandPayloadState();
+  setCommandStatus('Prefilled from history. Review before sending.', 'muted');
+  if (commandPayloadInput && !commandPayloadInput.disabled) commandPayloadInput.focus();
+}
+
+function clearCommandEditor(){
+  if (commandMethodSelect) commandMethodSelect.value = 'POST';
+  if (commandPathInput) commandPathInput.value = '';
+  if (commandPayloadInput) commandPayloadInput.value = '';
+  if (commandResponseEl) commandResponseEl.textContent = '—';
+  setCommandStatus('');
+  syncCommandPayloadState();
+}
+
+function syncCommandPayloadState(){
+  if (!commandPayloadInput || !commandMethodSelect) return;
+  const method = String(commandMethodSelect.value || 'POST').toUpperCase();
+  const disabled = method === 'GET';
+  commandPayloadInput.disabled = disabled;
+  if (disabled){
+    commandPayloadInput.placeholder = 'GET requests do not include a body.';
+  } else {
+    commandPayloadInput.placeholder = COMMAND_PAYLOAD_PLACEHOLDER || '{}';
+  }
+}
+
+async function sendDiagnosticCommand(){
+  if (!commandDeviceSelect || !commandPathInput || !commandMethodSelect) return;
+  const deviceId = commandDeviceSelect.value.trim();
+  if (!deviceId){
+    setCommandStatus('Select a device', 'error');
+    commandDeviceSelect.focus();
+    return;
+  }
+  const method = String(commandMethodSelect.value || 'POST').toUpperCase();
+  const pathRaw = commandPathInput.value.trim();
+  if (!pathRaw){
+    setCommandStatus('Enter a request path', 'error');
+    commandPathInput.focus();
+    return;
+  }
+  let body = undefined;
+  if (method === 'POST'){
+    const raw = commandPayloadInput ? commandPayloadInput.value.trim() : '';
+    if (raw){
+      try {
+        body = JSON.parse(raw);
+      } catch (err) {
+        setCommandStatus('Payload must be valid JSON', 'error');
+        if (commandPayloadInput && !commandPayloadInput.disabled) commandPayloadInput.focus();
+        return;
+      }
+    } else {
+      body = {};
+    }
+  }
+  setCommandStatus('Sending…');
+  if (commandResponseEl) commandResponseEl.textContent = '…';
+  if (commandSendBtn) commandSendBtn.setAttribute('disabled', 'true');
+  try {
+    const requestPayload = {
+      action: 'diagnostics_send_request',
+      entry_id: deviceId,
+      payload: {
+        method,
+        path: pathRaw,
+      }
+    };
+    if (method === 'POST'){
+      requestPayload.payload.body = body;
+    }
+    const response = await fetchWithAuth(API_ACTION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload)
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (err) { data = null; }
+    if (!response.ok){
+      const err = buildError(response, text);
+      if (handleAuthError(err)) return;
+      const message = (data && data.error) || (err && err.message) || text || 'Request failed';
+      setCommandStatus(message, 'error');
+      if (commandResponseEl) commandResponseEl.textContent = message || '—';
+      return;
+    }
+    if (!data || data.ok !== true){
+      const message = (data && data.error) || 'Request failed';
+      setCommandStatus(message, 'error');
+      if (commandResponseEl) commandResponseEl.textContent = message || '—';
+      return;
+    }
+    const payload = data.response !== undefined ? data.response : 'Success';
+    if (commandResponseEl) commandResponseEl.textContent = payloadToText(payload) || '—';
+    setCommandStatus('Command sent ✓', 'success');
+    await loadDiagnostics();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to send diagnostic request', err);
+    setCommandStatus('Send failed: ' + (err && err.message ? err.message : err), 'error');
+  } finally {
+    if (commandSendBtn) commandSendBtn.removeAttribute('disabled');
+  }
+}
+
+function refreshTypeFilterOptions(devices, opts = {}){
+  const select = getTypeFilterSelect();
+  const helper = document.getElementById('typeFilterHelper');
+  if (!select){
+    activeTypeFilter = TYPE_FILTER_ALL;
+    if (helper){
+      helper.textContent = 'Limit the visible events by request type.';
+    }
+    return;
+  }
+  const counts = new Map();
+  (devices || []).forEach((device) => {
+    (device?.requests || []).forEach((req) => {
+      const value = requestTypeValue(req);
+      const prev = counts.get(value) || 0;
+      counts.set(value, prev + 1);
+    });
+  });
+  if (activeTypeFilter !== TYPE_FILTER_ALL && !counts.has(activeTypeFilter)){
+    activeTypeFilter = TYPE_FILTER_ALL;
+  }
+  if (!opts.skipOptions){
+    const selectOptions = [{ value: TYPE_FILTER_ALL, label: 'All request types' }];
+    const sortable = Array.from(counts.keys()).map((value) => ({
+      value,
+      label: requestTypeLabelFromValue(value),
+      count: counts.get(value)
+    }));
+    sortable.sort((a, b) => {
+      if (a.value === TYPE_FILTER_OTHER) return 1;
+      if (b.value === TYPE_FILTER_OTHER) return -1;
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    });
+    sortable.forEach(({ value, label }) => {
+      selectOptions.push({ value, label });
+    });
+    select.innerHTML = selectOptions.map((opt) => `<option value="${opt.value}">${escapeHtml(opt.label)}</option>`).join('');
+  }
+  select.value = activeTypeFilter;
+  if (helper){
+    const totalRequests = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
+    if (!totalRequests){
+      helper.textContent = 'Limit the visible events by request type.';
+    } else if (activeTypeFilter === TYPE_FILTER_ALL){
+      helper.textContent = `Showing all ${totalRequests} recorded events.`;
+    } else {
+      const label = requestTypeLabelFromValue(activeTypeFilter);
+      const count = counts.get(activeTypeFilter) || 0;
+      helper.textContent = `Showing ${count} events matching ${label}.`;
+    }
+  }
+}
+
+function setBusy(active){
+  if (!busyEl) return;
+  busyEl.style.display = active ? 'inline-block' : 'none';
+}
+
+function showStatus(message, tone = 'danger'){
+  if (!statusEl) return;
+  if (!message){
+    statusEl.textContent = '';
+    statusEl.classList.add('d-none');
+    statusEl.classList.remove('alert-danger', 'alert-warning', 'alert-success');
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.classList.remove('d-none', 'alert-danger', 'alert-warning', 'alert-success');
+  statusEl.classList.add(tone === 'warning' ? 'alert-warning' : tone === 'success' ? 'alert-success' : 'alert-danger');
+}
+
+function setHistoryLimitStatus(message, tone = 'muted'){
+  const status = document.getElementById('historyLimitStatus');
+  if (!status) return;
+  if (!message){
+    status.textContent = '';
+    status.className = 'diag-settings-status muted';
+    return;
+  }
+  const classes = ['diag-settings-status'];
+  if (tone === 'success') classes.push('success');
+  else if (tone === 'error') classes.push('error');
+  else classes.push('muted');
+  status.className = classes.join(' ');
+  status.textContent = message;
+}
+
+function applyHistoryLimitResponse(data){
+  if (data && typeof data === 'object'){
+    const hist = Number(data.history_limit);
+    if (Number.isFinite(hist)) HISTORY_LIMIT = hist;
+    const minHist = Number(data.min_history_limit);
+    if (Number.isFinite(minHist)) MIN_HISTORY_LIMIT = minHist;
+    const maxHist = Number(data.max_history_limit);
+    if (Number.isFinite(maxHist)) MAX_HISTORY_LIMIT = maxHist;
+  }
+  if (MIN_HISTORY_LIMIT > MAX_HISTORY_LIMIT){
+    const tmp = MIN_HISTORY_LIMIT;
+    MIN_HISTORY_LIMIT = MAX_HISTORY_LIMIT;
+    MAX_HISTORY_LIMIT = tmp;
+  }
+  if (HISTORY_LIMIT < MIN_HISTORY_LIMIT) HISTORY_LIMIT = MIN_HISTORY_LIMIT;
+  if (HISTORY_LIMIT > MAX_HISTORY_LIMIT) HISTORY_LIMIT = MAX_HISTORY_LIMIT;
+  renderHistoryLimitControls();
+}
+
+function renderHistoryLimitControls(){
+  const input = document.getElementById('historyLimitInput');
+  if (input){
+    input.min = String(MIN_HISTORY_LIMIT);
+    input.max = String(MAX_HISTORY_LIMIT);
+    input.value = String(HISTORY_LIMIT);
+  }
+  const helper = document.getElementById('historyLimitHelper');
+  if (helper){
+    helper.textContent = `Store between ${MIN_HISTORY_LIMIT} and ${MAX_HISTORY_LIMIT} requests per device. Higher values preserve more history but use more memory.`;
+  }
+}
+
+async function saveHistoryLimit(){
+  if (historyLimitSaving) return;
+  const input = document.getElementById('historyLimitInput');
+  if (!input) return;
+  const raw = input.value;
+  if (raw === '' || raw === null || raw === undefined){
+    setHistoryLimitStatus('Enter a value', 'error');
+    input.focus();
+    return;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)){
+    setHistoryLimitStatus('Enter a whole number', 'error');
+    input.focus();
+    return;
+  }
+  const rounded = Math.round(parsed);
+  historyLimitSaving = true;
+  setHistoryLimitStatus('Saving…');
+  const btn = document.getElementById('historyLimitSaveBtn');
+  if (btn) btn.setAttribute('disabled', 'true');
+  try {
+    const response = await fetchWithAuth(API_DIAGNOSTICS, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ history_limit: rounded })
+    });
+    if (!response.ok){
+      const text = await response.text();
+      const err = buildError(response, text);
+      if (handleAuthError(err)) return;
+      let message = 'Save failed';
+      try {
+        const parsedBody = JSON.parse(text);
+        if (parsedBody && parsedBody.error) message = parsedBody.error;
+      } catch (parseErr) {
+        if (text) message = text;
+      }
+      setHistoryLimitStatus(message, 'error');
+      alert('Failed to update history limit: ' + message);
+      return;
+    }
+    const data = await response.json();
+    applyHistoryLimitResponse(data);
+    applyEventsResponse(data);
+    DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
+    FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
+    updateCommandDeviceOptions(DIAG_DATA);
+    renderFaceAttempts(FACE_ATTEMPTS);
+    refreshTypeFilterOptions(DIAG_DATA);
+    renderDevices(DIAG_DATA);
+    setHistoryLimitStatus('Saved ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to update history limit', err);
+    setHistoryLimitStatus('Save failed', 'error');
+    alert('Failed to update history limit: ' + (err && err.message ? err.message : err));
+  } finally {
+    historyLimitSaving = false;
+    if (btn) btn.removeAttribute('disabled');
+  }
+}
+
+function escapeHtml(value){
+  return (value == null ? '' : String(value)).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function formatDateTime(value){
+  if (value === undefined || value === null || value === '') return '—';
+  try {
+    let source = value;
+    if (typeof value === 'number'){
+      source = value > 1e12 ? value : value * 1000;
+    } else if (typeof value === 'string'){
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0 && numeric < 1e12){
+        source = numeric * 1000;
+      }
+    }
+    const dt = new Date(source);
+    if (Number.isNaN(dt.getTime())) return escapeHtml(String(value));
+    return dt.toLocaleString();
+  } catch (err) {
+    return escapeHtml(String(value));
+  }
+}
+
+function formatDuration(ms){
+  const num = Number(ms);
+  if (!Number.isFinite(num)) return '—';
+  if (Math.abs(num) >= 1000) {
+    return (num / 1000).toFixed(2) + ' s';
+  }
+  return Math.round(num) + ' ms';
+}
+
+function formatBody(data){
+  if (data === null || data === undefined || data === '') return '—';
+  if (typeof data === 'string') return data;
+  try {
+    return JSON.stringify(data, null, 2);
+  } catch (err) {
+    return String(data);
+  }
+}
+
+function requestTypeValue(req){
+  if (!req || typeof req !== 'object') return TYPE_FILTER_OTHER;
+  const candidates = [req.diag_type, req.diagType, req.type];
+  for (const candidate of candidates){
+    if (candidate === undefined || candidate === null) continue;
+    const text = String(candidate).trim().toLowerCase();
+    if (text) return text;
+  }
+  if (req.method !== undefined && req.method !== null){
+    const methodText = String(req.method).trim().toLowerCase();
+    if (methodText) return `method:${methodText}`;
+  }
+  return TYPE_FILTER_OTHER;
+}
+
+function requestTypeLabelFromValue(value){
+  if (!value) return 'Other';
+  if (value === TYPE_FILTER_OTHER) return 'Other';
+  if (value.startsWith('method:')){
+    return value.slice(7).toUpperCase();
+  }
+  const capitalize = (segment) => segment ? segment.charAt(0).toUpperCase() + segment.slice(1) : '';
+  const prettify = (segment) => segment
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(capitalize)
+    .join(' ');
+  const colonParts = String(value)
+    .split(':')
+    .map((part) => part
+      .split('/')
+      .map(prettify)
+      .filter(Boolean)
+      .join(' / '));
+  const label = colonParts.filter(Boolean).join(': ');
+  return label || 'Other';
+}
+
+function hasMeaningfulValue(obj, key){
+  if (!obj || typeof obj !== 'object') return false;
+  if (!(key in obj)) return false;
+  const value = obj[key];
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+function categorizeHistoryEvent(event){
+  const evt = event || {};
+  const typeKeys = [
+    'EventType','Type','EventCategory','Category','LogType','LogTypeName','CallType','SubType',
+    'Event','Result','action','Message','Description','Detail',
+  ];
+  const parts = [];
+  typeKeys.forEach((key) => {
+    if (!hasMeaningfulValue(evt, key)) return;
+    const text = String(evt[key]).trim();
+    if (text) parts.push(text);
+  });
+  const combined = parts.join(' ').toLowerCase();
+
+  const callKeys = [
+    'CallNo','CallNum','CallNumber','CallType','CallMode','CallStatus','PriorityCall',
+    'RoomNumber','RoomNo','Terminal','Intercom','SipAccount','SipNumber',
+  ];
+  const accessKeys = [
+    'AccessMode','Method','AccessType','AccessPoint','Door','DoorName','Reader','OpenType',
+    'User','UserID','UserName','Name','CardNo','CardNumber','Credential','CredentialType',
+    'Pin','PIN','Passcode','Password','AccessResult','AccessStatus','OpenResult',
+  ];
+
+  const callDetected = callKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (callDetected || /\bcall\b|doorbell|ringback|\bsip\b|intercom|monitor/i.test(combined)) {
+    return 'call';
+  }
+
+  if (/system|integrity|mismatch|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
+    return 'system';
+  }
+
+  const accessDetected = accessKeys.some((key) => hasMeaningfulValue(evt, key));
+  if (accessDetected || /\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger/i.test(combined)) {
+    return 'access';
+  }
+
+  return 'system';
+}
+
+function normalizeAccessEvent(event){
+  const copy = Object.assign({}, event || {});
+  if (!copy._category){
+    copy._category = categorizeHistoryEvent(copy);
+  }
+  if (!copy._device){
+    const candidates = [copy.device, copy.device_name, copy.Device, copy.DoorName, copy.Reader, copy.entry_id];
+    for (const candidate of candidates){
+      if (candidate === null || candidate === undefined) continue;
+      const text = String(candidate).trim();
+      if (text){
+        copy._device = text;
+        break;
+      }
+    }
+  }
+  if (!copy._t){
+    const candidates = [copy.timestamp, copy.Time, copy.RecordTime, copy.LogTime];
+    for (const candidate of candidates){
+      if (candidate === null || candidate === undefined) continue;
+      const parsed = new Date(candidate);
+      if (!Number.isNaN(parsed.getTime())){
+        copy._t = parsed.getTime();
+        break;
+      }
+      try {
+        const normalized = String(candidate).split('.')[0] + 'Z';
+        const fallback = new Date(normalized);
+        if (!Number.isNaN(fallback.getTime())){
+          copy._t = fallback.getTime();
+          break;
+        }
+      } catch (err) {}
+    }
+    if (!copy._t){
+      const coerced = Number(event && event._t);
+      copy._t = Number.isFinite(coerced) ? coerced : Date.now();
+    }
+  }
+  return copy;
+}
+
+function eventSummaryText(event){
+  if (!event) return 'Event';
+  const keys = ['Event','Result','Description','Message','Detail','action'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return 'Event';
+}
+
+function eventDeviceLabel(event){
+  if (!event) return '';
+  const keys = ['_device','device_name','device','DoorName','Reader'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return '';
+}
+
+function eventUserLabel(event){
+  if (!event) return '';
+  const keys = ['User','UserName','user_name','UserID','user_id','Name'];
+  for (const key of keys){
+    if (hasMeaningfulValue(event, key)){
+      return String(event[key]).trim();
+    }
+  }
+  return '';
+}
+
+function eventCategoryLabel(value){
+  if (value === 'access') return 'Access';
+  if (value === 'call') return 'Call';
+  return 'System';
+}
+
+function renderAccessEvents(events = ACCESS_EVENTS){
+  if (!eventsListEl) return;
+  const normalized = (Array.isArray(events) ? events : []).map((evt) => normalizeAccessEvent(evt));
+  normalized.sort((a, b) => (b._t || 0) - (a._t || 0));
+  const list = EVENT_FILTER_MODE === 'all'
+    ? normalized
+    : normalized.filter((evt) => (evt._category || 'system') === EVENT_FILTER_MODE);
+
+  if (!list.length){
+    const message = EVENT_EMPTY_MESSAGES[EVENT_FILTER_MODE] || EVENT_EMPTY_MESSAGES.all;
+    eventsListEl.innerHTML = `<div class="diag-event-empty">${escapeHtml(message)}</div>`;
+    return;
+  }
+
+  const html = list.map((evt) => {
+    const category = evt._category || 'system';
+    const summary = eventSummaryText(evt);
+    const device = eventDeviceLabel(evt);
+    const user = eventUserLabel(evt);
+    const timeSource = evt.timestamp || evt.Time || evt.RecordTime || evt.LogTime || evt._t;
+    const when = formatDateTime(timeSource);
+    const badgeClass = `diag-event-badge ${category}`;
+    const userMeta = user ? `<span><i class="bi bi-person-badge"></i>${escapeHtml(user)}</span>` : '';
+    const deviceMeta = device ? `<span><i class="bi bi-hdd-network"></i>${escapeHtml(device)}</span>` : '';
+    return `
+      <div class="diag-event" data-category="${escapeHtml(category)}">
+        <div class="diag-event-title">
+          <span class="${badgeClass}">${escapeHtml(eventCategoryLabel(category))}</span>
+          <span>${escapeHtml(summary)}</span>
+        </div>
+        <div class="diag-event-meta">
+          <span><i class="bi bi-clock-history"></i>${escapeHtml(when)}</span>
+          ${deviceMeta}
+          ${userMeta}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  eventsListEl.innerHTML = html;
+}
+
+function updateEventsSummary(){
+  const total = Array.isArray(ACCESS_EVENTS) ? ACCESS_EVENTS.length : 0;
+  if (eventsCountEl){
+    eventsCountEl.textContent = String(total);
+  }
+  if (eventsMetaEl){
+    const parts = [];
+    if (EVENTS_LAST_SYNC){
+      parts.push(`Last sync ${formatDateTime(EVENTS_LAST_SYNC)}`);
+    }
+    if (ACCESS_EVENT_LIMIT){
+      parts.push(`Keeping up to ${ACCESS_EVENT_LIMIT} events`);
+    }
+    eventsMetaEl.textContent = parts.join(' • ') || '—';
+  }
+  if (eventsLimitHelperEl){
+    eventsLimitHelperEl.textContent = `Range: ${MIN_ACCESS_EVENT_LIMIT} - ${MAX_ACCESS_EVENT_LIMIT} events.`;
+  }
+}
+
+function updateEventFilterButtons(){
+  document.querySelectorAll('[data-event-filter]')?.forEach((btn) => {
+    if (!btn || typeof btn.dataset.eventFilter !== 'string') return;
+    const value = btn.dataset.eventFilter;
+    if (value === EVENT_FILTER_MODE) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+}
+
+function setEventFilter(mode){
+  if (!EVENT_FILTERS.includes(mode)){
+    EVENT_FILTER_MODE = 'all';
+  } else {
+    EVENT_FILTER_MODE = mode;
+  }
+  updateEventFilterButtons();
+  renderAccessEvents(ACCESS_EVENTS);
+}
+
+function setEventsStatus(message, tone = 'muted'){
+  if (!eventsStatusEl) return;
+  if (!message){
+    eventsStatusEl.textContent = '';
+    eventsStatusEl.className = 'diag-settings-status muted';
+    return;
+  }
+  const classes = ['diag-settings-status'];
+  if (tone === 'success') classes.push('success');
+  else if (tone === 'error') classes.push('error');
+  else classes.push('muted');
+  eventsStatusEl.className = classes.join(' ');
+  eventsStatusEl.textContent = message;
+}
+
+function applyEventsResponse(data){
+  if (data && typeof data === 'object'){
+    ACCESS_EVENTS = Array.isArray(data.access_events) ? data.access_events : [];
+    const limit = Number(data.access_event_limit);
+    if (Number.isFinite(limit)) ACCESS_EVENT_LIMIT = limit;
+    const minLimit = Number(data.min_access_event_limit);
+    if (Number.isFinite(minLimit)) MIN_ACCESS_EVENT_LIMIT = minLimit;
+    const maxLimit = Number(data.max_access_event_limit);
+    if (Number.isFinite(maxLimit)) MAX_ACCESS_EVENT_LIMIT = maxLimit;
+    EVENTS_LAST_SYNC = data.events_last_sync || null;
+  } else {
+    ACCESS_EVENTS = [];
+    EVENTS_LAST_SYNC = null;
+  }
+  renderAccessEvents(ACCESS_EVENTS);
+  updateEventsSummary();
+}
+
+async function requestEventsRefresh(){
+  const response = await fetchWithAuth(API_ACTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'refresh_events' })
+  });
+  if (!response.ok){
+    const text = await response.text();
+    let message = text;
+    try {
+      const parsed = text ? JSON.parse(text) : null;
+      if (parsed && typeof parsed === 'object' && parsed.error){
+        message = parsed.error;
+      }
+    } catch (err) {}
+    const err = buildError(response, text);
+    if (message) err.message = message;
+    throw err;
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (payload && typeof payload === 'object' && 'ok' in payload && !payload.ok){
+    throw new Error(payload.error || 'Refresh failed');
+  }
+  return true;
+}
+
+async function refreshAccessEvents(){
+  if (btnRefreshEvents) btnRefreshEvents.setAttribute('disabled', 'true');
+  setEventsStatus('Requesting fresh events…');
+  try {
+    await requestEventsRefresh();
+    setEventsStatus('Events requested, reloading…');
+    await loadDiagnostics();
+    setEventsStatus('Events refreshed ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to refresh events', err);
+    setEventsStatus(`Refresh failed: ${err && err.message ? err.message : err}`, 'error');
+    alert('Failed to refresh events: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btnRefreshEvents) btnRefreshEvents.removeAttribute('disabled');
+  }
+}
+
+function renderDevices(devices, options = {}){
+  if (!devicesEl) return;
+  const preserveExpansion = options && options.preserveExpansion === true;
+  const expandedState = {};
+  if (preserveExpansion){
+    devicesEl.querySelectorAll('.diag-card').forEach((card) => {
+      const id = card?.dataset?.entryId;
+      const toggle = card.querySelector('.diag-toggle');
+      if (id && toggle && toggle.getAttribute('aria-expanded') === 'true'){
+        expandedState[id] = true;
+      }
+    });
+  }
+
+  devicesEl.innerHTML = '';
+  if (!devices || !devices.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No devices are currently registered.';
+    devicesEl.appendChild(empty);
+    return;
+  }
+  devices.forEach((device, index) => {
+    const card = document.createElement('div');
+    card.className = 'card diag-card';
+    const entryKey = device?.entry_id || device?.mac || device?.host || device?.ip || device?.name || index;
+    card.dataset.entryId = String(entryKey);
+    const lastTs = device.last_request_at || (device.requests && device.requests[0]?.timestamp);
+    const metaParts = [];
+    if (device.device_type) metaParts.push(device.device_type);
+    if (device.ip) metaParts.push('IP ' + device.ip);
+    if (device.host && device.host !== device.ip) metaParts.push('Host ' + device.host);
+    if (lastTs) metaParts.push('Last request ' + formatDateTime(lastTs));
+    const startExpanded = preserveExpansion ? !!expandedState[card.dataset.entryId] : index === 0;
+    card.innerHTML = `
+      <button class="diag-toggle" type="button" aria-expanded="${startExpanded ? 'true' : 'false'}">
+        <div>
+          <div class="diag-name">${escapeHtml(device.name || 'Device')}</div>
+          <div class="diag-meta">${escapeHtml(metaParts.join(' • '))}</div>
+        </div>
+        <i class="bi bi-chevron-down"></i>
+      </button>
+      <div class="diag-body" ${startExpanded ? '' : 'hidden'}></div>
+    `;
+    const toggle = card.querySelector('.diag-toggle');
+    const body = card.querySelector('.diag-body');
+    const ensureRendered = () => {
+      if (!body) return;
+      if (body.dataset.rendered === '1') return;
+      renderRequestList(body, device);
+      body.dataset.rendered = '1';
+    };
+    if (startExpanded) {
+      ensureRendered();
+    }
+    toggle?.addEventListener('click', () => {
+      if (!toggle || !body) return;
+      const expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      body.hidden = expanded;
+      if (!expanded){
+        ensureRendered();
+      }
+    });
+    devicesEl.appendChild(card);
+  });
+}
+
+function renderRequestList(container, device){
+  container.innerHTML = '';
+  const requests = Array.isArray(device.requests) ? device.requests : [];
+  let visible = requests.filter((req) => !requestShouldBeHidden(req));
+  let suppressedMessage = '';
+  if (!visible.length && requests.length){
+    visible = requests;
+    suppressedMessage = 'All recorded requests are normally hidden. Showing them to avoid an empty view.';
+  }
+  const filtered = activeTypeFilter === TYPE_FILTER_ALL
+    ? visible
+    : visible.filter((req) => {
+      const value = requestTypeValue(req);
+      if (activeTypeFilter === TYPE_FILTER_OTHER){
+        return value === TYPE_FILTER_OTHER;
+      }
+      return value === activeTypeFilter;
+    });
+  if (!filtered.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = visible.length
+      ? 'No requests match the current filter.'
+      : 'No requests have been recorded for this device yet.';
+    container.appendChild(empty);
+    if (suppressedMessage){
+      const helper = document.createElement('div');
+      helper.className = 'diag-suppressed-note';
+      helper.textContent = suppressedMessage;
+      container.appendChild(helper);
+    }
+    return;
+  }
+  if (suppressedMessage){
+    const helper = document.createElement('div');
+    helper.className = 'diag-suppressed-note';
+    helper.textContent = suppressedMessage;
+    container.appendChild(helper);
+  }
+  filtered.forEach((req, idx) => {
+    const details = document.createElement('details');
+    details.className = 'diag-request';
+    if (idx === 0) details.open = true;
+    const method = String(req.method || 'GET').toUpperCase();
+    const methodBadge = `<span class="badge method ${method.toLowerCase()}">${escapeHtml(method)}</span>`;
+    const typeLabel = requestTypeLabelFromValue(requestTypeValue(req));
+    const typeBadge = typeLabel ? `<span class="badge diag-type-badge">${escapeHtml(typeLabel)}</span>` : '';
+    const path = req.path || '';
+    const status = req.status != null ? String(req.status) : '—';
+    const ok = req.ok === true;
+    const summary = document.createElement('summary');
+    summary.innerHTML = `
+      ${methodBadge}
+      ${typeBadge}
+      <code>${escapeHtml(path || (req.url || ''))}</code>
+      <span class="diag-summary-meta">
+        <span>Status: ${escapeHtml(status)}</span>
+        <span>${formatDateTime(req.timestamp)}</span>
+        <span>${formatDuration(req.duration_ms)}</span>
+      </span>
+      ${ok ? '<span class="badge diag-status-badge diag-status-ok">OK</span>' : req.error ? '<span class="badge diag-status-badge diag-status-error">Error</span>' : ''}
+    `;
+    details.appendChild(summary);
+
+    const body = document.createElement('div');
+    body.className = 'diag-request-body';
+    const urlRow = document.createElement('div');
+    urlRow.className = 'diag-row';
+    urlRow.innerHTML = `<strong>URL</strong><span>${escapeHtml(req.url || '')}</span>`;
+    const transportBits = [];
+    if (req.scheme) transportBits.push(req.scheme.toUpperCase());
+    if (req.port) transportBits.push('port ' + req.port);
+    if (req.verify_ssl === false) transportBits.push('SSL verify disabled');
+    const transportRow = document.createElement('div');
+    transportRow.className = 'diag-row';
+    transportRow.innerHTML = `<strong>Transport</strong><span>${escapeHtml(transportBits.join(' • ') || '—')}</span>`;
+    const statusRow = document.createElement('div');
+    statusRow.className = 'diag-row';
+    statusRow.innerHTML = `<strong>Duration</strong><span>${formatDuration(req.duration_ms)}</span>`;
+
+    body.appendChild(urlRow);
+    body.appendChild(transportRow);
+    body.appendChild(statusRow);
+
+    if (req.error){
+      const errRow = document.createElement('div');
+      errRow.className = 'diag-row diag-error-text';
+      errRow.textContent = `Error: ${req.error}`;
+      body.appendChild(errRow);
+    }
+
+    if (req.payload){
+      const section = document.createElement('div');
+      section.className = 'diag-section';
+      section.innerHTML = `<div class="diag-section-title">Request body</div><pre>${escapeHtml(formatBody(req.payload))}</pre>`;
+      body.appendChild(section);
+    }
+
+    if (req.response_excerpt){
+      const section = document.createElement('div');
+      section.className = 'diag-section';
+      section.innerHTML = `<div class="diag-section-title">Response preview</div><pre>${escapeHtml(formatBody(req.response_excerpt))}</pre>`;
+      body.appendChild(section);
+    }
+
+    details.appendChild(body);
+    container.appendChild(details);
+  });
+}
+
+async function loadDiagnostics(){
+  setBusy(true);
+  showStatus('');
+  try {
+    const response = await fetchWithAuth(API_DIAGNOSTICS);
+    if (!response.ok){
+      const text = await response.text();
+      const err = buildError(response, text);
+      if (!handleAuthError(err)) {
+        throw err;
+      }
+      return;
+    }
+    const data = await response.json();
+    applyHistoryLimitResponse(data);
+    applyEventsResponse(data);
+    setHistoryLimitStatus('');
+    DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
+    FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
+    updateCommandDeviceOptions(DIAG_DATA);
+    renderFaceAttempts(FACE_ATTEMPTS);
+    refreshTypeFilterOptions(DIAG_DATA);
+    renderDevices(DIAG_DATA);
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to load diagnostics', err);
+    showStatus('Failed to load diagnostics: ' + (err && err.message ? err.message : err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnBack')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('settings', {}, { replaceState: false });
+  });
+  document.getElementById('btnRefresh')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    loadDiagnostics();
+  });
+  document.querySelectorAll('[data-tab-target]')?.forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      setActiveTab(btn.dataset.tabTarget);
+    });
+  });
+  document.querySelectorAll('[data-event-filter]')?.forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      setEventFilter(btn.dataset.eventFilter || 'all');
+    });
+  });
+  getTypeFilterSelect()?.addEventListener('change', (ev) => {
+    setTypeFilter(ev.target.value);
+  });
+  document.getElementById('historyLimitForm')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    await saveHistoryLimit();
+  });
+  document.getElementById('historyLimitInput')?.addEventListener('input', () => {
+    setHistoryLimitStatus('');
+  });
+  commandMethodSelect?.addEventListener('change', () => {
+    syncCommandPayloadState();
+  });
+  commandSendBtn?.addEventListener('click', () => {
+    sendDiagnosticCommand();
+  });
+  commandClearBtn?.addEventListener('click', () => {
+    clearCommandEditor();
+  });
+  btnRefreshEvents?.addEventListener('click', () => {
+    refreshAccessEvents();
+  });
+  btnOpenEventHistory?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('event_history');
+  });
+  renderHistoryLimitControls();
+  refreshTypeFilterOptions(DIAG_DATA);
+  updateCommandDeviceOptions(DIAG_DATA);
+  renderFaceAttempts(FACE_ATTEMPTS);
+  syncCommandPayloadState();
+  setEventFilter(EVENT_FILTER_MODE);
+  setActiveTab(ACTIVE_TAB);
+  loadDiagnostics();
+});
+</script>
+</body>
+</html>
