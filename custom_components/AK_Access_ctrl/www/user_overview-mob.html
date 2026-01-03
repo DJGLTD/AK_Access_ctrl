@@ -695,6 +695,14 @@ function parseIsoDate(value){
   return candidate;
 }
 
+function parseIsoDateTime(value){
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
 function sanitizeCredentialPrompts(raw){
   const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
   if (raw && typeof raw === 'object'){
@@ -908,6 +916,12 @@ function compileUsers(devices, registryUsers, kpis){
       access_end: r.access_end || '',
       access_expired: !!r.access_expired,
       access_in_future: !!r.access_in_future,
+      temporary: !!r.temporary,
+      temporary_one_time: !!r.temporary_one_time,
+      temporary_expires_at: r.temporary_expires_at || '',
+      temporary_used_at: r.temporary_used_at || '',
+      temporary_created_at: r.temporary_created_at || '',
+      remote_enrol_pending: !!r.remote_enrol_pending,
       face_url: extractFaceUrl(r),
       face_status: statusHint,
       face_synced_at: r.face_synced_at || '',
@@ -1038,7 +1052,19 @@ function compileUsers(devices, registryUsers, kpis){
     const readyDevices = shouldHost.filter(dev => dev.syncStatus === 'in_sync');
     const outOfSyncDevices = shouldHost.filter(dev => dev.syncStatus !== 'in_sync');
     const accessState = computeAccessState(item.access_start, item.access_end);
-    const expired = item.access_expired || accessState.expired;
+    const tempExpiresAt = parseIsoDateTime(item.temporary_expires_at);
+    const isTemporary = !!(
+      item.temporary
+      || item.temporary_one_time
+      || item.temporary_expires_at
+      || item.temporary_used_at
+    );
+    const now = new Date();
+    const tempExpired = isTemporary && (
+      !!item.temporary_used_at
+      || (tempExpiresAt && now >= tempExpiresAt)
+    );
+    const expired = item.access_expired || accessState.expired || tempExpired;
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLower = String(baseScheduleName).toLowerCase();
     const { _seenOn, _denied, _deviceFaceActive, ...rest } = item;
@@ -1099,6 +1125,7 @@ function compileUsers(devices, registryUsers, kpis){
       access: accessText,
       access_expired: expired,
       access_in_future: notStarted,
+      temporary_expired: tempExpired,
       presentOnDevice: item.presentOnDevice || (readyDevices.length > 0 && allVerified),
       face_active: !!faceActiveFinal,
       face_status: faceStatusFinal,
@@ -1162,6 +1189,8 @@ function renderUsers(list){
     const hasFaceProfile = !!u.face_url || u.face_active;
     if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Face active', 'in_sync');
+    } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
+      faceBadge = badge('Pending remote enrolment', 'pending');
     } else if (faceStatusLower === 'pending') {
       faceBadge = hasFaceProfile ? badge('Face pending', 'pending') : '<span class="text-muted">---</span>';
     } else {
@@ -1186,15 +1215,23 @@ function renderUsers(list){
     const errorCount = Number(u.face_error_count || 0);
     const errorText = errorCount > 0 ? `${errorCount} face sync error${errorCount === 1 ? '' : 's'}` : '0 face sync errors';
 
+    const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
+    const eventsHref = buildHref('event-history', { user: eventFilter });
     const actions = (!u.isCloud && idMatchesFilter(u.id))
-      ? `
-        <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
-        <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
-          <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
-          ${isUserPaused(u.id) ? 'Resume access' : 'Pause access'}
-        </button>
-        <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
-      `
+      ? (u.temporary_expired
+        ? `
+          <button class="btn btn-sm btn-outline-success" data-reactivate-user="${escapeHtml(u.id)}"><i class="bi bi-arrow-counterclockwise"></i> Reactivate</button>
+          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
+        `
+        : `
+          <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
+          <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
+          <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
+            <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
+            ${isUserPaused(u.id) ? 'Resume' : 'Pause'}
+          </button>
+          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
+        `)
       : '';
 
     card.innerHTML = `
@@ -1225,6 +1262,32 @@ function renderUsers(list){
       ev.preventDefault();
       const id = btn.dataset.editUser || '';
       openInApp('users', id ? { id } : {});
+    });
+  });
+
+  host.querySelectorAll('[data-user-events]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const id = link.dataset.userEvents || '';
+      openInApp('event-history', id ? { user: id } : {});
+    });
+  });
+
+  host.querySelectorAll('[data-reactivate-user]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      const id = btn.dataset.reactivateUser || '';
+      if (!id) return;
+      if (!confirm(`Reactivate ${id}?`)) return;
+      try {
+        btn.setAttribute('disabled', 'disabled');
+        await callService('akuvox_ac', 'reactivate_temporary_user', { id });
+        refresh();
+      } catch (err) {
+        alert('Reactivate failed: ' + (err?.message || err));
+      } finally {
+        btn.removeAttribute('disabled');
+      }
     });
   });
 

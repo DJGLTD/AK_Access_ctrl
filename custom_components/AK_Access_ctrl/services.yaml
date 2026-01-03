@@ -133,6 +133,15 @@ delete_user:
       selector:
         text:
 
+reactivate_temporary_user:
+  name: Reactivate temporary user
+  description: Reactivate an expired temporary user code.
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+
 upload_face:
   name: Upload face image for user
   fields:
