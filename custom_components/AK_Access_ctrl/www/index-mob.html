@@ -1975,6 +1975,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const addTempUserBtn = document.getElementById('btnAddTempUser');
+  if (addTempUserBtn) {
+    addTempUserBtn.href = buildHref('temp-user');
+    addTempUserBtn.removeAttribute('target');
+    addTempUserBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openInApp('temp-user');
+    });
+  }
+
   // initial + poll
   refresh();
   setInterval(refresh, 5000);
@@ -2099,6 +2109,9 @@ setInterval(refresh, 5000);
           <div class="d-flex gap-2">
             <a class="btn btn-success" id="btnAddUser" href="/akuvox-ac/users" target="_top">
               <i class="bi bi-person-plus"></i> Add User
+            </a>
+            <a class="btn btn-outline-info" id="btnAddTempUser" href="/akuvox-ac/temp-user" target="_top">
+              <i class="bi bi-clock-history"></i> Add Temporary User
             </a>
           </div>
         </div>

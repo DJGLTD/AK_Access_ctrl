@@ -43,6 +43,38 @@ add_user:
       selector:
         text:
 
+add_temporary_user:
+  name: Add temporary user
+  description: Create a temporary user with a passcode that can expire or be one-time use.
+  fields:
+    name:
+      required: true
+      example: "Contractor - Plumbing"
+      selector:
+        text:
+    pin:
+      required: true
+      example: "12345"
+      selector:
+        text:
+    one_time:
+      required: false
+      selector:
+        boolean:
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
+    expires_at:
+      required: false
+      example: "2024-07-08T17:00:00-04:00"
+      selector:
+        text:
+
 edit_user:
   name: Edit user
   fields:
