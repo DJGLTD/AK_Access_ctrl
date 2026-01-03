@@ -19,6 +19,8 @@
     .status{ min-height:1.5rem; }
     .btn-outline-accent{ border-color:rgba(47,240,196,.5); color:var(--text); }
     .btn-outline-accent:hover{ background:rgba(47,240,196,.2); border-color:var(--accent); color:var(--text); }
+    .page-title{ color:#fff; }
+    .required-today{ border-color:#ff6b6b; box-shadow:0 0 0 .2rem rgba(255,107,107,.25); }
   </style>
 </head>
 <body>
@@ -156,6 +158,31 @@ function toggleOneTime() {
   const disabled = oneTime.checked;
   endDate.disabled = disabled;
   endTime.disabled = disabled;
+  if (disabled) {
+    endTime.required = false;
+    endTime.classList.remove('required-today');
+    const label = document.querySelector('label[for="end_time"]');
+    if (label?.dataset.defaultText) label.textContent = label.dataset.defaultText;
+  } else {
+    updateEndTimeRequirement();
+  }
+}
+
+function updateEndTimeRequirement() {
+  const endDate = document.getElementById('end_date');
+  const endTime = document.getElementById('end_time');
+  const label = document.querySelector('label[for="end_time"]');
+  if (!endDate || !endTime || !label) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const isToday = endDate.value === today;
+  const defaultText = label.dataset.defaultText || 'End time (optional)';
+  label.textContent = isToday ? 'End time (required today)' : defaultText;
+  endTime.required = isToday;
+  if (isToday && !endTime.value) {
+    endTime.classList.add('required-today');
+  } else {
+    endTime.classList.remove('required-today');
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -168,18 +195,28 @@ window.addEventListener('DOMContentLoaded', () => {
   if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
   if (oneTime) oneTime.addEventListener('change', toggleOneTime);
   toggleOneTime();
+  updateEndTimeRequirement();
+  endDate?.addEventListener('change', updateEndTimeRequirement);
+  document.getElementById('end_time')?.addEventListener('input', updateEndTimeRequirement);
 
   document.getElementById('btnToday')?.addEventListener('click', () => {
     if (endDate) endDate.value = new Date().toISOString().slice(0, 10);
     document.getElementById('end_time').value = '23:59';
+    updateEndTimeRequirement();
   });
-  document.getElementById('btnDay')?.addEventListener('click', () => setQuickEnd(1));
-  document.getElementById('btnWeek')?.addEventListener('click', () => setQuickEnd(7));
+  document.getElementById('btnDay')?.addEventListener('click', () => {
+    setQuickEnd(1);
+    updateEndTimeRequirement();
+  });
+  document.getElementById('btnWeek')?.addEventListener('click', () => {
+    setQuickEnd(7);
+    updateEndTimeRequirement();
+  });
 
   if (backBtn) {
     backBtn.addEventListener('click', (e) => {
       e.preventDefault();
-      openInApp('users');
+      openInApp('index');
     });
   }
 
@@ -225,7 +262,7 @@ window.addEventListener('DOMContentLoaded', () => {
   <div class="card p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <div>
-        <h2 class="mb-0">Add Temporary User</h2>
+        <h2 class="mb-0 page-title">Add Temporary User</h2>
         <div class="muted">Create time-limited or one-time passcodes.</div>
       </div>
       <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
@@ -255,18 +292,17 @@ window.addEventListener('DOMContentLoaded', () => {
           <label class="form-label" for="end_date">End date</label>
           <input class="form-control" id="end_date" type="date" />
         </div>
-        <div class="col-md-6">
-          <label class="form-label" for="end_time">End time (optional)</label>
-          <input class="form-control" id="end_time" type="time" />
+        <div class="col-12">
+          <div class="muted mb-2">Quick end dates</div>
+          <div class="quick-row">
+            <button type="button" class="btn btn-outline-accent btn-sm" id="btnToday">Today</button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="btnDay">+1 day</button>
+            <button type="button" class="btn btn-outline-accent btn-sm" id="btnWeek">+1 week</button>
+          </div>
         </div>
-      </div>
-
-      <div class="mt-3">
-        <div class="muted mb-2">Quick end dates</div>
-        <div class="quick-row">
-          <button type="button" class="btn btn-outline-accent btn-sm" id="btnToday">Today</button>
-          <button type="button" class="btn btn-outline-accent btn-sm" id="btnDay">+1 day</button>
-          <button type="button" class="btn btn-outline-accent btn-sm" id="btnWeek">+1 week</button>
+        <div class="col-md-6">
+          <label class="form-label" for="end_time" data-default-text="End time (optional)">End time (optional)</label>
+          <input class="form-control" id="end_time" type="time" />
         </div>
       </div>
 
