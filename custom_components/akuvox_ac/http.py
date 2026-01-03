@@ -2408,14 +2408,17 @@ def _merge_last_access_from_events(
     for event in events or []:
         if not isinstance(event, dict):
             continue
+
         raw_value = None
         for key in _EVENT_USER_KEYS:
             raw_value = event.get(key)
             if raw_value not in (None, ""):
                 break
+
         raw_text = _normalize_user_match_value(raw_value)
         if not raw_text:
             continue
+
         match_id = None
         for candidate in (normalize_user_id(raw_text), raw_text):
             if not candidate:
@@ -2423,12 +2426,14 @@ def _merge_last_access_from_events(
             match_id = match_index.get(candidate.lower())
             if match_id:
                 break
+
         if not match_id:
             continue
 
         timestamp_text = _event_timestamp_text(event)
         if not timestamp_text:
             continue
+
         current = merged.get(match_id)
         current_epoch = AccessHistory._coerce_timestamp(current) if current else 0.0
         candidate_epoch = AccessHistory._coerce_timestamp(timestamp_text)
