@@ -17,7 +17,8 @@
     .page{min-height:100vh;display:flex;flex-direction:column;padding:1rem;gap:1rem;max-width:960px;margin:0 auto;}
     header.page-header{display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;}
     header.page-header h1{flex:1;font-size:1.35rem;margin:0;}
-    header.page-header .header-actions{display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;flex:1 1 auto;}
+    header.page-header .header-actions{display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;flex:1 1 auto;}
+    header.page-header .action-row{display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;}
     header.page-header .btn{white-space:nowrap;}
     .summary-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
     .summary-card{background:var(--card);border:1px solid var(--border);border-radius:0.75rem;padding:0.85rem;display:flex;flex-direction:column;gap:0.4rem;}
@@ -48,7 +49,8 @@
     @media (max-width:720px){
       .page{padding:0.75rem;}
       header.page-header h1{flex-basis:100%;font-size:1.25rem;}
-      header.page-header .header-actions{width:100%;justify-content:flex-start;}
+      header.page-header .header-actions{width:100%;align-items:flex-start;}
+      header.page-header .action-row{width:100%;justify-content:flex-start;}
       header.page-header .btn{flex:1 1 calc(50% - 0.5rem);}
       .summary-card .value{font-size:1.35rem;}
       .status-stack{width:100%;flex-direction:row;justify-content:flex-start;gap:0.5rem;margin-left:0;}
@@ -61,10 +63,14 @@
   <header class="page-header">
     <h1>User Management</h1>
     <div class="header-actions">
-      <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
-      <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
-      <button class="btn btn-outline-warning btn-sm" id="forceFullSyncBtn"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button>
-      <button class="btn btn-outline-secondary btn-sm" id="syncNowBtn"><i class="bi bi-arrow-repeat"></i> Sync Now</button>
+      <div class="action-row">
+        <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
+        <a class="btn btn-outline-info btn-sm" id="btnMobileAddTempUser" href="#"><i class="bi bi-clock-history"></i> Add Temp User</a>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-outline-warning btn-sm" id="forceFullSyncBtn"><i class="bi bi-arrow-repeat"></i> Force Full Sync</button>
+        <button class="btn btn-outline-secondary btn-sm" id="syncNowBtn"><i class="bi bi-arrow-repeat"></i> Sync Now</button>
+      </div>
     </div>
   </header>
   <section class="summary-grid" aria-label="User summary">
@@ -625,10 +631,6 @@ function handleAuthError(err) {
   return true;
 }
 
-const refreshBtn = document.getElementById('refreshBtn');
-if (refreshBtn) {
-  refreshBtn.addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
-}
 const forceFullSyncBtn = document.getElementById('forceFullSyncBtn');
 if (forceFullSyncBtn) {
   forceFullSyncBtn.addEventListener('click', async (ev) => {
@@ -666,6 +668,14 @@ if (mobileAddUser) {
   mobileAddUser.addEventListener('click', (ev) => {
     ev.preventDefault();
     openInApp('users');
+  });
+}
+const mobileAddTempUser = document.getElementById('btnMobileAddTempUser');
+if (mobileAddTempUser) {
+  mobileAddTempUser.href = buildHref('temp-user');
+  mobileAddTempUser.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('temp-user');
   });
 }
 
@@ -1349,7 +1359,6 @@ function renderUsers(list){
 
 async function refresh(){
   try {
-    document.getElementById('refreshBtn').setAttribute('disabled', 'disabled');
     const state = await apiGet(stateUrl);
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
@@ -1363,8 +1372,6 @@ async function refresh(){
     if (handleAuthError(err)) return;
     const host = document.getElementById('userList');
     host.innerHTML = `<div class="empty-state text-danger">Failed to load users: ${escapeHtml(err.message || err)}</div>`;
-  } finally {
-    document.getElementById('refreshBtn').removeAttribute('disabled');
   }
 }
 

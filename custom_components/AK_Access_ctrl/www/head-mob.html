@@ -164,6 +164,8 @@
       gap: 0.6rem;
     }
     .mobile-group.expanded .mobile-subgrid { display: grid; }
+    .mobile-group.show-add-options .mobile-subgrid[data-subgrid="users-primary"] { display: none; }
+    .mobile-group.show-add-options .mobile-subgrid[data-subgrid="users-add"] { display: grid; }
     .mobile-group [data-group-toggle] {
       border: 1px solid rgba(47,240,196,.25);
     }
@@ -216,6 +218,14 @@
       padding: 0.85rem 1rem;
     }
     .mobile-tile.sub .tile-title { font-size: 0.95rem; }
+    .mobile-tile.sub.back {
+      grid-column: 1 / -1;
+      background: transparent;
+      border: 1px solid rgba(148,163,184,.5);
+      padding: 0.55rem 0.85rem;
+      justify-content: center;
+    }
+    .mobile-tile.sub.back .tile-title { font-size: 0.9rem; }
     .mobile-tile.active {
       border-color: var(--accent);
       box-shadow: 0 0 0 0.15rem rgba(13,202,240,.3);
@@ -366,7 +376,7 @@
         </div>
         <i class="bi bi-people-fill"></i>
       </button>
-      <div class="mobile-subgrid">
+      <div class="mobile-subgrid" data-subgrid="users-primary">
         <button class="mobile-tile sub" type="button" data-view="user-overview">
           <div class="tile-text">
             <span class="tile-title">User overview</span>
@@ -374,12 +384,33 @@
           </div>
           <i class="bi bi-layout-text-window-reverse"></i>
         </button>
+        <button class="mobile-tile sub" type="button" data-submenu="user-add">
+          <div class="tile-text">
+            <span class="tile-title">Add user</span>
+            <small>Create a new access profile</small>
+          </div>
+          <i class="bi bi-person-plus-fill"></i>
+        </button>
+      </div>
+      <div class="mobile-subgrid" data-subgrid="users-add">
         <button class="mobile-tile sub" type="button" data-view="users" data-mode="add">
           <div class="tile-text">
             <span class="tile-title">Add user</span>
             <small>Create a new access profile</small>
           </div>
           <i class="bi bi-person-plus-fill"></i>
+        </button>
+        <button class="mobile-tile sub" type="button" data-view="temp-user">
+          <div class="tile-text">
+            <span class="tile-title">Add temporary user</span>
+            <small>Create time-limited access</small>
+          </div>
+          <i class="bi bi-clock-history"></i>
+        </button>
+        <button class="mobile-tile sub back" type="button" data-submenu-back="user-add">
+          <div class="tile-text">
+            <span class="tile-title">Back</span>
+          </div>
         </button>
       </div>
     </div>
@@ -956,6 +987,9 @@ function updateGroupExpansion(){
     if (!key) return;
     const expanded = expandedGroup === key;
     group.classList.toggle('expanded', expanded);
+    if (!expanded) {
+      group.classList.remove('show-add-options');
+    }
   });
   document.querySelectorAll('[data-group-toggle]').forEach(toggle => {
     const key = toggle.dataset.groupToggle;
@@ -1278,9 +1312,18 @@ document.querySelectorAll('nav.nav-buttons .nav-btn').forEach(btn => {
   });
 });
 
-document.querySelectorAll('.mobile-launcher [data-view], .mobile-launcher [data-group-toggle]').forEach(btn => {
+document.querySelectorAll('.mobile-launcher [data-view], .mobile-launcher [data-group-toggle], .mobile-launcher [data-submenu]').forEach(btn => {
   btn.addEventListener('click', (ev) => {
     ev.preventDefault();
+    if (btn.dataset.submenu) {
+      const group = btn.closest('[data-group]');
+      if (group) {
+        group.classList.add('show-add-options');
+        expandedGroup = group.dataset.group || expandedGroup;
+        updateGroupExpansion();
+      }
+      return;
+    }
     const rawView = btn.dataset.view || '';
     const hasView = rawView.trim() !== '';
     const view = hasView ? normalizeView(rawView) : null;
@@ -1305,6 +1348,18 @@ document.querySelectorAll('.mobile-launcher [data-view], .mobile-launcher [data-
     if (!hasView) return;
     if (isMobileMode) setMobileStage('content');
     loadView(view, params, { replaceState: false });
+  });
+});
+
+document.querySelectorAll('.mobile-launcher [data-submenu-back]').forEach(btn => {
+  btn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    const group = btn.closest('[data-group]');
+    if (group) {
+      group.classList.remove('show-add-options');
+      expandedGroup = group.dataset.group || expandedGroup;
+      updateGroupExpansion();
+    }
   });
 });
 

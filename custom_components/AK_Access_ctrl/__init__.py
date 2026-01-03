@@ -74,7 +74,7 @@ from .http import (
     register_ui,
     FACE_FILE_EXTENSIONS,
 )  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
-from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
+from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_temp_id, temp_id_from_int
 
 HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
@@ -1211,6 +1211,18 @@ def _normalize_schedule_for_integrity(
     return schedules_store._normalize_payload(name, payload)
 
 
+def _profile_is_empty_reserved(profile: Mapping[str, Any]) -> bool:
+    """Return True for empty pending/reserved profiles created by ID reservations."""
+
+    if not isinstance(profile, Mapping):
+        return False
+    status = str(profile.get("status") or "").strip().lower()
+    if status not in ("pending", "reserved"):
+        return False
+    has_core = any(bool(profile.get(k)) for k in ("name", "pin", "phone"))
+    return not has_core
+
+
 def _ha_id_from_int(n: int) -> str:
     return ha_id_from_int(n)
 
@@ -1745,10 +1757,42 @@ class AkuvoxUsersStore(Store):
                 return candidate
             n += 1
 
+    def next_free_temp_id(self, *, blocked: Optional[List[str]] = None) -> str:
+        used: set[str] = set()
+        users = self.data.get("users") or {}
+        if isinstance(users, dict):
+            for key, profile in users.items():
+                canonical = normalize_temp_id(key)
+                if not canonical:
+                    continue
+                if isinstance(profile, dict):
+                    status = str(profile.get("status") or "").strip().lower()
+                    if status == "deleted":
+                        continue
+                used.add(canonical)
+        if blocked:
+            for candidate in blocked:
+                canonical = normalize_temp_id(candidate)
+                if canonical:
+                    used.add(canonical)
+
+        n = 1
+        while True:
+            candidate = temp_id_from_int(n)
+            if candidate not in used:
+                return candidate
+            n += 1
+
     def reserve_id(self, ha_id: str):
         canonical = normalize_ha_id(ha_id)
         if not canonical:
             raise ValueError(f"Invalid HA id: {ha_id}")
+        self.data["users"].setdefault(canonical, {})
+
+    def reserve_temp_id(self, temp_id: str):
+        canonical = normalize_temp_id(temp_id)
+        if not canonical:
+            raise ValueError(f"Invalid temporary id: {temp_id}")
         self.data["users"].setdefault(canonical, {})
 
     async def upsert_profile(
@@ -2578,6 +2622,8 @@ class SyncQueue:
                 except Exception:
                     profiles = {}
                 for profile in profiles.values():
+                    if _profile_is_empty_reserved(profile or {}):
+                        continue
                     status = str((profile or {}).get("status") or "").strip().lower()
                     face_status = str((profile or {}).get("face_status") or "").strip().lower()
                     if status == "pending" or face_status == "pending":
@@ -3448,6 +3494,8 @@ class SyncManager:
         raw_registry: Dict[str, Any] = users_store.all() if users_store else {}
         registry: Dict[str, Any] = {}
         for key, value in (raw_registry or {}).items():
+            if _profile_is_empty_reserved(value or {}):
+                continue
             canonical = normalize_ha_id(key)
             if canonical:
                 registry[canonical] = value
@@ -3642,6 +3690,8 @@ class SyncManager:
         registry: Dict[str, Any] = {}
         reg_keys: List[str] = []
         for key, value in (raw_registry or {}).items():
+            if _profile_is_empty_reserved(value or {}):
+                continue
             canonical = normalize_ha_id(key)
             if canonical:
                 registry.setdefault(canonical, value)
@@ -4058,8 +4108,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         name: str = d["name"].strip()
 
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-        ha_id = users_store.next_free_ha_id()
-        users_store.reserve_id(ha_id)
+        temp_id = users_store.next_free_temp_id()
+        users_store.reserve_temp_id(temp_id)
         await users_store.async_save()
 
         raw_groups = d.get("groups") if d.get("groups") is not None else d.get("sync_groups")
@@ -4129,7 +4179,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         status_value = "active" if pin_only else "pending"
 
         await users_store.upsert_profile(
-            ha_id,
+            temp_id,
             name=name,
             groups=groups,
             pin=pin_payload,
