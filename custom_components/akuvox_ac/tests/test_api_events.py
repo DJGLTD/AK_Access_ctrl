@@ -25,7 +25,7 @@ const_module.Platform = _Platform
 sys.modules.setdefault("homeassistant", ha_module)
 sys.modules.setdefault("homeassistant.const", const_module)
 
-from custom_components.AK_Access_ctrl.api import AkuvoxAPI
+from custom_components.akuvox_ac.api import AkuvoxAPI
 
 
 def _extract(payload):

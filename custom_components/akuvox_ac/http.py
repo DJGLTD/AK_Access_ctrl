@@ -75,6 +75,53 @@ def _legacy_face_dir(hass: HomeAssistant) -> Path:
     return (root / "AK_Access_ctrl" / "FaceData").resolve()
 
 
+def _folder_migration_candidates(hass: HomeAssistant) -> List[Path]:
+    """Return possible legacy integration roots for migration."""
+
+    candidates = [Path(hass.config.path("custom_components"))]
+    try:
+        config_root = Path(hass.config.path())
+    except Exception:
+        config_root = None
+    if config_root is not None:
+        candidates.extend([config_root, config_root.parent])
+    for base in list(candidates):
+        try:
+            candidates.append(Path(str(base)))
+        except Exception:
+            continue
+    seen: Set[Path] = set()
+    unique: List[Path] = []
+    for base in candidates:
+        try:
+            resolved = base.resolve()
+        except Exception:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(resolved)
+    return unique
+
+
+def _maybe_migrate_component_folder(hass: HomeAssistant) -> bool:
+    """Ensure the integration folder matches the domain name."""
+
+    migrated = False
+    for base in _folder_migration_candidates(hass):
+        legacy_dir = base / "AK_Access_ctrl"
+        target_dir = base / DOMAIN
+        if not legacy_dir.exists() or target_dir.exists():
+            continue
+        try:
+            legacy_dir.rename(target_dir)
+        except Exception:
+            continue
+        else:
+            migrated = True
+    return migrated
+
+
 def _face_candidate(base: Path, user_id: str, ext: str) -> Optional[Path]:
     try:
         candidate = (base / f"{user_id}.{ext}").resolve()

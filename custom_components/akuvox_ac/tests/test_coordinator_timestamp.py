@@ -1,4 +1,4 @@
-from custom_components.AK_Access_ctrl.coordinator import AkuvoxCoordinator
+from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator
 
 
 def _make_coordinator_stub():
