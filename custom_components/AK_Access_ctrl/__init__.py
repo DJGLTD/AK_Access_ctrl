@@ -2883,6 +2883,36 @@ class SyncManager:
     async def _temporary_cleanup_midnight(self, now):
         await self._cleanup_temporary_users(reason="midnight")
 
+    async def _expire_temporary_user(
+        self,
+        key: str,
+        *,
+        now: datetime,
+        today: date,
+        used: bool,
+    ) -> None:
+        users_store = self._users_store()
+        if not users_store:
+            return
+
+        try:
+            await users_store.upsert_profile(
+                key,
+                access_end=today.isoformat(),
+                schedule_name="No Access",
+                schedule_id="1002",
+                temporary_used_at=now if used else None,
+            )
+        except Exception:
+            return
+
+        try:
+            sync_queue = self._root().get("sync_queue")
+            if sync_queue:
+                sync_queue.mark_change(None)
+        except Exception:
+            pass
+
     async def _cleanup_temporary_users(
         self,
         *,
@@ -2905,8 +2935,7 @@ class SyncManager:
 
             now = dt_util.now()
             today = now.date()
-            to_remove: List[str] = []
-            used_ids: List[str] = []
+            to_expire: List[Tuple[str, bool]] = []
 
             for key, profile in profiles.items():
                 if not isinstance(profile, dict):
@@ -2923,42 +2952,29 @@ class SyncManager:
                     user_name=event_user_name,
                     profile_key=str(key),
                 ):
-                    to_remove.append(str(key))
-                    used_ids.append(str(key))
+                    to_expire.append((str(key), True))
                     continue
 
                 expires_at = _parse_temp_datetime(profile.get("temporary_expires_at"))
                 if expires_at and now >= expires_at:
-                    to_remove.append(str(key))
+                    to_expire.append((str(key), False))
                     continue
 
                 if reason == "midnight":
                     access_end = _parse_access_date(profile.get("access_end"))
                     if access_end and access_end <= today:
-                        to_remove.append(str(key))
+                        to_expire.append((str(key), False))
 
-            if not to_remove:
+            if not to_expire:
                 return
 
-            for key in to_remove:
-                try:
-                    if key in used_ids:
-                        await users_store.upsert_profile(
-                            key,
-                            temporary_used_at=now,
-                        )
-                except Exception:
-                    pass
-
-                try:
-                    await self.hass.services.async_call(
-                        DOMAIN,
-                        "delete_user",
-                        {"id": key},
-                        blocking=True,
-                    )
-                except Exception:
-                    pass
+            for key, used in to_expire:
+                await self._expire_temporary_user(
+                    key,
+                    now=now,
+                    today=today,
+                    used=used,
+                )
 
     async def _bump_face_error_count(self, ha_key: str) -> int:
         users_store = self._users_store()
@@ -3841,6 +3857,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         root["settings_store"] = settings
         root["sync_manager"] = SyncManager(hass)
         root["sync_queue"] = SyncQueue(hass)
+        hass.async_create_task(
+            root["sync_manager"]._cleanup_temporary_users(reason="startup")
+        )
 
         t = settings.get_auto_sync_time()
         if t:
@@ -4230,6 +4249,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
+    async def svc_reactivate_temporary_user(call):
+        raw_key = call.data.get("id") or call.data.get("key")
+        key = str(raw_key or "").strip()
+        if not key:
+            return
+
+        canonical = normalize_ha_id(key)
+        effective_id = canonical or key
+        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
+        today = date.today().isoformat()
+
+        await users_store.upsert_profile(
+            effective_id,
+            access_start=today,
+            access_end=None,
+            schedule_name="24/7 Access",
+            schedule_id="1001",
+            status="active",
+            temporary_used_at="",
+            temporary_expires_at="",
+        )
+
+        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+
     async def svc_delete_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
         key = str(raw_key or "").strip()
@@ -4535,6 +4578,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "add_user", svc_add_user)
     hass.services.async_register(DOMAIN, "add_temporary_user", svc_add_temporary_user)
     hass.services.async_register(DOMAIN, "edit_user", svc_edit_user)
+    hass.services.async_register(
+        DOMAIN, "reactivate_temporary_user", svc_reactivate_temporary_user
+    )
     hass.services.async_register(DOMAIN, "delete_user", svc_delete_user)
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)
     hass.services.async_register(DOMAIN, "reboot_device", svc_reboot_device)

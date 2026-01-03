@@ -2730,6 +2730,9 @@ class AkuvoxUIView(HomeAssistantView):
                             "temporary_expires_at": prof.get("temporary_expires_at") or "",
                             "temporary_used_at": prof.get("temporary_used_at") or "",
                             "temporary_created_at": prof.get("temporary_created_at") or "",
+                            "remote_enrol_pending": bool(
+                                prof.get("remote_enrol_pending")
+                            ),
                             "license_plate": _extract_license_plates(prof),
                             "exit_permission": _normalize_exit_permission_http(
                                 prof.get("exit_permission")
@@ -4334,6 +4337,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                     status="pending",
                     face_status="pending",
                     face_synced_at="",
+                    remote_enrol_pending=False,
                 )
         except Exception:
             pass
@@ -4455,6 +4459,8 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
                     user_id,
                     status="pending",
                     name=profile_name or provided_name or None,
+                    face_status="pending",
+                    remote_enrol_pending=True,
                 )
             except Exception:
                 pass
