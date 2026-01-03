@@ -42,7 +42,7 @@ from .const import (
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
-from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id
+from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
 from .access_history import AccessHistory, categorize_event
 
 COMPONENT_ROOT = Path(__file__).parent
@@ -94,7 +94,7 @@ def _face_file_exists_in(base: Path, user_id: str) -> bool:
 
 def _remove_face_files(hass: HomeAssistant, user_id: str) -> None:
     removal_keys = {str(user_id or "").strip()}
-    canonical = normalize_ha_id(user_id)
+    canonical = normalize_user_id(user_id)
     if canonical:
         removal_keys.add(canonical)
     removal_keys = {key for key in removal_keys if key}
@@ -1849,7 +1849,7 @@ async def _refresh_face_statuses(
 
     profile_lookup = profiles or {}
     for entry in registry_users:
-        user_id = normalize_ha_id(entry.get("id"))
+        user_id = normalize_user_id(entry.get("id"))
         if not user_id:
             continue
         entry["id"] = user_id
@@ -2123,7 +2123,7 @@ def _select_reusable_reservation(users: Mapping[str, Any]) -> Optional[tuple[str
     for store_key, profile in users.items():
         if not _profile_is_empty_reserved(profile):
             continue
-        canonical = normalize_ha_id(store_key)
+        canonical = normalize_user_id(store_key)
         if not canonical:
             continue
         stamp: Optional[dt.datetime] = None
@@ -2259,12 +2259,12 @@ def _build_user_match_index(users: Dict[str, Any]) -> Dict[str, str]:
         if not text:
             return
         index.setdefault(text.lower(), canonical)
-        normalized = normalize_ha_id(text)
+        normalized = normalize_user_id(text)
         if normalized:
             index.setdefault(normalized.lower(), canonical)
 
     for key, profile in users.items():
-        canonical = normalize_ha_id(key) or _normalize_user_match_value(key)
+        canonical = normalize_user_id(key) or _normalize_user_match_value(key)
         if not canonical:
             continue
         _add(canonical, canonical)
@@ -2295,7 +2295,7 @@ def _merge_last_access(root: Dict[str, Any], users: Dict[str, Any]) -> Dict[str,
             if not raw_text:
                 continue
             match_id = None
-            for candidate in (normalize_ha_id(raw_text), raw_text):
+            for candidate in (normalize_user_id(raw_text), raw_text):
                 if not candidate:
                     continue
                 match_id = match_index.get(candidate.lower())
@@ -2370,7 +2370,7 @@ def _merge_last_access_from_events(
         if not raw_text:
             continue
         match_id = None
-        for candidate in (normalize_ha_id(raw_text), raw_text):
+            for candidate in (normalize_user_id(raw_text), raw_text):
             if not candidate:
                 continue
             match_id = match_index.get(candidate.lower())
@@ -2605,7 +2605,7 @@ class AkuvoxUIView(HomeAssistantView):
                 kpis["users"] = sum(
                     1
                     for key, prof in profiles.items()
-                    if normalize_ha_id(key) and not _profile_is_empty_reserved(prof)
+                    if normalize_user_id(key) and not _profile_is_empty_reserved(prof)
                 )
 
             settings_store = root.get("settings_store")
@@ -2692,7 +2692,7 @@ class AkuvoxUIView(HomeAssistantView):
                     all_users = {}
                 today = dt.date.today()
                 for key, prof in all_users.items():
-                    canonical = normalize_ha_id(key)
+                    canonical = normalize_user_id(key)
                     if not canonical or _profile_is_empty_reserved(prof):
                         continue
                     if str(prof.get("status") or "").strip().lower() == "deleted":
@@ -2965,7 +2965,7 @@ class AkuvoxUIAction(AkuvoxUIView):
             user_id = str(raw_id or "").strip()
             if not user_id:
                 return err("id required")
-            canonical = normalize_ha_id(user_id) or user_id
+            canonical = normalize_user_id(user_id) or user_id
 
             users_store = root.get("users_store")
             if users_store:
@@ -3373,7 +3373,7 @@ class AkuvoxUISettings(HomeAssistantView):
         if users_store:
             try:
                 for key, prof in (users_store.all() or {}).items():
-                    canonical = normalize_ha_id(key)
+                    canonical = normalize_user_id(key)
                     if not canonical:
                         continue
                     if _profile_is_empty_reserved(prof):
