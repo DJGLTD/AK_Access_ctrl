@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 ensure_homeassistant_stubs()
 
-import custom_components.AK_Access_ctrl.__init__ as akuvox
+import custom_components.akuvox_ac.__init__ as akuvox
 
 
 @pytest.fixture(autouse=True)

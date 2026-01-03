@@ -3,12 +3,12 @@ from typing import Any, Dict, List
 
 import pytest
 
-from custom_components.AK_Access_ctrl.ha_test_stubs import ensure_homeassistant_stubs
+from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
 ensure_homeassistant_stubs()
 
-from custom_components.AK_Access_ctrl.access_history import AccessHistory
-from custom_components.AK_Access_ctrl.coordinator import AkuvoxCoordinator
+from custom_components.akuvox_ac.access_history import AccessHistory
+from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator
 
 
 class _StorageStub:

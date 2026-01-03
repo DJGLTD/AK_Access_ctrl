@@ -73,6 +73,7 @@ from .http import (
     face_storage_dir,
     register_ui,
     FACE_FILE_EXTENSIONS,
+    _maybe_migrate_component_folder,
 )  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 from .ha_id import (
     ha_id_from_int,
@@ -3894,6 +3895,11 @@ class SyncManager:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     root = hass.data[DOMAIN]
+
+    try:
+        _maybe_migrate_component_folder(hass)
+    except Exception:
+        pass
 
     _migrate_face_storage(hass)
 

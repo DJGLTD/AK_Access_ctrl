@@ -5,11 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 # Importing the existing test module sets up the Home Assistant stubs that
-# custom_components.AK_Access_ctrl.http depends on. The import is intentional
+# custom_components.akuvox_ac.http depends on. The import is intentional
 # and must remain before importing the module under test.
 from . import test_exit_permissions  # noqa: F401
 
-import custom_components.AK_Access_ctrl.http as http
+import custom_components.akuvox_ac.http as http
 
 
 @pytest.fixture(autouse=True)
