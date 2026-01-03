@@ -2342,7 +2342,8 @@ def _merge_last_access(root: Dict[str, Any], users: Dict[str, Any]) -> Dict[str,
             if not raw_text:
                 continue
             match_id = None
-            for candidate in (normalize_user_id(raw_text), raw_text):
+            candidates = (normalize_user_id(raw_text), raw_text)
+            for candidate in candidates:
                 if not candidate:
                     continue
                 match_id = match_index.get(candidate.lower())
@@ -2420,7 +2421,8 @@ def _merge_last_access_from_events(
             continue
 
         match_id = None
-        for candidate in (normalize_user_id(raw_text), raw_text):
+        candidates = (normalize_user_id(raw_text), raw_text)
+        for candidate in candidates:
             if not candidate:
                 continue
             match_id = match_index.get(candidate.lower())
