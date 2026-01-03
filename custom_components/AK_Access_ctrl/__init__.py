@@ -23,6 +23,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -289,6 +290,66 @@ def _parse_access_date(value: Any) -> Optional[date]:
         return parsed.date()
 
     return None
+
+
+def _normalize_temp_datetime(value: Any) -> Optional[str]:
+    """Normalize temporary access datetimes to ISO format or clear them."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        normalized = value
+    elif isinstance(value, date):
+        normalized = datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        normalized = dt_util.parse_datetime(text)
+        if normalized is None:
+            try:
+                parsed_date = datetime.strptime(text.split("T", 1)[0], "%Y-%m-%d")
+            except ValueError:
+                return ""
+            normalized = datetime.combine(parsed_date.date(), datetime.min.time())
+    else:
+        return ""
+
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    return normalized.isoformat()
+
+
+def _parse_temp_datetime(value: Any) -> Optional[datetime]:
+    """Parse a temporary access datetime string into a timezone-aware datetime."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        parsed = dt_util.parse_datetime(text)
+        if parsed is None:
+            try:
+                parsed_date = datetime.strptime(text.split("T", 1)[0], "%Y-%m-%d")
+            except ValueError:
+                return None
+            parsed = datetime.combine(parsed_date.date(), datetime.min.time())
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    return parsed
 
 
 _BOOLISH_TRUE = {
@@ -1712,6 +1773,11 @@ class AkuvoxUsersStore(Store):
         license_plate: Optional[List[Any]] = None,
         exit_permission: Optional[str] = None,
         face_error_count: Optional[int] = None,
+        temporary: Optional[bool] = None,
+        temporary_one_time: Optional[bool] = None,
+        temporary_expires_at: Optional[str] = None,
+        temporary_used_at: Optional[str] = None,
+        temporary_created_at: Optional[str] = None,
     ):
         canonical = normalize_ha_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1809,6 +1875,34 @@ class AkuvoxUsersStore(Store):
                 u["face_error_count"] = count
             else:
                 u.pop("face_error_count", None)
+        if temporary is not None:
+            if temporary:
+                u["temporary"] = True
+            else:
+                u.pop("temporary", None)
+        if temporary_one_time is not None:
+            if temporary_one_time:
+                u["temporary_one_time"] = True
+            else:
+                u.pop("temporary_one_time", None)
+        if temporary_expires_at is not None:
+            normalized_expiry = _normalize_temp_datetime(temporary_expires_at)
+            if normalized_expiry:
+                u["temporary_expires_at"] = normalized_expiry
+            else:
+                u.pop("temporary_expires_at", None)
+        if temporary_used_at is not None:
+            normalized_used = _normalize_temp_datetime(temporary_used_at)
+            if normalized_used:
+                u["temporary_used_at"] = normalized_used
+            else:
+                u.pop("temporary_used_at", None)
+        if temporary_created_at is not None:
+            normalized_created = _normalize_temp_datetime(temporary_created_at)
+            if normalized_created:
+                u["temporary_created_at"] = normalized_created
+            else:
+                u.pop("temporary_created_at", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -2639,6 +2733,9 @@ class SyncManager:
         self._auto_unsub = None
         self._contact_sync_unsub = None
         self._integrity_unsub = None
+        self._temp_cleanup_unsub = None
+        self._temp_midnight_unsub = None
+        self._temp_cleanup_lock = asyncio.Lock()
         self._integrity_minutes = 15
         self._apply_integrity_interval(self._integrity_minutes)
         self._reboot_unsub = None
@@ -2651,6 +2748,18 @@ class SyncManager:
             hass,
             self._daily_contact_sync_cb,
             hour=23,
+            minute=0,
+            second=0,
+        )
+        self._temp_cleanup_unsub = async_track_time_interval(
+            hass,
+            self._temporary_cleanup_interval,
+            timedelta(minutes=5),
+        )
+        self._temp_midnight_unsub = async_track_time_change(
+            hass,
+            self._temporary_cleanup_midnight,
+            hour=0,
             minute=0,
             second=0,
         )
@@ -2722,6 +2831,134 @@ class SyncManager:
             if coord and api:
                 out.append((k, coord, api, opts))
         return out
+
+    @staticmethod
+    def _profile_is_temporary(profile: Dict[str, Any]) -> bool:
+        return bool(
+            profile.get("temporary")
+            or profile.get("temporary_one_time")
+            or profile.get("temporary_expires_at")
+        )
+
+    @staticmethod
+    def _temp_profile_matches_user(
+        profile: Dict[str, Any],
+        *,
+        user_id: Optional[str],
+        user_name: Optional[str],
+        profile_key: str,
+    ) -> bool:
+        if not user_id and not user_name:
+            return False
+
+        canonical_key = normalize_ha_id(profile_key) or profile_key
+        canonical_user = normalize_ha_id(user_id) if user_id else None
+        if canonical_user and canonical_key and canonical_user == canonical_key:
+            return True
+        if user_id:
+            raw_user = str(user_id).strip().lower()
+            if raw_user and raw_user == str(profile_key).strip().lower():
+                return True
+        name = str(profile.get("name") or "").strip()
+        if user_name and name:
+            if str(user_name).strip().lower() == name.lower():
+                return True
+        return False
+
+    async def handle_access_granted(
+        self,
+        user_id: Optional[str],
+        *,
+        user_name: Optional[str] = None,
+    ) -> None:
+        await self._cleanup_temporary_users(
+            reason="access_granted",
+            event_user_id=user_id,
+            event_user_name=user_name,
+        )
+
+    async def _temporary_cleanup_interval(self, now):
+        await self._cleanup_temporary_users(reason="interval")
+
+    async def _temporary_cleanup_midnight(self, now):
+        await self._cleanup_temporary_users(reason="midnight")
+
+    async def _cleanup_temporary_users(
+        self,
+        *,
+        reason: str,
+        event_user_id: Optional[str] = None,
+        event_user_name: Optional[str] = None,
+    ) -> None:
+        if self._temp_cleanup_lock.locked():
+            return
+
+        async with self._temp_cleanup_lock:
+            users_store = self._users_store()
+            if not users_store:
+                return
+
+            try:
+                profiles = users_store.all() or {}
+            except Exception:
+                return
+
+            now = dt_util.now()
+            today = now.date()
+            to_remove: List[str] = []
+            used_ids: List[str] = []
+
+            for key, profile in profiles.items():
+                if not isinstance(profile, dict):
+                    continue
+                if not self._profile_is_temporary(profile):
+                    continue
+                if str(profile.get("status") or "").strip().lower() == "deleted":
+                    continue
+
+                is_one_time = bool(profile.get("temporary_one_time"))
+                if is_one_time and self._temp_profile_matches_user(
+                    profile,
+                    user_id=event_user_id,
+                    user_name=event_user_name,
+                    profile_key=str(key),
+                ):
+                    to_remove.append(str(key))
+                    used_ids.append(str(key))
+                    continue
+
+                expires_at = _parse_temp_datetime(profile.get("temporary_expires_at"))
+                if expires_at and now >= expires_at:
+                    to_remove.append(str(key))
+                    continue
+
+                if reason == "midnight":
+                    access_end = _parse_access_date(profile.get("access_end"))
+                    if access_end and access_end <= today:
+                        to_remove.append(str(key))
+
+            if not to_remove:
+                return
+
+            for key in to_remove:
+                try:
+                    if key in used_ids:
+                        await users_store.upsert_profile(
+                            key,
+                            temporary_used_at=now,
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    await self.hass.services.async_call(
+                        DOMAIN,
+                        "delete_user",
+                        {"id": key},
+                        blocking=True,
+                    )
+                except Exception:
+                    pass
 
     async def _bump_face_error_count(self, ha_key: str) -> int:
         users_store = self._users_store()
@@ -3894,6 +4131,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)
 
+    async def svc_add_temporary_user(call):
+        d = call.data
+        name = str(d.get("name") or "").strip()
+        if not name:
+            return
+
+        raw_pin = d.get("pin")
+        pin_payload = str(raw_pin or "").strip()
+        if not pin_payload:
+            return
+
+        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
+        ha_id = users_store.next_free_ha_id()
+        users_store.reserve_id(ha_id)
+        await users_store.async_save()
+
+        one_time = bool(d.get("one_time") or d.get("one_time_use") or d.get("one_time_code"))
+        access_start = d.get("access_start")
+        access_end = d.get("access_end")
+        expires_at = d.get("expires_at") or d.get("temporary_expires_at")
+
+        await users_store.upsert_profile(
+            ha_id,
+            name=name,
+            groups=[],
+            pin=pin_payload,
+            schedule_name="24/7 Access",
+            key_holder=False,
+            status="active",
+            schedule_id="1001",
+            access_start=access_start if access_start is not None else date.today().isoformat(),
+            access_end=access_end if access_end is not None else None,
+            source="Temporary",
+            temporary=True,
+            temporary_one_time=one_time,
+            temporary_expires_at=expires_at,
+            temporary_created_at=dt_util.now(),
+        )
+
+        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+
     async def svc_edit_user(call):
         d = call.data
         raw_key = d.get("id")
@@ -4255,6 +4533,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         hass.data[DOMAIN]["sync_queue"].mark_change(None, full=True)
 
     hass.services.async_register(DOMAIN, "add_user", svc_add_user)
+    hass.services.async_register(DOMAIN, "add_temporary_user", svc_add_temporary_user)
     hass.services.async_register(DOMAIN, "edit_user", svc_edit_user)
     hass.services.async_register(DOMAIN, "delete_user", svc_delete_user)
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)

@@ -771,6 +771,19 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         if event_kind:
             self._update_access_state(event_kind, event, user_id=user_id, summary=summary_text or None)
+            if event_kind == "granted":
+                manager = self.hass.data.get(DOMAIN, {}).get("sync_manager")
+                if manager:
+                    try:
+                        await manager.handle_access_granted(
+                            user_id,
+                            user_name=self._extract_event_user_name(event),
+                        )
+                    except Exception as err:
+                        _LOGGER.debug(
+                            "Temporary user cleanup failed after access grant: %s",
+                            _safe_str(err),
+                        )
 
         return storage_changed
 
