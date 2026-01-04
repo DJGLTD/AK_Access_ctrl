@@ -2423,7 +2423,8 @@ def _merge_last_access_from_events(
             continue
 
         match_id = None
-        for candidate in (normalize_user_id(raw_text), raw_text):
+        candidates = (normalize_user_id(raw_text), raw_text)
+        for candidate in candidates:
             if not candidate:
                 continue
             match_id = match_index.get(candidate.lower())
