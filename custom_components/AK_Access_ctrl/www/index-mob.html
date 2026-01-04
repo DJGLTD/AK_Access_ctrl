@@ -1578,7 +1578,7 @@ function renderUsers(devs, registryUsers, kpis){
     const safeId = escapeHtml(u.id);
     const safeEventFilter = escapeHtml(eventFilter || u.id);
     let actions = '';
-    if (/^HA\d{3}$/.test(u.id)) {
+    if (/^(HA|TMP)\d+$/.test(u.id)) {
       if (u.temporary_expired) {
         actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
