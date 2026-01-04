@@ -1156,7 +1156,7 @@ function renderEvents(devs, aggregated){
 
 /* ===== Users ===== */
 function idMatchesFilter(id){
-  return /^HA-?\d+$/i.test(id) || /^User\d+$/i.test(id);
+  return /^HA-?\d+$/i.test(id) || /^User\d+$/i.test(id) || /^TMP-?\d+$/i.test(id);
 }
 const PIN_FIELDS = [
   'pin','Pin','PIN',
