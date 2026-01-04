@@ -1195,9 +1195,17 @@ function renderUsers(list){
     else accessBadge = badge(u.access, 'in_sync');
 
     const faceStatusLower = String(u.face_status || '').toLowerCase();
+    const isTemporaryUser = !!(
+      u.temporary
+      || u.temporary_one_time
+      || u.temporary_expires_at
+      || u.temporary_used_at
+    );
     let faceBadge;
     const hasFaceProfile = !!u.face_url || u.face_active;
-    if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
+    if (isTemporaryUser) {
+      faceBadge = '<span class="text-muted">---</span>';
+    } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Face active', 'in_sync');
     } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
       faceBadge = badge('Pending remote enrolment', 'pending');
@@ -1231,16 +1239,18 @@ function renderUsers(list){
       ? (u.temporary_expired
         ? `
           <button class="btn btn-sm btn-outline-success" data-reactivate-user="${escapeHtml(u.id)}"><i class="bi bi-arrow-counterclockwise"></i> Reactivate</button>
-          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
+          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Revoke</button>
         `
         : `
           <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
           <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
-          <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
-            <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
-            ${isUserPaused(u.id) ? 'Resume' : 'Pause'}
-          </button>
-          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Delete</button>
+          ${isTemporaryUser ? '' : `
+            <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
+              <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
+              ${isUserPaused(u.id) ? 'Resume' : 'Pause'}
+            </button>
+          `}
+          <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> ${isTemporaryUser ? 'Revoke' : 'Delete'}</button>
         `)
       : '';
 
