@@ -8,4 +8,4 @@ inline documentation referencing ``relays`` instead of schedule/key-holder data.
 
 from __future__ import annotations
 
-from .__init__ import AkuvoxUsersStore  # noqa: F401
+from .integration import AkuvoxUsersStore  # noqa: F401
