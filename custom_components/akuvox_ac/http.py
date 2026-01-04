@@ -2417,6 +2417,8 @@ def _merge_last_access_from_events(
                 break
 
         raw_text = _normalize_user_match_value(raw_value)
+        if isinstance(raw_text, str):
+            raw_text = raw_text.strip()
         if not raw_text:
             continue
 
