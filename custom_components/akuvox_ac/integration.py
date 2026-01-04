@@ -4474,7 +4474,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         queue: Optional[SyncQueue] = root.get("sync_queue")  # type: ignore[assignment]
         if queue:
-            queue.mark_change(None)
+            queue.mark_change(None, delay_minutes=0, full=True)
 
     async def svc_upload_face(call):
         """
