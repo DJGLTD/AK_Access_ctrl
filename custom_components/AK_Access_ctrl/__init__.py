@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set, Coroutine
 
 from homeassistant.const import Platform
 
@@ -2401,10 +2401,13 @@ class SyncQueue:
         self._tick_unsub: Optional[Callable[[], None]] = None
         self._startup_unsub: Optional[Callable[[], None]] = None
 
+        def _schedule_background_tick(_now):
+            self._schedule_task(self._background_tick(_now))
+
         try:
             self._tick_unsub = async_track_time_interval(
                 hass,
-                self._background_tick,
+                _schedule_background_tick,
                 timedelta(minutes=1),
             )
         except Exception:
@@ -2417,6 +2420,16 @@ class SyncQueue:
             )
         except Exception:
             self._startup_unsub = None
+
+    def _schedule_task(self, coro: Coroutine[Any, Any, Any]) -> None:
+        try:
+            loop = self.hass.loop
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(self.hass.async_create_task, coro)
+                return
+        except Exception:
+            pass
+        self.hass.async_create_task(coro)
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
@@ -2519,11 +2532,11 @@ class SyncQueue:
         self.next_sync_eta = eta
 
         if effective_delay <= 0:
-            self.hass.async_create_task(self.run())
+            self._schedule_task(self.run())
             return
 
         def _schedule_cb(_now):
-            self.hass.async_create_task(self.run())
+            self._schedule_task(self.run())
 
         self._handle = async_call_later(self.hass, effective_delay * 60, _schedule_cb)
 
@@ -2544,14 +2557,14 @@ class SyncQueue:
         if remaining <= 0:
             self.next_sync_eta = datetime.now()
             self._last_delay_from_default = True
-            self.hass.async_create_task(self.run())
+            self._schedule_task(self.run())
             return
 
         self.next_sync_eta = eta
         self._last_delay_from_default = True
 
         def _schedule_cb(_now):
-            self.hass.async_create_task(self.run())
+            self._schedule_task(self.run())
 
         self._handle = async_call_later(self.hass, remaining, _schedule_cb)
 
@@ -2576,7 +2589,7 @@ class SyncQueue:
                 pass
 
         self.next_sync_eta = datetime.now()
-        self.hass.async_create_task(self.run())
+        self._schedule_task(self.run())
 
     def _handle_hass_started(self, _event):
         try:
@@ -2584,15 +2597,10 @@ class SyncQueue:
         except Exception:
             pass
 
-        if self._startup_unsub:
-            try:
-                self._startup_unsub()
-            except Exception:
-                pass
-            self._startup_unsub = None
+        self._startup_unsub = None
 
         try:
-            self.hass.async_create_task(self._background_tick(datetime.now()))
+            self._schedule_task(self._background_tick(datetime.now()))
         except Exception:
             pass
 
