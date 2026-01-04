@@ -834,6 +834,63 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         # latest event reuses existing state (e.g. duplicate grant within timer).
         self.async_update_listeners()
 
+    def _parse_access_timestamp(self, value: Any) -> Optional[dt.datetime]:
+        from homeassistant.util import dt as dt_util
+
+        if isinstance(value, dt.datetime):
+            return dt_util.as_utc(value)
+        if isinstance(value, (int, float)):
+            return dt_util.utc_from_timestamp(value)
+        if isinstance(value, str):
+            parsed = dt_util.parse_datetime(value)
+            if parsed:
+                return dt_util.as_utc(parsed)
+        return None
+
+    def _lookup_user_name(self, user_id: Optional[str]) -> Optional[str]:
+        if not user_id:
+            return None
+        for user in self.users or []:
+            raw_id = (
+                user.get("UserID")
+                or user.get("UserId")
+                or user.get("ID")
+                or user.get("id")
+                or ""
+            )
+            if str(raw_id).strip() == user_id:
+                name = user.get("Name") or user.get("UserName") or user.get("name") or user.get("User")
+                if name:
+                    return str(name)
+        return None
+
+    def get_last_access_snapshot(self) -> Dict[str, Any]:
+        last_access = self.storage.data.get("last_access", {})
+        if not isinstance(last_access, dict):
+            return {}
+
+        latest_user_id: Optional[str] = None
+        latest_timestamp: Optional[str] = None
+        latest_dt: Optional[dt.datetime] = None
+        for user_id, timestamp in last_access.items():
+            if not user_id or not timestamp:
+                continue
+            parsed = self._parse_access_timestamp(timestamp)
+            if not parsed:
+                continue
+            if latest_dt is None or parsed > latest_dt:
+                latest_dt = parsed
+                latest_user_id = str(user_id).strip()
+                latest_timestamp = timestamp
+
+        user_name = self._lookup_user_name(latest_user_id)
+        return {
+            "user_id": latest_user_id,
+            "user_name": user_name,
+            "timestamp": latest_timestamp,
+            "timestamp_dt": latest_dt,
+        }
+
     def _activate_event_flag(self, flag: str) -> bool:
         prev = bool(self.event_state.get(flag))
         self.event_state[flag] = True

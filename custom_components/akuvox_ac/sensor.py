@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from homeassistant.components.sensor import SensorEntity
+from typing import Any, Dict, List
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -14,12 +14,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities: List[SensorEntity] = [
         AkuvoxOnlineSensor(coord, entry),
-        AkuvoxSyncStatusSensor(coord, entry),
         AkuvoxLastSyncSensor(coord, entry),
-        AkuvoxUsersCountSensor(coord, entry),
-        AkuvoxEventsCountSensor(coord, entry),
         AkuvoxLastAccessUserSensor(coord, entry),
-        AkuvoxCurrentCallerSensor(coord, entry),
+        AkuvoxLastAccessedSensor(coord, entry),
     ]
     async_add_entities(entities, update_before_add=True)
 
@@ -77,27 +74,6 @@ class AkuvoxOnlineSensor(_Base, SensorEntity):
         attrs["akuvox_metric"] = "online"
         return attrs
 
-class AkuvoxSyncStatusSensor(_Base, SensorEntity):
-    @property
-    def name(self) -> str:
-        return f"{self._coord.device_name} Sync"
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_sync"
-
-    @property
-    def native_value(self):
-        if not self._coord.health.get("online"):
-            return "Offline"
-        return self._coord.health.get("sync_status") or "pending"
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = super().extra_state_attributes
-        attrs["akuvox_metric"] = "sync_status"
-        return attrs
-
 class AkuvoxLastSyncSensor(_Base, SensorEntity):
     @property
     def name(self) -> str:
@@ -119,45 +95,6 @@ class AkuvoxLastSyncSensor(_Base, SensorEntity):
         attrs["akuvox_metric"] = "last_sync"
         return attrs
 
-class AkuvoxUsersCountSensor(_Base, SensorEntity):
-    @property
-    def name(self) -> str:
-        return f"{self._coord.device_name} Users"
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_users_count"
-
-    @property
-    def native_value(self):
-        return len(self._coord.users or [])
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = super().extra_state_attributes
-        attrs["akuvox_metric"] = "users_count"
-        return attrs
-
-class AkuvoxEventsCountSensor(_Base, SensorEntity):
-    @property
-    def name(self) -> str:
-        return f"{self._coord.device_name} Events"
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_events_count"
-
-    @property
-    def native_value(self):
-        return len(self._coord.events or [])
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        attrs = super().extra_state_attributes
-        attrs["akuvox_metric"] = "events_count"
-        return attrs
-
-
 class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
     @property
     def name(self) -> str:
@@ -169,17 +106,24 @@ class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
 
     @property
     def native_value(self):
+        snapshot = self._coord.get_last_access_snapshot()
+        value = snapshot.get("user_name") or snapshot.get("user_id")
+        if value:
+            return value
         state = getattr(self._coord, "event_state", {}) or {}
-        return state.get("last_user_name")
+        return state.get("last_user_name") or state.get("last_user_id")
 
     @property
     def extra_state_attributes(self):
+        snapshot = self._coord.get_last_access_snapshot()
         state = getattr(self._coord, "event_state", {}) or {}
         attrs = super().extra_state_attributes
         attrs.update(
             {
                 "akuvox_metric": "last_access_user",
-                "user_id": state.get("last_user_id"),
+                "user_id": snapshot.get("user_id") or state.get("last_user_id"),
+                "user_name": snapshot.get("user_name") or state.get("last_user_name"),
+                "last_accessed": snapshot.get("timestamp") or state.get("last_event_timestamp"),
                 "event_type": state.get("last_event_type"),
                 "event_summary": state.get("last_event_summary"),
                 "event_timestamp": state.get("last_event_timestamp"),
@@ -189,41 +133,36 @@ class AkuvoxLastAccessUserSensor(_Base, SensorEntity):
         return attrs
 
 
-class AkuvoxCurrentCallerSensor(_Base, SensorEntity):
+class AkuvoxLastAccessedSensor(_Base, SensorEntity):
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
     @property
     def name(self) -> str:
-        return f"{self._coord.device_name} Caller ID"
+        return f"{self._coord.device_name} Last Accessed"
 
     @property
     def unique_id(self) -> str:
-        return f"{self._entry.entry_id}_current_caller"
+        return f"{self._entry.entry_id}_last_accessed"
 
     @property
     def native_value(self):
-        state = getattr(self._coord, "caller_state", {}) or {}
-        value = state.get("caller_id") or state.get("caller_number")
-        return value or None
+        snapshot = self._coord.get_last_access_snapshot()
+        return snapshot.get("timestamp_dt")
 
     @property
     def extra_state_attributes(self):
-        state = getattr(self._coord, "caller_state", {}) or {}
+        snapshot = self._coord.get_last_access_snapshot()
+        state = getattr(self._coord, "event_state", {}) or {}
         attrs = super().extra_state_attributes
         attrs.update(
             {
-                "akuvox_metric": "current_caller",
-                "caller_id": state.get("caller_id"),
-                "caller_name": state.get("caller_name"),
-                "caller_number": state.get("caller_number"),
-                "raw_number": state.get("raw_number"),
-                "digits": state.get("digits"),
-                "call_id": state.get("call_id"),
-                "call_type": state.get("call_type"),
-                "timestamp": state.get("timestamp"),
-                "age_seconds": state.get("age_seconds"),
-                "key_holder": state.get("key_holder"),
-                "status": state.get("status"),
-                "error": state.get("error"),
-                "source": state.get("source"),
+                "akuvox_metric": "last_accessed",
+                "user_id": snapshot.get("user_id") or state.get("last_user_id"),
+                "user_name": snapshot.get("user_name") or state.get("last_user_name"),
+                "event_type": state.get("last_event_type"),
+                "event_summary": state.get("last_event_summary"),
+                "event_timestamp": snapshot.get("timestamp") or state.get("last_event_timestamp"),
+                "key_holder": state.get("last_event_key_holder"),
             }
         )
         return attrs
