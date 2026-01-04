@@ -1779,7 +1779,16 @@ function renderUsers(devs, registryUsers, kpis){
       const safeId = escapeHtml(u.id);
       const safeEventFilter = escapeHtml(eventFilter || u.id);
       const paused = isUserPaused(u.id);
-      if (u.temporary_expired) {
+      const isTemporaryUser = !!(
+        u.temporary
+        || u.temporary_one_time
+        || u.temporary_expires_at
+        || u.temporary_used_at
+      );
+      if (isTemporaryUser) {
+        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
+      } else if (u.temporary_expired) {
         actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
           </button>
