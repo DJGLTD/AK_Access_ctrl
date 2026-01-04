@@ -1775,7 +1775,7 @@ function renderUsers(devs, registryUsers, kpis){
     let actions;
     if (u.isCloud) {
       actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
-    } else if (/^HA\d{3}$/.test(u.id)) {
+    } else if (/^(HA|TMP)\d+$/.test(u.id)) {
       const safeId = escapeHtml(u.id);
       const safeEventFilter = escapeHtml(eventFilter || u.id);
       const paused = isUserPaused(u.id);
