@@ -1189,6 +1189,7 @@ function renderUsers(list){
     const accessLower = String(u.access || '').toLowerCase();
     let accessBadge;
     if (!u.access || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
+    else if (accessLower === 'paused') accessBadge = badge('Paused', 'pending');
     else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
     else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
     else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
