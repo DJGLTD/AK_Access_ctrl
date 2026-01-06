@@ -466,6 +466,8 @@ function savePausedUsers(map){
 }
 
 let PAUSED_USERS = loadPausedUsers();
+let USER_SEARCH = '';
+let LAST_USERS_STATE = null;
 
 function pausedSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return null;
@@ -913,6 +915,48 @@ function normalizeHaUserId(value){
   if (suffix.startsWith('-')) suffix = suffix.slice(1);
   if (!suffix || !/^\d+$/.test(suffix)) return '';
   return `HA${suffix}`;
+}
+
+function parseHaUserIdNumber(value){
+  const normalized = normalizeHaUserId(value);
+  if (!normalized) return null;
+  const num = Number(normalized.slice(2));
+  return Number.isFinite(num) ? num : null;
+}
+
+function compareUsersByHaId(a, b){
+  const aNum = parseHaUserIdNumber(a?.id);
+  const bNum = parseHaUserIdNumber(b?.id);
+  if (aNum !== null && bNum !== null) return aNum - bNum;
+  if (aNum !== null) return -1;
+  if (bNum !== null) return 1;
+  const idCompare = String(a?.id || '').localeCompare(String(b?.id || ''), undefined, {sensitivity:'base'});
+  if (idCompare) return idCompare;
+  return String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {sensitivity:'base'});
+}
+
+function normalizeSearchText(value){
+  return String(value || '').trim().toLowerCase();
+}
+
+function userMatchesSearch(user, term){
+  if (!term) return true;
+  const haystack = [
+    user?.id,
+    user?.name,
+    user?.access_schedule,
+    user?.schedule_name,
+    user?.access_level,
+    ...(Array.isArray(user?.groups) ? user.groups : [])
+  ]
+    .map(normalizeSearchText)
+    .filter(Boolean)
+    .join(' ');
+  return haystack.includes(term);
+}
+
+function setUserSearch(value){
+  USER_SEARCH = normalizeSearchText(value);
 }
 
 function deviceUserKey(record){
@@ -1741,7 +1785,8 @@ function renderUsers(devs, registryUsers, kpis){
 
   const listSorted = list
     .filter(u => u.isCloud || idMatchesFilter(u.id))
-    .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, {sensitivity:'base'}));
+    .filter(u => userMatchesSearch(u, USER_SEARCH))
+    .sort((a,b) => compareUsersByHaId(a, b));
 
   const dedupedByName = [];
   const nameIndex = new Map();
@@ -1971,6 +2016,11 @@ async function refresh(){
     }
     await maybeRequestEventHistory(state);
     syncPausedUsersFromState(state.registry_users || []);
+    LAST_USERS_STATE = {
+      devs,
+      registry: state.registry_users || [],
+      kpis: state.kpis || {}
+    };
     renderUsers(devs, state.registry_users || [], state.kpis || {});
   } catch(e){
     console.error('state load failed', e);
@@ -2339,6 +2389,20 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const userSearch = document.getElementById('userSearch');
+  if (userSearch) {
+    userSearch.addEventListener('input', (event) => {
+      setUserSearch(event.target.value || '');
+      if (LAST_USERS_STATE) {
+        renderUsers(
+          LAST_USERS_STATE.devs,
+          LAST_USERS_STATE.registry,
+          LAST_USERS_STATE.kpis
+        );
+      }
+    });
+  }
+
   // initial + poll
   refresh();
   setInterval(refresh, 5000);
@@ -2473,6 +2537,10 @@ setInterval(refresh, 5000);
             <a class="btn btn-outline-info" id="btnAddTempUser" href="/akuvox-ac/temp-user" target="_top">
               <i class="bi bi-clock-history"></i> Add Temporary User
             </a>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <i class="bi bi-search text-muted" aria-hidden="true"></i>
+            <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
           </div>
         </div>
         <div class="card-body">
