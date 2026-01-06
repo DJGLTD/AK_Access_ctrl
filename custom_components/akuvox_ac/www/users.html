@@ -670,7 +670,25 @@ function loadPausedUsers(){
   return {};
 }
 
+function savePausedUsers(map){
+  try {
+    const payload = JSON.stringify(map || {});
+    sessionStorage.setItem(PAUSED_USERS_KEY, payload);
+    localStorage.setItem(PAUSED_USERS_KEY, payload);
+  } catch (err) {}
+}
+
 let PAUSED_USERS = loadPausedUsers();
+
+function pausedSnapshotFromUser(user){
+  if (!user || typeof user !== 'object') return null;
+  const scheduleId = String(user.paused_schedule_id || '').trim();
+  const scheduleName = String(user.paused_schedule_name || '').trim();
+  if (scheduleId || scheduleName) {
+    return { schedule_id: scheduleId, schedule_name: scheduleName };
+  }
+  return null;
+}
 
 function pausedScheduleInfo(userId){
   const stored = userId && PAUSED_USERS ? PAUSED_USERS[userId] : null;
@@ -688,6 +706,43 @@ function pausedScheduleInfo(userId){
     }
   }
   return null;
+}
+
+function syncPausedUsersFromState(registryUsers){
+  if (!Array.isArray(registryUsers)) return;
+  const next = { ...(PAUSED_USERS || {}) };
+  let changed = false;
+  registryUsers.forEach(user => {
+    const id = String(user.id || user.UserID || user.UserId || user.ID || '').trim();
+    if (!id) return;
+    const paused = !!user.paused;
+    if (paused) {
+      const snapshot = pausedSnapshotFromUser(user);
+      if (snapshot) {
+        const existing = next[id] || {};
+        if (
+          String(existing.schedule_id || '') !== snapshot.schedule_id
+          || String(existing.schedule_name || '') !== snapshot.schedule_name
+        ) {
+          next[id] = snapshot;
+          changed = true;
+        }
+      } else if (!next[id]) {
+        next[id] = {
+          schedule_id: String(user.schedule_id || '').trim(),
+          schedule_name: String(user.schedule_name || '').trim()
+        };
+        changed = true;
+      }
+    } else if (next[id]) {
+      delete next[id];
+      changed = true;
+    }
+  });
+  if (changed) {
+    PAUSED_USERS = next;
+    savePausedUsers(PAUSED_USERS);
+  }
 }
 
 function applyPausedScheduleToCurrent(){
@@ -1649,6 +1704,7 @@ async function load(){
     updateKeyHolderAvailability();
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     applySchedulesUpdate(state?.schedules || {}, state?.schedule_ids || {});
+    syncPausedUsersFromState(state?.registry_users || []);
     REGISTRY = state.registry_users || [];
     DEVICES = state.devices || [];
 

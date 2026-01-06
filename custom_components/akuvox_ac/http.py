@@ -2774,6 +2774,9 @@ class AkuvoxUIView(HomeAssistantView):
                             "schedule_name": prof.get("schedule_name")
                             or "24/7 Access",
                             "schedule_id": prof.get("schedule_id") or "",
+                            "paused": bool(prof.get("paused")),
+                            "paused_schedule_id": prof.get("paused_schedule_id") or "",
+                            "paused_schedule_name": prof.get("paused_schedule_name") or "",
                             "key_holder": bool(prof.get("key_holder", False)),
                             "access_level": prof.get("access_level") or "",
                             "access_start": access_start.isoformat() if access_start else "",
