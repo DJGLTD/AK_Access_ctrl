@@ -147,6 +147,21 @@ def _now_hh_mm() -> str:
         return ""
 
 
+def _coerce_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    return None
+
+
 def _context_user_name(hass: HomeAssistant, context) -> str:
     """Best-effort friendly name for the actor behind a service/http call."""
 
@@ -1830,6 +1845,9 @@ class AkuvoxUsersStore(Store):
         temporary_expires_at: Optional[str] = None,
         temporary_used_at: Optional[str] = None,
         temporary_created_at: Optional[str] = None,
+        paused: Optional[bool] = None,
+        paused_schedule_id: Optional[str] = None,
+        paused_schedule_name: Optional[str] = None,
     ):
         canonical = normalize_user_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -1955,6 +1973,25 @@ class AkuvoxUsersStore(Store):
                 u["temporary_created_at"] = normalized_created
             else:
                 u.pop("temporary_created_at", None)
+        if paused is not None:
+            if paused:
+                u["paused"] = True
+            else:
+                u.pop("paused", None)
+                u.pop("paused_schedule_id", None)
+                u.pop("paused_schedule_name", None)
+        if paused_schedule_id is not None:
+            cleaned = str(paused_schedule_id or "").strip()
+            if cleaned:
+                u["paused_schedule_id"] = cleaned
+            else:
+                u.pop("paused_schedule_id", None)
+        if paused_schedule_name is not None:
+            cleaned = str(paused_schedule_name or "").strip()
+            if cleaned:
+                u["paused_schedule_name"] = cleaned
+            else:
+                u.pop("paused_schedule_name", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -4290,6 +4327,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             else:
                 pin_payload_edit = str(raw_pin)
 
+        paused_flag: Optional[bool] = None
+        if "paused" in d:
+            paused_flag = _coerce_bool(d.get("paused"))
+        paused_schedule_id: Optional[str] = None
+        if "paused_schedule_id" in d:
+            paused_schedule_id = str(d.get("paused_schedule_id") or "").strip()
+        paused_schedule_name: Optional[str] = None
+        if "paused_schedule_name" in d:
+            paused_schedule_name = str(d.get("paused_schedule_name") or "").strip()
+
         pin_only = (
             pin_payload_edit not in (None, "")
             and not face_reference_supplied
@@ -4318,6 +4365,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             source="Local",
             license_plate=lp_payload,
             exit_permission=d.get("exit_permission") if "exit_permission" in d else None,
+            paused=paused_flag,
+            paused_schedule_id=paused_schedule_id,
+            paused_schedule_name=paused_schedule_name,
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None)

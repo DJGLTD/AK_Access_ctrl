@@ -467,6 +467,16 @@ function savePausedUsers(map){
 
 let PAUSED_USERS = loadPausedUsers();
 
+function pausedSnapshotFromUser(user){
+  if (!user || typeof user !== 'object') return null;
+  const scheduleId = String(user.paused_schedule_id || '').trim();
+  const scheduleName = String(user.paused_schedule_name || '').trim();
+  if (scheduleId || scheduleName) {
+    return { schedule_id: scheduleId, schedule_name: scheduleName };
+  }
+  return null;
+}
+
 function scheduleSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return '';
   const scheduleName = String(user.access_level || user.schedule_name || '24/7 Access').trim() || '24/7 Access';
@@ -500,6 +510,40 @@ function pausedScheduleDisplay(user){
   if (!info) return '';
   const display = formatScheduleDisplay(info.schedule_id, info.schedule_name);
   return display || info.schedule_name || '';
+}
+
+function syncPausedUsersFromState(registryUsers){
+  if (!Array.isArray(registryUsers)) return;
+  const next = { ...(PAUSED_USERS || {}) };
+  let changed = false;
+  registryUsers.forEach(user => {
+    const id = String(user.id || user.UserID || user.UserId || user.ID || '').trim();
+    if (!id) return;
+    const paused = !!user.paused;
+    if (paused) {
+      const snapshot = pausedSnapshotFromUser(user);
+      if (snapshot) {
+        const existing = next[id] || {};
+        if (
+          String(existing.schedule_id || '') !== snapshot.schedule_id
+          || String(existing.schedule_name || '') !== snapshot.schedule_name
+        ) {
+          next[id] = snapshot;
+          changed = true;
+        }
+      } else if (!next[id]) {
+        next[id] = scheduleSnapshotFromUser(user);
+        changed = true;
+      }
+    } else if (next[id]) {
+      delete next[id];
+      changed = true;
+    }
+  });
+  if (changed) {
+    PAUSED_USERS = next;
+    savePausedUsers(PAUSED_USERS);
+  }
 }
 
 function resumeScheduleFromUser(user){
@@ -1881,11 +1925,15 @@ function renderUsers(devs, registryUsers, kpis){
       const name = user.name || id;
       const wasPaused = isUserPaused(id);
       const resumeSchedule = resumeScheduleFromUser(user);
+      const pauseSnapshot = scheduleSnapshotFromUser(user);
       const payload = {
         id,
         name,
         schedule_id: wasPaused ? resumeSchedule.schedule_id : PAUSE_SCHEDULE_ID,
         schedule_name: wasPaused ? resumeSchedule.schedule_name : PAUSE_SCHEDULE_NAME,
+        paused: !wasPaused,
+        paused_schedule_id: wasPaused ? '' : pauseSnapshot.schedule_id,
+        paused_schedule_name: wasPaused ? '' : pauseSnapshot.schedule_name,
       };
       try {
         btn.setAttribute('disabled', 'disabled');
@@ -1922,6 +1970,7 @@ async function refresh(){
       eventHistoryInitialized = true;
     }
     await maybeRequestEventHistory(state);
+    syncPausedUsersFromState(state.registry_users || []);
     renderUsers(devs, state.registry_users || [], state.kpis || {});
   } catch(e){
     console.error('state load failed', e);
