@@ -631,6 +631,7 @@ const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_
 const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
 const API_ACTION          = signedPath('action', '/api/akuvox_ac/ui/action');
 const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
+const API_SETTINGS        = signedPath('settings', '/api/akuvox_ac/ui/settings');
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
@@ -774,6 +775,7 @@ let EXIT_CLONES = {};   // { normalizedName: cloneName }
 let scheduleRefreshPromise = null;
 let scheduleRefreshTimer = null;
 let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
+let ALERT_TARGETS = {}; // { service: { granted: { any, users }, ... } }
 let REGISTRY = [];      // UI list of known users from /ui/state
 let DEVICES = [];       // [{entry_id, name, users}, ...] from /ui/state
 let CURRENT = null;     // working user object
@@ -951,6 +953,115 @@ function updateDeviceIdsDisplay(){
         <span class="text-monospace">${escapeHtml(deviceId || '—')}</span>
       </div>`;
   }).join('');
+}
+
+function ensureAlertTargetDefaults(service){
+  if (!ALERT_TARGETS[service] || typeof ALERT_TARGETS[service] !== 'object'){
+    ALERT_TARGETS[service] = {
+      device_offline: false,
+      integrity_failed: false,
+      any_denied: false,
+      granted: { any: false, users: [] }
+    };
+  } else {
+    const cfg = ALERT_TARGETS[service];
+    if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = !!cfg.device_offline;
+    if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = !!cfg.integrity_failed;
+    if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = !!cfg.any_denied;
+    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+    if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = !!cfg.granted.any;
+    if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
+    cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u).trim()).filter(Boolean)));
+  }
+}
+
+function loadAlertTargets(raw){
+  ALERT_TARGETS = (raw && typeof raw === 'object') ? { ...raw } : {};
+  Object.keys(ALERT_TARGETS).forEach(ensureAlertTargetDefaults);
+}
+
+function selectedNotifyTargetsForUser(userId){
+  const selected = new Set();
+  const cleanId = String(userId || '').trim();
+  if (!cleanId) return selected;
+  Object.keys(ALERT_TARGETS || {}).forEach(service => {
+    ensureAlertTargetDefaults(service);
+    const users = ALERT_TARGETS[service].granted?.users || [];
+    if (users.includes(cleanId)) selected.add(service);
+  });
+  return selected;
+}
+
+function renderNotifyTargets(){
+  const select = document.getElementById('notifyTargets');
+  if (!select) return;
+  select.innerHTML = '';
+  const userId = CURRENT && CURRENT.id ? String(CURRENT.id).trim() : '';
+  if (!PHONES.length){
+    select.innerHTML = `<option value="" disabled selected>(no phones found)</option>`;
+    select.disabled = true;
+    return;
+  }
+  if (!userId){
+    select.innerHTML = `<option value="" disabled selected>(save user to enable)</option>`;
+    select.disabled = true;
+    return;
+  }
+  const selected = selectedNotifyTargetsForUser(userId);
+  select.disabled = false;
+  const sorted = [...PHONES].sort((a,b) => (a.name || a.service || '').localeCompare(b.name || b.service || ''));
+  sorted.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.service;
+    opt.textContent = p.name || p.service;
+    if (selected.has(p.service)) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+function updateAlertTargetsForUser(userId, selectedServices){
+  const cleanId = String(userId || '').trim();
+  if (!cleanId) return ALERT_TARGETS;
+  const selected = new Set(selectedServices || []);
+  const servicesToCheck = new Set(Object.keys(ALERT_TARGETS || {}));
+  (PHONES || []).forEach(phone => {
+    if (phone && phone.service) servicesToCheck.add(phone.service);
+  });
+  servicesToCheck.forEach(service => {
+    if (!service) return;
+    if (!ALERT_TARGETS[service]) {
+      if (!selected.has(service)) return;
+      ALERT_TARGETS[service] = {
+        device_offline: false,
+        integrity_failed: false,
+        any_denied: false,
+        granted: { any: false, users: [] }
+      };
+    }
+    ensureAlertTargetDefaults(service);
+    const users = new Set(ALERT_TARGETS[service].granted.users || []);
+    if (selected.has(service)) users.add(cleanId);
+    else users.delete(cleanId);
+    ALERT_TARGETS[service].granted.users = Array.from(users);
+  });
+  return ALERT_TARGETS;
+}
+
+async function saveNotifyTargets(userId){
+  const select = document.getElementById('notifyTargets');
+  if (!select || select.disabled) return;
+  const selected = Array.from(select.selectedOptions).map(opt => opt.value);
+  updateAlertTargetsForUser(userId, selected);
+  try{
+    const res = await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
+    if (res && res.alerts && res.alerts.targets){
+      loadAlertTargets(res.alerts.targets);
+    }
+  }catch(err){
+    if (handleAuthError(err)) return;
+    console.warn('Failed to update notification targets', err);
+    alert('Failed to update access notifications.');
+  }
 }
 
 function normalizedScheduleKey(name){
@@ -1687,6 +1798,15 @@ async function load(){
       PHONES = [];
     }
 
+    try {
+      const settings = await apiGet(API_SETTINGS);
+      loadAlertTargets(settings?.alerts?.targets);
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      console.warn('Failed to load notification settings', err);
+      loadAlertTargets({});
+    }
+
     const params = new URLSearchParams(location.search);
     const id = (params.get('id') || '').trim();
     const modeParam = (params.get('mode') || '').toLowerCase();
@@ -1850,6 +1970,7 @@ function fillForm(){
   }
   updateDeviceIdsDisplay();
   applyCredentialPrompts();
+  renderNotifyTargets();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
   }
@@ -2144,6 +2265,8 @@ async function save(){
       }
     }
 
+    await saveNotifyTargets(CURRENT.id);
+
     // Back to list
     stopReservationHeartbeat();
     forgetReservationId();
@@ -2252,6 +2375,17 @@ function showPanel(which){
       <div class="form-text muted">Need a new schedule? Open <b>Global Settings → Access Schedules</b> to build one, then come back and select it here.</div>
     </div>
 
+    <div class="form-check mb-3" id="pedestrianOnlyRow">
+      <input class="form-check-input" type="checkbox" id="pedestrian_only">
+      <label class="form-check-label" for="pedestrian_only">Pedestrian access only</label>
+    </div>
+
+    <div class="mb-3" id="notifyTargetsRow">
+      <label class="form-label">Notify on access grant</label>
+      <select id="notifyTargets" class="form-select" multiple size="4"></select>
+      <div class="form-text muted">Select which phones receive a push notification when this user opens the gate.</div>
+    </div>
+
     <div class="mb-3" id="exitPermissionRow">
       <label class="form-label">Exit permissions</label>
       <select id="exit_permission" class="form-select">
@@ -2283,11 +2417,6 @@ function showPanel(which){
     <div class="form-check mb-3" id="keyHolderRow">
       <input class="form-check-input" type="checkbox" id="key_holder">
       <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
-    </div>
-
-    <div class="form-check mb-3" id="pedestrianOnlyRow">
-      <input class="form-check-input" type="checkbox" id="pedestrian_only">
-      <label class="form-check-label" for="pedestrian_only">Pedestrian access only</label>
     </div>
 
     <div class="action-buttons mb-3">
