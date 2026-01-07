@@ -1555,6 +1555,21 @@ class AkuvoxSchedulesStore(Store):
                 normalized["date_end"] = str(payload.get("date_end") or payload.get("DateEnd") or "").strip()
 
             raw_days = payload.get("days")
+            week_text = str(payload.get("Week") or payload.get("week") or "").strip()
+            if week_text:
+                week_map = {
+                    "0": "sun",
+                    "1": "mon",
+                    "2": "tue",
+                    "3": "wed",
+                    "4": "thu",
+                    "5": "fri",
+                    "6": "sat",
+                }
+                for ch in week_text:
+                    mapped = week_map.get(ch)
+                    if mapped:
+                        days_selected.add(mapped)
             if isinstance(raw_days, (list, tuple, set)):
                 for entry in raw_days:
                     key = str(entry or "").strip().lower()
@@ -3892,23 +3907,37 @@ class SyncManager:
                                 spec,
                             )
                             if _schedule_times_out_of_order(expected_spec):
-                                mismatch_reason = f"schedule {name} times out of order"
+                                mismatch_reason = (
+                                    f"schedule {name} times out of order"
+                                    f" (expected {expected_spec.get('start')}-{expected_spec.get('end')})"
+                                )
                                 break
                             device_spec = device_map.get(name.strip().lower())
                             if not device_spec:
                                 mismatch_reason = f"missing schedule {name}"
                                 break
                             if _schedule_times_out_of_order(device_spec):
-                                mismatch_reason = f"schedule {name} times out of order"
+                                mismatch_reason = (
+                                    f"schedule {name} times out of order"
+                                    f" (device {device_spec.get('start')}-{device_spec.get('end')})"
+                                )
                                 break
                             if expected_spec.get("days") != device_spec.get("days"):
-                                mismatch_reason = f"schedule {name} days mismatch"
+                                mismatch_reason = (
+                                    f"schedule {name} days mismatch"
+                                    f" (expected {expected_spec.get('days')},"
+                                    f" device {device_spec.get('days')})"
+                                )
                                 break
                             if (
                                 expected_spec.get("start") != device_spec.get("start")
                                 or expected_spec.get("end") != device_spec.get("end")
                             ):
-                                mismatch_reason = f"schedule {name} time mismatch"
+                                mismatch_reason = (
+                                    f"schedule {name} time mismatch"
+                                    f" (expected {expected_spec.get('start')}-{expected_spec.get('end')},"
+                                    f" device {device_spec.get('start')}-{device_spec.get('end')})"
+                                )
                                 break
 
                 if mismatch_reason is None:
