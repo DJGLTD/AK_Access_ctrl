@@ -1509,6 +1509,10 @@ function renderNotifyTargets(){
     return;
   }
   const enabled = toggle.checked;
+  wrap.style.display = enabled ? '' : 'none';
+  if (!enabled){
+    return;
+  }
   const selected = new Set(CURRENT && Array.isArray(CURRENT.notify_targets) ? CURRENT.notify_targets : []);
   targets.forEach(service => {
     const id = `notify_${service.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
