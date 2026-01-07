@@ -72,6 +72,39 @@ def test_process_door_events_skips_events_not_newer_than_last_timestamp():
     assert storage.data["door_events"]["last_event_epoch"] == last_epoch
 
 
+def test_process_door_events_force_latest_handles_most_recent_event():
+    storage = _StorageStub()
+    last_epoch = AccessHistory._coerce_timestamp("2024-04-10T12:00:00")
+    storage.data["door_events"].update(
+        {
+            "last_event_key": "evt-new",
+            "last_event_epoch": last_epoch,
+        }
+    )
+
+    events = [
+        {"ID": "evt-new", "Date": "2024-04-10", "Time": "12:00:00"},
+        {"ID": "evt-old", "Date": "2024-04-09", "Time": "09:15:00"},
+    ]
+    api = _APIStub(events)
+    coord = _build_coordinator(api, storage)
+
+    handled: List[Dict[str, Any]] = []
+
+    async def _handle(event, _targets):
+        handled.append(event)
+        return False
+
+    coord._handle_door_event = _handle  # type: ignore[attr-defined]
+
+    asyncio.run(coord._process_door_events(force_latest=True))
+
+    assert [event["ID"] for event in handled] == ["evt-new"]
+    assert storage.saved is False
+    assert storage.data["door_events"]["last_event_key"] == "evt-new"
+    assert storage.data["door_events"]["last_event_epoch"] == last_epoch
+
+
 def test_process_door_events_updates_state_with_newer_events():
     storage = _StorageStub()
     storage.data["door_events"]["last_event_key"] = "evt-old"
