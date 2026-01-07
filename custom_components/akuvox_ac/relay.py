@@ -115,6 +115,16 @@ def relay_suffix_for_user(
     requested: List[str] = []
     blocked_door_alarm = False
 
+    if pedestrian_access and any(role == RELAY_ROLE_PEDESTRIAN for role in roles.values()):
+        for key in RELAY_KEYS:
+            digit = _digit_for_key(key)
+            role = roles.get(key)
+            if role == RELAY_ROLE_PEDESTRIAN and digit not in requested:
+                requested.append(digit)
+        device = str(device_type or "").strip().lower()
+        allowed_digits = {"1"} if device == "keypad" else {"1", "2"}
+        return "".join(d for d in ("1", "2") if d in requested and d in allowed_digits)
+
     for key in RELAY_KEYS:
         digit = _digit_for_key(key)
         role = roles.get(key)
