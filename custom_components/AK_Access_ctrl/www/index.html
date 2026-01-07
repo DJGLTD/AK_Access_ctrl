@@ -78,9 +78,11 @@
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
     .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
     .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
-    .user-controls{margin-left:auto;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+    .user-controls{margin-left:auto;display:flex;align-items:center;gap:.5rem;flex-wrap:nowrap}
     .user-controls .form-control,
-    .user-controls .form-select{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:10rem}
+    .user-controls .form-select{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:8rem}
+    .user-controls .user-search{flex:1 1 12rem}
+    .user-controls .user-sort{flex:0 1 10rem}
     .user-controls .form-control:focus,
     .user-controls .form-select:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
     .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
@@ -107,7 +109,7 @@
       .card-body{overflow:auto;max-height:none;}
       .card-header{flex-wrap:wrap;gap:0.5rem;}
       .card-header .btn{width:100%;}
-      .user-controls{width:100%;}
+      .user-controls{width:100%;flex-wrap:wrap;}
       .user-controls .form-control,
       .user-controls .form-select{width:100%;min-width:0;}
       table.table{font-size:0.85rem;}
