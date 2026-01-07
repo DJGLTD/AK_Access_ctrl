@@ -62,6 +62,7 @@ from .relay import (
     normalize_roles as normalize_relay_roles,
     relay_suffix_for_user,
     door_relays,
+    RELAY_ROLE_PEDESTRIAN,
 )
 
 from .api import AkuvoxAPI
@@ -935,13 +936,16 @@ def _desired_device_user_payload(
         pass
 
     door_digits = door_relays(relay_roles)
+    pedestrian_only = pedestrian_access and any(
+        role == RELAY_ROLE_PEDESTRIAN for role in relay_roles.values()
+    )
     relay_suffix = relay_suffix_for_user(
         relay_roles,
         key_holder,
         pedestrian_access,
         device_type_raw,
     )
-    if not relay_suffix:
+    if not relay_suffix and not pedestrian_only:
         relay_suffix = "1"
     if not schedule_id:
         schedule_id = "1001"
