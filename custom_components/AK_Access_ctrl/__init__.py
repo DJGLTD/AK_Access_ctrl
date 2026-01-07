@@ -4221,7 +4221,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             exit_permission=d.get("exit_permission"),
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_add_temporary_user(call):
         d = call.data
@@ -4262,7 +4262,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_created_at=dt_util.now(),
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_edit_user(call):
         d = call.data
@@ -4320,7 +4320,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             exit_permission=d.get("exit_permission") if "exit_permission" in d else None,
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_reactivate_temporary_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4344,7 +4344,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_expires_at="",
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_delete_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4488,7 +4488,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         await users_store.upsert_profile(canonical or key, face_url=face_url, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_reboot_device(call):
         entry_id = call.data.get("entry_id")

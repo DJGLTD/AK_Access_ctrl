@@ -4393,7 +4393,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         queue = root.get("sync_queue")
         if queue:
             try:
-                queue.mark_change(None)
+                queue.mark_change(None, delay_minutes=0)
             except Exception:
                 pass
 
@@ -4516,7 +4516,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         queue = root.get("sync_queue")
         if queue:
             try:
-                queue.mark_change(None)
+                queue.mark_change(None, delay_minutes=0)
             except Exception:
                 pass
 
