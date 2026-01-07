@@ -670,6 +670,19 @@ function parseDateString(value){
   const lowered = text.toLowerCase();
   if (['--','-','—','n/a','null','none'].includes(lowered)) return null;
   if (/^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) return null;
+  const timeDateMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s+(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (timeDateMatch){
+    const [, hh, mm, ssRaw, dd, MM, yyyy] = timeDateMatch;
+    const iso = `${yyyy}-${String(MM).padStart(2,'0')}-${String(dd).padStart(2,'0')}T${String(hh).padStart(2,'0')}:${mm}:${ssRaw ? String(ssRaw).padStart(2,'0') : '00'}Z`;
+    const parsed = new Date(iso);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const dateMatch = text.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (dateMatch){
+    const [, dd, MM, yyyy] = dateMatch;
+    const parsed = new Date(`${yyyy}-${String(MM).padStart(2,'0')}-${String(dd).padStart(2,'0')}T00:00:00Z`);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
   let attempt = text;
   let parsed = new Date(attempt);
   if (!isNaN(parsed.getTime())) return parsed;
