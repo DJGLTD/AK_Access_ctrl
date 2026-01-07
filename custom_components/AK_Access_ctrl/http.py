@@ -2767,6 +2767,7 @@ class AkuvoxUIView(HomeAssistantView):
                             or "24/7 Access",
                             "schedule_id": prof.get("schedule_id") or "",
                             "key_holder": bool(prof.get("key_holder", False)),
+                            "pedestrian_only": bool(prof.get("pedestrian_only", False)),
                             "access_level": prof.get("access_level") or "",
                             "access_start": access_start.isoformat() if access_start else "",
                             "access_end": access_end.isoformat() if access_end else "",

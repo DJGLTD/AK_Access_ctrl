@@ -505,6 +505,17 @@ def _key_holder_from_record(record: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _pedestrian_only_from_record(record: Dict[str, Any]) -> Optional[bool]:
+    if not isinstance(record, dict):
+        return None
+    for key in ("pedestrian_only", "PedestrianOnly", "pedestrian_access_only"):
+        if key in record:
+            flag = _normalize_boolish(record.get(key))
+            if flag is not None:
+                return flag
+    return None
+
+
 def _face_asset_exists(hass: HomeAssistant, user_id: str) -> bool:
     try:
         search_paths: List[Path] = []
@@ -861,6 +872,10 @@ def _desired_device_user_payload(
     if key_holder_flag is None:
         key_holder_flag = _key_holder_from_record(local)
     key_holder = bool(key_holder_flag)
+    pedestrian_only_flag = _pedestrian_only_from_record(profile)
+    if pedestrian_only_flag is None:
+        pedestrian_only_flag = _pedestrian_only_from_record(local)
+    pedestrian_only = bool(pedestrian_only_flag)
     explicit_id = str(profile.get("schedule_id") or "").strip()
     if explicit_id and explicit_id.isdigit():
         mapped_id = sched_map.get(schedule_lower, "")
@@ -906,7 +921,9 @@ def _desired_device_user_payload(
         pass
 
     door_digits = door_relays(relay_roles)
-    relay_suffix = relay_suffix_for_user(relay_roles, key_holder, device_type_raw)
+    relay_suffix = relay_suffix_for_user(
+        relay_roles, key_holder, pedestrian_only, device_type_raw
+    )
     if not relay_suffix:
         relay_suffix = "1"
     if not schedule_id:
@@ -1817,6 +1834,7 @@ class AkuvoxUsersStore(Store):
         status: Optional[str] = None,
         schedule_name: Optional[str] = None,
         key_holder: Optional[bool] = None,
+        pedestrian_only: Optional[bool] = None,
         access_level: Optional[str] = None,
         schedule_id: Optional[str] = None,  # allow explicit schedule ID (1001/1002/1003/…)
         access_start: Optional[str] = None,
@@ -1860,6 +1878,8 @@ class AkuvoxUsersStore(Store):
             u["schedule_name"] = schedule_name
         if key_holder is not None:
             u["key_holder"] = bool(key_holder)
+        if pedestrian_only is not None:
+            u["pedestrian_only"] = bool(pedestrian_only)
         if access_level is not None:
             u["access_level"] = access_level
         if schedule_id is not None:
@@ -4209,6 +4229,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             phone=str(d.get("phone")) if d.get("phone") else None,
             schedule_name=d.get("schedule_name") or "24/7 Access",
             key_holder=bool(d.get("key_holder", False)),
+            pedestrian_only=bool(d.get("pedestrian_only", False)),
             access_level=d.get("access_level") or None,
             face_url=face_url,
             face_status="pending" if face_reference_supplied else None,
@@ -4307,6 +4328,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             phone=str(d.get("phone")) if "phone" in d else None,
             schedule_name=d.get("schedule_name") if "schedule_name" in d else None,
             key_holder=bool(d.get("key_holder")) if "key_holder" in d else None,
+            pedestrian_only=bool(d.get("pedestrian_only"))
+            if "pedestrian_only" in d
+            else None,
             access_level=d.get("access_level") if "access_level" in d else None,
             face_url=new_face_url,
             face_status=face_status,

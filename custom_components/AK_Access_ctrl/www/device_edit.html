@@ -649,10 +649,11 @@ function getSelectedGroups(){
 const RELAY_ROLE_LABELS = {
   none: 'Not used',
   door: 'Door Relay',
+  pedestrian: 'Pedestrian Relay',
   alarm: 'Alarm Relay',
   door_alarm: 'Door and Alarm Relay'
 };
-const RELAY_ROLE_ORDER = ['none', 'door', 'alarm', 'door_alarm'];
+const RELAY_ROLE_ORDER = ['none', 'door', 'pedestrian', 'alarm', 'door_alarm'];
 
 let CURRENT_DEVICE = null;
 let relayStatusTimer = null;
@@ -666,6 +667,7 @@ function relayValueNormalized(value, fallback = 'door'){
   if (RELAY_ROLE_ORDER.includes(clean)) return clean;
   if (clean === 'not_used' || clean === 'unused' || clean === 'none') return 'none';
   if (clean === 'door' || clean === 'door_relay') return 'door';
+  if (clean === 'pedestrian' || clean === 'pedestrian_relay' || clean === 'pedestrian_door') return 'pedestrian';
   if (clean === 'alarm' || clean === 'alarm_relay') return 'alarm';
   if (clean === 'door_and_alarm' || clean === 'door_alarm_relay' || clean === 'doorandalarm') return 'door_alarm';
   return fallback;

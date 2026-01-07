@@ -20,7 +20,11 @@ import custom_components.akuvox_ac.__init__ as akuvox
 def stub_relay_helpers(monkeypatch):
     monkeypatch.setattr(akuvox, "normalize_relay_roles", lambda roles, device_type: {"relay_a": "door"})
     monkeypatch.setattr(akuvox, "door_relays", lambda roles: "1")
-    monkeypatch.setattr(akuvox, "relay_suffix_for_user", lambda roles, key_holder, device_type: "1")
+    monkeypatch.setattr(
+        akuvox,
+        "relay_suffix_for_user",
+        lambda roles, key_holder, pedestrian_only, device_type: "1",
+    )
     monkeypatch.setattr(akuvox, "_face_asset_exists", lambda hass, user_id: False)
 
 

@@ -4,12 +4,14 @@ from typing import Any, Dict, Iterable, List
 
 RELAY_ROLE_NONE = "none"
 RELAY_ROLE_DOOR = "door"
+RELAY_ROLE_PEDESTRIAN = "pedestrian"
 RELAY_ROLE_ALARM = "alarm"
 RELAY_ROLE_DOOR_ALARM = "door_alarm"
 
 RELAY_ROLE_CHOICES = {
     RELAY_ROLE_NONE,
     RELAY_ROLE_DOOR,
+    RELAY_ROLE_PEDESTRIAN,
     RELAY_ROLE_ALARM,
     RELAY_ROLE_DOOR_ALARM,
 }
@@ -43,6 +45,8 @@ def normalize_role(value: Any, default: str) -> str:
         return RELAY_ROLE_NONE
     if cleaned in {"door", "door_relay"}:
         return RELAY_ROLE_DOOR
+    if cleaned in {"pedestrian", "pedestrian_relay", "pedestrian_door"}:
+        return RELAY_ROLE_PEDESTRIAN
     if cleaned in {"alarm", "alarm_relay"}:
         return RELAY_ROLE_ALARM
     if cleaned in {"door_alarm", "door_and_alarm", "door_alarm_relay", "door_and_alarm_relay"}:
@@ -87,7 +91,9 @@ def _digits_for_roles(roles: Dict[str, str], targets: Iterable[str]) -> List[str
 
 
 def door_relays(roles: Dict[str, str]) -> List[str]:
-    digits = _digits_for_roles(roles, {RELAY_ROLE_DOOR, RELAY_ROLE_DOOR_ALARM})
+    digits = _digits_for_roles(
+        roles, {RELAY_ROLE_DOOR, RELAY_ROLE_DOOR_ALARM, RELAY_ROLE_PEDESTRIAN}
+    )
     if not digits:
         digits.append("1")
     return digits
@@ -97,7 +103,12 @@ def alarm_relays(roles: Dict[str, str]) -> List[str]:
     return _digits_for_roles(roles, {RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM})
 
 
-def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: Any) -> str:
+def relay_suffix_for_user(
+    roles: Dict[str, str],
+    key_holder: bool,
+    pedestrian_only: bool,
+    device_type: Any,
+) -> str:
     """Return relay digits a user should receive based on their key holder flag."""
 
     def _digit_for_key(key: str) -> str:
@@ -106,23 +117,28 @@ def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: 
     requested: List[str] = []
     blocked_door_alarm = False
 
-    for key in RELAY_KEYS:
-        digit = _digit_for_key(key)
-        role = roles.get(key)
+    pedestrian_digits = _digits_for_roles(roles, {RELAY_ROLE_PEDESTRIAN})
+    if pedestrian_only and pedestrian_digits:
+        requested.extend(pedestrian_digits)
 
-        if role == RELAY_ROLE_DOOR:
-            if digit not in requested:
-                requested.append(digit)
-        elif role == RELAY_ROLE_DOOR_ALARM:
-            if key_holder:
+    if not pedestrian_only or not pedestrian_digits:
+        for key in RELAY_KEYS:
+            digit = _digit_for_key(key)
+            role = roles.get(key)
+
+            if role in (RELAY_ROLE_DOOR, RELAY_ROLE_PEDESTRIAN):
                 if digit not in requested:
                     requested.append(digit)
-            else:
-                blocked_door_alarm = True
+            elif role == RELAY_ROLE_DOOR_ALARM:
+                if key_holder:
+                    if digit not in requested:
+                        requested.append(digit)
+                else:
+                    blocked_door_alarm = True
 
-        if key_holder and role in (RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM):
-            if digit not in requested:
-                requested.append(digit)
+            if key_holder and role in (RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM):
+                if digit not in requested:
+                    requested.append(digit)
 
     device = str(device_type or "").strip().lower()
     allowed_digits = {"1"} if device == "keypad" else {"1", "2"}
