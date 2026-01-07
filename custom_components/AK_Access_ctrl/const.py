@@ -37,6 +37,7 @@ CONF_RELAY_ROLES  = "relay_roles"
 # Relay roles
 RELAY_ROLE_NONE       = "none"
 RELAY_ROLE_DOOR       = "door"
+RELAY_ROLE_PEDESTRIAN = "pedestrian"
 RELAY_ROLE_ALARM      = "alarm"
 RELAY_ROLE_DOOR_ALARM = "door_alarm"
 

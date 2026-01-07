@@ -78,6 +78,11 @@
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
     .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
     .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
+    .user-controls{margin-left:auto;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+    .user-controls .form-control,
+    .user-controls .form-select{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:10rem}
+    .user-controls .form-control:focus,
+    .user-controls .form-select:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
     .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
     @media (max-width: 1200px){
       .workspace{ width:95vw; }
@@ -102,6 +107,9 @@
       .card-body{overflow:auto;max-height:none;}
       .card-header{flex-wrap:wrap;gap:0.5rem;}
       .card-header .btn{width:100%;}
+      .user-controls{width:100%;}
+      .user-controls .form-control,
+      .user-controls .form-select{width:100%;min-width:0;}
       table.table{font-size:0.85rem;}
       .status-indicator{background:transparent!important;border:0;padding:0;gap:0;min-width:1.25rem;justify-content:center}
       .status-indicator .status-dot{display:inline-block}
@@ -446,6 +454,8 @@ const UI_ROOT = '/akuvox-ac';
 const PAUSED_USERS_KEY = 'akuvox_paused_users';
 const PAUSE_SCHEDULE_ID = '1002';
 const PAUSE_SCHEDULE_NAME = 'No Access';
+const USER_SORT_KEY = 'akuvox_user_sort';
+const USER_SORT_DEFAULT = 'name';
 
 function loadPausedUsers(){
   try {
@@ -466,6 +476,45 @@ function savePausedUsers(map){
 }
 
 let PAUSED_USERS = loadPausedUsers();
+let USER_SORT_MODE = USER_SORT_DEFAULT;
+let USER_SEARCH_QUERY = '';
+let LAST_USER_LIST = [];
+let LAST_USER_LIST_BY_ID = new Map();
+
+function readUserSortMode() {
+  try {
+    const raw = localStorage.getItem(USER_SORT_KEY);
+    if (raw) return raw;
+  } catch (err) {}
+  try {
+    const raw = sessionStorage.getItem(USER_SORT_KEY);
+    if (raw) return raw;
+  } catch (err) {}
+  return USER_SORT_DEFAULT;
+}
+
+function saveUserSortMode(mode) {
+  if (!mode) return;
+  try { localStorage.setItem(USER_SORT_KEY, mode); } catch (err) {}
+  try { sessionStorage.setItem(USER_SORT_KEY, mode); } catch (err) {}
+}
+
+function normalizeSearchValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function filterUsers(list, query) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) return list;
+  return list.filter(user => {
+    const haystack = [
+      user.id,
+      user.name,
+      (user.groups || []).join(' ')
+    ].map(normalizeSearchValue).join(' ');
+    return haystack.includes(needle);
+  });
+}
 
 function scheduleSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return '';
@@ -1369,6 +1418,50 @@ function scheduleDisplayId(rawId){
   return '';
 }
 
+function parseHaNumber(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/ha\\s*-?\\s*(\\d+)/i);
+  if (!match) return null;
+  const num = Number(match[1]);
+  if (!Number.isFinite(num)) return null;
+  return num;
+}
+
+function sortUsers(list, mode) {
+  const safeMode = mode === 'id' ? 'id' : 'name';
+  const sorted = [...list];
+  if (safeMode === 'id') {
+    sorted.sort((a, b) => {
+      const aId = a.id || a.UserID || a.UserId || a.ID || '';
+      const bId = b.id || b.UserID || b.UserId || b.ID || '';
+      const aNum = parseHaNumber(aId);
+      const bNum = parseHaNumber(bId);
+      if (aNum !== null && bNum !== null && aNum !== bNum) return aNum - bNum;
+      if (aNum !== null && bNum === null) return -1;
+      if (aNum === null && bNum !== null) return 1;
+      const aIdText = String(aId || '').trim();
+      const bIdText = String(bId || '').trim();
+      const idCompare = aIdText.localeCompare(bIdText, undefined, { sensitivity: 'base' });
+      if (idCompare !== 0) return idCompare;
+      const aName = String(a.name || '').trim();
+      const bName = String(b.name || '').trim();
+      return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+    });
+    return sorted;
+  }
+
+  sorted.sort((a, b) => {
+    const aName = String(a.name || a.id || '').trim();
+    const bName = String(b.name || b.id || '').trim();
+    const nameCompare = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+    if (nameCompare !== 0) return nameCompare;
+    const aId = String(a.id || '').trim();
+    const bId = String(b.id || '').trim();
+    return aId.localeCompare(bId, undefined, { sensitivity: 'base' });
+  });
+  return sorted;
+}
+
 function formatScheduleDisplay(rawId, label){
   const name = String(label ?? '').trim();
   if (name === '24/7 Access' || name === 'No Access') return name;
@@ -1422,9 +1515,179 @@ function attachPinRevealHandlers(container){
   });
 }
 
-function renderUsers(devs, registryUsers, kpis){
+function renderUserRows(list, listById){
   const tableBody = document.getElementById('tblUsers');
   if (!tableBody) return;
+  const rows = list.map(u => {
+    const scheduleRaw = u.access_schedule
+      || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
+    const scheduleLabel = String(scheduleRaw || '').trim();
+    const scheduleChip = scheduleLabel
+      ? `<span class="chip">${escapeHtml(scheduleLabel)}</span>`
+      : '—';
+    const accessStr = String(u.access || '').trim();
+    const accessLower = accessStr.toLowerCase();
+    let accessBadge = '';
+    if (accessStr === '---') accessBadge = '<span class="text-muted">---</span>';
+    else if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
+    else if (accessLower === 'paused') accessBadge = badge('Paused', 'pending');
+    else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
+    else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
+    else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
+    else accessBadge = badge(accessStr, 'in_sync');
+    const faceStatusLower = String(u.face_status || '').toLowerCase();
+    let faceBadge;
+    const hasFaceProfile = !!u.face_url || u.face_active;
+    if (accessLower === 'deleted') {
+      faceBadge = badge('Deleted', 'inactive');
+    } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
+      faceBadge = badge('Pending remote enrolment', 'pending');
+    } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
+      faceBadge = badge('Active', 'in_sync');
+    } else if (faceStatusLower === 'pending') {
+      faceBadge = hasFaceProfile ? badge('Pending', 'pending') : '<span class="text-muted">---</span>';
+    } else {
+      faceBadge = badge('Inactive', 'inactive');
+    }
+    const editHref = buildHref('users', { id: u.id });
+    const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
+    const eventsHref = buildHref('event-history', { user: eventFilter });
+    let actions;
+    if (u.isCloud) {
+      actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
+    } else if (/^(HA|TMP)\d+$/.test(u.id)) {
+      const safeId = escapeHtml(u.id);
+      const safeEventFilter = escapeHtml(eventFilter || u.id);
+      const paused = isUserPaused(u.id);
+      const isTemporaryUser = !!(
+        u.temporary
+        || u.temporary_one_time
+        || u.temporary_expires_at
+        || u.temporary_used_at
+      );
+      if (isTemporaryUser) {
+        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
+      } else if (u.temporary_expired) {
+        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
+            <i class="bi bi-arrow-counterclockwise"></i> Reactivate
+          </button>
+          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
+      } else {
+        actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+           <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+           <button class="btn btn-sm btn-outline-warning me-1" data-toggle-access="${safeId}">
+             <i class="bi ${paused ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
+             ${paused ? 'Resume' : 'Pause'}
+           </button>
+           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
+      }
+    } else {
+      actions = '';
+    }
+
+    const pinCell = renderPinCell(u.pin, u.name);
+
+    return `<tr>
+      <td>${escapeHtml(u.name)}</td>
+      <td>${pinCell}</td>
+      <td>${faceBadge}</td>
+      <td>${accessBadge}</td>
+      <td>${escapeHtml(u.last || '—')}</td>
+      <td>${scheduleChip}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+
+  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
+
+  tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.user;
+      if (!confirm(`Delete ${id}?`)) return;
+      try {
+        await callService('akuvox_ac','delete_user', { id });
+        refresh();
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      }
+    });
+  });
+
+  tableBody.querySelectorAll('button[data-reactivate-user]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.reactivateUser;
+      if (!id) return;
+      if (!confirm(`Reactivate ${id}?`)) return;
+      try {
+        btn.setAttribute('disabled', 'disabled');
+        await callService('akuvox_ac', 'reactivate_temporary_user', { id });
+        refresh();
+      } catch (e) {
+        alert('Reactivate failed: ' + e.message);
+      } finally {
+        btn.removeAttribute('disabled');
+      }
+    });
+  });
+
+  tableBody.querySelectorAll('a[data-edit-user]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const uid = link.dataset.editUser || '';
+      openInApp('users', uid ? { id: uid } : {});
+    });
+  });
+
+  tableBody.querySelectorAll('a[data-user-events]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const uid = link.dataset.userEvents || '';
+      openInApp('event-history', uid ? { user: uid } : {});
+    });
+  });
+
+  tableBody.querySelectorAll('button[data-toggle-access]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.toggleAccess || '';
+      const user = listById.get(id);
+      if (!id || !user) return;
+      const name = user.name || id;
+      const wasPaused = isUserPaused(id);
+      const resumeSchedule = resumeScheduleFromUser(user);
+      const payload = {
+        id,
+        name,
+        schedule_id: wasPaused ? resumeSchedule.schedule_id : PAUSE_SCHEDULE_ID,
+        schedule_name: wasPaused ? resumeSchedule.schedule_name : PAUSE_SCHEDULE_NAME,
+      };
+      try {
+        btn.setAttribute('disabled', 'disabled');
+        await updateUserSchedule(payload);
+        if (wasPaused) {
+          delete PAUSED_USERS[id];
+        } else {
+          PAUSED_USERS[id] = scheduleSnapshotFromUser(user);
+        }
+        savePausedUsers(PAUSED_USERS);
+        refresh();
+      } catch (err) {
+        alert(`Access update failed: ${escapeHtml(err.message || err)}`);
+      } finally {
+        btn.removeAttribute('disabled');
+      }
+    });
+  });
+
+  attachPinRevealHandlers(tableBody);
+}
+
+function renderUsersFromCache(){
+  const filtered = filterUsers(sortUsers(LAST_USER_LIST, USER_SORT_MODE), USER_SEARCH_QUERY);
+  renderUserRows(filtered, LAST_USER_LIST_BY_ID);
+}
+
+function renderUsers(devs, registryUsers, kpis){
   const devices = Array.isArray(devs) ? devs : [];
   const syncActive = !!(kpis && kpis.sync_active);
   const normalizedDevices = devices.map(d => {
@@ -1733,173 +1996,14 @@ function renderUsers(devs, registryUsers, kpis){
   });
 
   const listById = new Map(list.map(user => [String(user.id || ''), user]));
-  const rows = dedupedByName.map(u => {
-    const scheduleRaw = u.access_schedule
-      || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
-    const scheduleLabel = String(scheduleRaw || '').trim();
-    const scheduleChip = scheduleLabel
-      ? `<span class="chip">${escapeHtml(scheduleLabel)}</span>`
-      : '—';
-    const accessStr = String(u.access || '').trim();
-    const accessLower = accessStr.toLowerCase();
-    let accessBadge = '';
-    if (accessStr === '---') accessBadge = '<span class="text-muted">---</span>';
-    else if (!accessStr || accessLower === 'pending') accessBadge = badge('Pending', 'pending');
-    else if (accessLower === 'paused') accessBadge = badge('Paused', 'pending');
-    else if (accessLower === 'denied') accessBadge = badge('Denied', 'offline');
-    else if (accessLower === 'expired') accessBadge = badge('Expired', 'expired');
-    else if (accessLower === 'deleted') accessBadge = badge('Deleted', 'inactive');
-    else accessBadge = badge(accessStr, 'in_sync');
-    const faceStatusLower = String(u.face_status || '').toLowerCase();
-    let faceBadge;
-    const hasFaceProfile = !!u.face_url || u.face_active;
-    if (accessLower === 'deleted') {
-      faceBadge = badge('Deleted', 'inactive');
-    } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
-      faceBadge = badge('Pending remote enrolment', 'pending');
-    } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
-      faceBadge = badge('Active', 'in_sync');
-    } else if (faceStatusLower === 'pending') {
-      faceBadge = hasFaceProfile ? badge('Pending', 'pending') : '<span class="text-muted">---</span>';
-    } else {
-      faceBadge = badge('Inactive', 'inactive');
-    }
-    const editHref = buildHref('users', { id: u.id });
-    const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
-    const eventsHref = buildHref('event-history', { user: eventFilter });
-    let actions;
-    if (u.isCloud) {
-      actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
-    } else if (/^(HA|TMP)\d+$/.test(u.id)) {
-      const safeId = escapeHtml(u.id);
-      const safeEventFilter = escapeHtml(eventFilter || u.id);
-      const paused = isUserPaused(u.id);
-      const isTemporaryUser = !!(
-        u.temporary
-        || u.temporary_one_time
-        || u.temporary_expires_at
-        || u.temporary_used_at
-      );
-      if (isTemporaryUser) {
-        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
-          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
-      } else if (u.temporary_expired) {
-        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
-            <i class="bi bi-arrow-counterclockwise"></i> Reactivate
-          </button>
-          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
-      } else {
-        actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
-           <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
-           <button class="btn btn-sm btn-outline-warning me-1" data-toggle-access="${safeId}">
-             <i class="bi ${paused ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
-             ${paused ? 'Resume' : 'Pause'}
-           </button>
-           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
-      }
-    } else {
-      actions = '';
-    }
-
-    const pinCell = renderPinCell(u.pin, u.name);
-
-    return `<tr>
-      <td>${escapeHtml(u.name)}</td>
-      <td>${pinCell}</td>
-      <td>${faceBadge}</td>
-      <td>${accessBadge}</td>
-      <td>${escapeHtml(u.last || '—')}</td>
-      <td>${scheduleChip}</td>
-      <td>${actions}</td>
-    </tr>`;
-  }).join('');
-
   const kpiUsers = document.getElementById('kpiUsers');
   if (kpiUsers) {
     kpiUsers.textContent = String(dedupedByName.length);
   }
 
-  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
-
-  tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.user;
-      if (!confirm(`Delete ${id}?`)) return;
-      try {
-        await callService('akuvox_ac','delete_user', { id });
-        refresh();
-      } catch (e) {
-        alert('Delete failed: ' + e.message);
-      }
-    });
-  });
-
-  tableBody.querySelectorAll('button[data-reactivate-user]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.reactivateUser;
-      if (!id) return;
-      if (!confirm(`Reactivate ${id}?`)) return;
-      try {
-        btn.setAttribute('disabled', 'disabled');
-        await callService('akuvox_ac', 'reactivate_temporary_user', { id });
-        refresh();
-      } catch (e) {
-        alert('Reactivate failed: ' + e.message);
-      } finally {
-        btn.removeAttribute('disabled');
-      }
-    });
-  });
-
-  tableBody.querySelectorAll('a[data-edit-user]').forEach(link => {
-    link.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      const uid = link.dataset.editUser || '';
-      openInApp('users', uid ? { id: uid } : {});
-    });
-  });
-
-  tableBody.querySelectorAll('a[data-user-events]').forEach(link => {
-    link.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      const uid = link.dataset.userEvents || '';
-      openInApp('event-history', uid ? { user: uid } : {});
-    });
-  });
-
-  tableBody.querySelectorAll('button[data-toggle-access]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.toggleAccess || '';
-      const user = listById.get(id);
-      if (!id || !user) return;
-      const name = user.name || id;
-      const wasPaused = isUserPaused(id);
-      const resumeSchedule = resumeScheduleFromUser(user);
-      const payload = {
-        id,
-        name,
-        schedule_id: wasPaused ? resumeSchedule.schedule_id : PAUSE_SCHEDULE_ID,
-        schedule_name: wasPaused ? resumeSchedule.schedule_name : PAUSE_SCHEDULE_NAME,
-      };
-      try {
-        btn.setAttribute('disabled', 'disabled');
-        await updateUserSchedule(payload);
-        if (wasPaused) {
-          delete PAUSED_USERS[id];
-        } else {
-          PAUSED_USERS[id] = scheduleSnapshotFromUser(user);
-        }
-        savePausedUsers(PAUSED_USERS);
-        refresh();
-      } catch (err) {
-        alert(`Access update failed: ${escapeHtml(err.message || err)}`);
-      } finally {
-        btn.removeAttribute('disabled');
-      }
-    });
-  });
-
-  attachPinRevealHandlers(tableBody);
+  LAST_USER_LIST = dedupedByName;
+  LAST_USER_LIST_BY_ID = listById;
+  renderUsersFromCache();
 }
 
 
@@ -2284,6 +2388,26 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  USER_SORT_MODE = readUserSortMode();
+  const sortSelect = document.getElementById('userSortSelect');
+  if (sortSelect) {
+    sortSelect.value = USER_SORT_MODE;
+    sortSelect.addEventListener('change', () => {
+      USER_SORT_MODE = sortSelect.value || USER_SORT_DEFAULT;
+      saveUserSortMode(USER_SORT_MODE);
+      renderUsersFromCache();
+    });
+  }
+
+  const searchInput = document.getElementById('userSearchInput');
+  if (searchInput) {
+    searchInput.value = USER_SEARCH_QUERY;
+    searchInput.addEventListener('input', () => {
+      USER_SEARCH_QUERY = searchInput.value || '';
+      renderUsersFromCache();
+    });
+  }
+
   // initial + poll
   refresh();
   setInterval(refresh, 5000);
@@ -2418,6 +2542,15 @@ setInterval(refresh, 5000);
             <a class="btn btn-outline-info" id="btnAddTempUser" href="/akuvox-ac/temp-user" target="_top">
               <i class="bi bi-clock-history"></i> Add Temporary User
             </a>
+          </div>
+          <div class="user-controls">
+            <label class="visually-hidden" for="userSearchInput">Search users</label>
+            <input class="form-control form-control-sm user-search" id="userSearchInput" type="search" placeholder="Search users" aria-label="Search users" />
+            <label class="visually-hidden" for="userSortSelect">Organise users</label>
+            <select class="form-select form-select-sm user-sort" id="userSortSelect" aria-label="Organise users">
+              <option value="name">Name</option>
+              <option value="id">User ID</option>
+            </select>
           </div>
         </div>
         <div class="card-body">

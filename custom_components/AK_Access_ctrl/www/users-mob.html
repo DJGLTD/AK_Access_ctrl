@@ -779,6 +779,7 @@ let DEVICES = [];       // [{entry_id, name, users}, ...] from /ui/state
 let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
 let ANY_ALARM_CAPABLE = true;
+let ANY_PEDESTRIAN_CAPABLE = false;
 
 let reservationTimer = null;
 let reservationMisses = 0;
@@ -1117,6 +1118,19 @@ function updateKeyHolderAvailability(){
   }
 }
 
+function updatePedestrianOnlyAvailability(){
+  const row = document.getElementById('pedestrianOnlyRow');
+  const input = document.getElementById('pedestrian_only');
+  if (!row || !input) return;
+  if (ANY_PEDESTRIAN_CAPABLE){
+    row.style.display = '';
+  } else {
+    row.style.display = 'none';
+    input.checked = false;
+    if (CURRENT) CURRENT.pedestrian_only = false;
+  }
+}
+
 function stopReservationHeartbeat() {
   if (reservationTimer) {
     clearInterval(reservationTimer);
@@ -1369,6 +1383,7 @@ function blankProfile(id = ''){
     schedule_name: '24/7 Access',
     schedule_id: '1001',
     key_holder: false,
+    pedestrian_only: false,
     access_level: '',
     exit_permission: 'match',
     access_start: todayIso(),
@@ -1628,6 +1643,7 @@ async function load(){
       state = { schedules: {}, registry_users: [] };
     }
     ANY_ALARM_CAPABLE = false;
+    ANY_PEDESTRIAN_CAPABLE = false;
     if (state && typeof state === 'object'){
       const caps = state.capabilities;
       if (caps && typeof caps === 'object' && typeof caps.alarm_relay === 'boolean'){
@@ -1643,8 +1659,19 @@ async function load(){
           return a === 'alarm' || a === 'door_alarm' || b === 'alarm' || b === 'door_alarm';
         });
       }
+      if (Array.isArray(state.devices)){
+        ANY_PEDESTRIAN_CAPABLE = state.devices.some(dev => {
+          if (!dev || typeof dev !== 'object') return false;
+          const roles = dev.relay_roles || {};
+          const norm = (val) => String(val ?? '').toLowerCase().replace(/[\s-]+/g, '_');
+          const a = norm(roles.relay_a);
+          const b = norm(roles.relay_b);
+          return a === 'pedestrian' || b === 'pedestrian';
+        });
+      }
     }
     updateKeyHolderAvailability();
+    updatePedestrianOnlyAvailability();
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     applySchedulesUpdate(state?.schedules || {}, state?.schedule_ids || {});
     REGISTRY = state.registry_users || [];
@@ -1806,6 +1833,12 @@ function fillForm(){
     keyInput.checked = ANY_ALARM_CAPABLE && !!CURRENT.key_holder;
   }
   updateKeyHolderAvailability();
+
+  const pedestrianInput = document.getElementById('pedestrian_only');
+  if (pedestrianInput){
+    pedestrianInput.checked = ANY_PEDESTRIAN_CAPABLE && !!CURRENT.pedestrian_only;
+  }
+  updatePedestrianOnlyAvailability();
 
   const localHelp = document.getElementById('localHelp');
   if (localHelp && !localHelp.innerHTML){
@@ -2002,6 +2035,7 @@ async function save(){
       schedule_id: selectedScheduleId,          // drives ScheduleRelay on backend
       schedule_name: selectedScheduleName,      // for UI/state clarity
       key_holder: ANY_ALARM_CAPABLE ? document.getElementById('key_holder').checked : false,
+      pedestrian_only: ANY_PEDESTRIAN_CAPABLE ? document.getElementById('pedestrian_only').checked : false,
     };
 
     const exitSelect = document.getElementById('exit_permission');
@@ -2249,6 +2283,11 @@ function showPanel(which){
     <div class="form-check mb-3" id="keyHolderRow">
       <input class="form-check-input" type="checkbox" id="key_holder">
       <label class="form-check-label" for="key_holder">Key Holder (Disarm alarm and permit entry)</label>
+    </div>
+
+    <div class="form-check mb-3" id="pedestrianOnlyRow">
+      <input class="form-check-input" type="checkbox" id="pedestrian_only">
+      <label class="form-check-label" for="pedestrian_only">Pedestrian access only</label>
     </div>
 
     <div class="action-buttons mb-3">
