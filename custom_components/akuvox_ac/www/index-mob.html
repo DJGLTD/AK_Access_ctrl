@@ -1778,7 +1778,7 @@ function renderUsers(devs, registryUsers, kpis){
     let actions = '';
     if (/^(HA|TMP)\d+$/.test(u.id)) {
       if (u.temporary_expired) {
-        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
+        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}" data-reactivate-name="${escapeHtml(u.name)}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
           </button>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
@@ -1821,19 +1821,12 @@ function renderUsers(devs, registryUsers, kpis){
   });
 
   $('#tblUsers').querySelectorAll('button[data-reactivate-user]').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
       const id = btn.dataset.reactivateUser;
       if (!id) return;
-      if (!confirm(`Reactivate ${id}?`)) return;
-      try {
-        btn.setAttribute('disabled', 'disabled');
-        await callService('akuvox_ac', 'reactivate_temporary_user', { id });
-        refresh();
-      } catch (e) {
-        alert('Reactivate failed: ' + e.message);
-      } finally {
-        btn.removeAttribute('disabled');
-      }
+      const name = btn.dataset.reactivateName || '';
+      openInApp('temp-user', { reactivate: id, name });
     });
   });
 

@@ -141,6 +141,18 @@ reactivate_temporary_user:
       required: true
       selector:
         text:
+    access_start:
+      required: false
+      selector:
+        date:
+    access_end:
+      required: false
+      selector:
+        date:
+    expires_at:
+      required: false
+      selector:
+        text:
 
 upload_face:
   name: Upload face image for user
