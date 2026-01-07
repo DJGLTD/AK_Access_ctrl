@@ -55,6 +55,7 @@
     .user-toolbar{display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;width:100%;}
     .user-toolbar .form-control,
     .user-toolbar .form-select{min-width:180px;}
+    .user-toolbar .user-search{flex:1 1 240px;min-width:0;}
     @media (max-width: 1200px){
       .workspace{ width:95vw; }
     }
@@ -2370,14 +2371,14 @@ setInterval(refresh, 5000);
             </a>
           </div>
           <div class="user-toolbar">
-            <div class="d-flex align-items-center gap-2 w-100">
+            <div class="d-flex align-items-center gap-2 w-100 user-search">
               <i class="bi bi-search text-muted" aria-hidden="true"></i>
               <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
             </div>
             <select id="userSort" class="form-select form-select-sm" aria-label="Organise users">
-              <option value="ha_id">Organise: ID</option>
-              <option value="name">Organise: Name</option>
-              <option value="last_access">Organise: Last access</option>
+              <option value="last_access">last access</option>
+              <option value="ha_id">user id</option>
+              <option value="name">name</option>
             </select>
           </div>
         </div>

@@ -4,12 +4,14 @@ from typing import Any, Dict, Iterable, List
 
 RELAY_ROLE_NONE = "none"
 RELAY_ROLE_DOOR = "door"
+RELAY_ROLE_PEDESTRIAN = "pedestrian"
 RELAY_ROLE_ALARM = "alarm"
 RELAY_ROLE_DOOR_ALARM = "door_alarm"
 
 RELAY_ROLE_CHOICES = {
     RELAY_ROLE_NONE,
     RELAY_ROLE_DOOR,
+    RELAY_ROLE_PEDESTRIAN,
     RELAY_ROLE_ALARM,
     RELAY_ROLE_DOOR_ALARM,
 }
@@ -43,6 +45,8 @@ def normalize_role(value: Any, default: str) -> str:
         return RELAY_ROLE_NONE
     if cleaned in {"door", "door_relay"}:
         return RELAY_ROLE_DOOR
+    if cleaned in {"pedestrian", "pedestrian_relay", "ped_relay"}:
+        return RELAY_ROLE_PEDESTRIAN
     if cleaned in {"alarm", "alarm_relay"}:
         return RELAY_ROLE_ALARM
     if cleaned in {"door_alarm", "door_and_alarm", "door_alarm_relay", "door_and_alarm_relay"}:
@@ -87,7 +91,7 @@ def _digits_for_roles(roles: Dict[str, str], targets: Iterable[str]) -> List[str
 
 
 def door_relays(roles: Dict[str, str]) -> List[str]:
-    digits = _digits_for_roles(roles, {RELAY_ROLE_DOOR, RELAY_ROLE_DOOR_ALARM})
+    digits = _digits_for_roles(roles, {RELAY_ROLE_DOOR, RELAY_ROLE_PEDESTRIAN, RELAY_ROLE_DOOR_ALARM})
     if not digits:
         digits.append("1")
     return digits
@@ -111,6 +115,9 @@ def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: 
         role = roles.get(key)
 
         if role == RELAY_ROLE_DOOR:
+            if digit not in requested:
+                requested.append(digit)
+        elif role == RELAY_ROLE_PEDESTRIAN:
             if digit not in requested:
                 requested.append(digit)
         elif role == RELAY_ROLE_DOOR_ALARM:
