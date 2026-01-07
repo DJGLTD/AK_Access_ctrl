@@ -333,7 +333,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.debug("Failed to persist alert state: %s", _safe_str(err))
 
-    async def _process_door_events(self) -> List[Dict[str, Any]]:
+    async def _process_door_events(self, *, force_latest: bool = False) -> List[Dict[str, Any]]:
         """Fetch recent door events and handle non-key access notifications."""
 
         notifications = self.storage.data.get("notifications") or {}
@@ -392,6 +392,25 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             events_to_process.append((key, event, parsed_ts))
 
         if not events_to_process:
+            if force_latest:
+                latest_event: Optional[Dict[str, Any]] = None
+                latest_epoch = -1.0
+                for event in events:
+                    timestamp_text = self._extract_event_timestamp(event)
+                    parsed_ts = AccessHistory._coerce_timestamp(timestamp_text) if timestamp_text else 0.0
+                    if parsed_ts > latest_epoch:
+                        latest_epoch = parsed_ts
+                        latest_event = event
+                if latest_event:
+                    storage_dirty = await self._handle_door_event(latest_event, notify_targets)
+                    if storage_dirty:
+                        try:
+                            await self.storage.async_save()
+                        except Exception as err:
+                            _LOGGER.debug(
+                                "Unable to persist door event state: %s",
+                                _safe_str(err),
+                            )
             return events
 
         # Avoid processing an unbounded backlog.
@@ -1029,10 +1048,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         return None
 
-    async def async_refresh_access_history(self) -> List[Dict[str, Any]]:
+    async def async_refresh_access_history(self, *, force_latest: bool = False) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         try:
-            result = await self._process_door_events()
+            result = await self._process_door_events(force_latest=force_latest)
             if isinstance(result, list):
                 events = result
         finally:

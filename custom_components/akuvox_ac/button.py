@@ -51,7 +51,7 @@ class AkuvoxAccessPermittedButton(_Base):
         return f"{self._entry.entry_id}_access_permitted"
 
     async def async_press(self) -> None:
-        await self._coord.async_refresh_access_history()
+        await self._coord.async_refresh_access_history(force_latest=True)
 
 
 class AkuvoxCallEndButton(_Base):
