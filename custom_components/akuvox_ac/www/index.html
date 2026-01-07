@@ -1546,6 +1546,17 @@ function renderPinCell(pin, name){
   return `<button type="button" class="pin-toggle" data-pin="${safePin}" data-state="hidden" title="${safeLabel}" aria-label="${safeLabel}">****</button>`;
 }
 
+function formatLastAccess(value){
+  if (!value) return '—';
+  const text = String(value).trim();
+  if (!text) return '—';
+  const match = text.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if (!match) return text;
+  const hh = match[1].padStart(2, '0');
+  const mm = match[2];
+  return text.replace(match[0], `${hh}:${mm}`);
+}
+
 function attachPinRevealHandlers(container){
   if (!container) return;
   container.querySelectorAll('.pin-toggle').forEach(btn => {
@@ -1926,11 +1937,6 @@ function renderUsers(devs, registryUsers, kpis){
     } else {
       faceBadge = badge('Inactive', 'inactive');
     }
-    const errorCount = Number(u.face_error_count || 0);
-    const errorCell = errorCount > 0
-      ? `<span class="text-danger fw-semibold">${errorCount}</span>`
-      : '<span class="text-muted">0</span>';
-
     const editHref = buildHref('users', { id: u.id });
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
@@ -1947,14 +1953,14 @@ function renderUsers(devs, registryUsers, kpis){
         || u.temporary_expires_at
         || u.temporary_used_at
       );
-      if (isTemporaryUser) {
-        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
-          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
-      } else if (u.temporary_expired) {
+      if (u.temporary_expired) {
         actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
           </button>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
+      } else if (isTemporaryUser) {
+        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+          <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
       } else {
         actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
            <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
@@ -1974,9 +1980,8 @@ function renderUsers(devs, registryUsers, kpis){
       <td>${escapeHtml(u.name)}</td>
       <td>${pinCell}</td>
       <td>${faceBadge}</td>
-      <td>${errorCell}</td>
       <td>${accessBadge}</td>
-      <td>${escapeHtml(u.last || '—')}</td>
+      <td>${escapeHtml(formatLastAccess(u.last))}</td>
       <td>${scheduleChip}</td>
       <td>${actions}</td>
     </tr>`;
@@ -1987,7 +1992,7 @@ function renderUsers(devs, registryUsers, kpis){
     kpiUsers.textContent = String(dedupedByName.length);
   }
 
-  tableBody.innerHTML = rows || '<tr><td colspan="8" class="text-muted">No users</td></tr>';
+  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
 
   tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2643,9 +2648,9 @@ setInterval(refresh, 5000);
           <div id="usersTableWrap">
             <table class="table table-sm table-dark mb-0 table-center">
               <thead>
-                <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Errors</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
               </thead>
-              <tbody id="tblUsers"><tr><td colspan="8" class="text-muted">Loading…</td></tr></tbody>
+              <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>

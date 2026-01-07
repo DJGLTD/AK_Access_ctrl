@@ -1283,7 +1283,7 @@ function renderUsers(list){
     const actions = (!u.isCloud && idMatchesFilter(u.id))
       ? (u.temporary_expired
         ? `
-          <button class="btn btn-sm btn-outline-success" data-reactivate-user="${escapeHtml(u.id)}"><i class="bi bi-arrow-counterclockwise"></i> Reactivate</button>
+          <button class="btn btn-sm btn-outline-success" data-reactivate-user="${escapeHtml(u.id)}" data-reactivate-name="${escapeHtml(u.name)}"><i class="bi bi-arrow-counterclockwise"></i> Reactivate</button>
           <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Revoke</button>
         `
         : `
@@ -1341,20 +1341,12 @@ function renderUsers(list){
   });
 
   host.querySelectorAll('[data-reactivate-user]').forEach(btn => {
-    btn.addEventListener('click', async (ev) => {
+    btn.addEventListener('click', (ev) => {
       ev.preventDefault();
       const id = btn.dataset.reactivateUser || '';
       if (!id) return;
-      if (!confirm(`Reactivate ${id}?`)) return;
-      try {
-        btn.setAttribute('disabled', 'disabled');
-        await callService('akuvox_ac', 'reactivate_temporary_user', { id });
-        refresh();
-      } catch (err) {
-        alert('Reactivate failed: ' + (err?.message || err));
-      } finally {
-        btn.removeAttribute('disabled');
-      }
+      const name = btn.dataset.reactivateName || '';
+      openInApp('temp-user', { reactivate: id, name });
     });
   });
 

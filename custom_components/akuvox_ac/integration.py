@@ -4487,16 +4487,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         effective_id = canonical or key
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         today = date.today().isoformat()
+        access_start = call.data.get("access_start") or today
+        access_end = call.data.get("access_end")
+        expires_at = call.data.get("expires_at") or call.data.get("temporary_expires_at")
 
         await users_store.upsert_profile(
             effective_id,
-            access_start=today,
-            access_end=None,
+            access_start=access_start,
+            access_end=access_end,
             schedule_name="24/7 Access",
             schedule_id="1001",
             status="active",
             temporary_used_at="",
-            temporary_expires_at="",
+            temporary_expires_at=expires_at if expires_at is not None else "",
         )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
