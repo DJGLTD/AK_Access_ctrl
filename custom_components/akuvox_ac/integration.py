@@ -4125,7 +4125,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await coord.async_config_entry_first_refresh()
+    try:
+        await asyncio.wait_for(coord.async_config_entry_first_refresh(), timeout=30)
+    except asyncio.TimeoutError:
+        _LOGGER.warning(
+            "Initial refresh for %s timed out; continuing setup", entry.entry_id
+        )
+        hass.async_create_task(coord.async_refresh())
+    except Exception as err:
+        _LOGGER.warning(
+            "Initial refresh for %s failed; continuing setup: %s",
+            entry.entry_id,
+            err,
+        )
+        hass.async_create_task(coord.async_refresh())
 
     # ---------- Services ----------
     async def _ensure_local_face_for_user(user_id: str) -> str:
