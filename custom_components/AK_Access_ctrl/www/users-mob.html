@@ -992,31 +992,63 @@ function selectedNotifyTargetsForUser(userId){
   return selected;
 }
 
+function updateNotifyTargetsVisibility(){
+  const toggle = document.getElementById('notifyOnGrant');
+  const list = document.getElementById('notifyTargetsList');
+  if (!toggle || !list) return;
+  const canToggle = !toggle.disabled;
+  if (!canToggle){
+    list.style.display = '';
+    return;
+  }
+  list.style.display = toggle.checked ? '' : 'none';
+  list.querySelectorAll('input[type="checkbox"]').forEach(input => {
+    input.disabled = !toggle.checked;
+  });
+}
+
 function renderNotifyTargets(){
-  const select = document.getElementById('notifyTargets');
-  if (!select) return;
-  select.innerHTML = '';
+  const toggle = document.getElementById('notifyOnGrant');
+  const list = document.getElementById('notifyTargetsList');
+  if (!toggle || !list) return;
+  list.innerHTML = '';
   const userId = CURRENT && CURRENT.id ? String(CURRENT.id).trim() : '';
-  if (!PHONES.length){
-    select.innerHTML = `<option value="" disabled selected>(no phones found)</option>`;
-    select.disabled = true;
+  const hasPhones = PHONES.length > 0;
+  const canSelect = !!userId && hasPhones;
+  const selected = canSelect ? selectedNotifyTargetsForUser(userId) : new Set();
+  toggle.checked = selected.size > 0;
+  toggle.disabled = !canSelect;
+  if (!toggle._bound){
+    toggle.addEventListener('change', updateNotifyTargetsVisibility);
+    toggle._bound = true;
+  }
+  if (!hasPhones){
+    list.innerHTML = `<div class="form-text muted">No phones found.</div>`;
+    updateNotifyTargetsVisibility();
     return;
   }
   if (!userId){
-    select.innerHTML = `<option value="" disabled selected>(save user to enable)</option>`;
-    select.disabled = true;
+    list.innerHTML = `<div class="form-text muted">Save user to enable notifications.</div>`;
+    updateNotifyTargetsVisibility();
     return;
   }
-  const selected = selectedNotifyTargetsForUser(userId);
-  select.disabled = false;
   const sorted = [...PHONES].sort((a,b) => (a.name || a.service || '').localeCompare(b.name || b.service || ''));
   sorted.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p.service;
-    opt.textContent = p.name || p.service;
-    if (selected.has(p.service)) opt.selected = true;
-    select.appendChild(opt);
+    const label = document.createElement('label');
+    label.className = 'form-check d-flex align-items-center gap-2 mb-1';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'form-check-input';
+    input.value = p.service;
+    input.id = `notifyTarget-${p.service.replace(/[^a-z0-9_-]/gi, '-')}`;
+    if (selected.has(p.service)) input.checked = true;
+    const text = document.createElement('span');
+    text.textContent = p.name || p.service;
+    label.appendChild(input);
+    label.appendChild(text);
+    list.appendChild(label);
   });
+  updateNotifyTargetsVisibility();
 }
 
 function updateAlertTargetsForUser(userId, selectedServices){
@@ -1048,9 +1080,12 @@ function updateAlertTargetsForUser(userId, selectedServices){
 }
 
 async function saveNotifyTargets(userId){
-  const select = document.getElementById('notifyTargets');
-  if (!select || select.disabled) return;
-  const selected = Array.from(select.selectedOptions).map(opt => opt.value);
+  const toggle = document.getElementById('notifyOnGrant');
+  const list = document.getElementById('notifyTargetsList');
+  if (!toggle || !list || toggle.disabled) return;
+  const selected = toggle.checked
+    ? Array.from(list.querySelectorAll('input[type="checkbox"]:checked')).map(input => input.value)
+    : [];
   updateAlertTargetsForUser(userId, selected);
   try{
     const res = await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
@@ -2381,8 +2416,11 @@ function showPanel(which){
     </div>
 
     <div class="mb-3" id="notifyTargetsRow">
-      <label class="form-label">Notify on access grant</label>
-      <select id="notifyTargets" class="form-select" multiple size="4"></select>
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="notifyOnGrant">
+        <label class="form-check-label" for="notifyOnGrant">Notify on access granted</label>
+      </div>
+      <div id="notifyTargetsList" class="mt-2"></div>
       <div class="form-text muted">Select which phones receive a push notification when this user opens the gate.</div>
     </div>
 
