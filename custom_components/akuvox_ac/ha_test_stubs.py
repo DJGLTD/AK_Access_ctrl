@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from datetime import UTC, datetime
 
 
 def ensure_homeassistant_stubs() -> None:
@@ -138,6 +139,37 @@ def ensure_homeassistant_stubs() -> None:
 
     helpers_network_module.get_url = _get_url
 
+    util_module = types.ModuleType("homeassistant.util")
+    util_module.__path__ = []
+    dt_module = types.ModuleType("homeassistant.util.dt")
+
+    def _utcnow():
+        return datetime.now(tz=UTC)
+
+    def _now():
+        return datetime.now(tz=UTC)
+
+    def _as_utc(value):
+        if isinstance(value, datetime):
+            return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        return value
+
+    def _utc_from_timestamp(value):
+        return datetime.fromtimestamp(value, tz=UTC)
+
+    def _parse_datetime(value):
+        try:
+            return datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+
+    dt_module.utcnow = _utcnow
+    dt_module.now = _now
+    dt_module.as_utc = _as_utc
+    dt_module.utc_from_timestamp = _utc_from_timestamp
+    dt_module.parse_datetime = _parse_datetime
+    dt_module.DEFAULT_TIME_ZONE = UTC
+
     aiohttp_stub = types.ModuleType("aiohttp")
 
     class _ClientSession:
@@ -211,6 +243,8 @@ def ensure_homeassistant_stubs() -> None:
     sys.modules.setdefault("homeassistant.components.http.const", http_const_module)
     sys.modules.setdefault("homeassistant.components.persistent_notification", persistent_notification_module)
     sys.modules.setdefault("homeassistant.helpers.network", helpers_network_module)
+    sys.modules.setdefault("homeassistant.util", util_module)
+    sys.modules.setdefault("homeassistant.util.dt", dt_module)
     sys.modules.setdefault("aiohttp", aiohttp_stub)
     sys.modules.setdefault("aiohttp.web", web_module)
 
@@ -220,6 +254,6 @@ def ensure_homeassistant_stubs() -> None:
     helpers_module.event = event_module
     helpers_module.aiohttp_client = aiohttp_client_module
     helpers_module.update_coordinator = update_coordinator_module
+    util_module.dt = dt_module
     components_module.frontend = frontend_module
     aiohttp_stub.web = web_module
-

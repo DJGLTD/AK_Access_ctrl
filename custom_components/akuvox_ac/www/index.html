@@ -78,6 +78,9 @@
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
     .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
     .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
+    .user-toolbar{display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;}
+    .user-toolbar .form-control,
+    .user-toolbar .form-select{min-width:180px;}
     .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
     @media (max-width: 1200px){
       .workspace{ width:95vw; }
@@ -102,6 +105,9 @@
       .card-body{overflow:auto;max-height:none;}
       .card-header{flex-wrap:wrap;gap:0.5rem;}
       .card-header .btn{width:100%;}
+      .user-toolbar{width:100%;flex-direction:column;align-items:stretch;}
+      .user-toolbar .form-control,
+      .user-toolbar .form-select{width:100%;min-width:0;}
       table.table{font-size:0.85rem;}
       .status-indicator{background:transparent!important;border:0;padding:0;gap:0;min-width:1.25rem;justify-content:center}
       .status-indicator .status-dot{display:inline-block}
@@ -467,7 +473,22 @@ function savePausedUsers(map){
 
 let PAUSED_USERS = loadPausedUsers();
 let USER_SEARCH = '';
+let USER_SORT = 'ha_id';
 let LAST_USERS_STATE = null;
+
+function loadUserSort(){
+  try {
+    const raw = localStorage.getItem('akuvox_user_sort');
+    if (raw) return String(raw);
+  } catch (err) {}
+  return 'ha_id';
+}
+
+function saveUserSort(value){
+  try {
+    localStorage.setItem('akuvox_user_sort', value);
+  } catch (err) {}
+}
 
 function pausedSnapshotFromUser(user){
   if (!user || typeof user !== 'object') return null;
@@ -935,6 +956,24 @@ function compareUsersByHaId(a, b){
   return String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {sensitivity:'base'});
 }
 
+function compareUsersByName(a, b){
+  return String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' });
+}
+
+function compareUsersByLastAccess(a, b){
+  const aTime = Date.parse(a?.last_access || a?.last || '') || 0;
+  const bTime = Date.parse(b?.last_access || b?.last || '') || 0;
+  if (aTime !== bTime) return bTime - aTime;
+  return compareUsersByName(a, b);
+}
+
+function sortUsers(list){
+  const mode = USER_SORT || 'ha_id';
+  if (mode === 'name') return list.sort(compareUsersByName);
+  if (mode === 'last_access') return list.sort(compareUsersByLastAccess);
+  return list.sort(compareUsersByHaId);
+}
+
 function normalizeSearchText(value){
   return String(value || '').trim().toLowerCase();
 }
@@ -957,6 +996,11 @@ function userMatchesSearch(user, term){
 
 function setUserSearch(value){
   USER_SEARCH = normalizeSearchText(value);
+}
+
+function setUserSort(value){
+  USER_SORT = value || 'ha_id';
+  saveUserSort(USER_SORT);
 }
 
 function deviceUserKey(record){
@@ -1786,7 +1830,9 @@ function renderUsers(devs, registryUsers, kpis){
   const listSorted = list
     .filter(u => u.isCloud || idMatchesFilter(u.id))
     .filter(u => userMatchesSearch(u, USER_SEARCH))
-    .sort((a,b) => compareUsersByHaId(a, b));
+    .sort(() => 0);
+
+  sortUsers(listSorted);
 
   const dedupedByName = [];
   const nameIndex = new Map();
@@ -2402,6 +2448,22 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  const userSort = document.getElementById('userSort');
+  if (userSort) {
+    const initial = loadUserSort();
+    userSort.value = initial;
+    setUserSort(initial);
+    userSort.addEventListener('change', (event) => {
+      setUserSort(event.target.value || 'ha_id');
+      if (LAST_USERS_STATE) {
+        renderUsers(
+          LAST_USERS_STATE.devs,
+          LAST_USERS_STATE.registry,
+          LAST_USERS_STATE.kpis
+        );
+      }
+    });
+  }
 
   // initial + poll
   refresh();
@@ -2538,9 +2600,16 @@ setInterval(refresh, 5000);
               <i class="bi bi-clock-history"></i> Add Temporary User
             </a>
           </div>
-          <div class="d-flex align-items-center gap-2">
-            <i class="bi bi-search text-muted" aria-hidden="true"></i>
-            <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
+          <div class="user-toolbar">
+            <div class="d-flex align-items-center gap-2 flex-fill">
+              <i class="bi bi-search text-muted" aria-hidden="true"></i>
+              <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
+            </div>
+            <select id="userSort" class="form-select form-select-sm" aria-label="Organise users">
+              <option value="ha_id">Organise: ID</option>
+              <option value="name">Organise: Name</option>
+              <option value="last_access">Organise: Last access</option>
+            </select>
           </div>
         </div>
         <div class="card-body">

@@ -1823,15 +1823,6 @@ async function loadData(){
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  const backBtn = document.getElementById('btnBack');
-  if (backBtn) {
-    backBtn.href = buildHref('index');
-    backBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      openInApp('index', {}, { replaceState: true });
-    });
-  }
-
   const diagnosticsBtn = document.getElementById('openDiagnosticsBtn');
   if (diagnosticsBtn) {
     diagnosticsBtn.href = buildHref('diagnostics');
@@ -2031,7 +2022,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 <div class="container py-3">
   <div class="d-flex align-items-center gap-2">
-    <a class="btn btn-outline-light" id="btnBack" href="/akuvox-ac/index"><i class="bi bi-arrow-left"></i> Back</a>
     <h2 class="m-0">Global Settings</h2>
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>

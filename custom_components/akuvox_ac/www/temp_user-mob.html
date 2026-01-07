@@ -222,7 +222,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const startDate = document.getElementById('start_date');
   const endDate = document.getElementById('end_date');
   const oneTime = document.getElementById('one_time');
-  const backBtn = document.getElementById('btnBack');
   const pinButtons = document.getElementById('pinButtons');
 
   if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
@@ -245,13 +244,6 @@ window.addEventListener('DOMContentLoaded', () => {
     setQuickEnd(7);
     updateEndTimeRequirement();
   });
-
-  if (backBtn) {
-    backBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      openInApp('index');
-    });
-  }
 
   if (pinButtons) {
     pinButtons.addEventListener('click', (event) => {
@@ -308,7 +300,6 @@ window.addEventListener('DOMContentLoaded', () => {
         <h2 class="mb-0 page-title">Add Temporary User</h2>
         <div class="muted">Create time-limited or one-time passcodes.</div>
       </div>
-      <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i></button>
     </div>
 
     <form id="tempUserForm">

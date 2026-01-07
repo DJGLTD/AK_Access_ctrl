@@ -3010,7 +3010,7 @@ class SyncManager:
         try:
             sync_queue = self._root().get("sync_queue")
             if sync_queue:
-                sync_queue.mark_change(None)
+                sync_queue.mark_change(None, delay_minutes=0)
         except Exception:
             pass
 
@@ -4258,7 +4258,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             exit_permission=d.get("exit_permission"),
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_add_temporary_user(call):
         d = call.data
@@ -4299,7 +4299,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_created_at=dt_util.now(),
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_edit_user(call):
         d = call.data
@@ -4336,6 +4336,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         paused_schedule_name: Optional[str] = None
         if "paused_schedule_name" in d:
             paused_schedule_name = str(d.get("paused_schedule_name") or "").strip()
+        if paused_flag:
+            try:
+                existing_profile = users_store.get(effective_id) or {}
+            except Exception:
+                existing_profile = {}
+            existing_paused_id = str(existing_profile.get("paused_schedule_id") or "").strip()
+            existing_paused_name = str(existing_profile.get("paused_schedule_name") or "").strip()
+            existing_schedule_id = str(existing_profile.get("schedule_id") or "").strip()
+            existing_schedule_name = str(existing_profile.get("schedule_name") or "").strip()
+
+            if not paused_schedule_id:
+                if existing_paused_id:
+                    paused_schedule_id = existing_paused_id
+                elif existing_schedule_id and existing_schedule_id != "1002":
+                    paused_schedule_id = existing_schedule_id
+                else:
+                    paused_schedule_id = None
+            if not paused_schedule_name:
+                if existing_paused_name:
+                    paused_schedule_name = existing_paused_name
+                elif existing_schedule_name and existing_schedule_name.lower() != "no access":
+                    paused_schedule_name = existing_schedule_name
+                else:
+                    paused_schedule_name = None
 
         pin_only = (
             pin_payload_edit not in (None, "")
@@ -4370,7 +4394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             paused_schedule_name=paused_schedule_name,
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_reactivate_temporary_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4394,7 +4418,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_expires_at="",
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_delete_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4538,7 +4562,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         await users_store.upsert_profile(canonical or key, face_url=face_url, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_reboot_device(call):
         entry_id = call.data.get("entry_id")
@@ -4666,7 +4690,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         key = str(call.data["key"])
         groups = list(call.data.get("groups") or [])
         await hass.data[DOMAIN]["users_store"].upsert_profile(key, groups=groups, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_set_exit_device(call):
         entry_id = str(call.data["entry_id"])
@@ -4680,7 +4704,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 hass.config_entries.async_update_entry(entry_obj, options=new_options)
             queue: SyncQueue = hass.data[DOMAIN].get("sync_queue")  # type: ignore[assignment]
             if queue:
-                queue.mark_change(entry_id)
+                queue.mark_change(entry_id, delay_minutes=0)
 
     async def svc_set_auto_reboot(call):
         time_hhmm = call.data.get("time")
@@ -4691,12 +4715,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         name = call.data["name"]
         spec = call.data["spec"]
         await hass.data[DOMAIN]["schedules_store"].upsert(name, spec)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, full=True)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, full=True)
 
     async def svc_delete_schedule(call):
         name = call.data["name"]
         await hass.data[DOMAIN]["schedules_store"].delete(name)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, full=True)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, full=True)
 
     hass.services.async_register(DOMAIN, "add_user", svc_add_user)
     hass.services.async_register(DOMAIN, "add_temporary_user", svc_add_temporary_user)
