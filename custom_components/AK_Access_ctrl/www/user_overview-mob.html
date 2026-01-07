@@ -20,11 +20,14 @@
     header.page-header .header-actions{display:flex;flex-direction:column;gap:0.5rem;align-items:flex-end;flex:1 1 auto;}
     header.page-header .action-row{display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;}
     header.page-header .btn{white-space:nowrap;}
+    .user-search{min-width:200px;max-width:320px;}
     .summary-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
     .summary-card{background:var(--card);border:1px solid var(--border);border-radius:0.75rem;padding:0.85rem;display:flex;flex-direction:column;gap:0.4rem;}
     .summary-card .label{color:var(--muted);font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;}
     .summary-card .value{font-size:1.5rem;font-weight:600;}
     .summary-card small{color:var(--muted);}
+    .list-controls{display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;}
+    .list-controls .control-label{color:var(--muted);font-size:0.85rem;text-transform:uppercase;letter-spacing:0.08em;}
     .user-list{display:flex;flex-direction:column;gap:1rem;}
     .user-card{background:var(--card);border:1px solid var(--border);border-radius:1rem;padding:1rem;display:flex;flex-direction:column;gap:0.75rem;}
     .user-header{display:flex;gap:0.75rem;align-items:flex-start;}
@@ -64,6 +67,7 @@
     <h1>User Management</h1>
     <div class="header-actions">
       <div class="action-row">
+        <input class="form-control form-control-sm user-search" id="userSearchInput" type="search" placeholder="Search users" aria-label="Search users" />
         <a class="btn btn-primary btn-sm" id="btnMobileAddUser" href="#"><i class="bi bi-person-plus"></i> Add User</a>
         <a class="btn btn-outline-info btn-sm" id="btnMobileAddTempUser" href="#"><i class="bi bi-clock-history"></i> Add Temp User</a>
       </div>
@@ -90,7 +94,16 @@
       <small>Active facial credentials</small>
     </div>
   </section>
-  <div class="last-updated" id="lastUpdated"></div>
+  <div class="list-controls">
+    <div class="d-flex align-items-center gap-2">
+      <span class="control-label">Organise</span>
+      <select class="form-select form-select-sm" id="userSortSelect" aria-label="Organise users">
+        <option value="id">User ID</option>
+        <option value="name">Name</option>
+      </select>
+    </div>
+    <div class="last-updated" id="lastUpdated"></div>
+  </div>
   <section class="user-list" id="userList" aria-live="polite"></section>
 </div>
 <script>
@@ -237,6 +250,11 @@ function walkAuthWindows(start) {
 })();
 
 const AUTH_SIG_KEY = 'akuvox_auth_sig';
+const USER_SORT_KEY = 'akuvox_user_sort';
+const USER_SORT_DEFAULT = 'name';
+let USER_SORT_MODE = USER_SORT_DEFAULT;
+let USER_SEARCH_QUERY = '';
+let LAST_LIST = [];
 
 function readAuthSigFrom(search = location.search) {
   try {
@@ -246,6 +264,41 @@ function readAuthSigFrom(search = location.search) {
   } catch (err) {
     return '';
   }
+}
+
+function readUserSortMode() {
+  try {
+    const raw = localStorage.getItem(USER_SORT_KEY);
+    if (raw) return raw;
+  } catch (err) {}
+  try {
+    const raw = sessionStorage.getItem(USER_SORT_KEY);
+    if (raw) return raw;
+  } catch (err) {}
+  return USER_SORT_DEFAULT;
+}
+
+function saveUserSortMode(mode) {
+  if (!mode) return;
+  try { localStorage.setItem(USER_SORT_KEY, mode); } catch (err) {}
+  try { sessionStorage.setItem(USER_SORT_KEY, mode); } catch (err) {}
+}
+
+function normalizeSearchValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function filterUsers(list, query) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) return list;
+  return list.filter(user => {
+    const haystack = [
+      user.id,
+      user.name,
+      (user.groups || []).join(' ')
+    ].map(normalizeSearchValue).join(' ');
+    return haystack.includes(needle);
+  });
 }
 
 function rememberAuthSig(value) {
@@ -1158,9 +1211,47 @@ function compileUsers(devices, registryUsers, kpis){
     return pendingCount > 0;
   });
 
-  return cleaned
-    .filter(u => u.isCloud || idMatchesFilter(u.id))
-    .sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), undefined, { sensitivity: 'base' }));
+  return cleaned.filter(u => u.isCloud || idMatchesFilter(u.id));
+}
+
+function parseHaNumber(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/ha\\s*-?\\s*(\\d+)/i);
+  if (!match) return null;
+  const num = Number(match[1]);
+  if (!Number.isFinite(num)) return null;
+  return num;
+}
+
+function sortUsers(list, mode) {
+  const safeMode = mode === 'id' ? 'id' : 'name';
+  const sorted = [...list];
+  if (safeMode === 'id') {
+    sorted.sort((a, b) => {
+      const aId = a.id || a.UserID || a.UserId || a.ID || '';
+      const bId = b.id || b.UserID || b.UserId || b.ID || '';
+      const aNum = parseHaNumber(aId);
+      const bNum = parseHaNumber(bId);
+      if (aNum !== null && bNum !== null && aNum !== bNum) return aNum - bNum;
+      if (aNum !== null && bNum === null) return -1;
+      if (aNum === null && bNum !== null) return 1;
+      const aName = String(a.name || aId || '').trim();
+      const bName = String(b.name || bId || '').trim();
+      return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+    });
+    return sorted;
+  }
+
+  sorted.sort((a, b) => {
+    const aName = String(a.name || a.id || '').trim();
+    const bName = String(b.name || b.id || '').trim();
+    const nameCompare = aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+    if (nameCompare !== 0) return nameCompare;
+    const aId = String(a.id || '').trim();
+    const bId = String(b.id || '').trim();
+    return aId.localeCompare(bId, undefined, { sensitivity: 'base' });
+  });
+  return sorted;
 }
 
 function renderSummary(kpis, users){
@@ -1376,8 +1467,10 @@ async function refresh(){
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     const list = compileUsers(devices, state.registry_users || [], state.kpis || {});
+    LAST_LIST = list;
     renderSummary(state.kpis || {}, list);
-    renderUsers(list);
+    const filtered = filterUsers(sortUsers(list, USER_SORT_MODE), USER_SEARCH_QUERY);
+    renderUsers(filtered);
     const ts = new Date();
     document.getElementById('lastUpdated').textContent = `Updated ${ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   } catch (err) {
@@ -1386,6 +1479,31 @@ async function refresh(){
     const host = document.getElementById('userList');
     host.innerHTML = `<div class="empty-state text-danger">Failed to load users: ${escapeHtml(err.message || err)}</div>`;
   }
+}
+
+function renderFromCache() {
+  const filtered = filterUsers(sortUsers(LAST_LIST, USER_SORT_MODE), USER_SEARCH_QUERY);
+  renderUsers(filtered);
+}
+
+USER_SORT_MODE = readUserSortMode();
+const sortSelect = document.getElementById('userSortSelect');
+if (sortSelect) {
+  sortSelect.value = USER_SORT_MODE;
+  sortSelect.addEventListener('change', () => {
+    USER_SORT_MODE = sortSelect.value || USER_SORT_DEFAULT;
+    saveUserSortMode(USER_SORT_MODE);
+    renderFromCache();
+  });
+}
+
+const searchInput = document.getElementById('userSearchInput');
+if (searchInput) {
+  searchInput.value = USER_SEARCH_QUERY;
+  searchInput.addEventListener('input', () => {
+    USER_SEARCH_QUERY = searchInput.value || '';
+    renderFromCache();
+  });
 }
 
 refresh();
