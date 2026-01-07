@@ -62,6 +62,7 @@ from .relay import (
     normalize_roles as normalize_relay_roles,
     relay_suffix_for_user,
     door_relays,
+    pedestrian_relays,
     RELAY_ROLE_PEDESTRIAN,
 )
 
@@ -936,6 +937,7 @@ def _desired_device_user_payload(
         pass
 
     door_digits = door_relays(relay_roles)
+    pedestrian_digits = pedestrian_relays(relay_roles)
     pedestrian_only = pedestrian_access and any(
         role == RELAY_ROLE_PEDESTRIAN for role in relay_roles.values()
     )
@@ -1038,11 +1040,16 @@ def _desired_device_user_payload(
 
     group_value = HA_CONTACT_GROUP_NAME
 
+    door_digit_fallback = (
+        pedestrian_digits[0]
+        if pedestrian_only and pedestrian_digits
+        else door_digits[0] if door_digits else None
+    )
     door_num = _string_or_default(
         profile.get("door_num"),
         profile.get("DoorNum"),
         local.get("DoorNum"),
-        door_digits[0] if door_digits else None,
+        door_digit_fallback,
         default="1",
     )
 

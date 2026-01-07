@@ -101,6 +101,10 @@ def alarm_relays(roles: Dict[str, str]) -> List[str]:
     return _digits_for_roles(roles, {RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM})
 
 
+def pedestrian_relays(roles: Dict[str, str]) -> List[str]:
+    return _digits_for_roles(roles, {RELAY_ROLE_PEDESTRIAN})
+
+
 def relay_suffix_for_user(
     roles: Dict[str, str],
     key_holder: bool,
