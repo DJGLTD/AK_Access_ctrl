@@ -1330,6 +1330,36 @@ function formatWhen(ts){
   const HH = pad(d.getHours()), mm = pad(d.getMinutes()), SS = pad(d.getSeconds());
   return `${HH}:${mm}:${SS} ${DD}-${MM}-${YYYY}`;
 }
+function parseEventTimestamp(value){
+  if (!value) return 0;
+  if (value instanceof Date) return isNaN(value.getTime()) ? 0 : value.getTime();
+  const text = String(value).trim();
+  if (!text) return 0;
+  let parsed = new Date(text);
+  if (!isNaN(parsed.getTime())) return parsed.getTime();
+  const timeDateMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s+(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (timeDateMatch){
+    const [, hh, mm, ssRaw, dd, MM, yyyy] = timeDateMatch;
+    const iso = `${yyyy}-${String(MM).padStart(2,'0')}-${String(dd).padStart(2,'0')}T${String(hh).padStart(2,'0')}:${mm}:${ssRaw ? String(ssRaw).padStart(2,'0') : '00'}Z`;
+    parsed = new Date(iso);
+    if (!isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  const dateMatch = text.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (dateMatch){
+    const [, dd, MM, yyyy] = dateMatch;
+    parsed = new Date(`${yyyy}-${String(MM).padStart(2,'0')}-${String(dd).padStart(2,'0')}T00:00:00Z`);
+    if (!isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  if (text.includes(' ') && !text.includes('T')){
+    parsed = new Date(text.replace(' ', 'T'));
+    if (!isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  if (!/[a-z]/i.test(text) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(text)){
+    parsed = new Date(`${text}Z`);
+    if (!isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  return 0;
+}
 function applyEventFilter(){
   const list = eventFilterMode === 'all'
     ? cachedEvents
@@ -1365,9 +1395,8 @@ function renderEvents(devs, aggregated){
     }
     if (typeof copy._t !== 'number') {
       const rawTs = copy.timestamp || copy.Time || '';
-      const parsed = rawTs ? new Date(rawTs) : new Date();
-      if (parsed instanceof Date && !isNaN(parsed.getTime())) copy._t = parsed.getTime();
-      else copy._t = Number(copy._t) || 0;
+      const parsed = parseEventTimestamp(rawTs);
+      copy._t = parsed || Number(copy._t) || 0;
     }
     copy._category = normalizeEventCategory(copy._category) || categorizeEvent(copy);
     copy._device = copy._device || copy.device || '';
@@ -1378,14 +1407,11 @@ function renderEvents(devs, aggregated){
     const deviceName = safeDeviceName(d);
     (d.events || []).forEach(e => {
       let ts = e.timestamp || e.Time || '';
-      let dObj = new Date(ts);
-      if (isNaN(dObj.getTime()) && ts) {
-        try { ts = String(ts).split('.')[0] + 'Z'; dObj = new Date(ts); } catch {}
-      }
+      const parsed = parseEventTimestamp(ts);
       const copy = {
         ...e,
         _device: deviceName,
-        _t: dObj instanceof Date && !isNaN(dObj.getTime()) ? dObj.getTime() : 0,
+        _t: parsed || 0,
         _category: categorizeEvent(e, d),
       };
       const keyBase = copy._key || `${deviceName}|${ts || ''}|${copy.Event || copy.Result || ''}`;

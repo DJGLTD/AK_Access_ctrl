@@ -101,7 +101,12 @@ def alarm_relays(roles: Dict[str, str]) -> List[str]:
     return _digits_for_roles(roles, {RELAY_ROLE_ALARM, RELAY_ROLE_DOOR_ALARM})
 
 
-def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: Any) -> str:
+def relay_suffix_for_user(
+    roles: Dict[str, str],
+    key_holder: bool,
+    pedestrian_access: bool,
+    device_type: Any,
+) -> str:
     """Return relay digits a user should receive based on their key holder flag."""
 
     def _digit_for_key(key: str) -> str:
@@ -118,7 +123,7 @@ def relay_suffix_for_user(roles: Dict[str, str], key_holder: bool, device_type: 
             if digit not in requested:
                 requested.append(digit)
         elif role == RELAY_ROLE_PEDESTRIAN:
-            if digit not in requested:
+            if pedestrian_access and digit not in requested:
                 requested.append(digit)
         elif role == RELAY_ROLE_DOOR_ALARM:
             if key_holder:
