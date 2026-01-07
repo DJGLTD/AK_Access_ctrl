@@ -522,11 +522,6 @@ function openInApp(view, params = {}, options = {}) {
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
-const AUTO_UPDATE_CONFIG = '/api/config/automation/config';
-const AUTO_UPDATE_ID = 'akuvox_ac_auto_update';
-const AUTO_UPDATE_UPDATE_ENTITY = 'update.akuvox_access_control';
-const AUTO_UPDATE_REPOSITORY = 'Akuvox Access Control';
-const AUTO_UPDATE_DEFAULT_TIME = '03:00';
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 
@@ -559,7 +554,6 @@ let healthSaving = false;
 let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
-let autoUpdateSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -581,211 +575,6 @@ let scheduleReadOnly = false;
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
 
-function normalizeAutoUpdateTime(value){
-  const raw = String(value || '').trim();
-  const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
-  if (!match) return AUTO_UPDATE_DEFAULT_TIME;
-  let hours = Number(match[1]);
-  let minutes = Number(match[2]);
-  if (!Number.isFinite(hours)) hours = 0;
-  if (!Number.isFinite(minutes)) minutes = 0;
-  hours = Math.min(23, Math.max(0, Math.round(hours)));
-  minutes = Math.min(59, Math.max(0, Math.round(minutes)));
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-}
-
-function setAutoUpdateStatus(text, tone = 'muted'){
-  const el = document.getElementById('autoUpdateStatus');
-  if (!el) return;
-  const base = 'form-text mt-2';
-  let cls = base + ' text-white';
-  if (tone === 'success') cls = base + ' text-success';
-  else if (tone === 'error') cls = base + ' text-danger';
-  el.className = cls;
-  el.textContent = text;
-}
-
-function setAutoUpdateControlsDisabled(disabled){
-  ['autoUpdateToggle', 'autoUpdateTimeInput', 'autoUpdateRestartToggle'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = disabled;
-  });
-}
-
-function getAutoUpdateInputs(){
-  const timeInput = document.getElementById('autoUpdateTimeInput');
-  const restartToggle = document.getElementById('autoUpdateRestartToggle');
-  const time = normalizeAutoUpdateTime(timeInput?.value);
-  return { time, allowRestart: !!restartToggle?.checked };
-}
-
-function hasServiceAction(actions, service){
-  const list = Array.isArray(actions) ? actions : (actions ? [actions] : []);
-  for (const action of list){
-    if (!action) continue;
-    if (action.service === service) return true;
-    if (action.sequence && hasServiceAction(action.sequence, service)) return true;
-    if (Array.isArray(action.choose)){
-      for (const choice of action.choose){
-        if (hasServiceAction(choice?.sequence, service)) return true;
-      }
-    }
-    if (action.default && hasServiceAction(action.default, service)) return true;
-  }
-  return false;
-}
-
-function extractAutoUpdateOptions(config){
-  const triggers = Array.isArray(config?.trigger) ? config.trigger : (config?.trigger ? [config.trigger] : []);
-  const timeTrigger = triggers.find((trigger) => trigger && trigger.platform === 'time' && trigger.at);
-  const time = normalizeAutoUpdateTime(timeTrigger?.at);
-  const actions = Array.isArray(config?.action) ? config.action : (config?.action ? [config.action] : []);
-  const allowRestart = hasServiceAction(actions, 'homeassistant.restart');
-  return { time, allowRestart };
-}
-
-function buildAutoUpdateAutomation({ time, allowRestart }){
-  const installSequence = [
-    {
-      service: 'update.install',
-      target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] },
-      data: { backup: false }
-    }
-  ];
-  if (allowRestart) {
-    installSequence.push({ service: 'homeassistant.restart' });
-  }
-  return {
-    id: AUTO_UPDATE_ID,
-    alias: 'Akuvox Access Control • Auto update',
-    description: 'Automatically install updates for the Akuvox Access Control integration when they are available.',
-    mode: 'single',
-    trigger: [
-      { platform: 'time', at: normalizeAutoUpdateTime(time) }
-    ],
-    action: [
-      { service: 'hacs.update', data: { repository: AUTO_UPDATE_REPOSITORY } },
-      { delay: { minutes: 1 } },
-      { service: 'homeassistant.update_entity', target: { entity_id: [AUTO_UPDATE_UPDATE_ENTITY] } },
-      { delay: { seconds: 5 } },
-      {
-        choose: [
-          {
-            conditions: [ { condition: 'state', entity_id: AUTO_UPDATE_UPDATE_ENTITY, state: 'on' } ],
-            sequence: installSequence
-          }
-        ],
-        default: []
-      }
-    ],
-  };
-}
-
-async function fetchAutoUpdateConfig(){
-  try {
-    const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`);
-    if (res.status === 404) return null;
-    if (!res.ok) {
-      const text = await res.text();
-      throw buildError(res, text);
-    }
-    return res.json();
-  } catch (err) {
-    if (handleAuthError(err)) return null;
-    throw err;
-  }
-}
-
-async function setAutoUpdateEnabled(desired, { updating = false } = {}){
-  if (autoUpdateSaving) return;
-  autoUpdateSaving = true;
-  setAutoUpdateControlsDisabled(true);
-  setAutoUpdateStatus(desired ? (updating ? 'Updating automation…' : 'Creating automation…') : 'Removing automation…');
-  try {
-    if (desired){
-      const { time, allowRestart } = getAutoUpdateInputs();
-      const config = buildAutoUpdateAutomation({ time, allowRestart });
-      const timeInput = document.getElementById('autoUpdateTimeInput');
-      if (timeInput) timeInput.value = normalizeAutoUpdateTime(time);
-      let res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
-      });
-      if (res.status === 404){
-        res = await fetchWithAuth(AUTO_UPDATE_CONFIG, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config)
-        });
-      }
-      if (!res.ok){
-        const text = await res.text();
-        throw buildError(res, text);
-      }
-      const status = `Automation enabled. Updates will check daily at ${normalizeAutoUpdateTime(time)}.`
-        + (allowRestart ? ' Home Assistant will restart after installation.' : '');
-      setAutoUpdateStatus(status, 'success');
-      const toggle = document.getElementById('autoUpdateToggle');
-      if (toggle) toggle.checked = true;
-    } else {
-      const res = await fetchWithAuth(`${AUTO_UPDATE_CONFIG}/${AUTO_UPDATE_ID}`, { method: 'DELETE' });
-      if (res.status !== 200 && res.status !== 404){
-        const text = await res.text();
-        throw buildError(res, text);
-      }
-      setAutoUpdateStatus('Automation removed. Updates will no longer install automatically.', 'muted');
-      const toggle = document.getElementById('autoUpdateToggle');
-      if (toggle) toggle.checked = false;
-    }
-  } catch (err) {
-    if (handleAuthError(err)) return;
-    setAutoUpdateStatus('Automation change failed: ' + (err && err.message ? err.message : err), 'error');
-    alert('Failed to update automation: ' + (err && err.message ? err.message : err));
-  } finally {
-    autoUpdateSaving = false;
-    setAutoUpdateControlsDisabled(false);
-  }
-}
-
-async function refreshAutoUpdateToggle(){
-  setAutoUpdateControlsDisabled(true);
-  setAutoUpdateStatus('Checking current automation…');
-  try {
-    const cfg = await fetchAutoUpdateConfig();
-    const toggle = document.getElementById('autoUpdateToggle');
-    const timeInput = document.getElementById('autoUpdateTimeInput');
-    const restartToggle = document.getElementById('autoUpdateRestartToggle');
-    if (cfg){
-      const options = extractAutoUpdateOptions(cfg);
-      if (toggle) toggle.checked = true;
-      if (timeInput) timeInput.value = options.time;
-      if (restartToggle) restartToggle.checked = options.allowRestart;
-      const status = `Automation is enabled and will check daily at ${options.time}.`
-        + (options.allowRestart ? ' Home Assistant will restart after installation.' : '');
-      setAutoUpdateStatus(status, 'success');
-    } else {
-      if (toggle) toggle.checked = false;
-      if (timeInput) timeInput.value = normalizeAutoUpdateTime(timeInput?.value);
-      if (restartToggle) restartToggle.checked = false;
-      setAutoUpdateStatus('No automation is configured. Enable the toggle to create one.', 'muted');
-    }
-  } catch (err) {
-    if (handleAuthError(err)) return;
-    setAutoUpdateStatus('Could not verify automation: ' + (err && err.message ? err.message : err), 'error');
-  } finally {
-    setAutoUpdateControlsDisabled(false);
-  }
-}
-
-async function updateAutoUpdateOptions(){
-  const toggle = document.getElementById('autoUpdateToggle');
-  if (!toggle || !toggle.checked) {
-    setAutoUpdateStatus('Enable auto updates to create the automation.', 'muted');
-    return;
-  }
-  await setAutoUpdateEnabled(true, { updating: true });
-}
 function hideIntegritySavedOverlay(){
   const overlay = document.getElementById('integritySavedOverlay');
   if (!overlay) return;
@@ -2235,19 +2024,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveCredentialPrompts();
   });
 
-  document.getElementById('autoUpdateToggle')?.addEventListener('change', (ev) => {
-    setAutoUpdateEnabled(ev.target.checked);
-  });
-  document.getElementById('autoUpdateTimeInput')?.addEventListener('change', () => {
-    updateAutoUpdateOptions();
-  });
-  document.getElementById('autoUpdateRestartToggle')?.addEventListener('change', () => {
-    updateAutoUpdateOptions();
-  });
-
   renderCredentialPrompts();
   await loadData();
-  await refreshAutoUpdateToggle();
 });
 </script>
 
@@ -2265,26 +2043,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
       </div>
       <a class="btn btn-outline-info" id="openDiagnosticsBtn" href="/akuvox-ac/diagnostics"><i class="bi bi-activity me-1"></i>Open diagnostics</a>
-    </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="card-header text-white">Integration Auto Update</div>
-    <div class="card-body">
-      <p class="muted">Create a Home Assistant automation to check for Akuvox Access Control updates at a set time each day.</p>
-      <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" id="autoUpdateToggle">
-        <label class="form-check-label" for="autoUpdateToggle">Enable auto updates</label>
-      </div>
-      <div class="mt-3">
-        <label class="form-label" for="autoUpdateTimeInput">Check time</label>
-        <input class="form-control" type="time" id="autoUpdateTimeInput" step="60" />
-      </div>
-      <div class="form-check mt-3">
-        <input class="form-check-input" type="checkbox" id="autoUpdateRestartToggle">
-        <label class="form-check-label" for="autoUpdateRestartToggle">Allow restart after update installs</label>
-      </div>
-      <div class="form-text text-white mt-2" id="autoUpdateStatus">Checking current automation…</div>
     </div>
   </div>
 

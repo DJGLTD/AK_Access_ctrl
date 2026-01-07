@@ -13,7 +13,6 @@ PLATFORMS = [
     Platform.SENSOR,
     Platform.BUTTON,         # OK because we now ship a stub
     Platform.BINARY_SENSOR,  # OK because we now ship a stub
-    Platform.UPDATE,         # OK because we now ship a stub
 ]
 
 # Storage keys
