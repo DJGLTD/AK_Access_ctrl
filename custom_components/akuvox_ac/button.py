@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
+from .http import _ingest_history_event
 
 
 async def async_setup_entry(
@@ -51,6 +52,16 @@ class AkuvoxAccessPermittedButton(_Base):
         return f"{self._entry.entry_id}_access_permitted"
 
     async def async_press(self) -> None:
+        _ingest_history_event(
+            self.hass,
+            {
+                "Event": "Access permitted button pressed",
+                "_category": "system",
+                "_source": "system",
+                "entry_id": self._entry.entry_id,
+                "device_name": self._coord.device_name,
+            },
+        )
         await self._coord.async_refresh_access_history(force_latest=True)
 
 
