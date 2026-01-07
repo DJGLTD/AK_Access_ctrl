@@ -1399,8 +1399,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             who = user_id or "Unknown user"
             message = f"Access denied for {who} on {self.device_name}."
         elif event_type == "user_granted":
-            who = user_id or "Unknown user"
-            message = f"{who} granted access on {self.device_name}."
+            event = None
+            if extra and isinstance(extra.get("event"), dict):
+                event = extra["event"]
+            who = self._extract_event_user_name(event) if event else None
+            if not who:
+                who = user_id or "Unknown user"
+            message = f"{who} opened the gate."
         else:
             message = summary or f"{event_type} on {self.device_name}"
 
