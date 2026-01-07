@@ -624,6 +624,7 @@ function signedPath(key, fallback){
 
 const API_STATE           = signedPath('state', '/api/akuvox_ac/ui/state');
 const API_PHONES          = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_SETTINGS        = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_RESERVE_ID      = signedPath('reserve_id', '/api/akuvox_ac/ui/reserve_id');
 const API_RELEASE_ID      = signedPath('release_id', '/api/akuvox_ac/ui/release_id');
 const API_RESERVATION_PING = signedPath('reservation_ping', '/api/akuvox_ac/ui/reservation_ping');
@@ -635,6 +636,7 @@ const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvo
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 const MAX_LICENSE_PLATES = 5;
+let ALERT_TARGETS = {};
 
 async function apiGet(url){
   const r = await fetchWithAuth(url);
@@ -1312,6 +1314,9 @@ function selectExistingUser(id, options = {}){
     CURRENT.schedule_id = idForName(CURRENT.schedule_name);
   }
   applyPausedScheduleToCurrent();
+  if (CURRENT && CURRENT.id) {
+    CURRENT.notify_targets = getNotifyTargetsForUser(CURRENT.id);
+  }
 
   RESERVED_ID = null;
   stopReservationHeartbeat();
@@ -1430,7 +1435,96 @@ function blankProfile(id = ''){
     access_end: '',
     access_expired: false,
     access_in_future: false,
+    notify_targets: [],
   };
+}
+
+function friendlyNotifyName(service){
+  const found = (PHONES || []).find(p => p.service === service);
+  return found ? (found.name || found.service) : service;
+}
+
+function ensureAlertTargetDefaults(target){
+  if (!ALERT_TARGETS[target] || typeof ALERT_TARGETS[target] !== 'object'){
+    ALERT_TARGETS[target] = {
+      device_offline: false,
+      integrity_failed: false,
+      any_denied: false,
+      granted: { any: false, users: [] }
+    };
+    return;
+  }
+  const cfg = ALERT_TARGETS[target];
+  if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
+  if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
+  if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
+  if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+  if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
+  if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
+  cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u))));
+}
+
+function allNotifyTargets(){
+  const combined = new Set();
+  (PHONES || []).forEach(p => combined.add(p.service));
+  Object.keys(ALERT_TARGETS || {}).forEach(key => combined.add(key));
+  return Array.from(combined).filter(Boolean).sort((a, b) => friendlyNotifyName(a).localeCompare(friendlyNotifyName(b)));
+}
+
+function getNotifyTargetsForUser(userId){
+  if (!userId) return [];
+  const out = [];
+  Object.keys(ALERT_TARGETS || {}).forEach(service => {
+    ensureAlertTargetDefaults(service);
+    const users = ALERT_TARGETS[service].granted.users || [];
+    if (users.includes(userId)) out.push(service);
+  });
+  return out;
+}
+
+function renderNotifyTargets(){
+  const wrap = document.getElementById('notifyTargets');
+  const toggle = document.getElementById('notify_on_access');
+  if (!wrap || !toggle) return;
+  const targets = allNotifyTargets();
+  wrap.innerHTML = '';
+  if (!targets.length){
+    wrap.innerHTML = '<div class="form-text muted">No notify devices found.</div>';
+    return;
+  }
+  const enabled = toggle.checked;
+  const selected = new Set(CURRENT && Array.isArray(CURRENT.notify_targets) ? CURRENT.notify_targets : []);
+  targets.forEach(service => {
+    const id = `notify_${service.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    const row = document.createElement('div');
+    row.className = 'form-check';
+    row.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="${id}" data-notify-target="${service}">
+      <label class="form-check-label" for="${id}">${friendlyNotifyName(service)}</label>
+    `;
+    const input = row.querySelector('input');
+    if (input){
+      input.checked = selected.has(service);
+      input.disabled = !enabled;
+      input.addEventListener('change', () => {
+        if (!CURRENT) return;
+        const next = new Set(CURRENT.notify_targets || []);
+        if (input.checked) next.add(service);
+        else next.delete(service);
+        CURRENT.notify_targets = Array.from(next);
+      });
+    }
+    wrap.appendChild(row);
+  });
+}
+
+function refreshNotifyState(){
+  if (!CURRENT) return;
+  const toggle = document.getElementById('notify_on_access');
+  if (!toggle) return;
+  const currentTargets = Array.isArray(CURRENT.notify_targets) ? CURRENT.notify_targets : [];
+  toggle.checked = currentTargets.length > 0;
+  renderNotifyTargets();
 }
 
 function sanitizeCredentialPrompts(raw){
@@ -1715,6 +1809,14 @@ async function load(){
       console.warn('Failed to load phone list', err);
       PHONES = [];
     }
+    try {
+      const settingsResp = await apiGet(API_SETTINGS);
+      ALERT_TARGETS = settingsResp?.alerts?.targets || {};
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      console.warn('Failed to load notification settings', err);
+      ALERT_TARGETS = {};
+    }
 
     const params = new URLSearchParams(location.search);
     const id = (params.get('id') || '').trim();
@@ -1873,6 +1975,7 @@ function fillForm(){
   }
   updateDeviceIdsDisplay();
   applyCredentialPrompts();
+  refreshNotifyState();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
   }
@@ -1884,6 +1987,17 @@ function fillForm(){
   }
   if (faceErrorRow){
     faceErrorRow.style.display = '';
+  }
+  const notifyToggle = document.getElementById('notify_on_access');
+  if (notifyToggle && !notifyToggle._bound){
+    notifyToggle.addEventListener('change', () => {
+      if (!CURRENT) return;
+      if (!notifyToggle.checked) {
+        CURRENT.notify_targets = [];
+      }
+      renderNotifyTargets();
+    });
+    notifyToggle._bound = true;
   }
   bindFaceFileInput();
   bindRemoveFaceButton();
@@ -2019,6 +2133,41 @@ function fillPhones(){
   if (resSpan) resSpan.textContent = '';
 }
 
+function applyNotifyTargetsForUser(userId, selectedServices, enabled){
+  if (!userId) return;
+  const selected = new Set(enabled ? (selectedServices || []) : []);
+  const allTargets = new Set([
+    ...Object.keys(ALERT_TARGETS || {}),
+    ...selected,
+  ]);
+  allTargets.forEach(service => {
+    ensureAlertTargetDefaults(service);
+    const users = Array.isArray(ALERT_TARGETS[service].granted.users)
+      ? [...ALERT_TARGETS[service].granted.users]
+      : [];
+    const hasUser = users.includes(userId);
+    const shouldHave = selected.has(service);
+    if (shouldHave && !hasUser) users.push(userId);
+    if (!shouldHave && hasUser) {
+      ALERT_TARGETS[service].granted.users = users.filter(u => u !== userId);
+    } else {
+      ALERT_TARGETS[service].granted.users = users;
+    }
+  });
+}
+
+async function saveNotifyTargets(){
+  if (!CURRENT || !CURRENT.id) return;
+  const toggle = document.getElementById('notify_on_access');
+  const enabled = !!(toggle && toggle.checked);
+  const selected = enabled
+    ? Array.from(document.querySelectorAll('input[data-notify-target]:checked')).map(el => el.dataset.notifyTarget)
+    : [];
+  applyNotifyTargetsForUser(CURRENT.id, selected, enabled);
+  CURRENT.notify_targets = selected;
+  await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
+}
+
 /* -------------------- save: user core + optional face upload + optional remote enrol -------------------- */
 async function save(){
   if (!CURRENT){
@@ -2113,6 +2262,13 @@ async function save(){
       throw err;
     }
     try { await saveRes.json(); } catch {}
+
+    try {
+      await saveNotifyTargets();
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      alert('Failed to update access notifications: ' + (err && err.message ? err.message : err));
+    }
 
     // If a photo is selected, upload it now
     const fileInput = document.getElementById('facefile');
@@ -2300,6 +2456,15 @@ function showPanel(which){
         </div>
       </div>
       <div class="form-text muted mt-2">The start date defaults to today. Leave the end date empty to keep the user active indefinitely.</div>
+    </div>
+
+    <div class="mb-3" id="notifyOnAccessRow">
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="notify_on_access">
+        <label class="form-check-label" for="notify_on_access">Notify on access</label>
+      </div>
+      <div id="notifyTargets" class="mt-2"></div>
+      <div class="form-text muted">Choose which Home Assistant mobile app devices should notify when this user is granted access.</div>
     </div>
 
     <div class="form-check mb-3" id="keyHolderRow">
