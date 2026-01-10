@@ -585,7 +585,19 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             return False
 
         summary = " ".join(text_parts)
-        has_grant = any(word in summary for word in ("grant", "granted", "open", "unlock", "success", "allowed"))
+        has_grant = any(
+            word in summary
+            for word in (
+                "grant",
+                "granted",
+                "permit",
+                "permitted",
+                "open",
+                "unlock",
+                "success",
+                "allowed",
+            )
+        )
         if not has_grant:
             return False
 
@@ -637,6 +649,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         granted_words = (
             "grant",
             "granted",
+            "permit",
+            "permitted",
             "allowed",
             "success",
             "opened",
@@ -646,6 +660,20 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "access ok",
         )
         return any(word in summary for word in granted_words)
+
+    async def async_handle_manual_event(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+
+        notifications = self.storage.data.get("notifications") or {}
+        notify_targets: List[str] = list(notifications.get("targets") or [])
+
+        storage_dirty = await self._handle_door_event(event, notify_targets)
+        if storage_dirty:
+            try:
+                await self.storage.async_save()
+            except Exception as err:
+                _LOGGER.debug("Unable to persist manual door event state: %s", _safe_str(err))
 
     def _event_timestamp_to_epoch(self, timestamp: Any) -> float:
         value = AccessHistory._coerce_timestamp(timestamp)

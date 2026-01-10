@@ -61,6 +61,10 @@ add_temporary_user:
       required: false
       selector:
         boolean:
+    pedestrian_access:
+      required: false
+      selector:
+        boolean:
     access_start:
       required: false
       selector:
