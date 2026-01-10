@@ -653,6 +653,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "permitted",
             "allowed",
             "success",
+            "succ",
             "opened",
             "open",
             "unlock",
