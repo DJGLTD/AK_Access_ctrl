@@ -611,7 +611,6 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "EventType",
             "Type",
             "Description",
-            "Result",
             "Reason",
             "OpenMethod",
             "AccessMethod",
@@ -621,6 +620,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             val = event.get(key)
             if isinstance(val, str) and val:
                 tokens.append(val.lower())
+        status = event.get("Status")
+        if isinstance(status, str) and status:
+            tokens.append(status.strip().lower())
         return tokens
 
     def _event_is_access_denied(self, tokens: List[str]) -> bool:
