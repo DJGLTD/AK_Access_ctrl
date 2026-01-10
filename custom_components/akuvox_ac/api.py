@@ -842,8 +842,7 @@ class AkuvoxAPI:
                 relay_value = it2.pop("Schedule-Relay")
             normalized_relay = self._normalize_schedule_relay(relay_value)
             if normalized_relay is not None:
-                relay_key = "Schedule-Relay" if for_set else "ScheduleRelay"
-                it2[relay_key] = normalized_relay
+                it2["Schedule-Relay"] = normalized_relay
             else:
                 it2.pop("ScheduleRelay", None)
 
@@ -889,7 +888,7 @@ class AkuvoxAPI:
                     "Group",
                     "CardCode",
                     "BLEAuthCode",
-                    "ScheduleRelay",
+                    "Schedule-Relay",
                 ):
                     if k == "PrivatePIN":
                         if v == "":
@@ -899,7 +898,7 @@ class AkuvoxAPI:
                             if text:
                                 d[k] = text
                         continue
-                    if k == "ScheduleRelay":
+                    if k == "Schedule-Relay":
                         if v == "":
                             d[k] = ""
                         else:
@@ -1906,7 +1905,7 @@ class AkuvoxAPI:
 
         # NOTE: Do not include free-text 'Schedule' in user.add payloads.
         # Some Akuvox firmwares reject this with retcode -100 (error param).
-        # Use ScheduleRelay only on user.add; additional scheduling can be
+        # Use Schedule-Relay only on user.add; additional scheduling can be
         # applied later via user.set if needed.
 
         relay_value = item.get("ScheduleRelay")
@@ -1914,7 +1913,7 @@ class AkuvoxAPI:
             relay_value = item.get("Schedule-Relay")
         normalized_relay = self._normalize_schedule_relay(relay_value)
         if normalized_relay:
-            base["ScheduleRelay"] = normalized_relay
+            base["Schedule-Relay"] = normalized_relay
 
         def _first(*keys: str) -> Any:
             for key in keys:
