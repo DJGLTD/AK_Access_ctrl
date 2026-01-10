@@ -334,11 +334,16 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.debug("Failed to persist alert state: %s", _safe_str(err))
 
-    async def _process_door_events(self, *, force_latest: bool = False) -> List[Dict[str, Any]]:
+    async def _process_door_events(
+        self,
+        *,
+        force_latest: bool = False,
+        suppress_notifications: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Fetch recent door events and handle non-key access notifications."""
 
         notifications = self.storage.data.get("notifications") or {}
-        notify_targets: List[str] = list(notifications.get("targets") or [])
+        notify_targets: List[str] = [] if suppress_notifications else list(notifications.get("targets") or [])
 
         events: List[Dict[str, Any]] = []
 
@@ -403,6 +408,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                         latest_epoch = parsed_ts
                         latest_event = event
                 if latest_event:
+                    if suppress_notifications:
+                        latest_event = dict(latest_event)
+                        latest_event["_skip_notifications"] = True
                     storage_dirty = await self._handle_door_event(latest_event, notify_targets)
                     if storage_dirty:
                         try:
@@ -423,6 +431,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         last_processed_key = last_seen
         last_processed_epoch = last_seen_epoch
         for key, event, parsed_ts in events_to_process:
+            if suppress_notifications:
+                event = dict(event)
+                event["_skip_notifications"] = True
             if await self._handle_door_event(event, notify_targets):
                 storage_dirty = True
             last_processed_key = key
@@ -1144,10 +1155,18 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         return None
 
-    async def async_refresh_access_history(self, *, force_latest: bool = False) -> List[Dict[str, Any]]:
+    async def async_refresh_access_history(
+        self,
+        *,
+        force_latest: bool = False,
+        suppress_notifications: bool = False,
+    ) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         try:
-            result = await self._process_door_events(force_latest=force_latest)
+            result = await self._process_door_events(
+                force_latest=force_latest,
+                suppress_notifications=suppress_notifications,
+            )
             if isinstance(result, list):
                 events = result
         finally:
