@@ -384,10 +384,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 # Drop everything collected so far (they are older events).
                 events_to_process = []
                 continue
-            timestamp_text = self._extract_event_timestamp(event)
+            timestamp_text = self._extract_event_timestamp(event, fallback=False)
             parsed_ts = 0.0
             if timestamp_text:
-                parsed_ts = AccessHistory._coerce_timestamp(timestamp_text)
+                parsed_ts = self._coerce_event_timestamp_to_epoch(timestamp_text)
             if parsed_ts and parsed_ts <= last_seen_epoch:
                 continue
             events_to_process.append((key, event, parsed_ts))
@@ -397,8 +397,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 latest_event: Optional[Dict[str, Any]] = None
                 latest_epoch = -1.0
                 for event in events:
-                    timestamp_text = self._extract_event_timestamp(event)
-                    parsed_ts = AccessHistory._coerce_timestamp(timestamp_text) if timestamp_text else 0.0
+                    timestamp_text = self._extract_event_timestamp(event, fallback=False)
+                    parsed_ts = self._coerce_event_timestamp_to_epoch(timestamp_text) if timestamp_text else 0.0
                     if parsed_ts > latest_epoch:
                         latest_epoch = parsed_ts
                         latest_event = event
@@ -700,11 +700,52 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Unable to persist manual door event state: %s", _safe_str(err))
 
     def _event_timestamp_to_epoch(self, timestamp: Any) -> float:
-        value = AccessHistory._coerce_timestamp(timestamp)
+        value = self._coerce_event_timestamp_to_epoch(timestamp)
         if value:
             return value
         try:
             return float(time.time())
+        except Exception:
+            return 0.0
+
+    def _coerce_event_timestamp_to_epoch(self, timestamp: Any) -> float:
+        from homeassistant.util import dt as dt_util
+
+        if isinstance(timestamp, (int, float)):
+            try:
+                return float(timestamp)
+            except Exception:
+                return 0.0
+        if isinstance(timestamp, dt.datetime):
+            try:
+                return dt_util.as_utc(timestamp).timestamp()
+            except Exception:
+                return 0.0
+        if timestamp in (None, ""):
+            return 0.0
+        try:
+            text = str(timestamp).strip()
+        except Exception:
+            return 0.0
+        if not text:
+            return 0.0
+
+        parsed = dt_util.parse_datetime(text)
+        if not parsed:
+            normalized = text.replace(" ", "T")
+            parsed = dt_util.parse_datetime(normalized)
+        if not parsed:
+            cleaned = text.replace("T", " ").split("+", 1)[0].split("Z", 1)[0]
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+                try:
+                    parsed = dt.datetime.strptime(cleaned, fmt)
+                    break
+                except Exception:
+                    continue
+        if not parsed:
+            return 0.0
+        try:
+            return dt_util.as_utc(parsed).timestamp()
         except Exception:
             return 0.0
 
@@ -1345,7 +1386,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 timestamp_text = coord._extract_event_timestamp(event, fallback=False)
                 if not timestamp_text:
                     continue
-                event_epoch = AccessHistory._coerce_timestamp(timestamp_text)
+                event_epoch = coord._coerce_event_timestamp_to_epoch(timestamp_text)
                 if not event_epoch:
                     continue
 
