@@ -4366,6 +4366,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             pin=pin_payload,
             schedule_name="24/7 Access",
             key_holder=False,
+            pedestrian_access=bool(d.get("pedestrian_access"))
+            if "pedestrian_access" in d
+            else None,
             status="active",
             schedule_id="1001",
             access_start=access_start if access_start is not None else date.today().isoformat(),
