@@ -32,6 +32,7 @@ from .access_history import AccessHistory, categorize_event
 CALLER_LOOKBACK_SECONDS = 120
 CALLER_CLEAR_DELAY_SECONDS = 10
 CALLER_EVENT_WINDOW_SECONDS = 30
+ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS = 10
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -664,12 +665,32 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         )
         return any(word in summary for word in granted_words)
 
+    @staticmethod
+    def _is_access_permitted_button_event(event: Dict[str, Any]) -> bool:
+        label = _safe_str(event.get("Event")).strip().lower()
+        return label == "access permitted button pressed"
+
+    def _has_recent_door_event(self, window_seconds: float) -> bool:
+        door_events = self.storage.data.get("door_events") or {}
+        last_epoch_raw = door_events.get("last_event_epoch")
+        try:
+            last_epoch = float(last_epoch_raw)
+        except (TypeError, ValueError):
+            return False
+        if last_epoch <= 0:
+            return False
+        return (time.time() - last_epoch) <= window_seconds
+
     async def async_handle_manual_event(self, event: Dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
 
         notifications = self.storage.data.get("notifications") or {}
         notify_targets: List[str] = list(notifications.get("targets") or [])
+        if self._is_access_permitted_button_event(event):
+            if not self._has_recent_door_event(ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS):
+                event["_skip_notifications"] = True
+                notify_targets = []
 
         storage_dirty = await self._handle_door_event(event, notify_targets)
         if storage_dirty:
@@ -769,6 +790,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         """Handle a single door event, firing HA events as needed."""
 
         storage_changed = False
+        skip_notifications = bool(event.get("_skip_notifications"))
         last_access = self.storage.data.setdefault("last_access", {})
 
         user_id = self._extract_event_user_id(event)
@@ -790,33 +812,35 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 self.hass.bus.async_fire(EVENT_NON_KEY_ACCESS_GRANTED, payload)
             except Exception as err:
                 _LOGGER.debug("Failed to emit non-key access event: %s", _safe_str(err))
-            if notify_targets:
+            if notify_targets and not skip_notifications:
                 await self._dispatch_notification(event, notify_targets)
 
         tokens = self._event_summary_tokens(event)
         summary_text = " ".join(tokens)
         event_kind: Optional[str] = None
         if tokens and self._event_is_access_denied(tokens):
-            try:
-                await self._send_alert_notification(
-                    "any_denied",
-                    user_id=user_id,
-                    summary=summary_text,
-                    extra={"event": event},
-                )
-            except Exception as err:
-                _LOGGER.debug("Failed to dispatch denied alert: %s", _safe_str(err))
+            if not skip_notifications:
+                try:
+                    await self._send_alert_notification(
+                        "any_denied",
+                        user_id=user_id,
+                        summary=summary_text,
+                        extra={"event": event},
+                    )
+                except Exception as err:
+                    _LOGGER.debug("Failed to dispatch denied alert: %s", _safe_str(err))
             event_kind = "denied"
         elif tokens and self._event_is_access_granted(tokens):
-            try:
-                await self._send_alert_notification(
-                    "user_granted",
-                    user_id=user_id,
-                    summary=summary_text,
-                    extra={"event": event},
-                )
-            except Exception as err:
-                _LOGGER.debug("Failed to dispatch granted alert: %s", _safe_str(err))
+            if not skip_notifications:
+                try:
+                    await self._send_alert_notification(
+                        "user_granted",
+                        user_id=user_id,
+                        summary=summary_text,
+                        extra={"event": event},
+                    )
+                except Exception as err:
+                    _LOGGER.debug("Failed to dispatch granted alert: %s", _safe_str(err))
             event_kind = "granted"
 
         if event_kind:
