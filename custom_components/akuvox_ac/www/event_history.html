@@ -566,7 +566,9 @@ function getEventTitle(evt){
   const typeLabel = getEventTypeLabel(evt);
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
-    return `${deviceName} - Call - ${caller}`;
+    const typeLower = typeLabel.toLowerCase();
+    const callLabel = typeLower === 'cloud' ? 'Cloud' : 'Call';
+    return `${deviceName} - ${callLabel} - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
     const typeLower = typeLabel.toLowerCase();
