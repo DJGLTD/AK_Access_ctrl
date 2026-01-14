@@ -4355,6 +4355,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await users_store.async_save()
 
         one_time = bool(d.get("one_time") or d.get("one_time_use") or d.get("one_time_code"))
+        notify_on_access = bool(d.get("notify_on_access"))
         access_start = d.get("access_start")
         access_end = d.get("access_end")
         expires_at = d.get("expires_at") or d.get("temporary_expires_at")
@@ -4379,6 +4380,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_expires_at=expires_at,
             temporary_created_at=dt_util.now(),
         )
+
+        if notify_on_access:
+            settings_store: Optional[AkuvoxSettingsStore] = hass.data[DOMAIN].get("settings_store")
+            if settings_store:
+                targets = settings_store.get_alert_targets()
+                updated = False
+                for target, cfg in targets.items():
+                    if not isinstance(cfg, dict):
+                        continue
+                    granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
+                    users = list(granted.get("users") or [])
+                    if temp_id not in users:
+                        users.append(temp_id)
+                        granted["users"] = users
+                        cfg["granted"] = granted
+                        targets[target] = cfg
+                        updated = True
+                if updated:
+                    await settings_store.set_alert_targets(targets)
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 

@@ -283,6 +283,7 @@ window.addEventListener('DOMContentLoaded', () => {
         pin,
         one_time: document.getElementById('one_time').checked,
         pedestrian_access: document.getElementById('pedestrian_access').checked,
+        notify_on_access: document.getElementById('notify_on_access').checked,
         access_start: startValue || undefined,
         access_end: endValue || undefined,
         expires_at: expiresAt || undefined
@@ -339,6 +340,11 @@ window.addEventListener('DOMContentLoaded', () => {
       <div class="form-check form-switch mb-3">
         <input class="form-check-input" type="checkbox" id="pedestrian_access" />
         <label class="form-check-label" for="pedestrian_access">Pedestrian only access</label>
+      </div>
+
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" id="notify_on_access" />
+        <label class="form-check-label" for="notify_on_access">Notify on access</label>
       </div>
 
       <div class="row g-3">
