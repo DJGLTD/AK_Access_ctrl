@@ -1624,11 +1624,11 @@ async function callAction(actionName, payload, entryId){
     handleAuthError(err);
     throw err;
   }
-  const body = await res.json().catch(() => ({}));
-  if (body && body.ok === false){
-    throw new Error(body.error || 'Action failed');
+  const responseBody = await res.json().catch(() => ({}));
+  if (responseBody && responseBody.ok === false){
+    throw new Error(responseBody.error || 'Action failed');
   }
-  return body;
+  return responseBody;
 }
 
 function broadcastScheduleRevision(){
