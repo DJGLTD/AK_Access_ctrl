@@ -1228,7 +1228,22 @@ function getEventTypeLabel(event){
   return (
     normalizeEventTypeLabel(event.Type)
     || normalizeEventTypeLabel(event.type)
+    || normalizeEventTypeLabel(event.CallType)
+    || normalizeEventTypeLabel(event.callType)
+    || normalizeEventTypeLabel(event.CallMode)
+    || normalizeEventTypeLabel(event.call_mode)
+    || normalizeEventTypeLabel(event.CallStatus)
+    || normalizeEventTypeLabel(event.call_status)
+    || normalizeEventTypeLabel(event.EventType)
+    || normalizeEventTypeLabel(event.eventType)
   );
+}
+
+function isCloudEvent(event, typeLabel){
+  if (!event || typeof event !== 'object') return false;
+  const source = String(event.Source || event.source || event._source || '').toLowerCase();
+  if (source.includes('cloud')) return true;
+  return String(typeLabel || '').toLowerCase().includes('cloud');
 }
 
 function normalizeStatusLabel(value){
@@ -1272,9 +1287,10 @@ function describeEventForDisplay(event){
   if (normalizedCategory === 'call') {
     const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
     const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';
+    const callLabel = isCloudEvent(event, typeLabel) ? 'Cloud' : 'Call';
     return {
       category: normalizedCategory,
-      title: `${deviceLabel} - Call - ${caller}`,
+      title: `${deviceLabel} - ${callLabel} - ${caller}`,
       highlight: caller || fallbackMessage || typeLabel || label,
     };
   }
