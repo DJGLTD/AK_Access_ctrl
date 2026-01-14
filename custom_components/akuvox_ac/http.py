@@ -3451,6 +3451,13 @@ class AkuvoxUISettings(HomeAssistantView):
                 schedules = schedules_store.all()
             except Exception:
                 schedules = {}
+        groups: List[str] = []
+        groups_store = root.get("groups_store")
+        if groups_store:
+            try:
+                groups = groups_store.groups()
+            except Exception:
+                groups = []
 
         credential_prompts = (
             settings.get_credential_prompts()
@@ -3485,6 +3492,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 "min_access_event_limit": access_bounds[0],
                 "max_access_event_limit": access_bounds[1],
                 "credential_prompts": credential_prompts,
+                "groups": groups,
             }
         )
 

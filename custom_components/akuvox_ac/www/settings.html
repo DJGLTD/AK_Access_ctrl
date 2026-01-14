@@ -521,6 +521,18 @@ function openInApp(view, params = {}, options = {}) {
   return delivered;
 }
 
+const ESCAPE_HTML_LOOKUP = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+};
+
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, ch => ESCAPE_HTML_LOOKUP[ch] ?? ch);
+}
+
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
@@ -544,6 +556,8 @@ let SETTINGS_DATA = {
 };
 let PHONES = [];
 let USERS = [];
+let DEVICES = [];
+let GROUPS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let credentialSaving = false;
@@ -574,6 +588,7 @@ let scheduleSaving = false;
 let scheduleDeleting = false;
 let scheduleStatusTimer = null;
 let scheduleReadOnly = false;
+const DEVICE_SAVE_STATE = new Map();
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
 
@@ -881,6 +896,16 @@ function hhmmToMinutes(str){
   return Math.max(5, Math.min(1440, total));
 }
 
+function normalizeGroupsList(groups){
+  if (Array.isArray(groups)) {
+    return groups.length ? groups.map(g => String(g)) : ['Default'];
+  }
+  if (groups === null || groups === undefined || groups === '') {
+    return ['Default'];
+  }
+  return [String(groups)];
+}
+
 function friendlyName(service){
   const found = PHONES.find(p => p.service === service);
   if (found) return found.name || found.service;
@@ -920,6 +945,104 @@ function renderIntegrity(){
   const toggle = document.getElementById('faceIntegrityToggle');
   if (toggle) toggle.checked = SETTINGS_DATA.face_integrity_enabled !== false;
   setIntegrityStatus('');
+}
+
+function renderDeviceAccess(){
+  const host = document.getElementById('deviceAccessContainer');
+  if (!host) return;
+  host.innerHTML = '';
+
+  if (!DEVICES.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No devices are available yet.';
+    host.appendChild(empty);
+    return;
+  }
+
+  const groupList = GROUPS.length ? GROUPS : ['Default'];
+  DEVICES.forEach(device => {
+    const entryId = String(device.entry_id || device.id || '');
+    const currentGroups = normalizeGroupsList(device.sync_groups || device.groups || []);
+    const card = document.createElement('div');
+    card.className = 'device-option';
+    card.dataset.entryId = entryId;
+    card.innerHTML = `
+      <div class="device-header">
+        <div>
+          <div class="fw-semibold">${escapeHtml(device.name || 'Unnamed device')}</div>
+          <div class="device-meta">${escapeHtml(device.type || 'Unknown type')} · ${escapeHtml(device.ip || '—')}</div>
+        </div>
+        <span class="badge text-bg-secondary">${escapeHtml(device.status || (device.online === false ? 'offline' : 'online'))}</span>
+      </div>
+      <div class="mt-3">
+        <label class="form-label">Allowed access groups</label>
+        <select class="form-select" multiple size="4" data-device-groups></select>
+        <div class="form-text muted">Users must share one of these groups to sync to this device.</div>
+      </div>
+      <div class="d-flex align-items-center justify-content-end gap-2 mt-3">
+        <span class="small muted me-auto" data-device-status></span>
+        <button class="btn btn-outline-light btn-sm" data-device-reset>Reset</button>
+        <button class="btn btn-success btn-sm" data-device-save>Save</button>
+      </div>
+    `;
+    const select = card.querySelector('[data-device-groups]');
+    if (select){
+      groupList.forEach(group => {
+        const opt = document.createElement('option');
+        opt.value = group;
+        opt.textContent = group;
+        if (currentGroups.includes(group)) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+    host.appendChild(card);
+  });
+
+  host.querySelectorAll('[data-device-save]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('.device-option');
+      if (!card) return;
+      const entryId = card.dataset.entryId || '';
+      const select = card.querySelector('[data-device-groups]');
+      if (!entryId || !select) return;
+      const status = card.querySelector('[data-device-status]');
+      const selected = Array.from(select.selectedOptions).map(opt => opt.value);
+      const groups = selected.length ? selected : ['Default'];
+      if (DEVICE_SAVE_STATE.get(entryId)) return;
+      DEVICE_SAVE_STATE.set(entryId, true);
+      if (status) status.textContent = 'Saving…';
+      try{
+        const res = await callAction('device_set_groups', { groups }, entryId);
+        const updated = normalizeGroupsList(res?.groups || groups);
+        const dev = DEVICES.find(d => String(d.entry_id || d.id || '') === entryId);
+        if (dev) dev.sync_groups = updated;
+        if (status) status.textContent = 'Saved ✓';
+      }catch(err){
+        if (handleAuthError(err)) return;
+        if (status) status.textContent = 'Save failed';
+        alert('Failed to update device groups: ' + (err && err.message ? err.message : err));
+      }finally{
+        DEVICE_SAVE_STATE.delete(entryId);
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      }
+    });
+  });
+
+  host.querySelectorAll('[data-device-reset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.device-option');
+      if (!card) return;
+      const entryId = card.dataset.entryId || '';
+      const select = card.querySelector('[data-device-groups]');
+      if (!select || !entryId) return;
+      const dev = DEVICES.find(d => String(d.entry_id || d.id || '') === entryId);
+      const currentGroups = normalizeGroupsList(dev?.sync_groups || dev?.groups || []);
+      Array.from(select.options).forEach(opt => {
+        opt.selected = currentGroups.includes(opt.value);
+      });
+    });
+  });
 }
 
 function availablePhonesForSelect(){
@@ -1492,11 +1615,13 @@ function gatherScheduleSpec(){
   return base;
 }
 
-async function callAction(actionName, payload){
+async function callAction(actionName, payload, entryId){
+  const body = { action: actionName, payload };
+  if (entryId) body.entry_id = entryId;
   const res = await fetchWithAuth(API_ACTION, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: actionName, payload })
+    body: JSON.stringify(body)
   });
   if (!res.ok){
     const text = await res.text();
@@ -1736,6 +1861,9 @@ async function loadData(){
       registry_users: [],
     };
 
+    DEVICES = Array.isArray(settingsResp?.devices) ? settingsResp.devices : [];
+    GROUPS = Array.isArray(settingsResp?.groups) ? settingsResp.groups : [];
+
     const minDelay = Number(settingsResp?.min_auto_sync_delay_minutes);
     const maxDelay = Number(settingsResp?.max_auto_sync_delay_minutes);
     const safeMinDelay = Number.isFinite(minDelay) ? Math.max(1, Math.round(minDelay)) : 5;
@@ -1818,6 +1946,7 @@ async function loadData(){
     renderEventLimit();
     renderIntegrity();
     renderCredentialPrompts();
+    renderDeviceAccess();
     renderAlerts();
   } catch (err){
     if (handleAuthError(err)) return;
@@ -2130,6 +2259,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
       </div>
       <div id="credentialStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">Device Access Groups</div>
+    <div class="card-body">
+      <p class="muted">Pick which user groups can sync to each device. Users must share at least one selected group to gain access on that device.</p>
+      <div id="deviceAccessContainer"></div>
     </div>
   </div>
 
