@@ -4356,6 +4356,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         one_time = bool(d.get("one_time") or d.get("one_time_use") or d.get("one_time_code"))
         notify_on_access = bool(d.get("notify_on_access"))
+        notify_targets_raw = d.get("notify_targets")
+        notify_targets = []
+        if isinstance(notify_targets_raw, (list, tuple, set)):
+            notify_targets = [
+                str(target).strip()
+                for target in notify_targets_raw
+                if str(target).strip()
+            ]
+        notify_targets = list(dict.fromkeys(notify_targets))
         access_start = d.get("access_start")
         access_end = d.get("access_end")
         expires_at = d.get("expires_at") or d.get("temporary_expires_at")
@@ -4387,6 +4396,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 targets = settings_store.get_alert_targets()
                 updated = False
                 for target, cfg in targets.items():
+                    if notify_targets and target not in notify_targets:
+                        continue
                     if not isinstance(cfg, dict):
                         continue
                     granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}

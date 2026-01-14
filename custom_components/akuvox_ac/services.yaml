@@ -69,6 +69,11 @@ add_temporary_user:
       required: false
       selector:
         boolean:
+    notify_targets:
+      required: false
+      example: ["notify.mobile_app_phone"]
+      selector:
+        object:
     access_start:
       required: false
       selector:

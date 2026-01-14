@@ -1399,6 +1399,13 @@ function renderUsers(list){
 
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
+    const extendHref = buildHref('temp-user', {
+      extend: u.id,
+      name: u.name,
+      access_start: u.access_start,
+      access_end: u.access_end,
+      expires_at: u.temporary_expires_at
+    });
     const actions = (!u.isCloud && idMatchesFilter(u.id))
       ? (u.temporary_expired
         ? `
@@ -1410,6 +1417,9 @@ function renderUsers(list){
             <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
           `}
           <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
+          ${isTemporaryUser ? `
+            <a class="btn btn-sm btn-outline-primary" data-extend-user="${escapeHtml(u.id)}" data-extend-name="${escapeHtml(u.name || '')}" data-extend-start="${escapeHtml(u.access_start || '')}" data-extend-end="${escapeHtml(u.access_end || '')}" data-extend-expires="${escapeHtml(u.temporary_expires_at || '')}" href="${escapeHtml(extendHref)}"><i class="bi bi-calendar-plus"></i> Extend</a>
+          ` : ''}
           ${isTemporaryUser ? '' : `
             <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
               <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
@@ -1456,6 +1466,21 @@ function renderUsers(list){
       ev.preventDefault();
       const id = link.dataset.userEvents || '';
       openInApp('event-history', id ? { user: id } : {});
+    });
+  });
+
+  host.querySelectorAll('[data-extend-user]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const id = link.dataset.extendUser || '';
+      if (!id) return;
+      openInApp('temp-user', {
+        extend: id,
+        name: link.dataset.extendName || '',
+        access_start: link.dataset.extendStart || '',
+        access_end: link.dataset.extendEnd || '',
+        expires_at: link.dataset.extendExpires || ''
+      });
     });
   });
 

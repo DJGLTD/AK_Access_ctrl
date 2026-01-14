@@ -1940,12 +1940,23 @@ function renderUsers(devs, registryUsers, kpis){
     const editHref = buildHref('users', { id: u.id });
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
+    const extendHref = buildHref('temp-user', {
+      extend: u.id,
+      name: u.name,
+      access_start: u.access_start,
+      access_end: u.access_end,
+      expires_at: u.temporary_expires_at
+    });
     let actions;
     if (u.isCloud) {
       actions = '<span class="text-danger fw-semibold">Cloud managed</span>';
     } else if (/^(HA|TMP)\d+$/.test(u.id)) {
       const safeId = escapeHtml(u.id);
       const safeEventFilter = escapeHtml(eventFilter || u.id);
+      const safeName = escapeHtml(u.name || '');
+      const safeAccessStart = escapeHtml(u.access_start || '');
+      const safeAccessEnd = escapeHtml(u.access_end || '');
+      const safeExpiresAt = escapeHtml(u.temporary_expires_at || '');
       const paused = isUserPaused(u.id);
       const isTemporaryUser = !!(
         u.temporary
@@ -1960,6 +1971,7 @@ function renderUsers(devs, registryUsers, kpis){
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
       } else if (isTemporaryUser) {
         actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
+          <a class="btn btn-sm btn-outline-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
       } else {
         actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
@@ -2037,6 +2049,21 @@ function renderUsers(devs, registryUsers, kpis){
       ev.preventDefault();
       const uid = link.dataset.userEvents || '';
       openInApp('event-history', uid ? { user: uid } : {});
+    });
+  });
+
+  tableBody.querySelectorAll('a[data-extend-user]').forEach(link => {
+    link.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const uid = link.dataset.extendUser || '';
+      if (!uid) return;
+      openInApp('temp-user', {
+        extend: uid,
+        name: link.dataset.extendName || '',
+        access_start: link.dataset.extendStart || '',
+        access_end: link.dataset.extendEnd || '',
+        expires_at: link.dataset.extendExpires || ''
+      });
     });
   });
 
