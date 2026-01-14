@@ -1986,8 +1986,8 @@ function renderUsers(devs, registryUsers, kpis){
           </button>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
       } else if (isTemporaryUser) {
-        actions = `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
-          <a class="btn btn-sm btn-outline-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
+        actions = `<a class="btn btn-sm btn-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
+          <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
       } else {
         actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
