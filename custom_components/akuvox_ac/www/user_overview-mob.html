@@ -50,6 +50,31 @@
     .badge-inactive{background:rgba(108,117,125,0.2);color:#c2c9d1;}
     .badge-online{background:rgba(13,202,240,0.18);color:#6be7ff;}
     .badge-rebooting{background:rgba(111,66,193,0.18);color:#c49dff;}
+    .pin-toggle{
+      background:transparent;
+      border:0;
+      color:var(--text);
+      cursor:pointer;
+      font:inherit;
+      font-weight:600;
+      font-variant-numeric:tabular-nums;
+      letter-spacing:0.1em;
+      padding:0;
+      text-decoration:none;
+    }
+    .pin-toggle:hover,
+    .pin-toggle:focus{
+      color:#0dcaf0;
+      text-decoration:underline;
+    }
+    .pin-toggle:focus{
+      outline:2px solid rgba(13,202,240,.35);
+      outline-offset:2px;
+    }
+    .pin-toggle.revealed{
+      color:#0dcaf0;
+      letter-spacing:0.08em;
+    }
     .empty-state{background:var(--card);border:1px dashed var(--border);border-radius:0.75rem;padding:1.5rem;text-align:center;color:var(--muted);}
     .last-updated{color:var(--muted);font-size:0.85rem;text-align:right;}
     @media (max-width:720px){
@@ -983,6 +1008,11 @@ const FACE_STATUS_FIELDS = [
   'has_face','hasFace','HasFace'
 ];
 const FACE_STATE_FIELDS = ['face_status','faceStatus','FaceStatus'];
+const PIN_FIELDS = [
+  'pin','Pin','PIN',
+  'private_pin','PrivatePIN','privatePin','PrivatePin',
+  'password','Password'
+];
 
 function normalizeFaceFlag(value){
   if (typeof value === 'boolean') return value;
@@ -1017,6 +1047,18 @@ function extractFaceUrl(record){
     if (typeof raw === 'string' && raw.trim()){
       return raw.trim();
     }
+  }
+  return '';
+}
+
+function extractPin(record){
+  if (!record || typeof record !== 'object') return '';
+  for (const key of PIN_FIELDS){
+    if (!(key in record)) continue;
+    const raw = record[key];
+    if (raw === null || raw === undefined) continue;
+    const str = String(raw).trim();
+    if (str) return str;
   }
   return '';
 }
@@ -1057,6 +1099,51 @@ function formatScheduleDisplay(rawId, label){
   return displayId || name;
 }
 
+function renderPinToggle(pin, name){
+  const raw = typeof pin === 'number' ? String(pin) : String(pin || '').trim();
+  if (!raw) return '<span class="text-muted">—</span>';
+  const safePin = escapeHtml(raw);
+  const displayName = String(name || '').trim();
+  const label = displayName ? `Show PIN for ${displayName}` : 'Show PIN';
+  const safeLabel = escapeHtml(label);
+  return `<button type="button" class="pin-toggle" data-pin="${safePin}" data-state="hidden" title="${safeLabel}" aria-label="${safeLabel}">****</button>`;
+}
+
+function attachPinRevealHandlers(container){
+  if (!container) return;
+  container.querySelectorAll('.pin-toggle').forEach(btn => {
+    const storedPin = btn.dataset.pin || '';
+    if (!storedPin) return;
+    btn.addEventListener('click', () => {
+      const pin = btn.dataset.pin || '';
+      if (!pin) return;
+      if (btn._pinTimer) {
+        clearTimeout(btn._pinTimer);
+        btn._pinTimer = null;
+      }
+      btn.textContent = pin;
+      btn.classList.add('revealed');
+      btn.dataset.state = 'shown';
+      btn._pinTimer = setTimeout(() => {
+        btn.textContent = '****';
+        btn.classList.remove('revealed');
+        btn.dataset.state = 'hidden';
+        btn._pinTimer = null;
+      }, 5000);
+    });
+    btn.addEventListener('blur', () => {
+      if (btn.dataset.state !== 'shown') return;
+      if (btn._pinTimer) {
+        clearTimeout(btn._pinTimer);
+        btn._pinTimer = null;
+      }
+      btn.textContent = '****';
+      btn.classList.remove('revealed');
+      btn.dataset.state = 'hidden';
+    });
+  });
+}
+
 function compileUsers(devices, registryUsers, kpis){
   const normalizedDevices = (devices || []).map(d => ({
     entryId: String(d.entry_id || d.id || ''),
@@ -1073,6 +1160,7 @@ function compileUsers(devices, registryUsers, kpis){
     if (!key) return;
     const groups = normalizeGroupsList(r.groups || []);
     const statusHint = extractFaceStatus(r);
+    const pin = extractPin(r);
     by.set(key, {
       id: key,
       name: r.name || key,
@@ -1097,6 +1185,7 @@ function compileUsers(devices, registryUsers, kpis){
       temporary_used_at: r.temporary_used_at || '',
       temporary_created_at: r.temporary_created_at || '',
       remote_enrol_pending: !!r.remote_enrol_pending,
+      pin,
       face_url: extractFaceUrl(r),
       face_status: statusHint,
       face_synced_at: r.face_synced_at || '',
@@ -1125,6 +1214,7 @@ function compileUsers(devices, registryUsers, kpis){
       const last = u.LastAccess || u.last_access || '';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
+      const devicePin = extractPin(u);
 
       if (!by.has(key)) {
         by.set(key, {
@@ -1134,6 +1224,7 @@ function compileUsers(devices, registryUsers, kpis){
           access: accessAllowed ? 'Allowed' : 'Denied',
           isCloud,
           last: last || '—',
+          pin: devicePin,
           presentOnDevice: true,
           fromRegistry: false,
           status: u.Status || u.status || '',
@@ -1166,6 +1257,13 @@ function compileUsers(devices, registryUsers, kpis){
         cur._denied = true;
       } else if (!cur.fromRegistry) {
         cur.access = accessAllowed ? 'Allowed' : 'Denied';
+      }
+      if (devicePin) {
+        if (!cur.pin) {
+          cur.pin = devicePin;
+        } else if (!cur.fromRegistry) {
+          cur.pin = devicePin;
+        }
       }
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
@@ -1414,6 +1512,7 @@ function renderUsers(list){
       : '';
     const errorCount = Number(u.face_error_count || 0);
     const errorText = errorCount > 0 ? `${errorCount} face sync error${errorCount === 1 ? '' : 's'}` : '0 face sync errors';
+    const pinToggle = renderPinToggle(u.pin, u.name);
 
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
@@ -1462,6 +1561,7 @@ function renderUsers(list){
       <div class="user-groups">${chips || '<span class="text-muted">No groups</span>'}</div>
       <div class="user-meta">
         <div><i class="bi bi-clock-history"></i>Last access: ${escapeHtml(u.last || '—')}</div>
+        <div><i class="bi bi-key"></i>Code: ${pinToggle}</div>
         <div><i class="bi bi-calendar2-week"></i>Schedule: ${schedule}</div>
         <div><i class="bi bi-hdd-network"></i>${escapeHtml(coverageText)}${seenNote ? ` • ${escapeHtml(seenNote)}` : ''}</div>
         <div><i class="bi bi-exclamation-triangle"></i>${escapeHtml(errorText)}</div>
@@ -1470,6 +1570,8 @@ function renderUsers(list){
     `;
     host.appendChild(card);
   });
+
+  attachPinRevealHandlers(host);
 
   host.querySelectorAll('[data-edit-user]').forEach(btn => {
     btn.addEventListener('click', (ev) => {
