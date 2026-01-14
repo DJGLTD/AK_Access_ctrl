@@ -4016,23 +4016,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     if "groups_store" not in root:
         gs = AkuvoxGroupsStore(hass)
         await gs.async_load()
+        root["groups_store"] = gs
+
+    if "users_store" not in root:
         us = AkuvoxUsersStore(hass)
         await us.async_load()
+        root["users_store"] = us
+
+    if "schedules_store" not in root:
         schedules = AkuvoxSchedulesStore(hass)
         await schedules.async_load()
+        root["schedules_store"] = schedules
+
+    if "settings_store" not in root:
         settings = AkuvoxSettingsStore(hass)
         await settings.async_load()
-
-        root["groups_store"] = gs
-        root["users_store"] = us
-        root["schedules_store"] = schedules
         root["settings_store"] = settings
+
+    if "sync_manager" not in root:
         root["sync_manager"] = SyncManager(hass)
-        root["sync_queue"] = SyncQueue(hass)
         hass.async_create_task(
             root["sync_manager"]._cleanup_temporary_users(reason="startup")
         )
 
+    if "sync_queue" not in root:
+        root["sync_queue"] = SyncQueue(hass)
+
+    settings = root.get("settings_store")
+    if settings:
         t = settings.get_auto_sync_time()
         if t:
             try:
