@@ -1416,10 +1416,10 @@ function renderUsers(list){
           ${isTemporaryUser ? '' : `
             <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
           `}
-          <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
           ${isTemporaryUser ? `
-            <a class="btn btn-sm btn-outline-primary" data-extend-user="${escapeHtml(u.id)}" data-extend-name="${escapeHtml(u.name || '')}" data-extend-start="${escapeHtml(u.access_start || '')}" data-extend-end="${escapeHtml(u.access_end || '')}" data-extend-expires="${escapeHtml(u.temporary_expires_at || '')}" href="${escapeHtml(extendHref)}"><i class="bi bi-calendar-plus"></i> Extend</a>
+            <a class="btn btn-sm btn-primary" data-extend-user="${escapeHtml(u.id)}" data-extend-name="${escapeHtml(u.name || '')}" data-extend-start="${escapeHtml(u.access_start || '')}" data-extend-end="${escapeHtml(u.access_end || '')}" data-extend-expires="${escapeHtml(u.temporary_expires_at || '')}" href="${escapeHtml(extendHref)}"><i class="bi bi-calendar-plus"></i> Extend</a>
           ` : ''}
+          <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
           ${isTemporaryUser ? '' : `
             <button class="btn btn-sm btn-outline-warning" data-toggle-access="${escapeHtml(u.id)}">
               <i class="bi ${isUserPaused(u.id) ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
