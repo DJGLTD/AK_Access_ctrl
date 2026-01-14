@@ -30,6 +30,57 @@
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
 
+const EXTEND_ID = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('extend') || '';
+  } catch (err) {
+    return '';
+  }
+})();
+
+const EXTEND_NAME = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('name') || '';
+  } catch (err) {
+    return '';
+  }
+})();
+
+const EXTEND_START = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('access_start') || '';
+  } catch (err) {
+    return '';
+  }
+})();
+
+const EXTEND_END = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('access_end') || '';
+  } catch (err) {
+    return '';
+  }
+})();
+
+const EXTEND_EXPIRES_AT = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    return qs.get('expires_at') || '';
+  } catch (err) {
+    return '';
+  }
+})();
+
+const API_PHONES = signedPath('phones', '/api/akuvox_ac/ui/phones');
+const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
+let PHONES = [];
+let ALERT_TARGETS = {};
+let TEMP_NOTIFY_TARGETS = [];
+
 const REACTIVATE_ID = (() => {
   try {
     const qs = new URLSearchParams(location.search);
@@ -108,6 +159,27 @@ async function callService(service, data) {
     throw new Error(text || `Service ${service} failed`);
   }
   return res.json().catch(() => ({}));
+}
+
+function escapeHtml(value){
+  const lookup = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return String(value ?? '').replace(/[&<>"']/g, ch => lookup[ch] ?? ch);
+}
+
+async function fetchWithAuth(url, options = {}) {
+  const token = getAuthToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return fetch(url, { ...options, headers });
+}
+
+async function apiGet(url) {
+  const res = await fetchWithAuth(url);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 function buildHref(slug, params = {}) {
@@ -235,6 +307,85 @@ function updateEndTimeRequirement() {
   }
 }
 
+function splitDateTime(value) {
+  if (!value) return { date: '', time: '' };
+  const raw = String(value).trim();
+  if (!raw) return { date: '', time: '' };
+  const clean = raw.replace(' ', 'T');
+  const [datePart, timePart] = clean.split('T');
+  if (!datePart) return { date: '', time: '' };
+  const time = timePart ? timePart.slice(0, 5) : '';
+  return { date: datePart, time };
+}
+
+function friendlyNotifyName(service){
+  const found = (PHONES || []).find(p => p.service === service);
+  return found ? (found.name || found.service) : service;
+}
+
+function allNotifyTargets(){
+  const combined = new Set();
+  (PHONES || []).forEach(p => combined.add(p.service));
+  Object.keys(ALERT_TARGETS || {}).forEach(key => combined.add(key));
+  return Array.from(combined).filter(Boolean).sort((a, b) => friendlyNotifyName(a).localeCompare(friendlyNotifyName(b)));
+}
+
+function renderNotifyTargets(){
+  const wrap = document.getElementById('notifyTargets');
+  const toggle = document.getElementById('notify_on_access');
+  if (!wrap || !toggle) return;
+  wrap.innerHTML = '';
+  const enabled = toggle.checked;
+  wrap.style.display = enabled ? '' : 'none';
+  if (!enabled) return;
+  const targets = allNotifyTargets();
+  if (!targets.length) {
+    wrap.innerHTML = '<div class="form-text muted">No notify devices found.</div>';
+    return;
+  }
+  if (!TEMP_NOTIFY_TARGETS.length) {
+    TEMP_NOTIFY_TARGETS = [...targets];
+  }
+  const selected = new Set(TEMP_NOTIFY_TARGETS);
+  targets.forEach(service => {
+    const id = `notify_${service.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    const row = document.createElement('div');
+    row.className = 'form-check';
+    row.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="${id}" data-notify-target="${escapeHtml(service)}">
+      <label class="form-check-label" for="${id}">${escapeHtml(friendlyNotifyName(service))}</label>
+    `;
+    const input = row.querySelector('input');
+    if (input) {
+      input.checked = selected.has(service);
+      input.addEventListener('change', () => {
+        const next = new Set(TEMP_NOTIFY_TARGETS);
+        if (input.checked) next.add(service);
+        else next.delete(service);
+        TEMP_NOTIFY_TARGETS = Array.from(next);
+      });
+    }
+    wrap.appendChild(row);
+  });
+}
+
+async function loadNotifyTargets(){
+  try {
+    const [phonesResp, settingsResp] = await Promise.all([
+      apiGet(API_PHONES),
+      apiGet(API_SETTINGS)
+    ]);
+    PHONES = phonesResp?.phones || [];
+    ALERT_TARGETS = settingsResp?.alerts?.targets || {};
+  } catch (err) {
+    console.warn('Failed to load notify targets', err);
+    PHONES = [];
+    ALERT_TARGETS = {};
+  } finally {
+    renderNotifyTargets();
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('tempUserForm');
   const startDate = document.getElementById('start_date');
@@ -246,11 +397,49 @@ window.addEventListener('DOMContentLoaded', () => {
   const nameRow = document.getElementById('tempNameRow');
   const pinRow = document.getElementById('tempPinRow');
   const oneTimeRow = document.getElementById('tempOneTimeRow');
+  const pedestrianRow = document.getElementById('tempPedestrianRow');
+  const notifyRow = document.getElementById('tempNotifyRow');
   const submitBtn = document.getElementById('tempUserSubmit');
   const nameInput = document.getElementById('temp_name');
   const pinInput = document.getElementById('temp_pin');
+  const isExtend = !!EXTEND_ID;
+  const notifyToggle = document.getElementById('notify_on_access');
 
-  if (REACTIVATE_ID) {
+  if (isExtend) {
+    if (title) title.textContent = 'Extend Temporary User';
+    if (desc) {
+      const label = EXTEND_NAME ? `${EXTEND_NAME} (${EXTEND_ID})` : EXTEND_ID;
+      desc.textContent = `Update the end date and time for ${label}.`;
+    }
+    if (nameRow) nameRow.style.display = 'none';
+    if (pinRow) pinRow.style.display = 'none';
+    if (oneTimeRow) oneTimeRow.style.display = 'none';
+    if (pedestrianRow) pedestrianRow.style.display = 'none';
+    if (notifyRow) notifyRow.style.display = 'none';
+    if (nameInput) {
+      nameInput.required = false;
+      nameInput.disabled = true;
+    }
+    if (pinInput) {
+      pinInput.disabled = true;
+    }
+    if (oneTime) {
+      oneTime.checked = false;
+      oneTime.disabled = true;
+    }
+    if (startDate) {
+      startDate.value = EXTEND_START || startDate.value || new Date().toISOString().slice(0, 10);
+      startDate.disabled = true;
+    }
+    const endParts = splitDateTime(EXTEND_EXPIRES_AT);
+    const endDateValue = EXTEND_END || endParts.date;
+    if (endDate) endDate.value = endDateValue || endDate.value || '';
+    const endTimeInput = document.getElementById('end_time');
+    if (endTimeInput) endTimeInput.value = endParts.time || endTimeInput.value || '';
+    if (submitBtn) {
+      submitBtn.innerHTML = '<i class="bi bi-calendar-plus"></i> Extend temporary user';
+    }
+  } else if (REACTIVATE_ID) {
     if (title) title.textContent = 'Reactivate Temporary User';
     if (desc) {
       const label = REACTIVATE_NAME ? `${REACTIVATE_NAME} (${REACTIVATE_ID})` : REACTIVATE_ID;
@@ -271,12 +460,20 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  if (startDate) startDate.value = new Date().toISOString().slice(0, 10);
+  if (startDate && !isExtend) startDate.value = new Date().toISOString().slice(0, 10);
   if (oneTime) oneTime.addEventListener('change', toggleOneTime);
   toggleOneTime();
   updateEndTimeRequirement();
   endDate?.addEventListener('change', updateEndTimeRequirement);
   document.getElementById('end_time')?.addEventListener('input', updateEndTimeRequirement);
+  if (notifyToggle && !isExtend) {
+    notifyToggle.addEventListener('change', () => {
+      renderNotifyTargets();
+    });
+  }
+  if (!isExtend) {
+    loadNotifyTargets();
+  }
 
   document.getElementById('btnToday')?.addEventListener('click', () => {
     if (endDate) endDate.value = new Date().toISOString().slice(0, 10);
@@ -311,7 +508,15 @@ window.addEventListener('DOMContentLoaded', () => {
       const expiresAt = endValue ? combineDateTime(endValue, endTime, '23:59') : '';
 
       try {
-        if (REACTIVATE_ID) {
+        if (isExtend) {
+          await callService('reactivate_temporary_user', {
+            id: EXTEND_ID,
+            access_start: startValue || EXTEND_START || undefined,
+            access_end: endValue || undefined,
+            expires_at: expiresAt || undefined
+          });
+          setStatus('Temporary user extended. Syncing to devices shortly.', true);
+        } else if (REACTIVATE_ID) {
           await callService('reactivate_temporary_user', {
             id: REACTIVATE_ID,
             access_start: startValue || undefined,
@@ -332,6 +537,7 @@ window.addEventListener('DOMContentLoaded', () => {
             one_time: document.getElementById('one_time').checked,
             pedestrian_access: document.getElementById('pedestrian_access').checked,
             notify_on_access: document.getElementById('notify_on_access').checked,
+            notify_targets: document.getElementById('notify_on_access').checked ? TEMP_NOTIFY_TARGETS : [],
             access_start: startValue || undefined,
             access_end: endValue || undefined,
             expires_at: expiresAt || undefined
@@ -344,7 +550,9 @@ window.addEventListener('DOMContentLoaded', () => {
           resetGeneratedPin();
         }
       } catch (err) {
-        const fallback = REACTIVATE_ID ? 'Failed to reactivate temporary user.' : 'Failed to create temporary user.';
+        let fallback = 'Failed to create temporary user.';
+        if (isExtend) fallback = 'Failed to extend temporary user.';
+        else if (REACTIVATE_ID) fallback = 'Failed to reactivate temporary user.';
         setStatus(err?.message || fallback, false);
       }
     });
@@ -391,6 +599,8 @@ window.addEventListener('DOMContentLoaded', () => {
       <div class="form-check form-switch mb-3" id="tempNotifyRow">
         <input class="form-check-input" type="checkbox" id="notify_on_access" />
         <label class="form-check-label" for="notify_on_access">Notify on access</label>
+        <div id="notifyTargets" class="mt-2"></div>
+        <div class="form-text muted">Choose which Home Assistant mobile app devices should notify when this user is granted access.</div>
       </div>
 
       <div class="row g-3">

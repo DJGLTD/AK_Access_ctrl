@@ -536,7 +536,18 @@ function getEventStatusText(evt){
 
 function getEventTypeLabel(evt){
   if (!evt || typeof evt !== 'object') return '';
-  const value = evt.Type ?? evt.type;
+  const value = pickEventValue(evt, [
+    'Type',
+    'type',
+    'CallType',
+    'callType',
+    'CallMode',
+    'call_mode',
+    'CallStatus',
+    'call_status',
+    'EventType',
+    'eventType',
+  ]);
   if (value === null || value === undefined) return '';
   const text = String(value).trim();
   return text ? text : '';
@@ -568,7 +579,7 @@ function getEventTitle(evt){
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
     const typeLower = typeLabel.toLowerCase();
-    const callLabel = typeLower === 'cloud' ? 'Cloud' : 'Call';
+    const callLabel = typeLower.includes('cloud') ? 'Cloud' : 'Call';
     return `${deviceName} - ${callLabel} - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
