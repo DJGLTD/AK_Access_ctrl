@@ -731,6 +731,13 @@ function parseIsoDateTime(value){
   return parsed;
 }
 
+function formatCountdown(ms){
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
 function sanitizeCredentialPrompts(raw){
   const base = { ...DEFAULT_CREDENTIAL_PROMPTS };
   if (raw && typeof raw === 'object'){
@@ -1661,11 +1668,20 @@ function renderUsers(devs, registryUsers, kpis){
       || item.temporary_used_at
     );
     const now = new Date();
+    const tempRemainingMs = tempExpiresAt ? tempExpiresAt - now : null;
+    const tempCounting = isTemporary
+      && tempRemainingMs !== null
+      && tempRemainingMs > 0
+      && tempRemainingMs <= 3600000
+      && !item.temporary_used_at;
     const tempExpired = isTemporary && (
       !!item.temporary_used_at
       || (tempExpiresAt && now >= tempExpiresAt)
     );
-    const expired = item.access_expired || accessState.expired || tempExpired;
+    let expired = item.access_expired || accessState.expired || tempExpired;
+    if (tempCounting) {
+      expired = false;
+    }
     const notStarted = item.access_in_future || accessState.notStarted;
     const baseLower = String(baseScheduleName).toLowerCase();
     const { _seenOn, _denied, _deviceFaceActive, _pinOnDevice, ...rest } = item;
@@ -1705,6 +1721,8 @@ function renderUsers(devs, registryUsers, kpis){
       accessText = 'Deleted';
     } else if (isPaused) {
       accessText = 'Paused';
+    } else if (tempCounting) {
+      accessText = `Expires in ${formatCountdown(tempRemainingMs)}`;
     } else if (expired) {
       accessText = 'Expired';
     } else if (item._denied && baseLower !== 'no access') {
