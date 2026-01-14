@@ -65,6 +65,10 @@ add_temporary_user:
       required: false
       selector:
         boolean:
+    notify_on_access:
+      required: false
+      selector:
+        boolean:
     access_start:
       required: false
       selector:
