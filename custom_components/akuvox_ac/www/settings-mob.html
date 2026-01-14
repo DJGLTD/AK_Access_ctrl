@@ -1946,6 +1946,18 @@ async function loadData(){
   } catch (err){
     if (handleAuthError(err)) return;
     alert('Failed to load settings: ' + (err && err.message ? err.message : err));
+    DEVICES = [];
+    GROUPS = [];
+    PHONES = [];
+    USERS = [];
+    ALERT_TARGETS = {};
+    renderAutoSyncDelay();
+    renderHealthInterval();
+    renderEventLimit();
+    renderIntegrity();
+    renderCredentialPrompts();
+    renderDeviceAccess();
+    renderAlerts();
   } finally {
     setBusy(false);
   }
