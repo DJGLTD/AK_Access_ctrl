@@ -1889,8 +1889,11 @@ async function load(){
     try {
       const settingsResp = await apiGet(API_SETTINGS);
       ALERT_TARGETS = settingsResp?.alerts?.targets || {};
+      if (settingsResp && settingsResp.credential_prompts) {
+        CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(settingsResp.credential_prompts);
+      }
     } catch (err) {
-      if (handleAuthError(err)) return;
+      handleAuthError(err);
       console.warn('Failed to load notification settings', err);
       ALERT_TARGETS = {};
     }
