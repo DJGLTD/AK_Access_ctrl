@@ -124,6 +124,7 @@ def ensure_homeassistant_stubs() -> None:
 
     http_const_module = types.ModuleType("homeassistant.components.http.const")
     http_const_module.KEY_HASS_REFRESH_TOKEN_ID = "refresh_token_id"
+    http_const_module.KEY_HASS_USER = "user"
 
     persistent_notification_module = types.ModuleType("homeassistant.components.persistent_notification")
 
