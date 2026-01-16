@@ -1596,7 +1596,7 @@ def _static_asset(path: str) -> Path:
 def _signed_paths_for_request(
     hass: HomeAssistant, request: web.Request
 ) -> Dict[str, str]:
-    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    refresh_id = _request_refresh_token_id(hass, request)
     if not refresh_id:
         return {}
 
@@ -1670,6 +1670,31 @@ def _request_device_id(
     if not device_id:
         return None
     return str(device_id)
+
+
+def _request_refresh_token_id(
+    hass: HomeAssistant, request: Optional[web.Request]
+) -> Optional[str]:
+    if request is None:
+        return None
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    if refresh_id:
+        return str(refresh_id)
+    user = request.get(KEY_HASS_USER)
+    user_id = getattr(user, "id", None) if user is not None else None
+    if not user_id:
+        return None
+    try:
+        tokens = hass.auth.async_get_refresh_tokens(user_id)
+    except Exception:
+        return None
+    if not tokens:
+        return None
+    for token in tokens:
+        token_id = getattr(token, "id", None) or getattr(token, "token_id", None)
+        if token_id:
+            return str(token_id)
+    return None
 
 
 def _request_user_id(
@@ -2700,7 +2725,7 @@ class AkuvoxUIPanel(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+        refresh_id = _request_refresh_token_id(hass, request)
         if not refresh_id:
             if request.get(KEY_HASS_USER):
                 raise web.HTTPFound("/akuvox-ac/")
