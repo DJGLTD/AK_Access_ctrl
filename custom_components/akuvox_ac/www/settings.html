@@ -600,6 +600,7 @@ let GROUPS = [];
 let HA_USERS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
+let alertsQueued = false;
 let credentialSaving = false;
 let credentialQueued = null;
 let integritySaving = false;
@@ -2005,7 +2006,10 @@ async function saveHealthInterval(seconds){
 }
 
 async function saveAlerts(){
-  if (alertsSaving) return;
+  if (alertsSaving){
+    alertsQueued = true;
+    return;
+  }
   alertsSaving = true;
   try{
     setAlertsStatus('Saving…');
@@ -2022,6 +2026,10 @@ async function saveAlerts(){
     alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
   }finally{
     alertsSaving = false;
+    if (alertsQueued){
+      alertsQueued = false;
+      await saveAlerts();
+    }
   }
 }
 

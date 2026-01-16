@@ -3080,7 +3080,9 @@ class AkuvoxUIPanel(HomeAssistantView):
         async function authorizeWithToken(accessToken) {
           if (!accessToken) return null;
           try {
-            return await fetch("/api/akuvox_ac/ui/panel?handoff=1", {
+            const url = new URL("/api/akuvox_ac/ui/panel?handoff=1", window.location.origin);
+            url.searchParams.set("token", accessToken);
+            return await fetch(url.toString(), {
               headers: { Authorization: "Bearer " + accessToken },
               credentials: "same-origin",
             });
