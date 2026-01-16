@@ -1117,18 +1117,20 @@ function renderAlerts(){
         </div>
         <div class="mt-3" data-field="granted_users_wrap" style="${cfg.granted.specific ? '' : 'display: none;'}">
           <label class="form-label">Specific users to notify on grant</label>
-          <select class="form-select" multiple size="5" data-target="${service}" data-field="granted_users"></select>
-          <div class="form-text">Hold Ctrl/Cmd to select multiple users.</div>
+          <div class="granted-users-list" data-target="${service}" data-field="granted_users"></div>
+          <div class="form-text">Select one or more users.</div>
         </div>
       </div>`;
-    const select = card.querySelector('select[data-field="granted_users"]');
-    if (select){
+    const list = card.querySelector('[data-field="granted_users"]');
+    if (list){
       USERS.forEach(user => {
-        const opt = document.createElement('option');
-        opt.value = user.id;
-        opt.textContent = `${user.name} (${user.id})`;
-        if (cfg.granted.users.includes(user.id)) opt.selected = true;
-        select.appendChild(opt);
+        const row = document.createElement('div');
+        row.className = 'form-check';
+        row.innerHTML = `
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${user.id}" ${cfg.granted.users.includes(user.id) ? 'checked' : ''}>
+          <label class="form-check-label">${user.name} (${user.id})</label>
+        `;
+        list.appendChild(row);
       });
     }
     wrap.appendChild(card);
@@ -1171,12 +1173,17 @@ function renderAlerts(){
     });
   });
 
-  wrap.querySelectorAll('select[data-field="granted_users"]').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      const service = sel.getAttribute('data-target');
+  wrap.querySelectorAll('input[data-field="granted_users"]').forEach(input => {
+    input.addEventListener('change', async () => {
+      const service = input.getAttribute('data-target');
       if (!service) return;
       ensureTargetDefaults(service);
-      const values = Array.from(sel.selectedOptions).map(opt => opt.value);
+      const card = input.closest('.card');
+      if (!card) return;
+      const values = Array.from(card.querySelectorAll(`input[data-field="granted_users"][data-target="${service}"]`))
+        .filter(item => item.checked)
+        .map(item => item.getAttribute('data-user-id'))
+        .filter(Boolean);
       ALERT_TARGETS[service].granted.users = values;
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
       await saveAlerts();
