@@ -2884,13 +2884,29 @@ class AkuvoxUIPanel(HomeAssistantView):
       </div>
     </div>
     <script>
+      function extractTokens(source) {
+        if (!source || typeof source !== "object") return null;
+        const access = source.accessToken
+          || source.access_token
+          || source?.token?.access_token
+          || source?.data?.access_token
+          || null;
+        const refresh = source.refreshToken
+          || source.refresh_token
+          || source?.token?.refresh_token
+          || source?.data?.refresh_token
+          || null;
+        if (!access && !refresh) return null;
+        return { access: access || null, refresh: refresh || null };
+      }
+
       function readTokens(storage, key) {
         if (!storage) return null;
         try {
           const raw = storage.getItem(key);
           if (!raw) return null;
           const data = JSON.parse(raw);
-          return data?.access_token || null;
+          return extractTokens(data);
         } catch (err) {
           return null;
         }
@@ -2898,24 +2914,39 @@ class AkuvoxUIPanel(HomeAssistantView):
 
       function findToken() {
         function extractTokenFromAuth(auth) {
-          if (!auth || typeof auth !== "object") return null;
-          const access = auth.accessToken
-            || auth.access_token
-            || auth?.token?.access_token
-            || auth?.data?.access_token
-            || null;
-          if (access && typeof access === "string") return access.trim();
-          return null;
+          const tokens = extractTokens(auth);
+          if (!tokens) return null;
+          const access = tokens.access;
+          const refresh = tokens.refresh;
+          return {
+            access: typeof access === "string" ? access.trim() : null,
+            refresh: typeof refresh === "string" ? refresh.trim() : null,
+          };
+        }
+
+        function mergeTokens(current, next) {
+          if (!next) return current;
+          const merged = { access: null, refresh: null };
+          if (current) {
+            merged.access = current.access || null;
+            merged.refresh = current.refresh || null;
+          }
+          if (next.access) merged.access = next.access;
+          if (next.refresh) merged.refresh = next.refresh;
+          return merged;
         }
 
         function readStoredToken(storage) {
           if (!storage) return null;
+          let collected = null;
           const hassTokens = readTokens(storage, "hassTokens")
             || readTokens(storage, "akuvox_hassTokens");
-          if (hassTokens) return hassTokens;
+          collected = mergeTokens(collected, hassTokens);
           try {
             const direct = storage.getItem("akuvox_ll_token");
-            if (typeof direct === "string" && direct.trim()) return direct.trim();
+            if (typeof direct === "string" && direct.trim()) {
+              collected = mergeTokens(collected, { access: direct.trim(), refresh: null });
+            }
           } catch (err) {}
           try {
             for (const key of Object.keys(storage)) {
@@ -2926,13 +2957,16 @@ class AkuvoxUIPanel(HomeAssistantView):
               try {
                 const parsed = JSON.parse(raw);
                 const token = extractTokenFromAuth(parsed);
-                if (token) return token;
+                collected = mergeTokens(collected, token);
               } catch (err) {
-                if (typeof raw === "string" && raw.trim()) return raw.trim();
+                if (typeof raw === "string" && raw.trim()) {
+                  collected = mergeTokens(collected, { access: raw.trim(), refresh: null });
+                }
               }
             }
           } catch (err) {}
-          return null;
+          if (!collected || (!collected.access && !collected.refresh)) return null;
+          return collected;
         }
 
         function tokenFromWindow(win) {
@@ -2953,7 +2987,9 @@ class AkuvoxUIPanel(HomeAssistantView):
 
           try {
             const direct = win.AK_AC_HA_TOKEN || win.AK_AC_HASS_TOKEN || win.AK_AC_TOKEN || null;
-            if (typeof direct === "string" && direct.trim()) return direct.trim();
+            if (typeof direct === "string" && direct.trim()) {
+              return { access: direct.trim(), refresh: null };
+            }
           } catch (err) {}
 
           try {
@@ -3012,17 +3048,59 @@ class AkuvoxUIPanel(HomeAssistantView):
 
       async function bootstrap() {
         const status = document.getElementById("status");
-        const token = findToken();
-        if (!token) {
+        const tokens = findToken();
+        if (!tokens || (!tokens.access && !tokens.refresh)) {
           status.textContent = "No Home Assistant session token was found. Please sign in and reopen this panel.";
           return;
         }
+        async function exchangeRefreshToken(refreshToken) {
+          if (!refreshToken) return null;
+          try {
+            const body = new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: refreshToken,
+              client_id: window.location.origin,
+            });
+            const response = await fetch("/auth/token", {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body,
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            if (data && typeof data.access_token === "string" && data.access_token.trim()) {
+              return data.access_token.trim();
+            }
+          } catch (err) {
+            return null;
+          }
+          return null;
+        }
+
+        async function authorizeWithToken(accessToken) {
+          if (!accessToken) return null;
+          try {
+            return await fetch("/api/akuvox_ac/ui/panel?handoff=1", {
+              headers: { Authorization: "Bearer " + accessToken },
+              credentials: "same-origin",
+            });
+          } catch (err) {
+            return null;
+          }
+        }
+
         status.textContent = "Authorizing…";
         try {
-          const response = await fetch("/api/akuvox_ac/ui/panel?handoff=1", {
-            headers: { Authorization: "Bearer " + token },
-            credentials: "same-origin",
-          });
+          let access = tokens.access;
+          let response = await authorizeWithToken(access);
+          if ((!response || response.status === 401 || response.status === 403) && tokens.refresh) {
+            access = await exchangeRefreshToken(tokens.refresh);
+            response = await authorizeWithToken(access);
+          }
+          if (!response) {
+            status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
+            return;
+          }
           if (response.redirected) {
             window.location.href = response.url;
             return;
