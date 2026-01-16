@@ -1704,27 +1704,28 @@ async def _request_refresh_token_id(
     auth_header = request.headers.get("Authorization") or request.headers.get(
         "authorization"
     )
+    access_token = None
     if auth_header:
         parts = auth_header.split()
         if len(parts) == 2 and parts[0].lower() == "bearer":
-            access_token = parts[1].strip()
-            if access_token:
-                try:
-                    refresh_token = await hass.auth.async_validate_access_token(
-                        access_token
-                    )
-                except Exception:
-                    refresh_token = None
-                    _LOGGER.debug("Akuvox UI access token validation failed.")
-                token_id = getattr(refresh_token, "id", None) or getattr(
-                    refresh_token, "token_id", None
-                )
-                if token_id:
-                    _LOGGER.debug(
-                        "Akuvox UI refresh token id resolved from access token: %s",
-                        token_id,
-                    )
-                    return str(token_id)
+            access_token = parts[1].strip() or None
+    if not access_token:
+        access_token = request.query.get("token") or request.query.get("access_token")
+    if access_token:
+        try:
+            refresh_token = await hass.auth.async_validate_access_token(access_token)
+        except Exception:
+            refresh_token = None
+            _LOGGER.debug("Akuvox UI access token validation failed.")
+        token_id = getattr(refresh_token, "id", None) or getattr(
+            refresh_token, "token_id", None
+        )
+        if token_id:
+            _LOGGER.debug(
+                "Akuvox UI refresh token id resolved from access token: %s",
+                token_id,
+            )
+            return str(token_id)
     user = request.get(KEY_HASS_USER)
     user_id = getattr(user, "id", None) if user is not None else None
     if not user_id:
@@ -1760,7 +1761,8 @@ def _request_access_token(request: Optional[web.Request]) -> Optional[str]:
         "authorization"
     )
     if not auth_header:
-        return None
+        token = request.query.get("token") or request.query.get("access_token")
+        return token or None
     parts = auth_header.split()
     if len(parts) == 2 and parts[0].lower() == "bearer":
         token = parts[1].strip()
@@ -1780,6 +1782,13 @@ def _append_query_param(path: str, key: str, value: Optional[str]) -> str:
         params.append((key, value))
     query = urlencode(params)
     return parts._replace(query=query).geturl()
+
+
+async def _read_asset_text(hass: HomeAssistant, asset: pathlib.Path) -> str:
+    try:
+        return await hass.async_add_executor_job(asset.read_text, "utf-8")
+    except Exception:
+        return await hass.async_add_executor_job(asset.read_text)
 
 
 def _fallback_refresh_token_id(hass: HomeAssistant) -> Optional[str]:
@@ -2837,10 +2846,7 @@ class AkuvoxDashboardView(HomeAssistantView):
         if asset.suffix.lower() == ".html":
             hass: HomeAssistant = request.app["hass"]
             signed = await _signed_paths_for_request(hass, request)
-            try:
-                html = asset.read_text(encoding="utf-8")
-            except Exception:
-                html = asset.read_text()
+            html = await _read_asset_text(hass, asset)
             html = _inject_signed_paths(html, signed)
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
@@ -2878,10 +2884,10 @@ class AkuvoxUIPanel(HomeAssistantView):
       </div>
     </div>
     <script>
-      function readTokens(storage) {
+      function readTokens(storage, key) {
         if (!storage) return null;
         try {
-          const raw = storage.getItem("hassTokens");
+          const raw = storage.getItem(key);
           if (!raw) return null;
           const data = JSON.parse(raw);
           return data?.access_token || null;
@@ -2891,7 +2897,15 @@ class AkuvoxUIPanel(HomeAssistantView):
       }
 
       function findToken() {
-        return readTokens(window.localStorage) || readTokens(window.sessionStorage) || null;
+        return (
+          readTokens(window.localStorage, "hassTokens")
+          || readTokens(window.sessionStorage, "hassTokens")
+          || readTokens(window.localStorage, "akuvox_hassTokens")
+          || readTokens(window.sessionStorage, "akuvox_hassTokens")
+          || window.sessionStorage?.getItem("akuvox_ll_token")
+          || window.localStorage?.getItem("akuvox_ll_token")
+          || null
+        );
       }
 
       async function bootstrap() {
@@ -2949,8 +2963,6 @@ class AkuvoxUIPanel(HomeAssistantView):
             )
         except Exception:
             raise web.HTTPUnauthorized()
-        if access_token:
-            signed = _append_query_param(signed, "token", access_token)
         raise web.HTTPFound(signed)
 
 
