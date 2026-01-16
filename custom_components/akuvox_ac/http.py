@@ -2624,7 +2624,7 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()
