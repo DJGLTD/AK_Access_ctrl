@@ -140,7 +140,83 @@ function signedPath(key, fallback) {
       signed = { ...signed, ...parsed };
     }
   } catch (err) {}
-  return signed[key] || fallback;
+  const resolved = signed[key] || fallback;
+  if (!resolved) return resolved;
+  try {
+    const url = new URL(resolved, window.location.origin);
+    const authSig = authSigForPath(url.pathname);
+    if (authSig && !url.searchParams.has('authSig')) {
+      url.searchParams.set('authSig', authSig);
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch (err) {}
+  return resolved;
+}
+
+const AUTH_SIG_KEY = 'akuvox_auth_sig';
+
+function rememberAuthSig(value){
+  if (!value) return;
+  try { sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+  try { window.AK_AC_AUTH_SIG = value; } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      try { window.parent.sessionStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.localStorage.setItem(AUTH_SIG_KEY, value); } catch (err) {}
+      try { window.parent.AK_AC_AUTH_SIG = value; } catch (err) {}
+    }
+  } catch (err) {}
+}
+
+function currentAuthSig(){
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('authSig');
+    if (fromUrl) {
+      rememberAuthSig(fromUrl);
+      return fromUrl;
+    }
+  } catch (err) {}
+  try {
+    return sessionStorage.getItem(AUTH_SIG_KEY)
+      || localStorage.getItem(AUTH_SIG_KEY)
+      || window.AK_AC_AUTH_SIG
+      || null;
+  } catch (err) {}
+  try {
+    if (window.parent && window.parent !== window) {
+      return window.parent.AK_AC_AUTH_SIG
+        || (window.parent.sessionStorage && window.parent.sessionStorage.getItem(AUTH_SIG_KEY))
+        || (window.parent.localStorage && window.parent.localStorage.getItem(AUTH_SIG_KEY))
+        || null;
+    }
+  } catch (err) {}
+  return null;
+}
+
+function authSigMatchesPath(value, pathname) {
+  if (!value || !pathname) return false;
+  const parts = String(value).split('.');
+  if (parts.length < 3) return false;
+  const sigPath = parts.slice(2).join('.');
+  try {
+    const decoded = decodeURIComponent(sigPath);
+    if (decoded === pathname) return true;
+  } catch (err) {}
+  try {
+    return sigPath === encodeURIComponent(pathname);
+  } catch (err) {
+    return false;
+  }
+}
+
+function authSigForPath(pathname) {
+  const candidate = currentAuthSig();
+  if (candidate && authSigMatchesPath(candidate, pathname)) {
+    return candidate;
+  }
+  return '';
 }
 
 async function callService(service, data) {

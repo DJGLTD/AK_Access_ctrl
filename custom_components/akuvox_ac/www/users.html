@@ -650,6 +650,14 @@ function signedPath(key, fallback){
   if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
     return SIGNED_PATHS[key];
   }
+  try {
+    const url = new URL(fallback, window.location.origin);
+    const authSig = authSigForPath(url.pathname);
+    if (authSig && !url.searchParams.has('authSig')) {
+      url.searchParams.set('authSig', authSig);
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch (err) {}
   return fallback;
 }
 
