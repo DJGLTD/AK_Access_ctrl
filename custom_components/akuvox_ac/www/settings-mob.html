@@ -552,6 +552,7 @@ let SETTINGS_DATA = {
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
   dashboard_access_user_ids: [],
+  dashboard_signed_path_fallback: false,
   ha_users: [],
 };
 let PHONES = [];
@@ -572,6 +573,7 @@ let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
 let dashboardAccessSaving = false;
+let dashboardFallbackSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -696,6 +698,19 @@ function setDashboardAccessStatus(message, state){
   if (state === 'success') status.classList.add('text-success');
 }
 
+function setDashboardFallbackStatus(message, state){
+  const status = document.getElementById('dashboardFallbackStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.classList.remove('text-danger', 'text-success', 'visually-hidden');
+  if (!message){
+    status.classList.add('visually-hidden');
+    return;
+  }
+  if (state === 'error') status.classList.add('text-danger');
+  if (state === 'success') status.classList.add('text-success');
+}
+
 function normalizeDashboardAccessIds(raw){
   if (!Array.isArray(raw)) return [];
   const cleaned = raw.map((val) => String(val || '').trim()).filter(Boolean);
@@ -741,6 +756,12 @@ function renderDashboardAccess(){
   }).join('');
 }
 
+function renderDashboardFallback(){
+  const toggle = document.getElementById('dashboardSignedFallbackToggle');
+  if (!toggle) return;
+  toggle.checked = !!SETTINGS_DATA.dashboard_signed_path_fallback;
+}
+
 async function saveDashboardAccess(){
   if (dashboardAccessSaving) return;
   dashboardAccessSaving = true;
@@ -761,6 +782,28 @@ async function saveDashboardAccess(){
     alert('Failed to update dashboard access: ' + (err && err.message ? err.message : err));
   }finally{
     dashboardAccessSaving = false;
+  }
+}
+
+async function saveDashboardFallback(enabled){
+  if (dashboardFallbackSaving) return;
+  dashboardFallbackSaving = true;
+  try{
+    setDashboardFallbackStatus('Saving…');
+    const res = await apiPost(API_SETTINGS, { dashboard_signed_path_fallback: !!enabled });
+    if (typeof res?.dashboard_signed_path_fallback === 'boolean'){
+      SETTINGS_DATA.dashboard_signed_path_fallback = res.dashboard_signed_path_fallback;
+    } else {
+      SETTINGS_DATA.dashboard_signed_path_fallback = !!enabled;
+    }
+    renderDashboardFallback();
+    setDashboardFallbackStatus('Saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setDashboardFallbackStatus('Save failed', 'error');
+    alert('Failed to update dashboard signed path fallback: ' + (err && err.message ? err.message : err));
+  }finally{
+    dashboardFallbackSaving = false;
   }
 }
 function setIntegrityStatus(text, tone = 'muted') {
@@ -2026,6 +2069,7 @@ async function loadData(){
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
     HA_USERS = Array.isArray(settingsResp?.ha_users) ? settingsResp.ha_users : [];
     SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(settingsResp?.dashboard_access_user_ids);
+    SETTINGS_DATA.dashboard_signed_path_fallback = !!settingsResp?.dashboard_signed_path_fallback;
     ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
     Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
     SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
@@ -2051,6 +2095,7 @@ async function loadData(){
     renderDeviceAccess();
     renderAlerts();
     renderDashboardAccess();
+    renderDashboardFallback();
   } catch (err){
     if (handleAuthError(err)) return;
     alert('Failed to load settings: ' + (err && err.message ? err.message : err));
@@ -2068,6 +2113,7 @@ async function loadData(){
     renderDeviceAccess();
     renderAlerts();
     renderDashboardAccess();
+    renderDashboardFallback();
   } finally {
     setBusy(false);
   }
@@ -2157,6 +2203,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!target || target.type !== 'checkbox') return;
     SETTINGS_DATA.dashboard_access_user_ids = collectDashboardAccessIds();
     await saveDashboardAccess();
+  });
+
+  const dashboardFallbackToggle = document.getElementById('dashboardSignedFallbackToggle');
+  dashboardFallbackToggle?.addEventListener('change', async () => {
+    const enabled = !!dashboardFallbackToggle.checked;
+    if (enabled === SETTINGS_DATA.dashboard_signed_path_fallback) return;
+    SETTINGS_DATA.dashboard_signed_path_fallback = enabled;
+    await saveDashboardFallback(enabled);
   });
 
   const healthInput = document.getElementById('healthIntervalInput');
@@ -2325,6 +2379,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       <p class="muted">Administrators always have access to the dashboard. Select any additional Home Assistant users who should be allowed to open the dashboard.</p>
       <div id="dashboardAccessUsers" class="d-flex flex-column"></div>
       <div id="dashboardAccessStatus" class="visually-hidden small mt-2"></div>
+      <div class="form-check form-switch mt-3">
+        <input class="form-check-input" type="checkbox" id="dashboardSignedFallbackToggle">
+        <label class="form-check-label" for="dashboardSignedFallbackToggle">Use signed path fallback</label>
+      </div>
+      <div class="muted small">Enable this to sign dashboard API links using an allowed or admin refresh token when the request arrives without a refresh token (for example, when the dashboard is opened via a signed URL).</div>
+      <div id="dashboardFallbackStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 
