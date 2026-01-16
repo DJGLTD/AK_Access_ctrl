@@ -927,9 +927,18 @@ function buildUrl(view, params = {}){
   });
   const authSig = currentAuthSig();
   if (authSig) search.set('authSig', authSig);
-  const query = search.toString();
   const slug = view.replace(/_/g,'-');
-  return `${UI_ROOT}/${slug}${query ? `?${query}` : ''}`;
+  const base = signedPath(`ui:${slug}`, `${UI_ROOT}/${slug}`);
+  let url;
+  try {
+    url = new URL(base, window.location.origin);
+  } catch (err) {
+    url = new URL(`${UI_ROOT}/${slug}`, window.location.origin);
+  }
+  const merged = new URLSearchParams(url.search);
+  search.forEach((value, key) => merged.set(key, value));
+  url.search = merged.toString();
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function normalizeView(view){
