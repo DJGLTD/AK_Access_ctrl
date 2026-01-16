@@ -551,11 +551,14 @@ let SETTINGS_DATA = {
   min_access_event_limit: 5,
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
+  dashboard_access_user_ids: [],
+  ha_users: [],
 };
 let PHONES = [];
 let USERS = [];
 let DEVICES = [];
 let GROUPS = [];
+let HA_USERS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
 let integritySaving = false;
@@ -568,6 +571,7 @@ let healthSaving = false;
 let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
+let dashboardAccessSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -677,6 +681,87 @@ function showEventLimitSavedOverlay(message = 'Saved'){
     overlay.classList.remove('visible');
     eventLimitSavedTimer = null;
   }, 5000);
+}
+
+function setDashboardAccessStatus(message, state){
+  const status = document.getElementById('dashboardAccessStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.classList.remove('text-danger', 'text-success', 'visually-hidden');
+  if (!message){
+    status.classList.add('visually-hidden');
+    return;
+  }
+  if (state === 'error') status.classList.add('text-danger');
+  if (state === 'success') status.classList.add('text-success');
+}
+
+function normalizeDashboardAccessIds(raw){
+  if (!Array.isArray(raw)) return [];
+  const cleaned = raw.map((val) => String(val || '').trim()).filter(Boolean);
+  return Array.from(new Set(cleaned));
+}
+
+function collectDashboardAccessIds(){
+  const wrap = document.getElementById('dashboardAccessUsers');
+  if (!wrap) return [];
+  return Array.from(wrap.querySelectorAll('input[data-user-id]'))
+    .filter((input) => input.checked && input.dataset.admin !== 'true')
+    .map((input) => input.dataset.userId)
+    .filter(Boolean);
+}
+
+function renderDashboardAccess(){
+  const wrap = document.getElementById('dashboardAccessUsers');
+  if (!wrap) return;
+  const allowed = new Set(normalizeDashboardAccessIds(SETTINGS_DATA.dashboard_access_user_ids));
+  const users = Array.isArray(HA_USERS) ? HA_USERS : [];
+  if (!users.length){
+    wrap.innerHTML = '<div class="muted small">No Home Assistant users found.</div>';
+    return;
+  }
+  wrap.innerHTML = users.map((user) => {
+    const id = String(user.id || '').trim();
+    if (!id) return '';
+    const name = escapeHtml(user.name || id);
+    const isAdmin = !!user.is_admin;
+    const checked = isAdmin || allowed.has(id);
+    const disabled = isAdmin ? 'disabled' : '';
+    const badge = isAdmin ? '<span class="badge bg-info text-dark ms-2">Admin</span>' : '';
+    const helper = isAdmin ? '<div class="small muted">Always allowed</div>' : '';
+    return (
+      `<label class="form-check d-flex flex-column align-items-start gap-1 mb-2">
+        <div class="d-flex align-items-center gap-2">
+          <input class="form-check-input" type="checkbox" data-user-id="${escapeHtml(id)}" data-admin="${isAdmin}" ${checked ? 'checked' : ''} ${disabled}>
+          <span>${name}${badge}</span>
+        </div>
+        ${helper}
+      </label>`
+    );
+  }).join('');
+}
+
+async function saveDashboardAccess(){
+  if (dashboardAccessSaving) return;
+  dashboardAccessSaving = true;
+  try{
+    setDashboardAccessStatus('Saving…');
+    const ids = collectDashboardAccessIds();
+    const res = await apiPost(API_SETTINGS, { dashboard_access_user_ids: ids });
+    if (Array.isArray(res?.dashboard_access_user_ids)){
+      SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(res.dashboard_access_user_ids);
+    } else {
+      SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(ids);
+    }
+    renderDashboardAccess();
+    setDashboardAccessStatus('Saved ✓', 'success');
+  }catch(err){
+    if (handleAuthError(err)) return;
+    setDashboardAccessStatus('Save failed', 'error');
+    alert('Failed to update dashboard access: ' + (err && err.message ? err.message : err));
+  }finally{
+    dashboardAccessSaving = false;
+  }
 }
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
@@ -1939,6 +2024,8 @@ async function loadData(){
 
     PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
+    HA_USERS = Array.isArray(settingsResp?.ha_users) ? settingsResp.ha_users : [];
+    SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(settingsResp?.dashboard_access_user_ids);
     ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
     Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
     SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
@@ -1963,6 +2050,7 @@ async function loadData(){
     renderCredentialPrompts();
     renderDeviceAccess();
     renderAlerts();
+    renderDashboardAccess();
   } catch (err){
     if (handleAuthError(err)) return;
     alert('Failed to load settings: ' + (err && err.message ? err.message : err));
@@ -1970,6 +2058,7 @@ async function loadData(){
     GROUPS = [];
     PHONES = [];
     USERS = [];
+    HA_USERS = [];
     ALERT_TARGETS = {};
     renderAutoSyncDelay();
     renderHealthInterval();
@@ -1978,6 +2067,7 @@ async function loadData(){
     renderCredentialPrompts();
     renderDeviceAccess();
     renderAlerts();
+    renderDashboardAccess();
   } finally {
     setBusy(false);
   }
@@ -2060,6 +2150,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   eventLimitInput?.addEventListener('change', commitEventLimit);
   eventLimitInput?.addEventListener('blur', commitEventLimit);
+
+  const dashboardAccessWrap = document.getElementById('dashboardAccessUsers');
+  dashboardAccessWrap?.addEventListener('change', async (ev) => {
+    const target = ev.target;
+    if (!target || target.type !== 'checkbox') return;
+    SETTINGS_DATA.dashboard_access_user_ids = collectDashboardAccessIds();
+    await saveDashboardAccess();
+  });
 
   const healthInput = document.getElementById('healthIntervalInput');
   const commitHealthInterval = async () => {
@@ -2218,6 +2316,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header text-white">Dashboard Access</div>
+    <div class="card-body">
+      <p class="muted">Administrators always have access to the dashboard. Select any additional Home Assistant users who should be allowed to open the dashboard.</p>
+      <div id="dashboardAccessUsers" class="d-flex flex-column"></div>
+      <div id="dashboardAccessStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 

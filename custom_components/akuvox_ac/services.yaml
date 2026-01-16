@@ -257,3 +257,12 @@ set_dashboard_access_devices:
       selector:
         device:
           multiple: true
+
+set_dashboard_access_users:
+  name: Set dashboard access users
+  description: Allow specific Home Assistant users to access the Akuvox dashboard.
+  fields:
+    user_ids:
+      required: true
+      selector:
+        object:
