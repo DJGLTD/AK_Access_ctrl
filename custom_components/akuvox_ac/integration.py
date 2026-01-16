@@ -101,7 +101,7 @@ def _register_admin_dashboard(hass: HomeAssistant) -> bool:
     except ImportError:
         return False
 
-    panel_config = {"url": "/akuvox-ac/"}
+    panel_config = {"url": "/api/akuvox_ac/ui/panel"}
 
     try:
         frontend.async_register_built_in_panel(
