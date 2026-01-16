@@ -177,7 +177,7 @@ function buildHref(slug, params = {}) {
     search.set(key, value);
   });
   if (typeof currentAuthSig === 'function') {
-    const authSig = currentAuthSig();
+    const authSig = authSigForPath(url.pathname);
     if (authSig && !url.searchParams.has('authSig')) {
       url.searchParams.set('authSig', authSig);
     }
