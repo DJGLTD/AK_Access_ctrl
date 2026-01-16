@@ -1598,7 +1598,9 @@ def _signed_paths_for_request(
 ) -> Dict[str, str]:
     refresh_id = _request_refresh_token_id(hass, request)
     if not refresh_id:
-        return {}
+        refresh_id = _fallback_refresh_token_id(hass)
+        if not refresh_id:
+            return {}
 
     signed: Dict[str, str] = {}
 
@@ -1709,6 +1711,52 @@ def _request_refresh_token_id(
             )
             return str(token_id)
     _LOGGER.debug("Akuvox UI found refresh tokens without ids for user %s.", user_id)
+    return None
+
+
+def _fallback_refresh_token_id(hass: HomeAssistant) -> Optional[str]:
+    root = hass.data.get(DOMAIN, {}) or {}
+    settings = root.get("settings_store")
+    if not settings or not hasattr(settings, "get_dashboard_signed_path_fallback"):
+        return None
+    try:
+        enabled = settings.get_dashboard_signed_path_fallback()
+    except Exception:
+        return None
+    if not enabled:
+        return None
+    allowed_users = []
+    if hasattr(settings, "get_dashboard_user_ids"):
+        try:
+            allowed_users = settings.get_dashboard_user_ids() or []
+        except Exception:
+            allowed_users = []
+    if allowed_users:
+        candidate_users = allowed_users
+    else:
+        try:
+            candidate_users = [
+                user.id
+                for user in hass.auth.async_get_users()
+                if getattr(user, "is_active", True) and getattr(user, "is_admin", False)
+            ]
+        except Exception:
+            candidate_users = []
+    for user_id in candidate_users:
+        try:
+            tokens = hass.auth.async_get_refresh_tokens(user_id)
+        except Exception:
+            continue
+        for token in tokens or []:
+            token_id = getattr(token, "id", None) or getattr(token, "token_id", None)
+            if token_id:
+                _LOGGER.debug(
+                    "Akuvox UI using fallback refresh token %s for user %s.",
+                    token_id,
+                    user_id,
+                )
+                return str(token_id)
+    _LOGGER.debug("Akuvox UI fallback refresh token not available.")
     return None
 
 
@@ -2742,6 +2790,8 @@ class AkuvoxUIPanel(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         refresh_id = _request_refresh_token_id(hass, request)
         if not refresh_id:
+            refresh_id = _fallback_refresh_token_id(hass)
+        if not refresh_id:
             _LOGGER.debug(
                 "Akuvox UI panel missing refresh token id. user=%s",
                 bool(request.get(KEY_HASS_USER)),
@@ -3561,6 +3611,7 @@ class AkuvoxUISettings(HomeAssistantView):
         alerts = {"targets": {}}
         face_integrity_enabled = True
         dashboard_access_user_ids: List[str] = []
+        dashboard_signed_path_fallback = False
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
@@ -3606,6 +3657,10 @@ class AkuvoxUISettings(HomeAssistantView):
                 dashboard_access_user_ids = settings.get_dashboard_user_ids()
             except Exception:
                 dashboard_access_user_ids = []
+            try:
+                dashboard_signed_path_fallback = settings.get_dashboard_signed_path_fallback()
+            except Exception:
+                dashboard_signed_path_fallback = False
 
         registry_users: List[Dict[str, str]] = []
         if users_store:
@@ -3691,6 +3746,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 "credential_prompts": credential_prompts,
                 "groups": groups,
                 "dashboard_access_user_ids": dashboard_access_user_ids,
+                "dashboard_signed_path_fallback": dashboard_signed_path_fallback,
                 "ha_users": ha_users,
             }
         )
@@ -3830,6 +3886,17 @@ class AkuvoxUISettings(HomeAssistantView):
                 user_ids = payload.get("dashboard_access_user_ids") or []
                 cleaned = await settings.set_dashboard_user_ids(user_ids)
                 response["dashboard_access_user_ids"] = cleaned
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "dashboard_signed_path_fallback" in payload:
+            if not settings or not hasattr(settings, "set_dashboard_signed_path_fallback"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                enabled = await settings.set_dashboard_signed_path_fallback(
+                    payload.get("dashboard_signed_path_fallback")
+                )
+                response["dashboard_signed_path_fallback"] = enabled
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
 

@@ -2096,6 +2096,7 @@ class AkuvoxSettingsStore(Store):
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "dashboard_device_ids": [],
             "dashboard_user_ids": [],
+            "dashboard_signed_path_fallback": False,
         }
 
     async def async_load(self):
@@ -2166,6 +2167,10 @@ class AkuvoxSettingsStore(Store):
         self.data["dashboard_device_ids"] = self._sanitize_dashboard_device_ids(
             self.data.get("dashboard_device_ids")
         )
+        fallback = self.data.get("dashboard_signed_path_fallback", False)
+        if not isinstance(fallback, bool):
+            fallback = False
+        self.data["dashboard_signed_path_fallback"] = fallback
 
     async def async_save(self):
         await super().async_save(self.data)
@@ -2369,6 +2374,15 @@ class AkuvoxSettingsStore(Store):
         self.data["dashboard_user_ids"] = cleaned
         await self.async_save()
         return cleaned
+
+    def get_dashboard_signed_path_fallback(self) -> bool:
+        return bool(self.data.get("dashboard_signed_path_fallback", False))
+
+    async def set_dashboard_signed_path_fallback(self, enabled: Any) -> bool:
+        value = bool(enabled)
+        self.data["dashboard_signed_path_fallback"] = value
+        await self.async_save()
+        return value
 
     def get_integrity_interval_minutes(self) -> int:
         try:
