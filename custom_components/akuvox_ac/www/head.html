@@ -602,6 +602,8 @@ function scanTokenStorage(storage) {
       } catch (err) {
         if (typeof rawValue === 'string' && rawValue.trim()) {
           const token = persistTokens(rawValue.trim());
+          if (token) return token;
+        }
       }
     }
   } catch (err) {}
@@ -639,6 +641,7 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+    }
   } catch (err) {}
 
   return null;
