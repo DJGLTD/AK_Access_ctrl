@@ -214,9 +214,10 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+    }
   } catch (err) {}
 
-  return null;
+  return token;
 }
 
 function walkAuthWindows(start) {
