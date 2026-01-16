@@ -2784,7 +2784,80 @@ class AkuvoxDashboardView(HomeAssistantView):
 class AkuvoxUIPanel(HomeAssistantView):
     url = "/api/akuvox_ac/ui/panel"
     name = "api:akuvox_ac:ui_panel"
-    requires_auth = True
+    requires_auth = False
+
+    _BOOTSTRAP_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Akuvox Admin Panel</title>
+    <style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;background:#0b1320;color:#e6edf3;margin:0}
+      .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
+      .card{max-width:520px;background:#111a2b;border:1px solid #1b2942;border-radius:16px;padding:24px}
+      .title{font-size:1.2rem;font-weight:600;margin:0 0 0.75rem 0}
+      .muted{color:#a5b5cc;margin:0 0 1rem 0}
+      .btn{display:inline-block;background:#1b2942;color:#e6edf3;padding:0.6rem 1rem;border-radius:999px;text-decoration:none}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <p class="title">Connecting to the Akuvox admin dashboard…</p>
+        <p class="muted" id="status">Looking for your Home Assistant session.</p>
+        <a class="btn" id="fallback" href="/akuvox-ac/">Open dashboard</a>
+      </div>
+    </div>
+    <script>
+      function readTokens(storage) {
+        if (!storage) return null;
+        try {
+          const raw = storage.getItem("hassTokens");
+          if (!raw) return null;
+          const data = JSON.parse(raw);
+          return data?.access_token || null;
+        } catch (err) {
+          return null;
+        }
+      }
+
+      function findToken() {
+        return readTokens(window.localStorage) || readTokens(window.sessionStorage) || null;
+      }
+
+      async function bootstrap() {
+        const status = document.getElementById("status");
+        const token = findToken();
+        if (!token) {
+          status.textContent = "No Home Assistant session token was found. Please sign in and reopen this panel.";
+          return;
+        }
+        status.textContent = "Authorizing…";
+        try {
+          const response = await fetch("/api/akuvox_ac/ui/panel?handoff=1", {
+            headers: { Authorization: "Bearer " + token },
+            credentials: "same-origin",
+          });
+          if (response.redirected) {
+            window.location.href = response.url;
+            return;
+          }
+          if (response.url && response.url !== window.location.href) {
+            window.location.href = response.url;
+            return;
+          }
+          status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
+        } catch (err) {
+          status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
+        }
+      }
+
+      bootstrap();
+    </script>
+  </body>
+</html>
+"""
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -2796,9 +2869,7 @@ class AkuvoxUIPanel(HomeAssistantView):
                 "Akuvox UI panel missing refresh token id. user=%s",
                 bool(request.get(KEY_HASS_USER)),
             )
-            if request.get(KEY_HASS_USER):
-                raise web.HTTPFound("/akuvox-ac/")
-            raise web.HTTPUnauthorized()
+            return web.Response(text=self._BOOTSTRAP_HTML, content_type="text/html")
         try:
             signed = async_sign_path(
                 hass,
