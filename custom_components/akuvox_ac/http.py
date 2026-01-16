@@ -2769,7 +2769,7 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
     name = "api:akuvox_ac:static"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, path: str = ""):
         hass: HomeAssistant = request.app["hass"]
@@ -2822,6 +2822,21 @@ class AkuvoxStaticAssets(HomeAssistantView):
                             dest.write_bytes(asset.read_bytes())
                 except Exception:
                     pass
+        if asset.suffix.lower() == ".html":
+            if (
+                not _dashboard_access_allowed(hass, request)
+                and not asset.name.startswith("unauthorized")
+            ):
+                target = (
+                    "unauthorized-mob"
+                    if asset.name.endswith("-mob.html")
+                    else "unauthorized"
+                )
+                asset = _resolve_dashboard_asset(target, request)
+            signed = await _signed_paths_for_request(hass, request)
+            html = await _read_asset_text(hass, asset)
+            html = _inject_signed_paths(html, signed)
+            return web.Response(text=html, content_type="text/html")
         return web.FileResponse(asset)
 
 
@@ -2863,7 +2878,7 @@ class AkuvoxDashboardView(HomeAssistantView):
 class AkuvoxUIPanel(HomeAssistantView):
     url = "/api/akuvox_ac/ui/panel"
     name = "api:akuvox_ac:ui_panel"
-    requires_auth = False
+    requires_auth = True
 
     _BOOTSTRAP_HTML = """<!doctype html>
 <html lang="en">
