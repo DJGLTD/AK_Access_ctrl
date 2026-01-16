@@ -1921,6 +1921,11 @@ def _dashboard_access_allowed(
     return True
 
 
+def _require_dashboard_access(hass: HomeAssistant, request: Optional[web.Request]) -> None:
+    if not _dashboard_access_allowed(hass, request):
+        raise web.HTTPForbidden()
+
+
 def _only_hhmm(v: Optional[str]) -> str:
     if not v or v == "—":
         return "—"
@@ -3120,11 +3125,27 @@ class AkuvoxUIPanel(HomeAssistantView):
       bootstrap();
     </script>
   </body>
-</html>
+    </html>
 """
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _dashboard_access_allowed(hass, request):
+            refresh_id = await _request_refresh_token_id(hass, request)
+            if not refresh_id:
+                refresh_id = _fallback_refresh_token_id(hass)
+            if refresh_id:
+                try:
+                    signed = async_sign_path(
+                        hass,
+                        "/akuvox-ac/unauthorized",
+                        dt.timedelta(minutes=10),
+                        refresh_token_id=refresh_id,
+                    )
+                    raise web.HTTPFound(signed)
+                except Exception:
+                    raise web.HTTPForbidden()
+            raise web.HTTPForbidden()
         handoff = request.query.get("handoff")
         access_token = _request_access_token(request) if handoff else None
         refresh_id = await _request_refresh_token_id(hass, request)
@@ -3155,6 +3176,7 @@ class AkuvoxUIView(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
@@ -3420,6 +3442,7 @@ class AkuvoxUIAction(AkuvoxUIView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         raw_root = hass.data.get(DOMAIN, {}) or {}
         root = raw_root if isinstance(raw_root, dict) else {}
 
@@ -3908,6 +3931,7 @@ class AkuvoxUIDevices(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         out: List[Dict[str, str]] = []
@@ -3932,6 +3956,7 @@ class AkuvoxUISettings(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -4090,6 +4115,7 @@ class AkuvoxUISettings(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
@@ -4251,6 +4277,7 @@ class AkuvoxUIPhones(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         phones: List[Dict[str, str]] = []
 
         try:
@@ -4665,12 +4692,14 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
         payload = await self._build_payload(root)
         return web.json_response(payload)
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -4725,6 +4754,7 @@ class AkuvoxUIReserveId(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4820,6 +4850,7 @@ class AkuvoxUIReleaseId(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4866,6 +4897,7 @@ class AkuvoxUIReservationPing(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4921,6 +4953,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         id_val_raw: Optional[str] = None
@@ -5057,6 +5090,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        _require_dashboard_access(hass, request)
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
