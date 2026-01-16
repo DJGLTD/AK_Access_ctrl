@@ -183,16 +183,28 @@ async function apiGet(url) {
 }
 
 function buildHref(slug, params = {}) {
+  const clean = String(slug || '').replace(/_/g, '-');
+  const base = typeof signedPath === 'function'
+    ? signedPath(`ui:${clean}`, `/akuvox-ac/${clean}`)
+    : `/akuvox-ac/${clean}`;
+  const url = new URL(base, window.location.origin);
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
   const token = sessionStorage.getItem('akuvox_ll_token');
-  if (token) search.set('token', token);
-  const query = search.toString();
-  const clean = String(slug || '').replace(/_/g, '-');
-  return `/akuvox-ac/${clean}${query ? `?${query}` : ''}`;
+  if (token && !url.searchParams.has('token')) {
+    url.searchParams.set('token', token);
+  }
+  if (typeof currentAuthSig === 'function') {
+    const authSig = currentAuthSig();
+    if (authSig && !url.searchParams.has('authSig')) {
+      url.searchParams.set('authSig', authSig);
+    }
+  }
+  search.forEach((value, key) => url.searchParams.set(key, value));
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function requestParentNav(view, params = {}, options = {}) {

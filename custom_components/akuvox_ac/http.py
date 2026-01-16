@@ -1615,6 +1615,21 @@ def _signed_paths_for_request(
         except Exception as err:  # pragma: no cover - best effort
             _LOGGER.debug("Failed to sign %s for Akuvox UI: %s", path, err)
 
+    for slug in DASHBOARD_ROUTES.keys():
+        if not slug:
+            continue
+        path = f"/akuvox-ac/{slug}"
+        key = f"ui:{slug}"
+        try:
+            signed[key] = async_sign_path(
+                hass,
+                path,
+                dt.timedelta(minutes=10),
+                refresh_token_id=refresh_id,
+            )
+        except Exception as err:  # pragma: no cover - best effort
+            _LOGGER.debug("Failed to sign %s for Akuvox UI: %s", path, err)
+
     return signed
 
 

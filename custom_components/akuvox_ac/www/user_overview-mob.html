@@ -649,18 +649,26 @@ function syncPausedUsersFromState(registryUsers){
 }
 
 function buildHref(slug, params = {}) {
+  const clean = String(slug || '').replace(/_/g, '-');
+  const base = typeof signedPath === 'function'
+    ? signedPath(`ui:${clean}`, `${UI_ROOT}/${clean}`)
+    : `${UI_ROOT}/${clean}`;
+  const url = new URL(base, window.location.origin);
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
   const token = sessionStorage.getItem('akuvox_ll_token');
-  if (token) search.set('token', token);
+  if (token && !url.searchParams.has('token')) {
+    url.searchParams.set('token', token);
+  }
   const authSig = currentAuthSig();
-  if (authSig) search.set('authSig', authSig);
-  const query = search.toString();
-  const clean = String(slug || '').replace(/_/g, '-');
-  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
+  if (authSig && !url.searchParams.has('authSig')) {
+    url.searchParams.set('authSig', authSig);
+  }
+  search.forEach((value, key) => url.searchParams.set(key, value));
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function requestParentNav(view, params = {}, options = {}) {
