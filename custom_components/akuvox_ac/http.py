@@ -2659,6 +2659,28 @@ class AkuvoxDashboardView(HomeAssistantView):
         return web.FileResponse(asset, headers={"X-AK-AC-Variant": variant})
 
 
+class AkuvoxUIPanel(HomeAssistantView):
+    url = "/api/akuvox_ac/ui/panel"
+    name = "api:akuvox_ac:ui_panel"
+    requires_auth = True
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+        if not refresh_id:
+            raise web.HTTPUnauthorized()
+        try:
+            signed = async_sign_path(
+                hass,
+                "/akuvox-ac/",
+                dt.timedelta(minutes=10),
+                refresh_token_id=refresh_id,
+            )
+        except Exception:
+            raise web.HTTPUnauthorized()
+        raise web.HTTPFound(signed)
+
+
 class AkuvoxUIView(HomeAssistantView):
     url = "/api/akuvox_ac/ui/state"
     name = "api:akuvox_ac:ui_state"
@@ -4619,6 +4641,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxStaticAssets())
     hass.http.register_view(AkuvoxDashboardView())
+    hass.http.register_view(AkuvoxUIPanel())
     hass.http.register_view(AkuvoxUIView())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
