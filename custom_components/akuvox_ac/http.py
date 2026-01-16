@@ -10,7 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Optional, Mapping, Set
-from urllib.parse import urlencode, urlsplit, unquote
+from urllib.parse import urlencode, urlsplit, unquote, parse_qsl
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
@@ -1753,6 +1753,35 @@ async def _request_refresh_token_id(
     return None
 
 
+def _request_access_token(request: Optional[web.Request]) -> Optional[str]:
+    if request is None:
+        return None
+    auth_header = request.headers.get("Authorization") or request.headers.get(
+        "authorization"
+    )
+    if not auth_header:
+        return None
+    parts = auth_header.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1].strip()
+        return token or None
+    return None
+
+
+def _append_query_param(path: str, key: str, value: Optional[str]) -> str:
+    if not value:
+        return path
+    try:
+        parts = urlsplit(path)
+    except Exception:
+        return path
+    params = parse_qsl(parts.query, keep_blank_values=True)
+    if not any(existing_key == key for existing_key, _ in params):
+        params.append((key, value))
+    query = urlencode(params)
+    return parts._replace(query=query).geturl()
+
+
 def _fallback_refresh_token_id(hass: HomeAssistant) -> Optional[str]:
     root = hass.data.get(DOMAIN, {}) or {}
     settings = root.get("settings_store")
@@ -2900,6 +2929,8 @@ class AkuvoxUIPanel(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        handoff = request.query.get("handoff")
+        access_token = _request_access_token(request) if handoff else None
         refresh_id = await _request_refresh_token_id(hass, request)
         if not refresh_id:
             refresh_id = _fallback_refresh_token_id(hass)
@@ -2918,6 +2949,8 @@ class AkuvoxUIPanel(HomeAssistantView):
             )
         except Exception:
             raise web.HTTPUnauthorized()
+        if access_token:
+            signed = _append_query_param(signed, "token", access_token)
         raise web.HTTPFound(signed)
 
 
