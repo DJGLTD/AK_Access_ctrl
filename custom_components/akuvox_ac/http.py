@@ -18,6 +18,7 @@ from homeassistant.components.http.auth import async_sign_path
 from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID, KEY_HASS_USER
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
+from homeassistant.auth import async_validate_access_token
 
 from homeassistant.helpers.network import get_url
 
@@ -1593,10 +1594,10 @@ def _static_asset(path: str) -> Path:
     return candidate
 
 
-def _signed_paths_for_request(
+async def _signed_paths_for_request(
     hass: HomeAssistant, request: web.Request
 ) -> Dict[str, str]:
-    refresh_id = _request_refresh_token_id(hass, request)
+    refresh_id = await _request_refresh_token_id(hass, request)
     if not refresh_id:
         refresh_id = _fallback_refresh_token_id(hass)
         if not refresh_id:
@@ -1689,7 +1690,7 @@ def _request_device_id(
     return str(device_id)
 
 
-def _request_refresh_token_id(
+async def _request_refresh_token_id(
     hass: HomeAssistant, request: Optional[web.Request]
 ) -> Optional[str]:
     if request is None:
@@ -1701,6 +1702,30 @@ def _request_refresh_token_id(
             "Akuvox UI refresh token id found on request: %s", refresh_id
         )
         return str(refresh_id)
+    auth_header = request.headers.get("Authorization") or request.headers.get(
+        "authorization"
+    )
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            access_token = parts[1].strip()
+            if access_token:
+                try:
+                    refresh_token = await async_validate_access_token(
+                        hass, access_token
+                    )
+                except Exception:
+                    refresh_token = None
+                    _LOGGER.debug("Akuvox UI access token validation failed.")
+                token_id = getattr(refresh_token, "id", None) or getattr(
+                    refresh_token, "token_id", None
+                )
+                if token_id:
+                    _LOGGER.debug(
+                        "Akuvox UI refresh token id resolved from access token: %s",
+                        token_id,
+                    )
+                    return str(token_id)
     user = request.get(KEY_HASS_USER)
     user_id = getattr(user, "id", None) if user is not None else None
     if not user_id:
@@ -2783,7 +2808,7 @@ class AkuvoxDashboardView(HomeAssistantView):
         variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
         if asset.suffix.lower() == ".html":
             hass: HomeAssistant = request.app["hass"]
-            signed = _signed_paths_for_request(hass, request)
+            signed = await _signed_paths_for_request(hass, request)
             try:
                 html = asset.read_text(encoding="utf-8")
             except Exception:
@@ -2876,7 +2901,7 @@ class AkuvoxUIPanel(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        refresh_id = _request_refresh_token_id(hass, request)
+        refresh_id = await _request_refresh_token_id(hass, request)
         if not refresh_id:
             refresh_id = _fallback_refresh_token_id(hass)
         if not refresh_id:

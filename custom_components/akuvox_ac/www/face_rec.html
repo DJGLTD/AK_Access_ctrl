@@ -157,8 +157,6 @@ function redirectToUnauthorized(){
   let href = '/akuvox-ac/unauthorized';
   try {
     const search = new URLSearchParams();
-    const token = sessionStorage.getItem('akuvox_ll_token');
-    if (token) search.set('token', token);
     const authSig = currentAuthSig();
     if (authSig) search.set('authSig', authSig);
     const query = search.toString();

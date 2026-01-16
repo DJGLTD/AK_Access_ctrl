@@ -193,10 +193,6 @@ function buildHref(slug, params = {}) {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
-  const token = sessionStorage.getItem('akuvox_ll_token');
-  if (token && !url.searchParams.has('token')) {
-    url.searchParams.set('token', token);
-  }
   if (typeof currentAuthSig === 'function') {
     const authSig = currentAuthSig();
     if (authSig && !url.searchParams.has('authSig')) {
