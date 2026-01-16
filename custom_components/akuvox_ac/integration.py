@@ -2095,6 +2095,7 @@ class AkuvoxSettingsStore(Store):
             "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "dashboard_device_ids": [],
+            "dashboard_user_ids": [],
         }
 
     async def async_load(self):
@@ -2333,12 +2334,39 @@ class AkuvoxSettingsStore(Store):
             cleaned.append(text)
         return cleaned
 
+    def _sanitize_dashboard_user_ids(self, raw: Any) -> List[str]:
+        if raw in (None, ""):
+            return []
+        if isinstance(raw, (list, tuple, set)):
+            items = raw
+        else:
+            items = [raw]
+        cleaned: List[str] = []
+        for item in items:
+            try:
+                text = str(item).strip()
+            except Exception:
+                continue
+            if not text or text in cleaned:
+                continue
+            cleaned.append(text)
+        return cleaned
+
     def get_dashboard_device_ids(self) -> List[str]:
         return list(self.data.get("dashboard_device_ids") or [])
 
     async def set_dashboard_device_ids(self, device_ids: Any) -> List[str]:
         cleaned = self._sanitize_dashboard_device_ids(device_ids)
         self.data["dashboard_device_ids"] = cleaned
+        await self.async_save()
+        return cleaned
+
+    def get_dashboard_user_ids(self) -> List[str]:
+        return list(self.data.get("dashboard_user_ids") or [])
+
+    async def set_dashboard_user_ids(self, user_ids: Any) -> List[str]:
+        cleaned = self._sanitize_dashboard_user_ids(user_ids)
+        self.data["dashboard_user_ids"] = cleaned
         await self.async_save()
         return cleaned
 
@@ -4879,6 +4907,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         device_ids = call.data.get("device_ids") or []
         await settings_store.set_dashboard_device_ids(device_ids)
 
+    async def svc_set_dashboard_access_users(call):
+        settings_store: Optional[AkuvoxSettingsStore] = hass.data[DOMAIN].get("settings_store")
+        if not settings_store or not hasattr(settings_store, "set_dashboard_user_ids"):
+            return
+        user_ids = call.data.get("user_ids") or []
+        await settings_store.set_dashboard_user_ids(user_ids)
+
     async def svc_upsert_schedule(call):
         name = call.data["name"]
         spec = call.data["spec"]
@@ -4911,6 +4946,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(
         DOMAIN, "set_dashboard_access_devices", svc_set_dashboard_access_devices
     )
+    hass.services.async_register(DOMAIN, "set_dashboard_access_users", svc_set_dashboard_access_users)
     hass.services.async_register(DOMAIN, "upsert_schedule", svc_upsert_schedule)
     hass.services.async_register(DOMAIN, "delete_schedule", svc_delete_schedule)
 

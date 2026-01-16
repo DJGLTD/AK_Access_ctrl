@@ -1672,6 +1672,28 @@ def _request_device_id(
     return str(device_id)
 
 
+def _request_user_id(
+    hass: HomeAssistant, request: Optional[web.Request]
+) -> Optional[str]:
+    if request is None:
+        return None
+    user = request.get(KEY_HASS_USER)
+    if user is not None:
+        user_id = getattr(user, "id", None)
+        return str(user_id) if user_id else None
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    if not refresh_id:
+        return None
+    try:
+        token = hass.auth.async_get_refresh_token(refresh_id)
+    except Exception:
+        token = None
+    user_id = getattr(token, "user_id", None) if token else None
+    if not user_id:
+        return None
+    return str(user_id)
+
+
 def _request_user_is_admin(
     hass: HomeAssistant, request: Optional[web.Request]
 ) -> bool:
@@ -1706,20 +1728,32 @@ def _dashboard_access_allowed(
         return False
     if _request_user_is_admin(hass, request):
         return True
-    user = request.get(KEY_HASS_USER)
-    if not user:
-        return False
     root = hass.data.get(DOMAIN, {}) or {}
     settings = root.get("settings_store")
-    if not settings or not hasattr(settings, "get_dashboard_device_ids"):
+    if not settings:
         return True
-    allowed_devices = settings.get_dashboard_device_ids()
-    if not allowed_devices:
-        return True
-    device_id = _request_device_id(hass, request)
-    if not device_id:
-        return False
-    return device_id in allowed_devices
+    allowed_users = (
+        settings.get_dashboard_user_ids()
+        if hasattr(settings, "get_dashboard_user_ids")
+        else []
+    )
+    if allowed_users:
+        user_id = _request_user_id(hass, request)
+        if not user_id:
+            return False
+        return user_id in allowed_users
+
+    allowed_devices = (
+        settings.get_dashboard_device_ids()
+        if hasattr(settings, "get_dashboard_device_ids")
+        else []
+    )
+    if allowed_devices:
+        device_id = _request_device_id(hass, request)
+        if not device_id:
+            return False
+        return device_id in allowed_devices
+    return False
 
 
 def _only_hhmm(v: Optional[str]) -> str:
@@ -2668,6 +2702,8 @@ class AkuvoxUIPanel(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
         if not refresh_id:
+            if request.get(KEY_HASS_USER):
+                raise web.HTTPFound("/akuvox-ac/")
             raise web.HTTPUnauthorized()
         try:
             signed = async_sign_path(
@@ -3480,6 +3516,7 @@ class AkuvoxUISettings(HomeAssistantView):
         access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
         alerts = {"targets": {}}
         face_integrity_enabled = True
+        dashboard_access_user_ids: List[str] = []
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
@@ -3521,6 +3558,10 @@ class AkuvoxUISettings(HomeAssistantView):
                     raw = data.get("alerts") or {}
                     targets = raw.get("targets") if isinstance(raw, dict) else {}
                     alerts = {"targets": targets if isinstance(targets, dict) else {}}
+            try:
+                dashboard_access_user_ids = settings.get_dashboard_user_ids()
+            except Exception:
+                dashboard_access_user_ids = []
 
         registry_users: List[Dict[str, str]] = []
         if users_store:
@@ -3537,6 +3578,24 @@ class AkuvoxUISettings(HomeAssistantView):
                 pass
 
         registry_users.sort(key=lambda x: x.get("name", "").lower())
+
+        ha_users: List[Dict[str, Any]] = []
+        try:
+            for user in hass.auth.async_get_users():
+                if getattr(user, "is_active", True) is False:
+                    continue
+                name = getattr(user, "name", None) or getattr(user, "id", "")
+                ha_users.append(
+                    {
+                        "id": getattr(user, "id", ""),
+                        "name": name,
+                        "is_admin": bool(getattr(user, "is_admin", False)),
+                    }
+                )
+        except Exception:
+            ha_users = []
+
+        ha_users.sort(key=lambda x: str(x.get("name", "")).lower())
 
         schedules: Dict[str, Any] = {}
         schedules_store = root.get("schedules_store")
@@ -3587,6 +3646,8 @@ class AkuvoxUISettings(HomeAssistantView):
                 "max_access_event_limit": access_bounds[1],
                 "credential_prompts": credential_prompts,
                 "groups": groups,
+                "dashboard_access_user_ids": dashboard_access_user_ids,
+                "ha_users": ha_users,
             }
         )
 
@@ -3715,6 +3776,16 @@ class AkuvoxUISettings(HomeAssistantView):
             try:
                 updated = await settings.set_credential_prompts(payload.get("credential_prompts"))
                 response["credential_prompts"] = updated
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "dashboard_access_user_ids" in payload:
+            if not settings or not hasattr(settings, "set_dashboard_user_ids"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                user_ids = payload.get("dashboard_access_user_ids") or []
+                cleaned = await settings.set_dashboard_user_ids(user_ids)
+                response["dashboard_access_user_ids"] = cleaned
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
 
