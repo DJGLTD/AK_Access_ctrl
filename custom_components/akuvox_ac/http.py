@@ -2880,7 +2880,7 @@ class AkuvoxUIPanel(HomeAssistantView):
       <div class="card">
         <p class="title">Connecting to the Akuvox admin dashboard…</p>
         <p class="muted" id="status">Looking for your Home Assistant session.</p>
-        <a class="btn" id="fallback" href="/akuvox-ac/">Open dashboard</a>
+        <a class="btn" id="fallback" href="/akuvox-ac/index">Open dashboard</a>
       </div>
     </div>
     <script>
@@ -2957,7 +2957,7 @@ class AkuvoxUIPanel(HomeAssistantView):
         try:
             signed = async_sign_path(
                 hass,
-                "/akuvox-ac/",
+                "/akuvox-ac/index",
                 dt.timedelta(minutes=10),
                 refresh_token_id=refresh_id,
             )
