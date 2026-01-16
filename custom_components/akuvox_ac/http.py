@@ -18,7 +18,6 @@ from homeassistant.components.http.auth import async_sign_path
 from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID, KEY_HASS_USER
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
-from homeassistant.auth import async_validate_access_token
 
 from homeassistant.helpers.network import get_url
 
@@ -1711,8 +1710,8 @@ async def _request_refresh_token_id(
             access_token = parts[1].strip()
             if access_token:
                 try:
-                    refresh_token = await async_validate_access_token(
-                        hass, access_token
+                    refresh_token = await hass.auth.async_validate_access_token(
+                        access_token
                     )
                 except Exception:
                     refresh_token = None
