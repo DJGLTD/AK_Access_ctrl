@@ -177,7 +177,7 @@
         const params = new URLSearchParams(location.search);
         const base = signedUiPath('index', '/akuvox-ac/index');
         const url = new URL(base, window.location.origin);
-        const authSig = currentAuthSig();
+        const authSig = authSigForPath(url.pathname);
         if (authSig && !url.searchParams.has('authSig')) url.searchParams.set('authSig', authSig);
         params.forEach((value, key) => url.searchParams.set(key, value));
         window.location.replace(`${url.pathname}${url.search}${url.hash}`);
