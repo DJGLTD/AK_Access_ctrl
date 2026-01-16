@@ -916,17 +916,18 @@ function ensureTargetDefaults(target){
       device_offline: false,
       integrity_failed: false,
       any_denied: false,
-      granted: { any: false, users: [] }
+      granted: { any: false, specific: false, users: [] }
     };
   } else {
     const cfg = ALERT_TARGETS[target];
     if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
     if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
     if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
-    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, users: [] };
+    if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, specific: false, users: [] };
     if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
     if (!Array.isArray(cfg.granted.users)) cfg.granted.users = [];
     cfg.granted.users = Array.from(new Set(cfg.granted.users.map(u => String(u))));
+    if (typeof cfg.granted.specific !== 'boolean') cfg.granted.specific = cfg.granted.users.length > 0;
   }
 }
 
@@ -1108,7 +1109,11 @@ function renderAlerts(){
           <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_any" ${cfg.granted.any ? 'checked' : ''}>
           <label class="form-check-label">Any User Granted Access</label>
         </div>
-        <div class="mt-3">
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_specific" ${cfg.granted.specific ? 'checked' : ''}>
+          <label class="form-check-label">Specific User Granted Access</label>
+        </div>
+        <div class="mt-3" data-field="granted_users_wrap" style="${cfg.granted.specific ? '' : 'display: none;'}">
           <label class="form-label">Specific users to notify on grant</label>
           <select class="form-select" multiple size="5" data-target="${service}" data-field="granted_users"></select>
           <div class="form-text">Hold Ctrl/Cmd to select multiple users.</div>
@@ -1151,6 +1156,14 @@ function renderAlerts(){
       else if (field === 'integrity_failed') cfg.integrity_failed = checked;
       else if (field === 'any_denied') cfg.any_denied = checked;
       else if (field === 'granted_any') cfg.granted.any = checked;
+      else if (field === 'granted_specific') {
+        cfg.granted.specific = checked;
+        const card = input.closest('.card');
+        if (card){
+          const wrap = card.querySelector('[data-field="granted_users_wrap"]');
+          if (wrap) wrap.style.display = checked ? '' : 'none';
+        }
+      }
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
       await saveAlerts();
     });
