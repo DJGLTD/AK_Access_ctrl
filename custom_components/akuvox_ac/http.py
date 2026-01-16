@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlsplit, unquote
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.components.http.auth import async_sign_path
-from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
+from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID, KEY_HASS_USER
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
 
@@ -1654,6 +1654,45 @@ def _inject_signed_paths(html: str, signed: Dict[str, str]) -> str:
     return script + html
 
 
+def _request_device_id(
+    hass: HomeAssistant, request: Optional[web.Request]
+) -> Optional[str]:
+    if request is None:
+        return None
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    if not refresh_id:
+        return None
+    try:
+        token = hass.auth.async_get_refresh_token(refresh_id)
+    except Exception:
+        token = None
+    device_id = getattr(token, "device_id", None) if token else None
+    if not device_id:
+        return None
+    return str(device_id)
+
+
+def _dashboard_access_allowed(
+    hass: HomeAssistant, request: Optional[web.Request]
+) -> bool:
+    if request is None:
+        return False
+    user = request.get(KEY_HASS_USER)
+    if user and getattr(user, "is_admin", False):
+        return True
+    root = hass.data.get(DOMAIN, {}) or {}
+    settings = root.get("settings_store")
+    if not settings or not hasattr(settings, "get_dashboard_device_ids"):
+        return False
+    allowed_devices = settings.get_dashboard_device_ids()
+    if not allowed_devices:
+        return False
+    device_id = _request_device_id(hass, request)
+    if not device_id:
+        return False
+    return device_id in allowed_devices
+
+
 def _only_hhmm(v: Optional[str]) -> str:
     if not v or v == "—":
         return "—"
@@ -2569,6 +2608,10 @@ class AkuvoxDashboardView(HomeAssistantView):
 
         if not target:
             raise web.HTTPNotFound()
+
+        hass: HomeAssistant = request.app["hass"]
+        if not _dashboard_access_allowed(hass, request) and not target.startswith("unauthorized"):
+            target = "unauthorized"
 
         asset = _resolve_dashboard_asset(target, request)
         variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
