@@ -1676,24 +1676,39 @@ def _request_refresh_token_id(
     hass: HomeAssistant, request: Optional[web.Request]
 ) -> Optional[str]:
     if request is None:
+        _LOGGER.debug("Akuvox UI request missing request object for refresh token.")
         return None
     refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
     if refresh_id:
+        _LOGGER.debug(
+            "Akuvox UI refresh token id found on request: %s", refresh_id
+        )
         return str(refresh_id)
     user = request.get(KEY_HASS_USER)
     user_id = getattr(user, "id", None) if user is not None else None
     if not user_id:
+        _LOGGER.debug("Akuvox UI request missing HA user for refresh token lookup.")
         return None
     try:
         tokens = hass.auth.async_get_refresh_tokens(user_id)
     except Exception:
+        _LOGGER.debug(
+            "Akuvox UI failed to fetch refresh tokens for user %s.", user_id
+        )
         return None
     if not tokens:
+        _LOGGER.debug("Akuvox UI found no refresh tokens for user %s.", user_id)
         return None
     for token in tokens:
         token_id = getattr(token, "id", None) or getattr(token, "token_id", None)
         if token_id:
+            _LOGGER.debug(
+                "Akuvox UI selected refresh token %s for user %s.",
+                token_id,
+                user_id,
+            )
             return str(token_id)
+    _LOGGER.debug("Akuvox UI found refresh tokens without ids for user %s.", user_id)
     return None
 
 
@@ -2727,6 +2742,10 @@ class AkuvoxUIPanel(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         refresh_id = _request_refresh_token_id(hass, request)
         if not refresh_id:
+            _LOGGER.debug(
+                "Akuvox UI panel missing refresh token id. user=%s",
+                bool(request.get(KEY_HASS_USER)),
+            )
             if request.get(KEY_HASS_USER):
                 raise web.HTTPFound("/akuvox-ac/")
             raise web.HTTPUnauthorized()
