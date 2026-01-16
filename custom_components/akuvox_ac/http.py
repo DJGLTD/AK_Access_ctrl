@@ -1880,7 +1880,7 @@ def _dashboard_access_allowed(
         if not device_id:
             return False
         return device_id in allowed_devices
-    return False
+    return True
 
 
 def _only_hhmm(v: Optional[str]) -> str:
