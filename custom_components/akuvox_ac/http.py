@@ -1672,21 +1672,50 @@ def _request_device_id(
     return str(device_id)
 
 
-def _dashboard_access_allowed(
+def _request_user_is_admin(
     hass: HomeAssistant, request: Optional[web.Request]
 ) -> bool:
     if request is None:
         return False
     user = request.get(KEY_HASS_USER)
-    if user and getattr(user, "is_admin", False):
+    if user is not None:
+        return bool(getattr(user, "is_admin", False))
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
+    if not refresh_id:
+        return False
+    try:
+        token = hass.auth.async_get_refresh_token(refresh_id)
+    except Exception:
+        return False
+    if not token:
+        return False
+    user_id = getattr(token, "user_id", None)
+    if not user_id:
+        return False
+    try:
+        stored_user = hass.auth.async_get_user(user_id)
+    except Exception:
+        return False
+    return bool(getattr(stored_user, "is_admin", False))
+
+
+def _dashboard_access_allowed(
+    hass: HomeAssistant, request: Optional[web.Request]
+) -> bool:
+    if request is None:
+        return False
+    if _request_user_is_admin(hass, request):
         return True
+    user = request.get(KEY_HASS_USER)
+    if not user:
+        return False
     root = hass.data.get(DOMAIN, {}) or {}
     settings = root.get("settings_store")
     if not settings or not hasattr(settings, "get_dashboard_device_ids"):
-        return False
+        return True
     allowed_devices = settings.get_dashboard_device_ids()
     if not allowed_devices:
-        return False
+        return True
     device_id = _request_device_id(hass, request)
     if not device_id:
         return False
