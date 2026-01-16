@@ -602,8 +602,6 @@ function scanTokenStorage(storage) {
       } catch (err) {
         if (typeof rawValue === 'string' && rawValue.trim()) {
           const token = persistTokens(rawValue.trim());
-          if (token) return token;
-        }
       }
     }
   } catch (err) {}
@@ -641,8 +639,6 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
-      if (token) return token;
-    }
   } catch (err) {}
 
   return null;
@@ -926,8 +922,6 @@ function buildUrl(view, params = {}){
   Object.entries(params || {}).forEach(([k,v]) => {
     if (v !== undefined && v !== null && v !== '') search.set(k, v);
   });
-  const token = getToken();
-  if (token) search.set('token', token);
   const authSig = currentAuthSig();
   if (authSig) search.set('authSig', authSig);
   const query = search.toString();
