@@ -1892,6 +1892,13 @@ async function load(){
       if (settingsResp && settingsResp.credential_prompts) {
         CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(settingsResp.credential_prompts);
       }
+      if (
+        settingsResp
+        && settingsResp.schedules
+        && (!state?.schedules || Object.keys(state.schedules || {}).length === 0)
+      ) {
+        applySchedulesUpdate(settingsResp.schedules, state?.schedule_ids || {});
+      }
     } catch (err) {
       handleAuthError(err);
       console.warn('Failed to load notification settings', err);
