@@ -2897,15 +2897,117 @@ class AkuvoxUIPanel(HomeAssistantView):
       }
 
       function findToken() {
-        return (
-          readTokens(window.localStorage, "hassTokens")
-          || readTokens(window.sessionStorage, "hassTokens")
-          || readTokens(window.localStorage, "akuvox_hassTokens")
-          || readTokens(window.sessionStorage, "akuvox_hassTokens")
-          || window.sessionStorage?.getItem("akuvox_ll_token")
-          || window.localStorage?.getItem("akuvox_ll_token")
-          || null
-        );
+        function extractTokenFromAuth(auth) {
+          if (!auth || typeof auth !== "object") return null;
+          const access = auth.accessToken
+            || auth.access_token
+            || auth?.token?.access_token
+            || auth?.data?.access_token
+            || null;
+          if (access && typeof access === "string") return access.trim();
+          return null;
+        }
+
+        function readStoredToken(storage) {
+          if (!storage) return null;
+          const hassTokens = readTokens(storage, "hassTokens")
+            || readTokens(storage, "akuvox_hassTokens");
+          if (hassTokens) return hassTokens;
+          try {
+            const direct = storage.getItem("akuvox_ll_token");
+            if (typeof direct === "string" && direct.trim()) return direct.trim();
+          } catch (err) {}
+          try {
+            for (const key of Object.keys(storage)) {
+              if (!/auth|token|hass/i.test(key)) continue;
+              let raw = null;
+              try { raw = storage.getItem(key); } catch (err) { raw = null; }
+              if (!raw) continue;
+              try {
+                const parsed = JSON.parse(raw);
+                const token = extractTokenFromAuth(parsed);
+                if (token) return token;
+              } catch (err) {
+                if (typeof raw === "string" && raw.trim()) return raw.trim();
+              }
+            }
+          } catch (err) {}
+          return null;
+        }
+
+        function tokenFromWindow(win) {
+          if (!win) return null;
+          let token = null;
+          try {
+            token = readStoredToken(win.localStorage) || readStoredToken(win.sessionStorage);
+          } catch (err) {
+            token = null;
+          }
+          if (token) return token;
+
+          token = extractTokenFromAuth(win.hassAuth)
+            || extractTokenFromAuth(win.auth)
+            || extractTokenFromAuth(win.AK_AC_HA_AUTH)
+            || null;
+          if (token) return token;
+
+          try {
+            const direct = win.AK_AC_HA_TOKEN || win.AK_AC_HASS_TOKEN || win.AK_AC_TOKEN || null;
+            if (typeof direct === "string" && direct.trim()) return direct.trim();
+          } catch (err) {}
+
+          try {
+            const conn = win.hassConnection;
+            if (conn && typeof conn.then === "function") {
+              conn.then((resolved) => {
+                try {
+                  extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
+                } catch (err) {}
+              }).catch(() => {});
+            } else if (conn) {
+              token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+              if (token) return token;
+            }
+          } catch (err) {}
+
+          return null;
+        }
+
+        function walkAuthWindows(start) {
+          const visited = new Set();
+          let current = start;
+          while (current && !visited.has(current)) {
+            const token = tokenFromWindow(current);
+            if (token) return token;
+            visited.add(current);
+
+            let next = null;
+            try {
+              next = current.parent;
+            } catch (err) {
+              next = null;
+            }
+            if (next && next !== current && !visited.has(next)) {
+              current = next;
+              continue;
+            }
+
+            try {
+              next = current.opener;
+            } catch (err) {
+              next = null;
+            }
+            if (next && next !== current && !visited.has(next)) {
+              current = next;
+              continue;
+            }
+
+            break;
+          }
+          return null;
+        }
+
+        return walkAuthWindows(window);
       }
 
       async function bootstrap() {
