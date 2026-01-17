@@ -4574,6 +4574,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         removal_keys = {key}
         if canonical:
             removal_keys.add(canonical)
+        removal_norms = {normalize_user_id(value) for value in removal_keys}
+        removal_norms.discard(None)
 
         root = hass.data.get(DOMAIN, {})
         users_store: Optional[AkuvoxUsersStore] = root.get("users_store")
@@ -4600,6 +4602,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     schedule_name="No Access",
                     schedule_id="1002",
                 )
+            except Exception:
+                pass
+
+        settings_store: Optional[AkuvoxSettingsStore] = root.get("settings_store")
+        if settings_store:
+            try:
+                targets = settings_store.get_alert_targets()
+                updated = False
+                for target, cfg in targets.items():
+                    if not isinstance(cfg, dict):
+                        continue
+                    granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
+                    users = list(granted.get("users") or [])
+                    if not users:
+                        continue
+                    filtered = [
+                        user
+                        for user in users
+                        if user not in removal_keys
+                        and normalize_user_id(user) not in removal_norms
+                    ]
+                    if filtered != users:
+                        granted["users"] = filtered
+                        if not filtered:
+                            granted["specific"] = False
+                        cfg["granted"] = granted
+                        targets[target] = cfg
+                        updated = True
+                if updated:
+                    await settings_store.set_alert_targets(targets)
             except Exception:
                 pass
 
