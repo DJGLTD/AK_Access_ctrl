@@ -1288,10 +1288,12 @@ function renderAlerts(){
     if (list){
       USERS.forEach(user => {
         const row = document.createElement('div');
+        const userId = String(user.id || '').trim();
+        if (!userId) return;
         row.className = 'form-check';
         row.innerHTML = `
-          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${user.id}" ${cfg.granted.users.includes(user.id) ? 'checked' : ''}>
-          <label class="form-check-label">${user.name} (${user.id})</label>
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${escapeHtml(userId)}" ${cfg.granted.users.includes(userId) ? 'checked' : ''}>
+          <label class="form-check-label">${escapeHtml(user.name || userId)} (${escapeHtml(userId)})</label>
         `;
         list.appendChild(row);
       });
