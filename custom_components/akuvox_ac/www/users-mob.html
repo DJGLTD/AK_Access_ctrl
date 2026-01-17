@@ -135,6 +135,8 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
   } catch (err) {}
 
   return null;
@@ -487,41 +489,6 @@ function currentAuthSig(){
   return '';
 }
 
-
-function decodeAuthSigPayload(value) {
-  if (!value || typeof value !== 'string') return null;
-  const parts = value.split('.');
-  if (parts.length !== 3) return null;
-  try {
-    const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-    const json = atob(padded);
-    return JSON.parse(json);
-  } catch (err) {
-    return null;
-  }
-}
-
-function authSigMatchesPath(value, pathname) {
-  if (!value || !pathname) return false;
-  const payload = decodeAuthSigPayload(value);
-  if (!payload || typeof payload.path !== 'string') return false;
-  const normalize = (input) => {
-    const path = String(input || '').trim();
-    if (!path) return '';
-    return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
-  };
-  return normalize(payload.path) === normalize(pathname);
-}
-
-function authSigForPath(pathname) {
-  const candidate = currentAuthSig();
-  if (candidate && authSigMatchesPath(candidate, pathname)) {
-    return candidate;
-  }
-  return '';
-}
-
 rememberAuthSig(readAuthSigFrom());
 
 function nextBearerToken(){
@@ -585,7 +552,9 @@ function redirectToUnauthorized(params = {}){
       Object.entries(targetParams).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') search.set(key, value);
       });
-      const authSig = authSigForPath('/akuvox-ac/unauthorized');
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
       if (authSig && !search.has('authSig')) search.set('authSig', authSig);
       const query = search.toString();
       if (query) href = `/akuvox-ac/unauthorized?${query}`;
@@ -650,14 +619,6 @@ function signedPath(key, fallback){
   if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
     return SIGNED_PATHS[key];
   }
-  try {
-    const url = new URL(fallback, window.location.origin);
-    const authSig = authSigForPath(url.pathname);
-    if (authSig && !url.searchParams.has('authSig')) {
-      url.searchParams.set('authSig', authSig);
-      return `${url.pathname}${url.search}${url.hash}`;
-    }
-  } catch (err) {}
   return fallback;
 }
 
@@ -816,22 +777,18 @@ function setBusy(yes){
 }
 
 function buildHref(slug, params = {}) {
-  const clean = String(slug || '').replace(/_/g, '-');
-  const base = typeof signedPath === 'function'
-    ? signedPath(`ui:${clean}`, `${UI_ROOT}/${clean}`)
-    : `${UI_ROOT}/${clean}`;
-  const url = new URL(base, window.location.origin);
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
-  const authSig = authSigForPath(url.pathname);
-  if (authSig && !url.searchParams.has('authSig')) {
-    url.searchParams.set('authSig', authSig);
-  }
-  search.forEach((value, key) => url.searchParams.set(key, value));
-  return `${url.pathname}${url.search}${url.hash}`;
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
 }
 
 function requestParentNav(view, params = {}, options = {}) {
@@ -1887,18 +1844,8 @@ async function load(){
     try {
       const settingsResp = await apiGet(API_SETTINGS);
       ALERT_TARGETS = settingsResp?.alerts?.targets || {};
-      if (settingsResp && settingsResp.credential_prompts) {
-        CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(settingsResp.credential_prompts);
-      }
-      if (
-        settingsResp
-        && settingsResp.schedules
-        && (!state?.schedules || Object.keys(state.schedules || {}).length === 0)
-      ) {
-        applySchedulesUpdate(settingsResp.schedules, state?.schedule_ids || {});
-      }
     } catch (err) {
-      handleAuthError(err);
+      if (handleAuthError(err)) return;
       console.warn('Failed to load notification settings', err);
       ALERT_TARGETS = {};
     }

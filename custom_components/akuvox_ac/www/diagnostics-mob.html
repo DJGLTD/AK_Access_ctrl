@@ -264,6 +264,8 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
+    }
   } catch (err) {}
 
   return null;
@@ -377,6 +379,8 @@ async function fetchWithAuth(url, options = {}) {
   try {
     const response = await fetch(url, merged);
     if (response.status === 401 || response.status === 403) {
+      if (token) REJECTED_TOKENS.add(token);
+    }
     return response;
   } catch (err) {
     throw err;
@@ -406,12 +410,15 @@ function redirectToUnauthorized(){
   });
   const authSig = currentAuthSig();
   if (authSig) targetParams.set('authSig', authSig);
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) targetParams.set('token', token);
   const query = targetParams.toString();
   let href = `/akuvox-ac/unauthorized${query ? `?${query}` : ''}`;
   try {
     if (window.parent && window.parent !== window) {
       const search = new URLSearchParams(targetParams);
       if (authSig) search.set('authSig', authSig);
+      if (token) search.set('token', token);
       const clean = search.toString();
       if (clean) href = `/akuvox-ac/unauthorized?${clean}`;
     }
@@ -480,22 +487,18 @@ function signedPath(key, fallback){
 
 const UI_ROOT = '/akuvox-ac';
 function buildHref(slug, params = {}) {
-  const clean = String(slug || '').replace(/_/g, '-');
-  const base = typeof signedPath === 'function'
-    ? signedPath(`ui:${clean}`, `${UI_ROOT}/${clean}`)
-    : `${UI_ROOT}/${clean}`;
-  const url = new URL(base, window.location.origin);
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
-  const authSig = authSigForPath(url.pathname);
-  if (authSig && !url.searchParams.has('authSig')) {
-    url.searchParams.set('authSig', authSig);
-  }
-  search.forEach((value, key) => url.searchParams.set(key, value));
-  return `${url.pathname}${url.search}${url.hash}`;
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
 }
 function requestParentNav(view, params = {}, options = {}) {
   try {
