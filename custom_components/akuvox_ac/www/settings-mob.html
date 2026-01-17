@@ -558,6 +558,7 @@ let DEVICES = [];
 let GROUPS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
+let alertsSaveQueued = false;
 let integritySaving = false;
 let credentialSaving = false;
 let credentialQueued = null;
@@ -1841,7 +1842,10 @@ async function saveHealthInterval(seconds){
 }
 
 async function saveAlerts(){
-  if (alertsSaving) return;
+  if (alertsSaving) {
+    alertsSaveQueued = true;
+    return;
+  }
   alertsSaving = true;
   try{
     setAlertsStatus('Saving…');
@@ -1858,6 +1862,10 @@ async function saveAlerts(){
     alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
   }finally{
     alertsSaving = false;
+    if (alertsSaveQueued){
+      alertsSaveQueued = false;
+      await saveAlerts();
+    }
   }
 }
 
