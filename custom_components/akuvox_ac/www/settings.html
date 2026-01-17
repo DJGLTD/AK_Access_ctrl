@@ -1185,6 +1185,11 @@ function renderAlerts(){
         .map(item => item.getAttribute('data-user-id'))
         .filter(Boolean);
       ALERT_TARGETS[service].granted.users = values;
+      if (values.length && !ALERT_TARGETS[service].granted.specific) {
+        ALERT_TARGETS[service].granted.specific = true;
+        const specificToggle = card.querySelector(`input[data-field="granted_specific"][data-target="${service}"]`);
+        if (specificToggle) specificToggle.checked = true;
+      }
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
       await saveAlerts();
     });

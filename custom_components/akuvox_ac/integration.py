@@ -2352,9 +2352,11 @@ class AkuvoxSettingsStore(Store):
                     granted_cfg = {}
 
                 users_raw = []
+                specific_flag = False
                 if isinstance(granted_cfg, dict):
                     users_raw = granted_cfg.get("users") or []
                     any_flag = bool(granted_cfg.get("any"))
+                    specific_flag = bool(granted_cfg.get("specific"))
                 else:
                     any_flag = False
 
@@ -2367,7 +2369,14 @@ class AkuvoxSettingsStore(Store):
                 elif isinstance(users_raw, str) and users_raw.strip():
                     users_list = [users_raw.strip()]
 
-                data["granted"] = {"any": any_flag, "users": users_list}
+                if not specific_flag and users_list:
+                    specific_flag = True
+
+                data["granted"] = {
+                    "any": any_flag,
+                    "specific": specific_flag,
+                    "users": users_list,
+                }
                 cleaned[target] = data
         return cleaned
 
