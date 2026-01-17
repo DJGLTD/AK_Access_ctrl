@@ -171,10 +171,11 @@ function tokenFromWindow(win) {
       }).catch(() => {});
     } else if (conn) {
       token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
+      if (token) return token;
     }
   } catch (err) {}
 
-  return token;
+  return null;
 }
 
 function walkAuthWindows(start) {
@@ -319,41 +320,6 @@ function currentAuthSig(){
   return '';
 }
 
-
-function decodeAuthSigPayload(value) {
-  if (!value || typeof value !== 'string') return null;
-  const parts = value.split('.');
-  if (parts.length !== 3) return null;
-  try {
-    const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
-    const json = atob(padded);
-    return JSON.parse(json);
-  } catch (err) {
-    return null;
-  }
-}
-
-function authSigMatchesPath(value, pathname) {
-  if (!value || !pathname) return false;
-  const payload = decodeAuthSigPayload(value);
-  if (!payload || typeof payload.path !== 'string') return false;
-  const normalize = (input) => {
-    const path = String(input || '').trim();
-    if (!path) return '';
-    return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
-  };
-  return normalize(payload.path) === normalize(pathname);
-}
-
-function authSigForPath(pathname) {
-  const candidate = currentAuthSig();
-  if (candidate && authSigMatchesPath(candidate, pathname)) {
-    return candidate;
-  }
-  return '';
-}
-
 rememberAuthSig(readAuthSigFrom());
 
 function nextBearerToken(){
@@ -417,7 +383,9 @@ function redirectToUnauthorized(params = {}){
       Object.entries(targetParams).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') search.set(key, value);
       });
-      const authSig = authSigForPath('/akuvox-ac/unauthorized');
+      const token = sessionStorage.getItem('akuvox_ll_token');
+      if (token && !search.has('token')) search.set('token', token);
+      const authSig = currentAuthSig();
       if (authSig && !search.has('authSig')) search.set('authSig', authSig);
       const query = search.toString();
       if (query) href = `/akuvox-ac/unauthorized?${query}`;
@@ -507,22 +475,18 @@ async function apiPost(url, body){
 }
 const UI_ROOT = '/akuvox-ac';
 function buildHref(slug, params = {}) {
-  const clean = String(slug || '').replace(/_/g, '-');
-  const base = typeof signedPath === 'function'
-    ? signedPath(`ui:${clean}`, `${UI_ROOT}/${clean}`)
-    : `${UI_ROOT}/${clean}`;
-  const url = new URL(base, window.location.origin);
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     search.set(key, value);
   });
-  const authSig = authSigForPath(url.pathname);
-  if (authSig && !url.searchParams.has('authSig')) {
-    url.searchParams.set('authSig', authSig);
-  }
-  search.forEach((value, key) => url.searchParams.set(key, value));
-  return `${url.pathname}${url.search}${url.hash}`;
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  const clean = String(slug || '').replace(/_/g, '-');
+  return `${UI_ROOT}/${clean}${query ? `?${query}` : ''}`;
 }
 function requestParentNav(view, params = {}, options = {}) {
   try {
@@ -589,18 +553,13 @@ let SETTINGS_DATA = {
   min_access_event_limit: 5,
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
-  dashboard_access_user_ids: [],
-  dashboard_signed_path_fallback: false,
-  ha_users: [],
 };
 let PHONES = [];
 let USERS = [];
 let DEVICES = [];
 let GROUPS = [];
-let HA_USERS = [];
 let ALERT_TARGETS = {};
 let alertsSaving = false;
-let alertsQueued = false;
 let credentialSaving = false;
 let credentialQueued = null;
 let integritySaving = false;
@@ -611,8 +570,6 @@ let healthSaving = false;
 let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
-let dashboardAccessSaving = false;
-let dashboardFallbackSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -722,128 +679,6 @@ function showEventLimitSavedOverlay(message = 'Saved'){
     overlay.classList.remove('visible');
     eventLimitSavedTimer = null;
   }, 5000);
-}
-
-function setDashboardAccessStatus(message, state){
-  const status = document.getElementById('dashboardAccessStatus');
-  if (!status) return;
-  status.textContent = message || '';
-  status.classList.remove('text-danger', 'text-success', 'visually-hidden');
-  if (!message){
-    status.classList.add('visually-hidden');
-    return;
-  }
-  if (state === 'error') status.classList.add('text-danger');
-  if (state === 'success') status.classList.add('text-success');
-}
-
-function setDashboardFallbackStatus(message, state){
-  const status = document.getElementById('dashboardFallbackStatus');
-  if (!status) return;
-  status.textContent = message || '';
-  status.classList.remove('text-danger', 'text-success', 'visually-hidden');
-  if (!message){
-    status.classList.add('visually-hidden');
-    return;
-  }
-  if (state === 'error') status.classList.add('text-danger');
-  if (state === 'success') status.classList.add('text-success');
-}
-
-function normalizeDashboardAccessIds(raw){
-  if (!Array.isArray(raw)) return [];
-  const cleaned = raw.map((val) => String(val || '').trim()).filter(Boolean);
-  return Array.from(new Set(cleaned));
-}
-
-function collectDashboardAccessIds(){
-  const wrap = document.getElementById('dashboardAccessUsers');
-  if (!wrap) return [];
-  return Array.from(wrap.querySelectorAll('input[data-user-id]'))
-    .filter((input) => input.checked && input.dataset.admin !== 'true')
-    .map((input) => input.dataset.userId)
-    .filter(Boolean);
-}
-
-function renderDashboardAccess(){
-  const wrap = document.getElementById('dashboardAccessUsers');
-  if (!wrap) return;
-  const allowed = new Set(normalizeDashboardAccessIds(SETTINGS_DATA.dashboard_access_user_ids));
-  const users = Array.isArray(HA_USERS) ? HA_USERS : [];
-  if (!users.length){
-    wrap.innerHTML = '<div class="muted small">No Home Assistant users found.</div>';
-    return;
-  }
-  wrap.innerHTML = users.map((user) => {
-    const id = String(user.id || '').trim();
-    if (!id) return '';
-    const name = escapeHtml(user.name || id);
-    const isAdmin = !!user.is_admin;
-    const checked = isAdmin || allowed.has(id);
-    const disabled = isAdmin ? 'disabled' : '';
-    const badge = isAdmin ? '<span class="badge bg-info text-dark ms-2">Admin</span>' : '';
-    const helper = isAdmin ? '<div class="small muted">Always allowed</div>' : '';
-    return (
-      `<label class="form-check d-flex flex-column align-items-start gap-1 mb-2">
-        <div class="d-flex align-items-center gap-2">
-          <input class="form-check-input" type="checkbox" data-user-id="${escapeHtml(id)}" data-admin="${isAdmin}" ${checked ? 'checked' : ''} ${disabled}>
-          <span>${name}${badge}</span>
-        </div>
-        ${helper}
-      </label>`
-    );
-  }).join('');
-}
-
-function renderDashboardFallback(){
-  const toggle = document.getElementById('dashboardSignedFallbackToggle');
-  if (!toggle) return;
-  toggle.checked = !!SETTINGS_DATA.dashboard_signed_path_fallback;
-}
-
-async function saveDashboardAccess(){
-  if (dashboardAccessSaving) return;
-  dashboardAccessSaving = true;
-  try{
-    setDashboardAccessStatus('Saving…');
-    const ids = collectDashboardAccessIds();
-    const res = await apiPost(API_SETTINGS, { dashboard_access_user_ids: ids });
-    if (Array.isArray(res?.dashboard_access_user_ids)){
-      SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(res.dashboard_access_user_ids);
-    } else {
-      SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(ids);
-    }
-    renderDashboardAccess();
-    setDashboardAccessStatus('Saved ✓', 'success');
-  }catch(err){
-    if (handleAuthError(err)) return;
-    setDashboardAccessStatus('Save failed', 'error');
-    alert('Failed to update dashboard access: ' + (err && err.message ? err.message : err));
-  }finally{
-    dashboardAccessSaving = false;
-  }
-}
-
-async function saveDashboardFallback(enabled){
-  if (dashboardFallbackSaving) return;
-  dashboardFallbackSaving = true;
-  try{
-    setDashboardFallbackStatus('Saving…');
-    const res = await apiPost(API_SETTINGS, { dashboard_signed_path_fallback: !!enabled });
-    if (typeof res?.dashboard_signed_path_fallback === 'boolean'){
-      SETTINGS_DATA.dashboard_signed_path_fallback = res.dashboard_signed_path_fallback;
-    } else {
-      SETTINGS_DATA.dashboard_signed_path_fallback = !!enabled;
-    }
-    renderDashboardFallback();
-    setDashboardFallbackStatus('Saved ✓', 'success');
-  }catch(err){
-    if (handleAuthError(err)) return;
-    setDashboardFallbackStatus('Save failed', 'error');
-    alert('Failed to update dashboard signed path fallback: ' + (err && err.message ? err.message : err));
-  }finally{
-    dashboardFallbackSaving = false;
-  }
 }
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
@@ -1290,12 +1125,10 @@ function renderAlerts(){
     if (list){
       USERS.forEach(user => {
         const row = document.createElement('div');
-        const userId = String(user.id || '').trim();
-        if (!userId) return;
         row.className = 'form-check';
         row.innerHTML = `
-          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${escapeHtml(userId)}" ${cfg.granted.users.includes(userId) ? 'checked' : ''}>
-          <label class="form-check-label">${escapeHtml(user.name || userId)} (${escapeHtml(userId)})</label>
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${user.id}" ${cfg.granted.users.includes(user.id) ? 'checked' : ''}>
+          <label class="form-check-label">${user.name} (${user.id})</label>
         `;
         list.appendChild(row);
       });
@@ -1350,11 +1183,8 @@ function renderAlerts(){
       const values = Array.from(card.querySelectorAll(`input[data-field="granted_users"][data-target="${service}"]`))
         .filter(item => item.checked)
         .map(item => item.getAttribute('data-user-id'))
-        .filter(Boolean)
-        .map(value => String(value).trim())
         .filter(Boolean);
       ALERT_TARGETS[service].granted.users = values;
-      ALERT_TARGETS[service].granted.specific = values.length > 0;
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
       await saveAlerts();
     });
@@ -2011,10 +1841,7 @@ async function saveHealthInterval(seconds){
 }
 
 async function saveAlerts(){
-  if (alertsSaving){
-    alertsQueued = true;
-    return;
-  }
+  if (alertsSaving) return;
   alertsSaving = true;
   try{
     setAlertsStatus('Saving…');
@@ -2031,10 +1858,6 @@ async function saveAlerts(){
     alert('Failed to update alerts: ' + (err && err.message ? err.message : err));
   }finally{
     alertsSaving = false;
-    if (alertsQueued){
-      alertsQueued = false;
-      await saveAlerts();
-    }
   }
 }
 
@@ -2121,9 +1944,6 @@ async function loadData(){
 
     PHONES = Array.isArray(phonesResp.phones) ? phonesResp.phones : [];
     USERS = Array.isArray(SETTINGS_DATA.registry_users) ? SETTINGS_DATA.registry_users : [];
-    HA_USERS = Array.isArray(settingsResp?.ha_users) ? settingsResp.ha_users : [];
-    SETTINGS_DATA.dashboard_access_user_ids = normalizeDashboardAccessIds(settingsResp?.dashboard_access_user_ids);
-    SETTINGS_DATA.dashboard_signed_path_fallback = !!settingsResp?.dashboard_signed_path_fallback;
     ALERT_TARGETS = (SETTINGS_DATA.alerts && SETTINGS_DATA.alerts.targets) ? { ...SETTINGS_DATA.alerts.targets } : {};
     Object.keys(ALERT_TARGETS).forEach(ensureTargetDefaults);
     SETTINGS_DATA.capabilities = settingsResp?.capabilities && typeof settingsResp.capabilities === 'object'
@@ -2148,8 +1968,6 @@ async function loadData(){
     renderCredentialPrompts();
     renderDeviceAccess();
     renderAlerts();
-    renderDashboardAccess();
-    renderDashboardFallback();
   } catch (err){
     if (handleAuthError(err)) return;
     alert('Failed to load settings: ' + (err && err.message ? err.message : err));
@@ -2157,7 +1975,6 @@ async function loadData(){
     GROUPS = [];
     PHONES = [];
     USERS = [];
-    HA_USERS = [];
     ALERT_TARGETS = {};
     renderAutoSyncDelay();
     renderHealthInterval();
@@ -2166,8 +1983,6 @@ async function loadData(){
     renderCredentialPrompts();
     renderDeviceAccess();
     renderAlerts();
-    renderDashboardAccess();
-    renderDashboardFallback();
   } finally {
     setBusy(false);
   }
@@ -2293,22 +2108,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   eventLimitInput?.addEventListener('change', commitEventLimit);
   eventLimitInput?.addEventListener('blur', commitEventLimit);
-
-  const dashboardAccessWrap = document.getElementById('dashboardAccessUsers');
-  dashboardAccessWrap?.addEventListener('change', async (ev) => {
-    const target = ev.target;
-    if (!target || target.type !== 'checkbox') return;
-    SETTINGS_DATA.dashboard_access_user_ids = collectDashboardAccessIds();
-    await saveDashboardAccess();
-  });
-
-  const dashboardFallbackToggle = document.getElementById('dashboardSignedFallbackToggle');
-  dashboardFallbackToggle?.addEventListener('change', async () => {
-    const enabled = !!dashboardFallbackToggle.checked;
-    if (enabled === SETTINGS_DATA.dashboard_signed_path_fallback) return;
-    SETTINGS_DATA.dashboard_signed_path_fallback = enabled;
-    await saveDashboardFallback(enabled);
-  });
 
   const integrityInput = document.getElementById('integrityInput');
   const commitIntegrity = async () => {
@@ -2446,21 +2245,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
-    </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="card-header">Dashboard Access</div>
-    <div class="card-body">
-      <p class="muted">Administrators always have access to the dashboard. Select any additional Home Assistant users who should be allowed to open the dashboard.</p>
-      <div id="dashboardAccessUsers" class="d-flex flex-column"></div>
-      <div id="dashboardAccessStatus" class="visually-hidden small mt-2"></div>
-      <div class="form-check form-switch mt-3">
-        <input class="form-check-input" type="checkbox" id="dashboardSignedFallbackToggle">
-        <label class="form-check-label" for="dashboardSignedFallbackToggle">Use signed path fallback</label>
-      </div>
-      <div class="muted small">Enable this to sign dashboard API links using an allowed or admin refresh token when the request arrives without a refresh token (for example, when the dashboard is opened via a signed URL).</div>
-      <div id="dashboardFallbackStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 

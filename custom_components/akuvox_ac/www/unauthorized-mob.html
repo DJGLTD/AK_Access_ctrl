@@ -127,60 +127,19 @@
 
   rememberAuthSig(readAuthSigFrom());
 
-  function collectSignedPaths(){
-    const result = {};
-    const merge = (candidate) => {
-      if (!candidate || typeof candidate !== 'object') return;
-      for (const [key, value] of Object.entries(candidate)) {
-        if (typeof value === 'string' && value) result[key] = value;
-      }
-    };
-    const read = (storage) => {
-      if (!storage) return;
-      try {
-        const raw = storage.getItem('akuvox_signed_paths');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          merge(parsed);
-        }
-      } catch (err) {}
-    };
-
-    try { merge(window.AK_AC_SIGNED_PATHS); } catch (err) {}
-    try { read(typeof sessionStorage !== 'undefined' ? sessionStorage : null); } catch (err) {}
-    try { read(typeof localStorage !== 'undefined' ? localStorage : null); } catch (err) {}
-    try {
-      if (window.parent && window.parent !== window) {
-        try { merge(window.parent.AK_AC_SIGNED_PATHS); } catch (err) {}
-        try { read(window.parent.sessionStorage); } catch (err) {}
-        try { read(window.parent.localStorage); } catch (err) {}
-      }
-    } catch (err) {}
-
-    return result;
-  }
-
-  const SIGNED_PATHS = collectSignedPaths();
-  function signedUiPath(slug, fallback){
-    const key = `ui:${slug}`;
-    if (SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && SIGNED_PATHS[key]) {
-      return SIGNED_PATHS[key];
-    }
-    return fallback;
-  }
-
   (function(){
     const retryBtn = document.getElementById('retry');
     if (!retryBtn) return;
     retryBtn.addEventListener('click', () => {
       try {
         const params = new URLSearchParams(location.search);
-        const base = signedUiPath('index', '/akuvox-ac/index');
-        const url = new URL(base, window.location.origin);
-        const authSig = authSigForPath(url.pathname);
-        if (authSig && !url.searchParams.has('authSig')) url.searchParams.set('authSig', authSig);
-        params.forEach((value, key) => url.searchParams.set(key, value));
-        window.location.replace(`${url.pathname}${url.search}${url.hash}`);
+        const token = sessionStorage.getItem('akuvox_ll_token');
+        if (token && !params.has('token')) params.set('token', token);
+        const authSig = currentAuthSig();
+        if (authSig && !params.has('authSig')) params.set('authSig', authSig);
+        const search = params.toString();
+        const target = `/akuvox-ac/index${search ? `?${search}` : ''}`;
+        window.location.replace(target);
       } catch (err) {
         const authSig = currentAuthSig();
         if (authSig) {

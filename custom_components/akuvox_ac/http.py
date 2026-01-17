@@ -10,12 +10,12 @@ from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Optional, Mapping, Set
-from urllib.parse import urlencode, urlsplit, unquote, parse_qsl
+from urllib.parse import urlencode, urlsplit, unquote
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.components.http.auth import async_sign_path
-from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID, KEY_HASS_USER
+from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
 
@@ -1593,33 +1593,16 @@ def _static_asset(path: str) -> Path:
     return candidate
 
 
-async def _signed_paths_for_request(
+def _signed_paths_for_request(
     hass: HomeAssistant, request: web.Request
 ) -> Dict[str, str]:
-    refresh_id = await _request_refresh_token_id(hass, request)
+    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
     if not refresh_id:
-        refresh_id = _fallback_refresh_token_id(hass)
-        if not refresh_id:
-            return {}
+        return {}
 
     signed: Dict[str, str] = {}
 
     for key, path in SIGNED_API_PATHS.items():
-        try:
-            signed[key] = async_sign_path(
-                hass,
-                path,
-                dt.timedelta(minutes=10),
-                refresh_token_id=refresh_id,
-            )
-        except Exception as err:  # pragma: no cover - best effort
-            _LOGGER.debug("Failed to sign %s for Akuvox UI: %s", path, err)
-
-    for slug in DASHBOARD_ROUTES.keys():
-        if not slug:
-            continue
-        path = f"/akuvox-ac/{slug}"
-        key = f"ui:{slug}"
         try:
             signed[key] = async_sign_path(
                 hass,
@@ -1669,256 +1652,6 @@ def _inject_signed_paths(html: str, signed: Dict[str, str]) -> str:
             return html[:insert_at] + script + html[insert_at:]
 
     return script + html
-
-
-def _request_device_id(
-    hass: HomeAssistant, request: Optional[web.Request]
-) -> Optional[str]:
-    if request is None:
-        return None
-    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
-    if not refresh_id:
-        return None
-    try:
-        token = hass.auth.async_get_refresh_token(refresh_id)
-    except Exception:
-        token = None
-    device_id = getattr(token, "device_id", None) if token else None
-    if not device_id:
-        return None
-    return str(device_id)
-
-
-async def _request_refresh_token_id(
-    hass: HomeAssistant, request: Optional[web.Request]
-) -> Optional[str]:
-    if request is None:
-        _LOGGER.debug("Akuvox UI request missing request object for refresh token.")
-        return None
-    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
-    if refresh_id:
-        _LOGGER.debug(
-            "Akuvox UI refresh token id found on request: %s", refresh_id
-        )
-        return str(refresh_id)
-    auth_header = request.headers.get("Authorization") or request.headers.get(
-        "authorization"
-    )
-    access_token = None
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            access_token = parts[1].strip() or None
-    if not access_token:
-        access_token = request.query.get("token") or request.query.get("access_token")
-    if access_token:
-        try:
-            refresh_token = await hass.auth.async_validate_access_token(access_token)
-        except Exception:
-            refresh_token = None
-            _LOGGER.debug("Akuvox UI access token validation failed.")
-        token_id = getattr(refresh_token, "id", None) or getattr(
-            refresh_token, "token_id", None
-        )
-        if token_id:
-            _LOGGER.debug(
-                "Akuvox UI refresh token id resolved from access token: %s",
-                token_id,
-            )
-            return str(token_id)
-    user = request.get(KEY_HASS_USER)
-    user_id = getattr(user, "id", None) if user is not None else None
-    if not user_id:
-        _LOGGER.debug("Akuvox UI request missing HA user for refresh token lookup.")
-        return None
-    try:
-        tokens = hass.auth.async_get_refresh_tokens(user_id)
-    except Exception:
-        _LOGGER.debug(
-            "Akuvox UI failed to fetch refresh tokens for user %s.", user_id
-        )
-        return None
-    if not tokens:
-        _LOGGER.debug("Akuvox UI found no refresh tokens for user %s.", user_id)
-        return None
-    for token in tokens:
-        token_id = getattr(token, "id", None) or getattr(token, "token_id", None)
-        if token_id:
-            _LOGGER.debug(
-                "Akuvox UI selected refresh token %s for user %s.",
-                token_id,
-                user_id,
-            )
-            return str(token_id)
-    _LOGGER.debug("Akuvox UI found refresh tokens without ids for user %s.", user_id)
-    return None
-
-
-def _request_access_token(request: Optional[web.Request]) -> Optional[str]:
-    if request is None:
-        return None
-    auth_header = request.headers.get("Authorization") or request.headers.get(
-        "authorization"
-    )
-    if not auth_header:
-        token = request.query.get("token") or request.query.get("access_token")
-        return token or None
-    parts = auth_header.split()
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        token = parts[1].strip()
-        return token or None
-    return None
-
-
-def _append_query_param(path: str, key: str, value: Optional[str]) -> str:
-    if not value:
-        return path
-    try:
-        parts = urlsplit(path)
-    except Exception:
-        return path
-    params = parse_qsl(parts.query, keep_blank_values=True)
-    if not any(existing_key == key for existing_key, _ in params):
-        params.append((key, value))
-    query = urlencode(params)
-    return parts._replace(query=query).geturl()
-
-
-async def _read_asset_text(hass: HomeAssistant, asset: pathlib.Path) -> str:
-    try:
-        return await hass.async_add_executor_job(asset.read_text, "utf-8")
-    except Exception:
-        return await hass.async_add_executor_job(asset.read_text)
-
-
-def _fallback_refresh_token_id(hass: HomeAssistant) -> Optional[str]:
-    root = hass.data.get(DOMAIN, {}) or {}
-    settings = root.get("settings_store")
-    if not settings or not hasattr(settings, "get_dashboard_signed_path_fallback"):
-        return None
-    try:
-        enabled = settings.get_dashboard_signed_path_fallback()
-    except Exception:
-        return None
-    if not enabled:
-        return None
-    allowed_users = []
-    if hasattr(settings, "get_dashboard_user_ids"):
-        try:
-            allowed_users = settings.get_dashboard_user_ids() or []
-        except Exception:
-            allowed_users = []
-    if allowed_users:
-        candidate_users = allowed_users
-    else:
-        try:
-            candidate_users = [
-                user.id
-                for user in hass.auth.async_get_users()
-                if getattr(user, "is_active", True) and getattr(user, "is_admin", False)
-            ]
-        except Exception:
-            candidate_users = []
-    for user_id in candidate_users:
-        try:
-            tokens = hass.auth.async_get_refresh_tokens(user_id)
-        except Exception:
-            continue
-        for token in tokens or []:
-            token_id = getattr(token, "id", None) or getattr(token, "token_id", None)
-            if token_id:
-                _LOGGER.debug(
-                    "Akuvox UI using fallback refresh token %s for user %s.",
-                    token_id,
-                    user_id,
-                )
-                return str(token_id)
-    _LOGGER.debug("Akuvox UI fallback refresh token not available.")
-    return None
-
-
-def _request_user_id(
-    hass: HomeAssistant, request: Optional[web.Request]
-) -> Optional[str]:
-    if request is None:
-        return None
-    user = request.get(KEY_HASS_USER)
-    if user is not None:
-        user_id = getattr(user, "id", None)
-        return str(user_id) if user_id else None
-    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
-    if not refresh_id:
-        return None
-    try:
-        token = hass.auth.async_get_refresh_token(refresh_id)
-    except Exception:
-        token = None
-    user_id = getattr(token, "user_id", None) if token else None
-    if not user_id:
-        return None
-    return str(user_id)
-
-
-def _request_user_is_admin(
-    hass: HomeAssistant, request: Optional[web.Request]
-) -> bool:
-    if request is None:
-        return False
-    user = request.get(KEY_HASS_USER)
-    if user is not None:
-        return bool(getattr(user, "is_admin", False))
-    refresh_id = request.get(KEY_HASS_REFRESH_TOKEN_ID)
-    if not refresh_id:
-        return False
-    try:
-        token = hass.auth.async_get_refresh_token(refresh_id)
-    except Exception:
-        return False
-    if not token:
-        return False
-    user_id = getattr(token, "user_id", None)
-    if not user_id:
-        return False
-    try:
-        stored_user = hass.auth.async_get_user(user_id)
-    except Exception:
-        return False
-    return bool(getattr(stored_user, "is_admin", False))
-
-
-def _dashboard_access_allowed(
-    hass: HomeAssistant, request: Optional[web.Request]
-) -> bool:
-    if request is None:
-        return False
-    if _request_user_is_admin(hass, request):
-        return True
-    root = hass.data.get(DOMAIN, {}) or {}
-    settings = root.get("settings_store")
-    if not settings:
-        return True
-    allowed_users = (
-        settings.get_dashboard_user_ids()
-        if hasattr(settings, "get_dashboard_user_ids")
-        else []
-    )
-    if allowed_users:
-        user_id = _request_user_id(hass, request)
-        if not user_id:
-            return False
-        return user_id in allowed_users
-
-    allowed_devices = (
-        settings.get_dashboard_device_ids()
-        if hasattr(settings, "get_dashboard_device_ids")
-        else []
-    )
-    if allowed_devices:
-        device_id = _request_device_id(hass, request)
-        if not device_id:
-            return False
-        return device_id in allowed_devices
-    return True
 
 
 def _only_hhmm(v: Optional[str]) -> str:
@@ -2823,7 +2556,7 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()
@@ -2837,349 +2570,21 @@ class AkuvoxDashboardView(HomeAssistantView):
         if not target:
             raise web.HTTPNotFound()
 
-        hass: HomeAssistant = request.app["hass"]
-        if not _dashboard_access_allowed(hass, request) and not target.startswith("unauthorized"):
-            target = "unauthorized"
-
         asset = _resolve_dashboard_asset(target, request)
         variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
         if asset.suffix.lower() == ".html":
             hass: HomeAssistant = request.app["hass"]
-            signed = await _signed_paths_for_request(hass, request)
-            html = await _read_asset_text(hass, asset)
+            signed = _signed_paths_for_request(hass, request)
+            try:
+                html = asset.read_text(encoding="utf-8")
+            except Exception:
+                html = asset.read_text()
             html = _inject_signed_paths(html, signed)
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
             return response
 
         return web.FileResponse(asset, headers={"X-AK-AC-Variant": variant})
-
-
-class AkuvoxUIPanel(HomeAssistantView):
-    url = "/api/akuvox_ac/ui/panel"
-    name = "api:akuvox_ac:ui_panel"
-    # NOTE: Do not require auth on this entry point; enforcing auth here
-    # breaks device/embedded dashboard access that relies on signed paths.
-    requires_auth = False
-
-    _BOOTSTRAP_HTML = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Akuvox Admin Panel</title>
-    <style>
-      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;background:#0b1320;color:#e6edf3;margin:0}
-      .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem}
-      .card{max-width:520px;background:#111a2b;border:1px solid #1b2942;border-radius:16px;padding:24px}
-      .title{font-size:1.2rem;font-weight:600;margin:0 0 0.75rem 0}
-      .muted{color:#a5b5cc;margin:0 0 1rem 0}
-      .btn{display:inline-block;background:#1b2942;color:#e6edf3;padding:0.6rem 1rem;border-radius:999px;text-decoration:none}
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <div class="card">
-        <p class="title">Connecting to the Akuvox admin dashboard…</p>
-        <p class="muted" id="status">Looking for your Home Assistant session.</p>
-        <a class="btn" id="fallback" href="__AK_AC_FALLBACK__">Open dashboard</a>
-      </div>
-    </div>
-    <script>
-      function extractTokens(source) {
-        if (!source || typeof source !== "object") return null;
-        const access = source.accessToken
-          || source.access_token
-          || source?.token?.access_token
-          || source?.data?.access_token
-          || null;
-        const refresh = source.refreshToken
-          || source.refresh_token
-          || source?.token?.refresh_token
-          || source?.data?.refresh_token
-          || null;
-        if (!access && !refresh) return null;
-        return { access: access || null, refresh: refresh || null };
-      }
-
-      function readTokens(storage, key) {
-        if (!storage) return null;
-        try {
-          const raw = storage.getItem(key);
-          if (!raw) return null;
-          const data = JSON.parse(raw);
-          return extractTokens(data);
-        } catch (err) {
-          return null;
-        }
-      }
-
-      function findToken() {
-        function extractTokenFromAuth(auth) {
-          const tokens = extractTokens(auth);
-          if (!tokens) return null;
-          const access = tokens.access;
-          const refresh = tokens.refresh;
-          return {
-            access: typeof access === "string" ? access.trim() : null,
-            refresh: typeof refresh === "string" ? refresh.trim() : null,
-          };
-        }
-
-        function mergeTokens(current, next) {
-          if (!next) return current;
-          const merged = { access: null, refresh: null };
-          if (current) {
-            merged.access = current.access || null;
-            merged.refresh = current.refresh || null;
-          }
-          if (next.access) merged.access = next.access;
-          if (next.refresh) merged.refresh = next.refresh;
-          return merged;
-        }
-
-        function readStoredToken(storage) {
-          if (!storage) return null;
-          let collected = null;
-          const hassTokens = readTokens(storage, "hassTokens")
-            || readTokens(storage, "akuvox_hassTokens");
-          collected = mergeTokens(collected, hassTokens);
-          try {
-            const direct = storage.getItem("akuvox_ll_token");
-            if (typeof direct === "string" && direct.trim()) {
-              collected = mergeTokens(collected, { access: direct.trim(), refresh: null });
-            }
-          } catch (err) {}
-          try {
-            for (const key of Object.keys(storage)) {
-              if (!/auth|token|hass/i.test(key)) continue;
-              let raw = null;
-              try { raw = storage.getItem(key); } catch (err) { raw = null; }
-              if (!raw) continue;
-              try {
-                const parsed = JSON.parse(raw);
-                const token = extractTokenFromAuth(parsed);
-                collected = mergeTokens(collected, token);
-              } catch (err) {
-                if (typeof raw === "string" && raw.trim()) {
-                  collected = mergeTokens(collected, { access: raw.trim(), refresh: null });
-                }
-              }
-            }
-          } catch (err) {}
-          if (!collected || (!collected.access && !collected.refresh)) return null;
-          return collected;
-        }
-
-        function tokenFromWindow(win) {
-          if (!win) return null;
-          let token = null;
-          try {
-            token = readStoredToken(win.localStorage) || readStoredToken(win.sessionStorage);
-          } catch (err) {
-            token = null;
-          }
-          if (token) return token;
-
-          token = extractTokenFromAuth(win.hassAuth)
-            || extractTokenFromAuth(win.auth)
-            || extractTokenFromAuth(win.AK_AC_HA_AUTH)
-            || null;
-          if (token) return token;
-
-          try {
-            const direct = win.AK_AC_HA_TOKEN || win.AK_AC_HASS_TOKEN || win.AK_AC_TOKEN || null;
-            if (typeof direct === "string" && direct.trim()) {
-              return { access: direct.trim(), refresh: null };
-            }
-          } catch (err) {}
-
-          try {
-            const conn = win.hassConnection;
-            if (conn && typeof conn.then === "function") {
-              conn.then((resolved) => {
-                try {
-                  extractTokenFromAuth(resolved?.auth || resolved?.options?.auth || resolved);
-                } catch (err) {}
-              }).catch(() => {});
-            } else if (conn) {
-              token = extractTokenFromAuth(conn?.auth || conn?.options?.auth || conn);
-              if (token) return token;
-            }
-          } catch (err) {}
-
-          return null;
-        }
-
-        function walkAuthWindows(start) {
-          const visited = new Set();
-          let current = start;
-          while (current && !visited.has(current)) {
-            const token = tokenFromWindow(current);
-            if (token) return token;
-            visited.add(current);
-
-            let next = null;
-            try {
-              next = current.parent;
-            } catch (err) {
-              next = null;
-            }
-            if (next && next !== current && !visited.has(next)) {
-              current = next;
-              continue;
-            }
-
-            try {
-              next = current.opener;
-            } catch (err) {
-              next = null;
-            }
-            if (next && next !== current && !visited.has(next)) {
-              current = next;
-              continue;
-            }
-
-            break;
-          }
-          return null;
-        }
-
-        return walkAuthWindows(window);
-      }
-
-      async function bootstrap() {
-        const status = document.getElementById("status");
-        const tokens = findToken();
-        if (!tokens || (!tokens.access && !tokens.refresh)) {
-          status.textContent = "No Home Assistant session token was found. Please sign in and reopen this panel.";
-          return;
-        }
-        async function exchangeRefreshToken(refreshToken) {
-          if (!refreshToken) return null;
-          try {
-            const body = new URLSearchParams({
-              grant_type: "refresh_token",
-              refresh_token: refreshToken,
-              client_id: window.location.origin,
-            });
-            const response = await fetch("/auth/token", {
-              method: "POST",
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              body,
-            });
-            if (!response.ok) return null;
-            const data = await response.json();
-            if (data && typeof data.access_token === "string" && data.access_token.trim()) {
-              return data.access_token.trim();
-            }
-          } catch (err) {
-            return null;
-          }
-          return null;
-        }
-
-        async function authorizeWithToken(accessToken) {
-          if (!accessToken) return null;
-          try {
-            const url = new URL("/api/akuvox_ac/ui/panel?handoff=1__AK_AC_PANEL_QUERY__", window.location.origin);
-            url.searchParams.set("token", accessToken);
-            return await fetch(url.toString(), {
-              headers: { Authorization: "Bearer " + accessToken },
-              credentials: "same-origin",
-            });
-          } catch (err) {
-            return null;
-          }
-        }
-
-        status.textContent = "Authorizing…";
-        try {
-          let access = tokens.access;
-          let response = await authorizeWithToken(access);
-          if ((!response || response.status === 401 || response.status === 403) && tokens.refresh) {
-            access = await exchangeRefreshToken(tokens.refresh);
-            response = await authorizeWithToken(access);
-          }
-          if (!response) {
-            status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
-            return;
-          }
-          if (response.redirected) {
-            window.location.href = response.url;
-            return;
-          }
-          if (response.url && response.url !== window.location.href) {
-            window.location.href = response.url;
-            return;
-          }
-          status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
-        } catch (err) {
-          status.textContent = "Unable to authorize the dashboard. Please refresh the Home Assistant page and try again.";
-        }
-      }
-
-      bootstrap();
-    </script>
-  </body>
-</html>
-"""
-
-    @staticmethod
-    def _normalize_panel_slug(value: Optional[str]) -> Optional[str]:
-        if not value:
-            return "index"
-        clean = str(value or "").strip().strip("/")
-        if not clean:
-            return "index"
-        lowered = clean.lower()
-        if lowered.startswith("akuvox-ac/"):
-            lowered = lowered.split("/", 1)[1].strip("/")
-        if lowered.endswith(".html"):
-            trimmed = lowered[:-5]
-            if trimmed in DASHBOARD_ROUTES:
-                return trimmed
-        if lowered in DASHBOARD_ROUTES:
-            return lowered[:-5] if lowered.endswith(".html") else lowered
-        return None
-
-    def _panel_bootstrap_html(self, slug: str) -> str:
-        fallback = f"/akuvox-ac/{slug}"
-        query = f"&view={slug}"
-        return (
-            self._BOOTSTRAP_HTML.replace("__AK_AC_FALLBACK__", fallback).replace(
-                "__AK_AC_PANEL_QUERY__", query
-            )
-        )
-
-    async def get(self, request: web.Request):
-        hass: HomeAssistant = request.app["hass"]
-        slug = self._normalize_panel_slug(request.query.get("view"))
-        if not slug:
-            raise web.HTTPNotFound()
-        handoff = request.query.get("handoff")
-        access_token = _request_access_token(request) if handoff else None
-        refresh_id = await _request_refresh_token_id(hass, request)
-        if not refresh_id:
-            refresh_id = _fallback_refresh_token_id(hass)
-        if not refresh_id:
-            _LOGGER.debug(
-                "Akuvox UI panel missing refresh token id. user=%s",
-                bool(request.get(KEY_HASS_USER)),
-            )
-            return web.Response(
-                text=self._panel_bootstrap_html(slug), content_type="text/html"
-            )
-        try:
-            signed = async_sign_path(
-                hass,
-                f"/akuvox-ac/{slug}",
-                dt.timedelta(minutes=10),
-                refresh_token_id=refresh_id,
-            )
-        except Exception:
-            raise web.HTTPUnauthorized()
-        raise web.HTTPFound(signed)
 
 
 class AkuvoxUIView(HomeAssistantView):
@@ -3981,8 +3386,6 @@ class AkuvoxUISettings(HomeAssistantView):
         access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
         alerts = {"targets": {}}
         face_integrity_enabled = True
-        dashboard_access_user_ids: List[str] = []
-        dashboard_signed_path_fallback = False
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
@@ -4024,14 +3427,6 @@ class AkuvoxUISettings(HomeAssistantView):
                     raw = data.get("alerts") or {}
                     targets = raw.get("targets") if isinstance(raw, dict) else {}
                     alerts = {"targets": targets if isinstance(targets, dict) else {}}
-            try:
-                dashboard_access_user_ids = settings.get_dashboard_user_ids()
-            except Exception:
-                dashboard_access_user_ids = []
-            try:
-                dashboard_signed_path_fallback = settings.get_dashboard_signed_path_fallback()
-            except Exception:
-                dashboard_signed_path_fallback = False
 
         registry_users: List[Dict[str, str]] = []
         if users_store:
@@ -4048,24 +3443,6 @@ class AkuvoxUISettings(HomeAssistantView):
                 pass
 
         registry_users.sort(key=lambda x: x.get("name", "").lower())
-
-        ha_users: List[Dict[str, Any]] = []
-        try:
-            for user in hass.auth.async_get_users():
-                if getattr(user, "is_active", True) is False:
-                    continue
-                name = getattr(user, "name", None) or getattr(user, "id", "")
-                ha_users.append(
-                    {
-                        "id": getattr(user, "id", ""),
-                        "name": name,
-                        "is_admin": bool(getattr(user, "is_admin", False)),
-                    }
-                )
-        except Exception:
-            ha_users = []
-
-        ha_users.sort(key=lambda x: str(x.get("name", "")).lower())
 
         schedules: Dict[str, Any] = {}
         schedules_store = root.get("schedules_store")
@@ -4116,9 +3493,6 @@ class AkuvoxUISettings(HomeAssistantView):
                 "max_access_event_limit": access_bounds[1],
                 "credential_prompts": credential_prompts,
                 "groups": groups,
-                "dashboard_access_user_ids": dashboard_access_user_ids,
-                "dashboard_signed_path_fallback": dashboard_signed_path_fallback,
-                "ha_users": ha_users,
             }
         )
 
@@ -4247,27 +3621,6 @@ class AkuvoxUISettings(HomeAssistantView):
             try:
                 updated = await settings.set_credential_prompts(payload.get("credential_prompts"))
                 response["credential_prompts"] = updated
-            except Exception as err:
-                return web.json_response({"ok": False, "error": str(err)}, status=400)
-
-        if "dashboard_access_user_ids" in payload:
-            if not settings or not hasattr(settings, "set_dashboard_user_ids"):
-                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
-            try:
-                user_ids = payload.get("dashboard_access_user_ids") or []
-                cleaned = await settings.set_dashboard_user_ids(user_ids)
-                response["dashboard_access_user_ids"] = cleaned
-            except Exception as err:
-                return web.json_response({"ok": False, "error": str(err)}, status=400)
-
-        if "dashboard_signed_path_fallback" in payload:
-            if not settings or not hasattr(settings, "set_dashboard_signed_path_fallback"):
-                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
-            try:
-                enabled = await settings.set_dashboard_signed_path_fallback(
-                    payload.get("dashboard_signed_path_fallback")
-                )
-                response["dashboard_signed_path_fallback"] = enabled
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
 
@@ -5194,7 +4547,6 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxStaticAssets())
     hass.http.register_view(AkuvoxDashboardView())
-    hass.http.register_view(AkuvoxUIPanel())
     hass.http.register_view(AkuvoxUIView())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
