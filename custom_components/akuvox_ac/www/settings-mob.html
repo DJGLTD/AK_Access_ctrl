@@ -1348,8 +1348,11 @@ function renderAlerts(){
       const values = Array.from(card.querySelectorAll(`input[data-field="granted_users"][data-target="${service}"]`))
         .filter(item => item.checked)
         .map(item => item.getAttribute('data-user-id'))
+        .filter(Boolean)
+        .map(value => String(value).trim())
         .filter(Boolean);
       ALERT_TARGETS[service].granted.users = values;
+      ALERT_TARGETS[service].granted.specific = values.length > 0;
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
       await saveAlerts();
     });
