@@ -224,15 +224,21 @@ function setQuickEnd(days) {
 
 function toggleOneTime() {
   const oneTime = document.getElementById('one_time');
+  const startDate = document.getElementById('start_date');
   const endDate = document.getElementById('end_date');
   const endTime = document.getElementById('end_time');
-  if (!oneTime || !endDate || !endTime) return;
+  const scheduleRow = document.getElementById('tempScheduleRow');
+  if (!oneTime) return;
   const disabled = oneTime.checked;
-  endDate.disabled = disabled;
-  endTime.disabled = disabled;
+  if (startDate) startDate.disabled = disabled;
+  if (endDate) endDate.disabled = disabled;
+  if (endTime) endTime.disabled = disabled;
+  if (scheduleRow) scheduleRow.classList.toggle('d-none', disabled);
   if (disabled) {
-    endTime.required = false;
-    endTime.classList.remove('required-today');
+    if (endTime) {
+      endTime.required = false;
+      endTime.classList.remove('required-today');
+    }
     const label = document.querySelector('label[for="end_time"]');
     if (label?.dataset.defaultText) label.textContent = label.dataset.defaultText;
   } else {
@@ -325,9 +331,6 @@ function renderNotifyTargets(){
   if (!targets.length) {
     wrap.innerHTML = '<div class="form-text muted">No notify devices found.</div>';
     return;
-  }
-  if (!TEMP_NOTIFY_TARGETS.length) {
-    TEMP_NOTIFY_TARGETS = [...targets];
   }
   const selected = new Set(TEMP_NOTIFY_TARGETS);
   targets.forEach(service => {
@@ -573,7 +576,7 @@ window.addEventListener('DOMContentLoaded', () => {
         <div class="form-text muted">Choose which Home Assistant mobile app devices should notify when this user is granted access.</div>
       </div>
 
-      <div class="row g-3">
+      <div class="row g-3" id="tempScheduleRow">
         <div class="col-md-6">
           <label class="form-label" for="start_date">Start date</label>
           <input class="form-control" id="start_date" type="date" />

@@ -1123,11 +1123,12 @@ function renderAlerts(){
     const list = card.querySelector('[data-field="granted_users"]');
     if (list){
       USERS.forEach(user => {
+        const userId = String(user.id);
         const row = document.createElement('div');
         row.className = 'form-check';
         row.innerHTML = `
-          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${user.id}" ${cfg.granted.users.includes(user.id) ? 'checked' : ''}>
-          <label class="form-check-label">${user.name} (${user.id})</label>
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${userId}" ${cfg.granted.users.includes(userId) ? 'checked' : ''}>
+          <label class="form-check-label">${user.name} (${userId})</label>
         `;
         list.appendChild(row);
       });
