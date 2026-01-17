@@ -4415,11 +4415,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             if settings_store:
                 targets = settings_store.get_alert_targets()
                 updated = False
+                if notify_targets:
+                    for target in notify_targets:
+                        if target not in targets:
+                            targets[target] = {}
+                            updated = True
                 for target, cfg in targets.items():
                     if notify_targets and target not in notify_targets:
                         continue
                     if not isinstance(cfg, dict):
-                        continue
+                        cfg = {}
                     granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
                     users = list(granted.get("users") or [])
                     if temp_id not in users:
