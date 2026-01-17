@@ -2882,7 +2882,7 @@ class AkuvoxUIPanel(HomeAssistantView):
       <div class="card">
         <p class="title">Connecting to the Akuvox admin dashboard…</p>
         <p class="muted" id="status">Looking for your Home Assistant session.</p>
-        <a class="btn" id="fallback" href="/akuvox-ac/index">Open dashboard</a>
+        <a class="btn" id="fallback" href="__AK_AC_FALLBACK__">Open dashboard</a>
       </div>
     </div>
     <script>
@@ -3082,7 +3082,7 @@ class AkuvoxUIPanel(HomeAssistantView):
         async function authorizeWithToken(accessToken) {
           if (!accessToken) return null;
           try {
-            const url = new URL("/api/akuvox_ac/ui/panel?handoff=1", window.location.origin);
+            const url = new URL("/api/akuvox_ac/ui/panel?handoff=1__AK_AC_PANEL_QUERY__", window.location.origin);
             url.searchParams.set("token", accessToken);
             return await fetch(url.toString(), {
               headers: { Authorization: "Bearer " + accessToken },
@@ -3125,8 +3125,38 @@ class AkuvoxUIPanel(HomeAssistantView):
 </html>
 """
 
+    @staticmethod
+    def _normalize_panel_slug(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return "index"
+        clean = str(value or "").strip().strip("/")
+        if not clean:
+            return "index"
+        lowered = clean.lower()
+        if lowered.startswith("akuvox-ac/"):
+            lowered = lowered.split("/", 1)[1].strip("/")
+        if lowered.endswith(".html"):
+            trimmed = lowered[:-5]
+            if trimmed in DASHBOARD_ROUTES:
+                return trimmed
+        if lowered in DASHBOARD_ROUTES:
+            return lowered[:-5] if lowered.endswith(".html") else lowered
+        return None
+
+    def _panel_bootstrap_html(self, slug: str) -> str:
+        fallback = f"/akuvox-ac/{slug}"
+        query = f"&view={slug}"
+        return (
+            self._BOOTSTRAP_HTML.replace("__AK_AC_FALLBACK__", fallback).replace(
+                "__AK_AC_PANEL_QUERY__", query
+            )
+        )
+
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        slug = self._normalize_panel_slug(request.query.get("view"))
+        if not slug:
+            raise web.HTTPNotFound()
         handoff = request.query.get("handoff")
         access_token = _request_access_token(request) if handoff else None
         refresh_id = await _request_refresh_token_id(hass, request)
@@ -3137,11 +3167,13 @@ class AkuvoxUIPanel(HomeAssistantView):
                 "Akuvox UI panel missing refresh token id. user=%s",
                 bool(request.get(KEY_HASS_USER)),
             )
-            return web.Response(text=self._BOOTSTRAP_HTML, content_type="text/html")
+            return web.Response(
+                text=self._panel_bootstrap_html(slug), content_type="text/html"
+            )
         try:
             signed = async_sign_path(
                 hass,
-                "/akuvox-ac/index",
+                f"/akuvox-ac/{slug}",
                 dt.timedelta(minutes=10),
                 refresh_token_id=refresh_id,
             )
