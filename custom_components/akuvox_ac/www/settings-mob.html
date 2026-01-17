@@ -68,6 +68,11 @@
     .device-option + .device-option{ margin-top:1rem; }
     .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
     .device-meta{ color:var(--muted); font-size:0.9rem; }
+    .granted-users-list{
+      max-height: calc(4 * 2.25rem);
+      overflow-y: auto;
+      padding:0.25rem 0;
+    }
     @media (max-width: 576px){
       .schedule-window-header{ flex-direction:column; align-items:flex-start; }
       .schedule-window-header .btn{ width:100%; }
