@@ -747,7 +747,7 @@ const $ = (sel) => document.querySelector(sel);
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 
-let eventFilterMode = 'all';
+let eventFilterMode = 'access';
 let cachedEvents = [];
 let eventHistoryInitialized = false;
 let lastEventRefreshAttempt = 0;
@@ -1338,7 +1338,6 @@ const EVENT_EMPTY_MESSAGES = {
   all: 'No recent events',
   system: 'No system events',
   access: 'No access events',
-  call: 'No call events',
 };
 function formatWhen(ts){
   if (!ts) return '—';
@@ -1386,7 +1385,12 @@ function parseEventTimestamp(value){
 function applyEventFilter(){
   const list = eventFilterMode === 'all'
     ? cachedEvents
-    : cachedEvents.filter(evt => evt._category === eventFilterMode);
+    : cachedEvents.filter((evt) => {
+      if (eventFilterMode === 'access') {
+        return evt._category === 'access' || evt._category === 'call';
+      }
+      return evt._category === eventFilterMode;
+    });
   const listEl = $('#eventList');
   if (!listEl) return;
   const html = list.map(e => {
@@ -2657,7 +2661,6 @@ setInterval(refresh, 5000);
             <option value="all">All events</option>
             <option value="system">System events</option>
             <option value="access">Access events</option>
-            <option value="call">Call events</option>
           </select>
         </div>
         <div class="card-body">
