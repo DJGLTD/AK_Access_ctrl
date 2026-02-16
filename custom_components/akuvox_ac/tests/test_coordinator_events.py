@@ -28,6 +28,24 @@ class _APIStub:
         return list(self._events)
 
 
+class _ServiceStub:
+    def __init__(self, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: List[Dict[str, Any]] = []
+
+    async def async_call(self, domain: str, service: str, data: Dict[str, Any], blocking: bool = False):
+        self.calls.append(
+            {
+                "domain": domain,
+                "service": service,
+                "data": data,
+                "blocking": blocking,
+            }
+        )
+        if self.should_fail:
+            raise RuntimeError("push unavailable")
+
+
 def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord = object.__new__(AkuvoxCoordinator)
     coord.api = api
@@ -37,6 +55,47 @@ def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord.hass = type("H", (), {"data": {}, "loop": None})()
     coord._publish_access_history = lambda events: None  # type: ignore[attr-defined]
     return coord
+
+
+def test_dispatch_notification_appends_system_event_on_success():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.events = []
+    coord.hass.services = _ServiceStub()
+
+    event = {
+        "Event": "Door unlocked",
+        "UserName": "Neil smalley",
+        "Date": "2026-01-08",
+        "Time": "08:30:00",
+    }
+
+    asyncio.run(coord._dispatch_notification(event, ["mobile_app_elles_iphone"]))
+
+    assert len(coord.events) == 1
+    assert (
+        coord.events[0]["Event"]
+        == "System notification sent to elles iphone — Neil smalley accessed the gate"
+    )
+
+
+def test_dispatch_notification_appends_system_event_on_failure():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.events = []
+    coord.hass.services = _ServiceStub(should_fail=True)
+
+    event = {
+        "Event": "Door unlocked",
+        "UserName": "Neil smalley",
+        "Date": "2026-01-08",
+        "Time": "08:30:00",
+    }
+
+    asyncio.run(coord._dispatch_notification(event, ["mobile_app_elles_iphone"]))
+
+    assert len(coord.events) == 1
+    assert coord.events[0]["Event"].startswith("System notification failed for elles iphone —")
 
 
 def test_process_door_events_skips_events_not_newer_than_last_timestamp():
