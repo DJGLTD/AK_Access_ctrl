@@ -57,6 +57,29 @@ def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     return coord
 
 
+def test_resolve_event_user_id_matches_profile_name_to_canonical_id():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = [
+        {"ID": "HA003", "Name": "Alice Walker"},
+        {"ID": "HA004", "Name": "Bob Stone"},
+    ]
+
+    resolved = coord._resolve_event_user_id({"UserName": "alice walker"})
+
+    assert resolved == "HA003"
+
+
+def test_resolve_event_user_id_keeps_canonical_id_when_present():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = [{"ID": "HA005", "Name": "Charlie"}]
+
+    resolved = coord._resolve_event_user_id({"UserID": "ha005"})
+
+    assert resolved == "HA005"
+
+
 def test_dispatch_notification_appends_system_event_on_success():
     storage = _StorageStub()
     coord = _build_coordinator(_APIStub([]), storage)

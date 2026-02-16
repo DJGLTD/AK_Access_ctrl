@@ -565,17 +565,73 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         for key in (
             "UserID",
             "UserId",
-            "User",
-            "UserName",
-            "Name",
             "ID",
             "CardNo",
             "CardNumber",
+            "User",
+            "UserName",
+            "Name",
         ):
             val = event.get(key)
             if val not in (None, ""):
                 return _safe_str(val)
         return None
+
+    def _resolve_event_user_id(self, event: Dict[str, Any]) -> Optional[str]:
+        """Resolve an event user reference to a canonical profile identifier when possible."""
+
+        raw_user = self._extract_event_user_id(event)
+        if raw_user in (None, ""):
+            return None
+
+        raw_text = _safe_str(raw_user).strip()
+        if not raw_text:
+            return None
+
+        normalized_raw = normalize_ha_id(raw_text)
+        resolved = normalized_raw or raw_text
+
+        users = self.users if isinstance(self.users, list) else []
+        if not users:
+            return resolved
+
+        def _user_id_from_record(record: Dict[str, Any]) -> Optional[str]:
+            for key in ("ID", "UserID", "UserId", "id", "user_id"):
+                value = record.get(key)
+                if value in (None, ""):
+                    continue
+                text = _safe_str(value).strip()
+                if not text:
+                    continue
+                return normalize_ha_id(text) or text
+            return None
+
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            user_id = _user_id_from_record(user)
+            if not user_id:
+                continue
+            if user_id == resolved:
+                return user_id
+            if normalize_ha_id(user_id) and normalize_ha_id(user_id) == normalized_raw:
+                return user_id
+
+        raw_lower = raw_text.casefold()
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            user_id = _user_id_from_record(user)
+            if not user_id:
+                continue
+            for key in ("Name", "name", "UserName", "username", "User", "user"):
+                value = user.get(key)
+                if value in (None, ""):
+                    continue
+                if _safe_str(value).strip().casefold() == raw_lower:
+                    return user_id
+
+        return resolved
 
     def _is_non_key_access(self, event: Dict[str, Any]) -> bool:
         text_parts: List[str] = []
@@ -845,7 +901,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         skip_notifications = bool(event.get("_skip_notifications"))
         last_access = self.storage.data.setdefault("last_access", {})
 
-        user_id = self._extract_event_user_id(event)
+        user_id = self._resolve_event_user_id(event)
         timestamp = self._extract_event_timestamp(event)
         if user_id and timestamp:
             if last_access.get(user_id) != timestamp:
