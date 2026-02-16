@@ -1494,10 +1494,30 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         }
 
         for target in notify_targets:
+            target_label = self._format_notification_target(target)
             try:
                 await service.async_call("notify", target, data, blocking=False)
+                user_label = self._extract_event_user_name(event) or self._extract_event_user_id(event) or "Unknown user"
+                self._append_event(
+                    f"System notification sent to {target_label} — {user_label} accessed the gate"
+                )
             except Exception as err:
+                self._append_event(
+                    f"System notification failed for {target_label} — {_safe_str(err)}"
+                )
                 _LOGGER.debug("Failed to dispatch notification to %s: %s", target, _safe_str(err))
+
+    @staticmethod
+    def _format_notification_target(target: Any) -> str:
+        raw = _safe_str(target).strip()
+        if not raw:
+            return "unknown target"
+        normalized = raw
+        if normalized.lower().startswith("mobile_app_"):
+            normalized = normalized[len("mobile_app_") :]
+        normalized = normalized.replace("_", " ").replace(".", " ")
+        normalized = " ".join(part for part in normalized.split() if part)
+        return normalized or raw
 
     async def _send_alert_notification(
         self,
