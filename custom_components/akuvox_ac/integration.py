@@ -1110,11 +1110,18 @@ def _desired_device_user_payload(
             desired["PrivatePIN"] = str(pin_value)
 
     if not is_keypad:
-        phone_value = profile.get("phone")
-        if phone_value in (None, ""):
-            phone_value = local.get("PhoneNum") or local.get("Phone")
-        if phone_value not in (None, ""):
-            desired["PhoneNum"] = str(phone_value)
+        paused_profile = _coerce_bool(profile.get("paused")) is True
+        if paused_profile:
+            # Paused users should not be callable from the intercom.
+            # Force an explicit empty PhoneNum so user.set clears any
+            # previously configured phone target on the device.
+            desired["PhoneNum"] = ""
+        else:
+            phone_value = profile.get("phone")
+            if phone_value in (None, ""):
+                phone_value = local.get("PhoneNum") or local.get("Phone")
+            if phone_value not in (None, ""):
+                desired["PhoneNum"] = str(phone_value)
 
         face_url = profile.get("face_url") or local.get("FaceUrl") or local.get("FaceURL")
         face_asset_exists: Optional[bool] = None
@@ -4498,6 +4505,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 else:
                     paused_schedule_name = None
 
+        pause_contact_name: Optional[str] = None
+        pause_contact_phone: Optional[str] = None
+        if paused_flag:
+            if "name" in d:
+                pause_contact_name = str(d.get("name") or "").strip() or None
+            if "phone" in d:
+                pause_contact_phone = str(d.get("phone") or "").strip() or None
+            if existing_profile:
+                if not pause_contact_name:
+                    pause_contact_name = str(existing_profile.get("name") or "").strip() or None
+                if not pause_contact_phone:
+                    pause_contact_phone = str(existing_profile.get("phone") or "").strip() or None
+
         pin_only = (
             pin_payload_edit not in (None, "")
             and not face_reference_supplied
@@ -4533,6 +4553,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             paused_schedule_id=paused_schedule_id,
             paused_schedule_name=paused_schedule_name,
         )
+
+        if paused_flag and (pause_contact_name or pause_contact_phone):
+            root = hass.data.get(DOMAIN, {})
+            manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]
+            if manager:
+                for _, coord, api, _ in manager._devices():
+                    try:
+                        response = await api.contact_get()
+                        contacts = manager._extract_contact_items(response)
+                        delete_items: list[dict[str, Any]] = []
+                        seen_names: set[str] = set()
+                        for contact in contacts:
+                            contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
+                            if not contact_name:
+                                continue
+                            if not _is_ha_group_record(contact):
+                                continue
+                            contact_phone = str(
+                                contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
+                            ).strip()
+                            if pause_contact_name and contact_name == pause_contact_name:
+                                if contact_name not in seen_names:
+                                    delete_items.append({"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME})
+                                    seen_names.add(contact_name)
+                                continue
+                            if pause_contact_phone and contact_phone == pause_contact_phone:
+                                if contact_name not in seen_names:
+                                    delete_items.append({"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME})
+                                    seen_names.add(contact_name)
+                        if delete_items:
+                            await api.contact_delete(delete_items)
+                    except Exception:
+                        pass
+                    try:
+                        await coord.async_request_refresh()
+                    except Exception:
+                        pass
 
         hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
