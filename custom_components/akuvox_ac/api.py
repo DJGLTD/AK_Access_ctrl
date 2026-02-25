@@ -1263,6 +1263,8 @@ class AkuvoxAPI:
             _add_combo(True, configured_port, verify)
         _add_combo(True, 443, False)
         _add_combo(True, 443, True)
+        _add_combo(False, configured_port)
+        _add_combo(False, 80)
 
         paths = [
             ("GET", "/api/system/status", None),
@@ -1301,7 +1303,8 @@ class AkuvoxAPI:
                 except Exception:
                     port = 443 if str(chosen.get("scheme", "https")).lower() == "https" else 80
                 verify = bool(chosen.get("verify_ssl", True))
-                self._detected = (True, port, verify)
+                use_https = str(chosen.get("scheme", "https")).lower() == "https"
+                self._detected = (use_https, port, verify if use_https else True)
 
         return {"ok": ok, "attempts": attempts}
 
