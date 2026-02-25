@@ -28,6 +28,48 @@ sys.modules.setdefault("homeassistant.const", const_module)
 from custom_components.akuvox_ac.api import AkuvoxAPI
 
 
+class _ResponseStub:
+    def __init__(self, status: int, body: str = "") -> None:
+        self.status = status
+        self.reason = "stub"
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+    async def json(self, content_type=None):
+        raise ValueError("not json")
+
+
+class _RequestContextStub:
+    def __init__(self, response: _ResponseStub) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> _ResponseStub:
+        return self._response
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class _SessionStub:
+    def _build(self, url: str):
+        if url.startswith("https://"):
+            return _RequestContextStub(_ResponseStub(503, "tls unavailable"))
+        return _RequestContextStub(_ResponseStub(200, "ok"))
+
+    def get(self, url, **kwargs):
+        return self._build(url)
+
+    def post(self, url, **kwargs):
+        return self._build(url)
+
+    def head(self, url, **kwargs):
+        return self._build(url)
+
+
+
+
 def _extract(payload):
     return AkuvoxAPI._extract_doorlog_items(payload)
 
@@ -86,3 +128,14 @@ def test_extract_doorlog_items_accepts_direct_event_dict():
 
 def test_extract_doorlog_items_returns_empty_for_unknown_payload():
     assert _extract({"data": {"unexpected": []}}) == []
+
+
+def test_ping_info_detects_http_device_when_https_fails():
+    import asyncio
+
+    api = AkuvoxAPI(_SessionStub(), host="127.0.0.1", port=80, username="", password="")
+
+    info = asyncio.run(api.ping_info())
+
+    assert info["ok"] is True
+    assert api._detected == (False, 80, True)
