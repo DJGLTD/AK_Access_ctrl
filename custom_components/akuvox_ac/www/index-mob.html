@@ -1372,6 +1372,19 @@ function renderEvents(devs, aggregated){
   listEl.innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
 }
 
+function extractAccessEventsCollection(payload){
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+
+  const candidateKeys = ['events', 'items', 'results', 'history', 'data'];
+  for (const key of candidateKeys){
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+  }
+
+  return [];
+}
+
 /* ===== Users ===== */
 function idMatchesFilter(id){
   return /^HA-?\d+$/i.test(id) || /^TMP-?\d+$/i.test(id) || /^User\d+$/i.test(id);
@@ -1929,8 +1942,9 @@ async function refresh(){
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
+    const accessEvents = extractAccessEventsCollection(state?.access_events);
     renderDevices(devs);
-    renderEvents(devs, state.access_events || []);
+    renderEvents(devs, accessEvents);
     if (cachedEvents.length > 0) {
       eventHistoryInitialized = true;
     }
@@ -1997,7 +2011,7 @@ async function requestEventHistoryRefresh(){
 async function maybeRequestEventHistory(state){
   if (eventHistoryInitialized) return;
 
-  const aggregated = Array.isArray(state?.access_events) ? state.access_events : [];
+  const aggregated = extractAccessEventsCollection(state?.access_events);
   const deviceEventsAvailable = Array.isArray(state?.devices)
     && state.devices.some(dev => Array.isArray(dev?.events) && dev.events.length > 0);
 
