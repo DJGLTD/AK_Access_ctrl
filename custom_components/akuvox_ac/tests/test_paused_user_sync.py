@@ -53,3 +53,17 @@ def test_active_user_retains_phone_number_on_device_payload():
     desired = _build_desired(profile, {"FaceUrl": "https://example.invalid/existing.jpg"})
 
     assert desired.get("PhoneNum") == "15551234567"
+
+
+def test_face_url_keeps_face_register_enabled_during_sync():
+    profile = {
+        "name": "User One",
+        "schedule_name": "24/7 Access",
+        "schedule_id": "1001",
+        "face_url": "https://example.invalid/device/Face/user1.jpg",
+    }
+
+    desired = _build_desired(profile, {})
+
+    assert desired.get("FaceUrl") == profile["face_url"]
+    assert desired.get("FaceRegister") == 1

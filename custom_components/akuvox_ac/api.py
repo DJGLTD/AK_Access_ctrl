@@ -2382,6 +2382,9 @@ class AkuvoxAPI:
     async def contact_delete(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return await self._api_contact("del", items)
 
+    async def contact_add(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return await self._api_contact("add", items)
+
     async def contact_get(self) -> Dict[str, Any]:
         return await self._api_contact("get", [{}])
 
