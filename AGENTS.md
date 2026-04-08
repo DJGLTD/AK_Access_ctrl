@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## Working rules
-- Follow the repository’s release process.
+- Follow the repository release process.
 - Do not use Git commit SHAs as user-facing release versions.
-- User-facing versions must use Semantic Versioning in the form `vMAJOR.MINOR.PATCH`.
+- User-facing versions must follow Semantic Versioning: `vMAJOR.MINOR.PATCH`.
 - Do not manually invent or hardcode the next release number unless explicitly asked.
 - Assume release tags are created automatically by CI after merge to `main`.
 
