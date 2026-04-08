@@ -945,7 +945,10 @@ class AkuvoxAPI:
                 d.pop("UserID", None)
                 if not had_user_id_alias:
                     d.pop("UserId", None)
-            face_source = d.pop("FaceFileName", None)
+            if for_set:
+                face_source = d.pop("FaceFileName", None)
+            else:
+                face_source = d.get("FaceFileName")
             if not face_source and isinstance(d.get("FaceUrl"), str):
                 try:
                     face_source = Path(str(d["FaceUrl"])).name

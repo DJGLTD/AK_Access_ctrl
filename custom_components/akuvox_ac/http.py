@@ -428,11 +428,13 @@ def _build_face_upload_payload(
         payload["WebRelay"] = "0"
 
     if face_reference not in (None, ""):
-        payload["FaceUrl"] = str(face_reference)
+        reference_text = str(face_reference).strip()
+        payload["FaceUrl"] = reference_text
+        filename = face_filename_from_reference(reference_text, user_id)
+        if filename:
+            payload["FaceFileName"] = filename
+            payload["importFile"] = {"fileName": filename, "fileData": {}}
 
-    # Use device path in FaceUrl (from upload result); never send FaceFileName to device
-    for key in ("FaceFileName", "faceFileName"):
-        payload.pop(key, None)
     payload.pop("faceInfo", None)
     payload["FaceRegister"] = 1
     payload.setdefault("Type", "0")
