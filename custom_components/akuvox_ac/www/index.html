@@ -1848,13 +1848,15 @@ function renderUsers(devs, registryUsers, kpis){
 
     const rawUserPending = String(item.status || '').toLowerCase() === 'pending';
     const pinOnDevice = !!_pinOnDevice && item.presentOnDevice;
-    const userPending = rawUserPending && !pinOnDevice;
-    const facePendingFinal = faceStatusFinal === 'pending';
     const hasFaceProfile = !!rest.face_url || faceActiveFinal;
-    const needsSync = userPending || facePendingFinal;
+    const provisionalUserPending = rawUserPending && !pinOnDevice;
+    const provisionalFacePending = faceStatusFinal === 'pending';
+    const needsSync = provisionalUserPending || provisionalFacePending;
     const allVerified = readyDevices.length
       ? readyDevices.every(dev => seenIds.includes(dev.entryId))
       : !requiredIds.length || !needsSync;
+    const userPending = provisionalUserPending && !allVerified;
+    const facePendingFinal = provisionalFacePending && (!allVerified || hasFaceProfile);
     const pendingDevices = needsSync && !syncActive
       ? outOfSyncDevices.filter(dev => !dev.entryId || !seenIds.includes(dev.entryId))
       : [];
@@ -1879,7 +1881,7 @@ function renderUsers(devs, registryUsers, kpis){
     } else if (allVerified) {
       accessText = baseLower === 'no access' ? 'No Access' : 'Allowed';
     }
-    if (accessText === 'Pending' && !hasFaceProfile) {
+    if (accessText === 'Pending' && !hasFaceProfile && !allVerified) {
       accessText = '---';
     }
 
@@ -1971,7 +1973,7 @@ function renderUsers(devs, registryUsers, kpis){
     } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
       faceBadge = badge('Active', 'in_sync');
     } else if (faceStatusLower === 'pending') {
-      faceBadge = hasFaceProfile ? badge('Pending', 'pending') : '<span class="text-muted">---</span>';
+      faceBadge = hasFaceProfile ? badge('Pending', 'pending') : badge('Inactive', 'inactive');
     } else {
       faceBadge = badge('Inactive', 'inactive');
     }

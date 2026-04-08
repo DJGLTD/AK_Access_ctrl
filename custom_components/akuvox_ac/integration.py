@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set, Coroutine
@@ -264,6 +265,22 @@ def _name_matches_user_id(name: Any, user_id: Any) -> bool:
     name_norm = normalize_user_id(name_text) or name_text
     user_norm = normalize_user_id(user_id_text) or user_id_text
     return name_norm == user_norm
+
+
+def _user_id_sort_key(value: Any) -> Tuple[int, int, str]:
+    """Sort IDs by prefix family and numeric suffix (HA first, then TMP)."""
+
+    text = normalize_user_id(value) or str(value or "").strip()
+    if not text:
+        return (3, 0, "")
+
+    match = re.match(r"^(HA|TMP)-?(\d+)$", text, flags=re.IGNORECASE)
+    if not match:
+        return (3, 0, text.lower())
+
+    family = match.group(1).upper()
+    priority = 0 if family == "HA" else 1
+    return (priority, int(match.group(2)), text.upper())
 
 
 def _normalize_access_date(value: Any) -> Optional[str]:
@@ -3619,6 +3636,7 @@ class SyncManager:
             if canonical:
                 registry[canonical] = value
         registry_keys = list(registry.keys())
+        registry_keys.sort(key=_user_id_sort_key)
         reg_key_set = set(registry_keys)
 
         auto_delete_keys: Set[str] = set()
