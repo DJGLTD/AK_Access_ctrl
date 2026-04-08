@@ -1162,6 +1162,10 @@ def _desired_device_user_payload(
         if face_url not in (None, ""):
             face_url_str = str(face_url)
             desired["FaceUrl"] = face_url_str
+            # Keep face registration enabled whenever a face asset reference is
+            # present. Some firmwares temporarily report face state as pending
+            # after enrollment; forcing "0" during a later sync clears the face.
+            desired["FaceRegister"] = 1
 
             face_active: Optional[bool] = _face_flag_from_record(profile)
             if face_active is None:
@@ -1174,8 +1178,6 @@ def _desired_device_user_payload(
                         face_active = _face_asset_exists(hass, ha_key)
                     except Exception:
                         face_active = None
-            if face_active:
-                desired["FaceRegister"] = 1
         else:
             desired["FaceRegister"] = "0"
 
@@ -3239,6 +3241,105 @@ class SyncManager:
             return [it for it in payload if isinstance(it, dict)]
         return []
 
+    @staticmethod
+    def _contact_phone(value: Mapping[str, Any]) -> str:
+        return str(value.get("Phone") or value.get("PhoneNum") or value.get("phone") or "").strip()
+
+    async def _sync_contacts_for_profiles(
+        self,
+        api: AkuvoxAPI,
+        profiles: Iterable[Tuple[str, str]],
+    ) -> None:
+        """Ensure HA contact entries exist for profile (name, phone) pairs."""
+
+        desired: Dict[str, str] = {}
+        for raw_name, raw_phone in profiles:
+            name = str(raw_name or "").strip()
+            phone = str(raw_phone or "").strip()
+            if not name or not phone:
+                continue
+            desired[name] = phone
+        if not desired:
+            return
+
+        try:
+            response = await api.contact_get()
+        except Exception:
+            return
+
+        contacts = self._extract_contact_items(response)
+        existing_by_name: Dict[str, Dict[str, Any]] = {}
+        for contact in contacts:
+            if not _is_ha_group_record(contact):
+                continue
+            name = str(contact.get("Name") or contact.get("name") or "").strip()
+            if not name:
+                continue
+            existing_by_name[name] = contact
+
+        add_items: List[Dict[str, Any]] = []
+        delete_items: List[Dict[str, Any]] = []
+        seen_delete: Set[str] = set()
+        for name, phone in desired.items():
+            existing = existing_by_name.get(name)
+            if existing:
+                existing_phone = self._contact_phone(existing)
+                if self._normalize_phone(existing_phone) == self._normalize_phone(phone):
+                    continue
+                if name not in seen_delete:
+                    delete_items.append({"Name": name, "Group": HA_CONTACT_GROUP_NAME})
+                    seen_delete.add(name)
+            add_items.append(
+                {"Name": name, "Phone": phone, "PhoneNum": phone, "Group": HA_CONTACT_GROUP_NAME}
+            )
+
+        if delete_items:
+            try:
+                await api.contact_delete(delete_items)
+            except Exception:
+                pass
+        if add_items:
+            try:
+                await api.contact_add(add_items)
+            except Exception:
+                pass
+
+    async def _delete_contacts(self, api: AkuvoxAPI, *, name: Optional[str], phone: Optional[str]) -> None:
+        match_name = str(name or "").strip()
+        match_phone = str(phone or "").strip()
+        match_phone_norm = self._normalize_phone(match_phone)
+        if not match_name and not match_phone_norm:
+            return
+
+        try:
+            response = await api.contact_get()
+        except Exception:
+            return
+
+        contacts = self._extract_contact_items(response)
+        delete_items: List[Dict[str, Any]] = []
+        seen_names: Set[str] = set()
+        for contact in contacts:
+            contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
+            if not contact_name or not _is_ha_group_record(contact):
+                continue
+            contact_phone = self._contact_phone(contact)
+            contact_phone_norm = self._normalize_phone(contact_phone)
+            match = False
+            if match_name and contact_name == match_name:
+                match = True
+            elif match_phone_norm and contact_phone_norm and contact_phone_norm == match_phone_norm:
+                match = True
+            if match and contact_name not in seen_names:
+                delete_items.append({"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME})
+                seen_names.add(contact_name)
+
+        if delete_items:
+            try:
+                await api.contact_delete(delete_items)
+            except Exception:
+                pass
+
     async def _daily_contact_sync_cb(self, now):
         users_store = self._users_store()
         if not users_store:
@@ -3690,6 +3791,7 @@ class SyncManager:
         add_batch: List[Dict[str, Any]] = []
         update_batch: List[Tuple[str, Dict[str, Any], Optional[Dict[str, Any]]]] = []
         delete_only_keys: List[str] = []
+        contact_profiles: List[Tuple[str, str]] = []
         face_root_base = face_base_url(self.hass)
 
         for ha_key in registry_keys:
@@ -3723,6 +3825,12 @@ class SyncManager:
             )
 
             if should_have_access:
+                phone_text = str(prof.get("phone") or "").strip()
+                paused = _coerce_bool(prof.get("paused")) is True
+                if phone_text and not paused:
+                    name_text = str(prof.get("name") or desired_base.get("Name") or ha_key).strip()
+                    if name_text:
+                        contact_profiles.append((name_text, phone_text))
                 if add_missing_only:
                     if not local:
                         add_batch.append(desired_base)
@@ -3787,6 +3895,12 @@ class SyncManager:
                     )
                 except Exception:
                     pass
+
+        if contact_profiles:
+            try:
+                await self._sync_contacts_for_profiles(api, contact_profiles)
+            except Exception:
+                pass
 
         # Mark pending -> active
         try:
@@ -4381,6 +4495,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             exit_permission=d.get("exit_permission"),
         )
 
+        phone_for_contact = str(d.get("phone") or "").strip()
+        if phone_for_contact:
+            manager: Optional[SyncManager] = hass.data.get(DOMAIN, {}).get("sync_manager")
+            if manager:
+                for _, _, api, _ in manager._devices():
+                    try:
+                        await manager._sync_contacts_for_profiles(api, [(name, phone_for_contact)])
+                    except Exception:
+                        pass
+
         hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
 
     async def svc_add_temporary_user(call):
@@ -4468,9 +4592,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         raw_key = d.get("id")
         canonical_key = normalize_user_id(raw_key)
         key = canonical_key or str(raw_key)
-        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
-
         effective_id = canonical_key or key
+        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
+        try:
+            existing_profile = users_store.get(effective_id) or {}
+        except Exception:
+            existing_profile = {}
         face_reference_supplied = False
         new_face_url = None
         if "face_url" in d:
@@ -4499,10 +4626,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if "paused_schedule_name" in d:
             paused_schedule_name = str(d.get("paused_schedule_name") or "").strip()
         if paused_flag:
-            try:
-                existing_profile = users_store.get(effective_id) or {}
-            except Exception:
-                existing_profile = {}
             existing_paused_id = str(existing_profile.get("paused_schedule_id") or "").strip()
             existing_paused_name = str(existing_profile.get("paused_schedule_name") or "").strip()
             existing_schedule_id = str(existing_profile.get("schedule_id") or "").strip()
@@ -4572,36 +4695,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             paused_schedule_name=paused_schedule_name,
         )
 
+        if paused_flag is not True:
+            old_name = str(existing_profile.get("name") or "").strip()
+            old_phone = str(existing_profile.get("phone") or "").strip()
+            next_name = str(d.get("name") or existing_profile.get("name") or "").strip()
+            next_phone = (
+                str(d.get("phone") if "phone" in d else existing_profile.get("phone") or "").strip()
+            )
+            manager: Optional[SyncManager] = hass.data.get(DOMAIN, {}).get("sync_manager")
+            if manager:
+                for _, _, api, _ in manager._devices():
+                    try:
+                        if old_name and old_phone and (old_name != next_name or old_phone != next_phone):
+                            await manager._delete_contacts(api, name=old_name, phone=old_phone)
+                        elif "phone" in d and not next_phone and old_name:
+                            await manager._delete_contacts(api, name=old_name, phone=old_phone)
+                        if next_name and next_phone:
+                            await manager._sync_contacts_for_profiles(api, [(next_name, next_phone)])
+                    except Exception:
+                        pass
+
         if paused_flag and (pause_contact_name or pause_contact_phone):
             root = hass.data.get(DOMAIN, {})
             manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]
             if manager:
                 for _, coord, api, _ in manager._devices():
                     try:
-                        response = await api.contact_get()
-                        contacts = manager._extract_contact_items(response)
-                        delete_items: list[dict[str, Any]] = []
-                        seen_names: set[str] = set()
-                        for contact in contacts:
-                            contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
-                            if not contact_name:
-                                continue
-                            if not _is_ha_group_record(contact):
-                                continue
-                            contact_phone = str(
-                                contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
-                            ).strip()
-                            if pause_contact_name and contact_name == pause_contact_name:
-                                if contact_name not in seen_names:
-                                    delete_items.append({"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME})
-                                    seen_names.add(contact_name)
-                                continue
-                            if pause_contact_phone and contact_phone == pause_contact_phone:
-                                if contact_name not in seen_names:
-                                    delete_items.append({"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME})
-                                    seen_names.add(contact_name)
-                        if delete_items:
-                            await api.contact_delete(delete_items)
+                        await manager._delete_contacts(
+                            api,
+                            name=pause_contact_name,
+                            phone=pause_contact_phone,
+                        )
                     except Exception:
                         pass
                     try:
@@ -4716,37 +4840,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             for entry_id, coord, api, _ in manager._devices():
                 try:
                     if phone_to_remove or name_to_remove:
-                        try:
-                            response = await api.contact_get()
-                            contacts = manager._extract_contact_items(response)
-                            delete_items: list[dict[str, Any]] = []
-                            seen_names: set[str] = set()
-                            for contact in contacts:
-                                contact_name = str(contact.get("Name") or contact.get("name") or "").strip()
-                                if not contact_name:
-                                    continue
-                                if not _is_ha_group_record(contact):
-                                    continue
-                                contact_phone = str(
-                                    contact.get("Phone") or contact.get("PhoneNum") or contact.get("phone") or ""
-                                ).strip()
-                                if name_to_remove and contact_name == name_to_remove:
-                                    if contact_name not in seen_names:
-                                        delete_items.append(
-                                            {"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME}
-                                        )
-                                        seen_names.add(contact_name)
-                                    continue
-                                if phone_to_remove and contact_phone == phone_to_remove:
-                                    if contact_name not in seen_names:
-                                        delete_items.append(
-                                            {"Name": contact_name, "Group": HA_CONTACT_GROUP_NAME}
-                                        )
-                                        seen_names.add(contact_name)
-                            if delete_items:
-                                await api.contact_delete(delete_items)
-                        except Exception:
-                            pass
+                        await manager._delete_contacts(
+                            api,
+                            name=name_to_remove,
+                            phone=phone_to_remove,
+                        )
                     id_records = await _lookup_device_user_ids_by_ha_key(
                         api,
                         lookup_key,
