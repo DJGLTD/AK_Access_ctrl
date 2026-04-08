@@ -24,6 +24,28 @@ class _ApiStub:
         self.delete_calls.append(items)
 
 
+class _ReplaceApiStub:
+    def __init__(self):
+        self.delete_calls = []
+        self.add_calls = []
+
+    async def user_list(self):
+        return [
+            {
+                "ID": "42",
+                "UserID": "user1",
+                "Name": "User One",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+            }
+        ]
+
+    async def user_delete(self, value):
+        self.delete_calls.append(value)
+
+    async def user_add(self, items):
+        self.add_calls.append(items)
+
+
 def _make_manager():
     hass = SimpleNamespace(data={integration.DOMAIN: {}}, config=SimpleNamespace(path=lambda *parts: "/tmp"))
     return integration.SyncManager(hass)
@@ -88,3 +110,35 @@ def test_delete_contacts_matches_normalized_phone():
     asyncio.run(manager._delete_contacts(api, name=None, phone="15551112222"))
 
     assert api.delete_calls == [[{"Name": "Jane Doe", "Group": integration.HA_CONTACT_GROUP_NAME}]]
+
+
+def test_replace_user_on_device_deletes_existing_before_add():
+    manager = _make_manager()
+    api = _ReplaceApiStub()
+
+    import asyncio
+
+    asyncio.run(
+        manager._replace_user_on_device(
+            api,
+            "user1",
+            {
+                "UserID": "user1",
+                "Name": "User One",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+            },
+            existing=None,
+        )
+    )
+
+    assert api.delete_calls == ["42", "user1", "User One"]
+    assert api.add_calls == [[{
+        "UserID": "user1",
+        "Name": "User One",
+        "Group": integration.HA_CONTACT_GROUP_NAME,
+        "DialAccount": "0",
+        "AnalogSystem": "0",
+        "AnalogNumber": "",
+        "AnalogReplace": "",
+        "AnalogProxyAddress": "",
+    }]]

@@ -3195,6 +3195,17 @@ class SyncManager:
         desired: Dict[str, Any],
         existing: Optional[Dict[str, Any]],
     ) -> None:
+        await self._replace_user_on_device(api, ha_key, desired, existing=existing)
+
+    async def _replace_user_on_device(
+        self,
+        api: AkuvoxAPI,
+        ha_key: str,
+        desired: Dict[str, Any],
+        *,
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Delete the current device user record(s) and recreate from desired payload."""
         records = []
         if isinstance(existing, dict):
             records = [existing]
@@ -3894,7 +3905,36 @@ class SyncManager:
                         storage=getattr(coord, "storage", None),
                     )
                 except Exception:
-                    pass
+                    latest: Optional[Dict[str, Any]] = None
+                    try:
+                        latest_records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+                    except Exception:
+                        latest_records = []
+                    if latest_records:
+                        latest = latest_records[0]
+                    else:
+                        latest = existing
+
+                    diffs: List[str] = []
+                    try:
+                        diffs = _integrity_field_differences(
+                            latest or {},
+                            desired,
+                            include_face=is_intercom,
+                        )
+                    except Exception:
+                        diffs = ["unknown"]
+
+                    if diffs:
+                        try:
+                            await self._replace_user_on_device(
+                                api,
+                                ha_key,
+                                desired,
+                                existing=latest,
+                            )
+                        except Exception:
+                            pass
 
         if contact_profiles:
             try:
