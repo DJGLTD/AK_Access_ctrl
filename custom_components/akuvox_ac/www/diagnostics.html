@@ -545,6 +545,7 @@ function openInApp(view, params = {}, options = {}) {
   <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
     <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
     <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
+    <button class="nav-link" type="button" data-tab-target="sync-errors">Sync errors</button>
     <button class="nav-link" type="button" data-tab-target="face">Manual diagnostics</button>
   </div>
   <div class="diag-tab-content">
@@ -603,6 +604,15 @@ function openInApp(view, params = {}, options = {}) {
             <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="call">Call</button>
           </div>
           <div id="eventsList" class="diag-events-list mt-3"></div>
+        </div>
+      </div>
+    </div>
+    <div class="diag-tab-pane" id="tabSyncErrors" data-tab="sync-errors" hidden>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <h5 class="mb-2">Synchronization issues</h5>
+          <p class="muted small mb-0">Failed sync-related requests are listed here so you can quickly identify devices and payloads that need attention.</p>
+          <div id="syncErrorsList" class="mt-3"></div>
         </div>
       </div>
     </div>
@@ -679,10 +689,11 @@ const eventsLimitHelperEl = document.getElementById('eventsLimitHelper');
 const eventsStatusEl = document.getElementById('eventsStatus');
 const btnRefreshEvents = document.getElementById('btnRefreshEvents');
 const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
+const syncErrorsListEl = document.getElementById('syncErrorsList');
 let DIAG_DATA = [];
 let FACE_ATTEMPTS = [];
 let ACTIVE_TAB = 'requests';
-const VALID_TABS = Object.freeze(['requests', 'events', 'face']);
+const VALID_TABS = Object.freeze(['requests', 'events', 'sync-errors', 'face']);
 let HISTORY_LIMIT = 50;
 let MIN_HISTORY_LIMIT = 10;
 let MAX_HISTORY_LIMIT = 200;
@@ -1189,6 +1200,7 @@ async function saveHistoryLimit(){
     FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
     updateCommandDeviceOptions(DIAG_DATA);
     renderFaceAttempts(FACE_ATTEMPTS);
+    renderSyncErrors(DIAG_DATA);
     refreshTypeFilterOptions(DIAG_DATA);
     renderDevices(DIAG_DATA);
     setHistoryLimitStatus('Saved ✓', 'success');
@@ -1244,6 +1256,90 @@ function formatBody(data){
   } catch (err) {
     return String(data);
   }
+}
+
+function requestHasError(req){
+  if (!req || typeof req !== 'object') return false;
+  if (req.ok === false) return true;
+  if (req.error) return true;
+  const status = Number(req.status);
+  return Number.isFinite(status) && status >= 400;
+}
+
+function requestLooksLikeSync(req){
+  if (!req || typeof req !== 'object') return false;
+  const pieces = [
+    req.diag_type,
+    req.diagType,
+    req.type,
+    req.path,
+    req.url,
+    req.error,
+    req.payload && req.payload.action,
+    req.payload && req.payload.target,
+  ];
+  const joined = pieces
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) => String(value).toLowerCase())
+    .join(' ');
+  return /(sync|user|contact|group|schedule|face|permission|access)/.test(joined);
+}
+
+function collectSyncErrors(devices = DIAG_DATA){
+  const rows = [];
+  (Array.isArray(devices) ? devices : []).forEach((device) => {
+    const requests = Array.isArray(device?.requests) ? device.requests : [];
+    requests.forEach((req) => {
+      if (requestShouldBeHidden(req)) return;
+      if (!requestHasError(req)) return;
+      if (!requestLooksLikeSync(req)) return;
+      rows.push({
+        deviceName: device?.name || device?.entry_id || 'Device',
+        deviceId: device?.entry_id || '',
+        request: req,
+        ts: Date.parse(req?.timestamp || '') || 0,
+      });
+    });
+  });
+  rows.sort((a, b) => b.ts - a.ts);
+  return rows;
+}
+
+function renderSyncErrors(devices = DIAG_DATA){
+  if (!syncErrorsListEl) return;
+  const rows = collectSyncErrors(devices);
+  if (!rows.length){
+    syncErrorsListEl.innerHTML = '<div class="muted">No sync errors found in the current request history.</div>';
+    return;
+  }
+
+  syncErrorsListEl.innerHTML = rows.map((row) => {
+    const req = row.request || {};
+    const method = String(req.method || 'GET').toUpperCase();
+    const status = req.status != null ? String(req.status) : '—';
+    const path = req.path || req.url || '—';
+    const message = req.error || 'Request failed without an explicit error message.';
+    return `
+      <details class="diag-request">
+        <summary>
+          <span class="badge method ${escapeHtml(method.toLowerCase())}">${escapeHtml(method)}</span>
+          <code>${escapeHtml(path)}</code>
+          <span class="diag-summary-meta">
+            <span>${escapeHtml(row.deviceName)}</span>
+            <span>Status: ${escapeHtml(status)}</span>
+            <span>${formatDateTime(req.timestamp)}</span>
+          </span>
+          <span class="badge diag-status-badge diag-status-error">Error</span>
+        </summary>
+        <div class="diag-request-body">
+          <div class="diag-row"><strong>Device</strong><span>${escapeHtml(row.deviceName)}${row.deviceId ? ` (${escapeHtml(row.deviceId)})` : ''}</span></div>
+          <div class="diag-row"><strong>Error</strong><span class="diag-error-text">${escapeHtml(message)}</span></div>
+          ${req.payload ? `<div class="diag-section"><div class="diag-section-title">Request body</div><pre>${escapeHtml(formatBody(req.payload))}</pre></div>` : ''}
+          ${req.response_excerpt ? `<div class="diag-section"><div class="diag-section-title">Response preview</div><pre>${escapeHtml(formatBody(req.response_excerpt))}</pre></div>` : ''}
+        </div>
+      </details>
+    `;
+  }).join('');
 }
 
 function requestTypeValue(req){
@@ -1772,6 +1868,7 @@ async function loadDiagnostics(){
     FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
     updateCommandDeviceOptions(DIAG_DATA);
     renderFaceAttempts(FACE_ATTEMPTS);
+    renderSyncErrors(DIAG_DATA);
     refreshTypeFilterOptions(DIAG_DATA);
     renderDevices(DIAG_DATA);
   } catch (err) {
@@ -1834,6 +1931,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshTypeFilterOptions(DIAG_DATA);
   updateCommandDeviceOptions(DIAG_DATA);
   renderFaceAttempts(FACE_ATTEMPTS);
+  renderSyncErrors(DIAG_DATA);
   syncCommandPayloadState();
   setEventFilter(EVENT_FILTER_MODE);
   setActiveTab(ACTIVE_TAB);
