@@ -2514,6 +2514,8 @@ class SyncQueue:
         self._pending_devices: set[str] = set()
         self._pending_full = False
         self._pending_full_devices: set[str] = set()
+        self._pending_reason_all: Optional[str] = None
+        self._pending_reason_devices: Dict[str, str] = {}
         self.next_sync_eta: Optional[datetime] = None
         self._last_mark: Optional[datetime] = None
         self._last_delay_from_default = False
@@ -2625,7 +2627,14 @@ class SyncQueue:
         delay_minutes: Optional[int] = None,
         *,
         full: bool = False,
+        trigger: Optional[str] = None,
     ):
+        trigger_label = str(trigger or "").strip()
+        if entry_id:
+            if trigger_label:
+                self._pending_reason_devices[entry_id] = trigger_label
+        elif trigger_label:
+            self._pending_reason_all = trigger_label
         self._set_health_status(entry_id, "pending")
         if entry_id:
             self._pending_devices.add(entry_id)
@@ -2770,7 +2779,7 @@ class SyncQueue:
 
         if pending_detected:
             try:
-                self.mark_change(None, delay_minutes=0)
+                self.mark_change(None, delay_minutes=0, trigger="auto-detected pending state")
             except Exception:
                 pass
 
@@ -2844,11 +2853,23 @@ class SyncQueue:
                     return
 
                 for entry_id, coord, _api in targets:
+                    sync_trigger = (
+                        self._pending_reason_devices.get(entry_id)
+                        or self._pending_reason_all
+                        or "unspecified trigger"
+                    )
                     if full is None:
                         full_sync = self._pending_full or entry_id in self._pending_full_devices
                     else:
                         full_sync = full
                     try:
+                        try:
+                            mode = "full sync" if full_sync else "sync"
+                            coord._append_event(
+                                f"Starting {mode} (trigger: {sync_trigger})"
+                            )  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
                         coord.health["sync_status"] = "in_progress"
                     except Exception:
                         pass
@@ -2857,7 +2878,9 @@ class SyncQueue:
                         coord.health["sync_status"] = "in_sync"
                         coord.health["last_sync"] = _now_hh_mm()
                         try:
-                            coord._append_event("Sync succeeded")  # type: ignore[attr-defined]
+                            coord._append_event(
+                                f"Sync succeeded (trigger: {sync_trigger})"
+                            )  # type: ignore[attr-defined]
                         except Exception:
                             pass
                     except Exception as err:
@@ -2875,6 +2898,8 @@ class SyncQueue:
                 self._pending_devices.clear()
                 self._pending_full = False
                 self._pending_full_devices.clear()
+                self._pending_reason_all = None
+                self._pending_reason_devices.clear()
                 self._handle = None
                 self._active = False
 
@@ -2884,14 +2909,20 @@ class SyncQueue:
         *,
         include_all: bool = False,
         full: Optional[bool] = None,
+        trigger: Optional[str] = None,
     ):
         if include_all and entry_id:
             include_all = False
 
+        trigger_label = str(trigger or "").strip()
         if include_all and not entry_id:
             self._pending_all = True
             if full:
                 self._pending_full = True
+            if trigger_label:
+                self._pending_reason_all = trigger_label
+        elif entry_id and trigger_label:
+            self._pending_reason_devices[entry_id] = trigger_label
 
         self._set_health_status(entry_id, "in_progress" if entry_id else "pending")
         if self._handle is not None:
@@ -3093,7 +3124,7 @@ class SyncManager:
         try:
             sync_queue = self._root().get("sync_queue")
             if sync_queue:
-                sync_queue.mark_change(None, delay_minutes=0)
+                sync_queue.mark_change(None, delay_minutes=0, trigger="temporary user expiry")
         except Exception:
             pass
 
@@ -3434,10 +3465,19 @@ class SyncManager:
 
         def _cb(now):
             try:
-                self._root()["sync_queue"].mark_change(None, delay_minutes=0)
+                self._root()["sync_queue"].mark_change(
+                    None,
+                    delay_minutes=0,
+                    trigger="scheduled auto sync",
+                )
             except Exception:
                 pass
-            self.hass.async_create_task(self._root()["sync_queue"].sync_now(None))  # type: ignore
+            self.hass.async_create_task(
+                self._root()["sync_queue"].sync_now(
+                    None,
+                    trigger="scheduled auto sync",
+                )
+            )  # type: ignore
 
         self._auto_unsub = async_track_time_change(self.hass, _cb, hour=hh, minute=mm, second=0)
 
@@ -3925,16 +3965,27 @@ class SyncManager:
                     except Exception:
                         diffs = ["unknown"]
 
-                    if diffs:
+                    try:
+                        await self._replace_user_on_device(
+                            api,
+                            ha_key,
+                            desired,
+                            existing=latest,
+                        )
                         try:
-                            await self._replace_user_on_device(
-                                api,
-                                ha_key,
-                                desired,
-                                existing=latest,
-                            )
+                            if diffs:
+                                diff_text = ", ".join(diffs)
+                                coord._append_event(  # type: ignore[attr-defined]
+                                    f"User {ha_key} recreated after update issue ({diff_text})"
+                                )
+                            else:
+                                coord._append_event(  # type: ignore[attr-defined]
+                                    f"User {ha_key} recreated after update issue"
+                                )
                         except Exception:
                             pass
+                    except Exception:
+                        pass
 
         if contact_profiles:
             try:
@@ -4177,8 +4228,12 @@ class SyncManager:
                     except Exception:
                         pass
                     if sq:
-                        sq.mark_change(entry_id, full=True)
-                        await sq.sync_now(entry_id, full=True)
+                        sq.mark_change(entry_id, full=True, trigger=f"integrity mismatch: {mismatch_reason}")
+                        await sq.sync_now(
+                            entry_id,
+                            full=True,
+                            trigger=f"integrity mismatch: {mismatch_reason}",
+                        )
             except Exception:
                 try:
                     coord._append_event("Integrity check error")  # type: ignore[attr-defined]
@@ -4545,7 +4600,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     except Exception:
                         pass
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="add_user service")
 
     async def svc_add_temporary_user(call):
         d = call.data
@@ -4625,7 +4680,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 if updated:
                     await settings_store.set_alert_targets(targets)
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(
+            None,
+            delay_minutes=0,
+            trigger="add_temporary_user service",
+        )
 
     async def svc_edit_user(call):
         d = call.data
@@ -4773,7 +4832,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                     except Exception:
                         pass
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="edit_user service")
 
     async def svc_reactivate_temporary_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4800,7 +4859,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_expires_at=expires_at if expires_at is not None else "",
         )
 
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(
+            None,
+            delay_minutes=0,
+            trigger="reactivate_temporary_user service",
+        )
 
     async def svc_delete_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -4936,7 +4999,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         queue: Optional[SyncQueue] = root.get("sync_queue")  # type: ignore[assignment]
         if queue:
-            queue.mark_change(None, delay_minutes=0, full=True)
+            queue.mark_change(None, delay_minutes=0, full=True, trigger="delete_user service")
 
     async def svc_upload_face(call):
         """
@@ -4950,7 +5013,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         await users_store.upsert_profile(canonical or key, face_url=face_url, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="upload_face service")
 
     async def svc_reboot_device(call):
         entry_id = call.data.get("entry_id")
@@ -5051,14 +5114,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         include_all = not entry_id
 
         try:
-            await queue.sync_now(entry_id, include_all=include_all, full=True)
+            await queue.sync_now(
+                entry_id,
+                include_all=include_all,
+                full=True,
+                trigger=f"force_full_sync service by {triggered_by}",
+            )
         except Exception:
             pass
 
     async def svc_sync_now(call):
         data = call.data if isinstance(call.data, Mapping) else {}
         entry_id = data.get("entry_id")
-        await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id)
+        await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id, trigger="sync_now service")
 
     async def svc_add_missing_users(call):
         data = call.data if isinstance(call.data, Mapping) else {}
@@ -5078,7 +5146,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         key = str(call.data["key"])
         groups = list(call.data.get("groups") or [])
         await hass.data[DOMAIN]["users_store"].upsert_profile(key, groups=groups, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0)
+        hass.data[DOMAIN]["sync_queue"].mark_change(
+            None,
+            delay_minutes=0,
+            trigger="set_user_groups service",
+        )
 
     async def svc_set_exit_device(call):
         entry_id = str(call.data["entry_id"])
@@ -5092,7 +5164,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 hass.config_entries.async_update_entry(entry_obj, options=new_options)
             queue: SyncQueue = hass.data[DOMAIN].get("sync_queue")  # type: ignore[assignment]
             if queue:
-                queue.mark_change(entry_id, delay_minutes=0)
+                queue.mark_change(entry_id, delay_minutes=0, trigger="set_exit_device service")
 
     async def svc_set_auto_reboot(call):
         time_hhmm = call.data.get("time")
@@ -5103,12 +5175,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         name = call.data["name"]
         spec = call.data["spec"]
         await hass.data[DOMAIN]["schedules_store"].upsert(name, spec)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, full=True)
+        hass.data[DOMAIN]["sync_queue"].mark_change(
+            None,
+            delay_minutes=0,
+            full=True,
+            trigger="upsert_schedule service",
+        )
 
     async def svc_delete_schedule(call):
         name = call.data["name"]
         await hass.data[DOMAIN]["schedules_store"].delete(name)
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, full=True)
+        hass.data[DOMAIN]["sync_queue"].mark_change(
+            None,
+            delay_minutes=0,
+            full=True,
+            trigger="delete_schedule service",
+        )
 
     hass.services.async_register(DOMAIN, "add_user", svc_add_user)
     hass.services.async_register(DOMAIN, "add_temporary_user", svc_add_temporary_user)
