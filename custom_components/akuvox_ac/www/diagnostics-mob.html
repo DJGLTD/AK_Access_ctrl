@@ -1272,6 +1272,8 @@ function collectDeviceCommands(devices = DIAG_DATA){
     const requests = Array.isArray(device?.requests) ? device.requests : [];
     requests.forEach((req) => {
       if (!req || typeof req !== 'object') return;
+      const method = String(req.method || 'GET').toUpperCase();
+      if (method !== 'POST') return;
       rows.push({
         deviceName: device?.name || device?.entry_id || 'Device',
         deviceId: device?.entry_id || '',

@@ -37,3 +37,16 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert normalized[0]["FaceRegister"] == 1
+
+
+def test_normalize_user_set_preserves_face_url_field():
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=_SessionStub())
+
+    normalized = api._normalize_user_items_for_add_or_set(
+        [{"UserID": "HA001", "ID": "7", "Name": "Test", "FaceUrl": "", "FaceRegisterStatus": "1"}],
+        allow_face_url=True,
+        for_set=True,
+    )
+
+    assert normalized[0]["FaceUrl"] == ""
+    assert normalized[0]["FaceRegisterStatus"] == "1"
