@@ -611,7 +611,14 @@ function openInApp(view, params = {}, options = {}) {
       <div class="diag-settings-card card">
         <div class="card-body">
           <h5 class="mb-2">Device commands</h5>
-          <p class="muted small mb-0">All commands sent to devices are listed here, including add/update/delete user requests and their responses.</p>
+          <p class="muted small mb-3">All commands sent to devices are listed here, including add/update/delete user requests and their responses.</p>
+          <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-7 col-lg-6">
+              <label class="form-label text-uppercase small muted" for="syncTypeFilterSelect">Filter events</label>
+              <select id="syncTypeFilterSelect" class="form-select"></select>
+              <div id="syncTypeFilterHelper" class="form-text mt-1">Limit the visible events by request type.</div>
+            </div>
+          </div>
           <div id="syncErrorsList" class="mt-3"></div>
         </div>
       </div>
@@ -690,6 +697,7 @@ const eventsStatusEl = document.getElementById('eventsStatus');
 const btnRefreshEvents = document.getElementById('btnRefreshEvents');
 const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
 const syncErrorsListEl = document.getElementById('syncErrorsList');
+const syncTypeFilterHelperEl = document.getElementById('syncTypeFilterHelper');
 let DIAG_DATA = [];
 let FACE_ATTEMPTS = [];
 let ACTIVE_TAB = 'requests';
@@ -750,15 +758,30 @@ function getTypeFilterSelect(){
   return document.getElementById('typeFilterSelect');
 }
 
+function getSyncTypeFilterSelect(){
+  return document.getElementById('syncTypeFilterSelect');
+}
+
+function setTypeFilterHelpersText(message){
+  const helper = document.getElementById('typeFilterHelper');
+  if (helper) helper.textContent = message;
+  if (syncTypeFilterHelperEl) syncTypeFilterHelperEl.textContent = message;
+}
+
 function setTypeFilter(value, options = {}){
   const select = getTypeFilterSelect();
+  const syncSelect = getSyncTypeFilterSelect();
   activeTypeFilter = value && value !== TYPE_FILTER_ALL ? value : TYPE_FILTER_ALL;
   if (select && select.value !== activeTypeFilter){
     select.value = activeTypeFilter;
   }
+  if (syncSelect && syncSelect.value !== activeTypeFilter){
+    syncSelect.value = activeTypeFilter;
+  }
   refreshTypeFilterOptions(DIAG_DATA, { skipOptions: true });
   if (!options.skipRender){
     renderDevices(DIAG_DATA, { preserveExpansion: true });
+    renderSyncErrors(DIAG_DATA);
   }
 }
 
@@ -1034,12 +1057,10 @@ async function sendDiagnosticCommand(){
 
 function refreshTypeFilterOptions(devices, opts = {}){
   const select = getTypeFilterSelect();
-  const helper = document.getElementById('typeFilterHelper');
-  if (!select){
+  const syncSelect = getSyncTypeFilterSelect();
+  if (!select && !syncSelect){
     activeTypeFilter = TYPE_FILTER_ALL;
-    if (helper){
-      helper.textContent = 'Limit the visible events by request type.';
-    }
+    setTypeFilterHelpersText('Limit the visible events by request type.');
     return;
   }
   const counts = new Map();
@@ -1068,20 +1089,21 @@ function refreshTypeFilterOptions(devices, opts = {}){
     sortable.forEach(({ value, label }) => {
       selectOptions.push({ value, label });
     });
-    select.innerHTML = selectOptions.map((opt) => `<option value="${opt.value}">${escapeHtml(opt.label)}</option>`).join('');
+    const optionsHtml = selectOptions.map((opt) => `<option value="${opt.value}">${escapeHtml(opt.label)}</option>`).join('');
+    if (select) select.innerHTML = optionsHtml;
+    if (syncSelect) syncSelect.innerHTML = optionsHtml;
   }
-  select.value = activeTypeFilter;
-  if (helper){
-    const totalRequests = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
-    if (!totalRequests){
-      helper.textContent = 'Limit the visible events by request type.';
-    } else if (activeTypeFilter === TYPE_FILTER_ALL){
-      helper.textContent = `Showing all ${totalRequests} recorded events.`;
-    } else {
-      const label = requestTypeLabelFromValue(activeTypeFilter);
-      const count = counts.get(activeTypeFilter) || 0;
-      helper.textContent = `Showing ${count} events matching ${label}.`;
-    }
+  if (select) select.value = activeTypeFilter;
+  if (syncSelect) syncSelect.value = activeTypeFilter;
+  const totalRequests = Array.from(counts.values()).reduce((sum, n) => sum + n, 0);
+  if (!totalRequests){
+    setTypeFilterHelpersText('Limit the visible events by request type.');
+  } else if (activeTypeFilter === TYPE_FILTER_ALL){
+    setTypeFilterHelpersText(`Showing all ${totalRequests} recorded events.`);
+  } else {
+    const label = requestTypeLabelFromValue(activeTypeFilter);
+    const count = counts.get(activeTypeFilter) || 0;
+    setTypeFilterHelpersText(`Showing ${count} events matching ${label}.`);
   }
 }
 
@@ -1289,12 +1311,25 @@ function collectDeviceCommands(devices = DIAG_DATA){
 function renderSyncErrors(devices = DIAG_DATA){
   if (!syncErrorsListEl) return;
   const rows = collectDeviceCommands(devices);
+  const filteredRows = activeTypeFilter === TYPE_FILTER_ALL
+    ? rows
+    : rows.filter((row) => {
+      const value = requestTypeValue(row.request);
+      if (activeTypeFilter === TYPE_FILTER_OTHER){
+        return value === TYPE_FILTER_OTHER;
+      }
+      return value === activeTypeFilter;
+    });
   if (!rows.length){
     syncErrorsListEl.innerHTML = '<div class="muted">No device commands found in the current request history.</div>';
     return;
   }
+  if (!filteredRows.length){
+    syncErrorsListEl.innerHTML = '<div class="muted">No device commands match the current filter.</div>';
+    return;
+  }
 
-  syncErrorsListEl.innerHTML = rows.map((row) => {
+  syncErrorsListEl.innerHTML = filteredRows.map((row) => {
     const req = row.request || {};
     const method = String(req.method || 'GET').toUpperCase();
     const status = req.status != null ? String(req.status) : '—';
@@ -1886,6 +1921,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   getTypeFilterSelect()?.addEventListener('change', (ev) => {
+    setTypeFilter(ev.target.value);
+  });
+  getSyncTypeFilterSelect()?.addEventListener('change', (ev) => {
     setTypeFilter(ev.target.value);
   });
   document.getElementById('historyLimitForm')?.addEventListener('submit', async (ev) => {
