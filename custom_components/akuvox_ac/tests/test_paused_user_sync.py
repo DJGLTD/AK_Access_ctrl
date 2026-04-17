@@ -67,3 +67,15 @@ def test_face_url_keeps_face_register_enabled_during_sync():
 
     assert desired.get("FaceUrl") == profile["face_url"]
     assert desired.get("FaceRegister") == 1
+
+
+def test_prepare_user_set_payload_keeps_existing_face_url_and_status():
+    payload = integration._prepare_user_set_payload(
+        "HA001",
+        {"UserID": "HA001", "Name": "User One"},
+        {"ID": "368", "UserID": "HA001", "Name": "User One", "FaceUrl": "", "FaceRegisterStatus": "1", "ContactID": "16"},
+    )
+
+    assert payload.get("FaceUrl") == ""
+    assert payload.get("FaceRegisterStatus") == "1"
+    assert payload.get("ContactID") == "16"

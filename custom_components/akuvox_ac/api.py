@@ -818,8 +818,11 @@ class AkuvoxAPI:
                 it2.pop("FaceUrl", None)
                 it2.pop("FaceURL", None)
             else:
-                face_reference = ""
+                face_reference: Optional[str] = None
+                face_url_present = False
                 for key in ("FaceUrl", "FaceURL"):
+                    if key in it2:
+                        face_url_present = True
                     raw = it2.pop(key, None)
                     if raw in (None, ""):
                         continue
@@ -827,8 +830,10 @@ class AkuvoxAPI:
                     if not text:
                         continue
                     face_reference = text
-                if face_reference:
+                if face_reference is not None:
                     it2["FaceUrl"] = face_reference
+                elif for_set and face_url_present:
+                    it2["FaceUrl"] = ""
 
             # Drop QR code payloads that some firmwares reject on user.set.
             it2.pop("QrCodeUrl", None)
@@ -2198,7 +2203,7 @@ class AkuvoxAPI:
 
         normalized_items = self._normalize_user_items_for_add_or_set(
             prepared,
-            allow_face_url=False,
+            allow_face_url=True,
             for_set=True,
         )
 

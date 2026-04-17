@@ -733,8 +733,6 @@ def _prepare_user_set_payload(
         forbidden = set(mapping.keys())
         cleaned: Dict[str, Any] = {}
         for key, value in source.items():
-            if key in _FACE_URL_KEYS or key in _FACE_FILENAME_KEYS:
-                continue
             if key in forbidden:
                 key = mapping[key]
             if key in ("ScheduleRelay", "BLE_AuthCode", "FaceRegister", "Priority"):
@@ -791,8 +789,33 @@ def _prepare_user_set_payload(
     if ha_key:
         payload["UserID"] = str(ha_key)
 
-    for key in _FACE_URL_KEYS:
-        payload.pop(key, None)
+    face_url_value: Optional[str] = None
+    face_url_present = False
+    for source in (desired, existing, payload):
+        if not isinstance(source, dict):
+            continue
+        for key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS):
+            if key not in source:
+                continue
+            face_url_present = True
+            raw_value = source.get(key)
+            if raw_value in (None, ""):
+                continue
+            text = str(raw_value).strip()
+            if text:
+                face_url_value = text
+                break
+        if face_url_value is not None:
+            break
+
+    if face_url_value is not None:
+        payload["FaceUrl"] = face_url_value
+    elif face_url_present:
+        payload["FaceUrl"] = ""
+
+    for key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS):
+        if key != "FaceUrl":
+            payload.pop(key, None)
 
     for key in ("ScheduleID", "Type", "Id", "id"):
         payload.pop(key, None)
@@ -803,6 +826,9 @@ def _prepare_user_set_payload(
             face_flag = _face_flag_from_record(existing or {})
         if face_flag is not None:
             payload["FaceRegisterStatus"] = "1" if face_flag else "0"
+
+    if str(payload.get("FaceUrl") or "").strip() and str(payload.get("FaceRegisterStatus") or "").strip() != "1":
+        payload["FaceRegisterStatus"] = "1"
 
     payload["LicensePlate"] = _normalize_fixed_plate(payload.get("LicensePlate"))
     payload["LicensePlateTime"] = _normalize_fixed_plate(payload.get("LicensePlateTime"))
