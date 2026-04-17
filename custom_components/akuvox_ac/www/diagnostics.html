@@ -545,7 +545,7 @@ function openInApp(view, params = {}, options = {}) {
   <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
     <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
     <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
-    <button class="nav-link" type="button" data-tab-target="sync-errors">Sync errors</button>
+    <button class="nav-link" type="button" data-tab-target="sync-errors">Device commands</button>
     <button class="nav-link" type="button" data-tab-target="face">Manual diagnostics</button>
   </div>
   <div class="diag-tab-content">
@@ -610,8 +610,8 @@ function openInApp(view, params = {}, options = {}) {
     <div class="diag-tab-pane" id="tabSyncErrors" data-tab="sync-errors" hidden>
       <div class="diag-settings-card card">
         <div class="card-body">
-          <h5 class="mb-2">Synchronization issues</h5>
-          <p class="muted small mb-0">Failed sync-related requests are listed here so you can quickly identify devices and payloads that need attention.</p>
+          <h5 class="mb-2">Device commands</h5>
+          <p class="muted small mb-0">All commands sent to devices are listed here, including add/update/delete user requests and their responses.</p>
           <div id="syncErrorsList" class="mt-3"></div>
         </div>
       </div>
@@ -1266,33 +1266,12 @@ function requestHasError(req){
   return Number.isFinite(status) && status >= 400;
 }
 
-function requestLooksLikeSync(req){
-  if (!req || typeof req !== 'object') return false;
-  const pieces = [
-    req.diag_type,
-    req.diagType,
-    req.type,
-    req.path,
-    req.url,
-    req.error,
-    req.payload && req.payload.action,
-    req.payload && req.payload.target,
-  ];
-  const joined = pieces
-    .filter((value) => value !== null && value !== undefined)
-    .map((value) => String(value).toLowerCase())
-    .join(' ');
-  return /(sync|user|contact|group|schedule|face|permission|access)/.test(joined);
-}
-
-function collectSyncErrors(devices = DIAG_DATA){
+function collectDeviceCommands(devices = DIAG_DATA){
   const rows = [];
   (Array.isArray(devices) ? devices : []).forEach((device) => {
     const requests = Array.isArray(device?.requests) ? device.requests : [];
     requests.forEach((req) => {
-      if (requestShouldBeHidden(req)) return;
-      if (!requestHasError(req)) return;
-      if (!requestLooksLikeSync(req)) return;
+      if (!req || typeof req !== 'object') return;
       rows.push({
         deviceName: device?.name || device?.entry_id || 'Device',
         deviceId: device?.entry_id || '',
@@ -1307,9 +1286,9 @@ function collectSyncErrors(devices = DIAG_DATA){
 
 function renderSyncErrors(devices = DIAG_DATA){
   if (!syncErrorsListEl) return;
-  const rows = collectSyncErrors(devices);
+  const rows = collectDeviceCommands(devices);
   if (!rows.length){
-    syncErrorsListEl.innerHTML = '<div class="muted">No sync errors found in the current request history.</div>';
+    syncErrorsListEl.innerHTML = '<div class="muted">No device commands found in the current request history.</div>';
     return;
   }
 
@@ -1318,7 +1297,10 @@ function renderSyncErrors(devices = DIAG_DATA){
     const method = String(req.method || 'GET').toUpperCase();
     const status = req.status != null ? String(req.status) : '—';
     const path = req.path || req.url || '—';
-    const message = req.error || 'Request failed without an explicit error message.';
+    const hasError = requestHasError(req);
+    const message = req.error || 'No explicit error message was returned.';
+    const statusBadgeClass = hasError ? 'diag-status-error' : 'diag-status-ok';
+    const statusBadgeLabel = hasError ? 'Error' : 'Success';
     return `
       <details class="diag-request">
         <summary>
@@ -1329,11 +1311,11 @@ function renderSyncErrors(devices = DIAG_DATA){
             <span>Status: ${escapeHtml(status)}</span>
             <span>${formatDateTime(req.timestamp)}</span>
           </span>
-          <span class="badge diag-status-badge diag-status-error">Error</span>
+          <span class="badge diag-status-badge ${statusBadgeClass}">${statusBadgeLabel}</span>
         </summary>
         <div class="diag-request-body">
           <div class="diag-row"><strong>Device</strong><span>${escapeHtml(row.deviceName)}${row.deviceId ? ` (${escapeHtml(row.deviceId)})` : ''}</span></div>
-          <div class="diag-row"><strong>Error</strong><span class="diag-error-text">${escapeHtml(message)}</span></div>
+          ${hasError ? `<div class="diag-row"><strong>Error</strong><span class="diag-error-text">${escapeHtml(message)}</span></div>` : ''}
           ${req.payload ? `<div class="diag-section"><div class="diag-section-title">Request body</div><pre>${escapeHtml(formatBody(req.payload))}</pre></div>` : ''}
           ${req.response_excerpt ? `<div class="diag-section"><div class="diag-section-title">Response preview</div><pre>${escapeHtml(formatBody(req.response_excerpt))}</pre></div>` : ''}
         </div>
