@@ -1836,6 +1836,19 @@ def _device_face_is_active(record: Mapping[str, Any]) -> bool:
     return True
 
 
+def _device_face_registration_mismatch(record: Mapping[str, Any]) -> bool:
+    url = str(
+        record.get("FaceUrl")
+        or record.get("FaceURL")
+        or record.get("face_url")
+        or ""
+    ).strip()
+    if not url:
+        return False
+    flag = _face_flag_from_record(record)
+    return flag is False
+
+
 def _evaluate_face_status(
     hass: HomeAssistant,
     user: Mapping[str, Any],
@@ -1847,7 +1860,7 @@ def _evaluate_face_status(
         return "none"
 
     has_face_asset = _face_image_exists(hass, user_id)
-    wants_face = stored_status in {"pending", "active"} or has_face_asset
+    wants_face = stored_status in {"pending", "active", "error"} or has_face_asset
     if not wants_face:
         return "none"
 
@@ -1877,6 +1890,8 @@ def _evaluate_face_status(
                 break
         if record is None:
             return "pending"
+        if _device_face_registration_mismatch(record):
+            return "error"
         face_active = _device_face_is_active(record)
         if not face_active:
             return "pending"
@@ -1927,7 +1942,7 @@ async def _refresh_face_statuses(
         if not users_store:
             continue
 
-        status_for_store = desired_status if desired_status in {"pending", "active"} else ""
+        status_for_store = desired_status if desired_status in {"pending", "active", "error"} else ""
         stored_status_norm = stored_status if stored_status else ""
         stored_errors = stored.get("face_error_count")
         clear_errors = bool(stored_errors) and desired_status == "active"
