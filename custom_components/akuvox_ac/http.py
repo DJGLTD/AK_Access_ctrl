@@ -2524,6 +2524,37 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
     return devices, any_alarm
 
 
+def _apply_face_error_sync_overrides(
+    devices: List[Dict[str, Any]],
+    registry_users: List[Dict[str, Any]],
+) -> None:
+    """Flag devices as pending when relevant users have face status errors."""
+    if not devices or not registry_users:
+        return
+
+    for dev in devices:
+        if not dev.get("participate_in_sync", True):
+            continue
+        if not _device_supports_face(dev):
+            continue
+
+        sync_groups = dev.get("sync_groups")
+        error_users = 0
+        for user in registry_users:
+            if str(user.get("face_status") or "").strip().lower() != "error":
+                continue
+            if not _groups_overlap(user.get("groups"), sync_groups):
+                continue
+            error_users += 1
+
+        if error_users <= 0:
+            continue
+
+        if str(dev.get("sync_status") or "").strip().lower() == "in_sync":
+            dev["sync_status"] = "pending"
+        dev["face_error_users"] = error_users
+
+
 # ========================= STATE =========================
 class AkuvoxStaticAssets(HomeAssistantView):
     url = "/api/AK_AC/{path:.*}"
@@ -2831,6 +2862,16 @@ class AkuvoxUIView(HomeAssistantView):
                         }
                     )
             await _refresh_face_statuses(hass, us, registry_users, devices, all_users)
+            _apply_face_error_sync_overrides(devices, registry_users)
+            kpis["pending"] = sum(
+                1
+                for d in devices
+                if d.get("sync_status") != "in_sync" and d.get("online", True)
+            )
+            kpis["sync_active"] = queue_active or any(
+                d.get("online", True) and d.get("sync_status") == "in_progress"
+                for d in devices
+            )
             last_access_by_user = _merge_last_access(root, all_users)
             event_last_access = _merge_last_access_from_events(aggregated_events, all_users)
             if event_last_access:
