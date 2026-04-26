@@ -467,6 +467,19 @@ let mobileStage = isMobileMode ? 'nav' : 'content';
 let knownToken = null;
 let tokenRefreshScheduled = false;
 
+const INVALID_TOKEN_LITERALS = new Set(['null', 'undefined', 'none', 'false', 'true', 'nan', '[object object]']);
+
+function normalizeTokenCandidate(value) {
+  if (typeof value !== 'string') return null;
+  const token = value.trim();
+  if (!token) return null;
+  const lowered = token.toLowerCase();
+  if (INVALID_TOKEN_LITERALS.has(lowered)) return null;
+  if (token.length < 20) return null;
+  if (!/^[A-Za-z0-9._~-]+$/.test(token)) return null;
+  return token;
+}
+
 function scheduleTokenRefresh(){
   if (tokenRefreshScheduled) return;
   tokenRefreshScheduled = true;
@@ -479,7 +492,7 @@ function scheduleTokenRefresh(){
 }
 
 function rememberToken(value) {
-  const token = typeof value === 'string' ? value.trim() : '';
+  const token = normalizeTokenCandidate(value);
   if (!token) return null;
   const changed = token !== knownToken;
   knownToken = token;
@@ -504,8 +517,11 @@ function getToken(){
     stored = null;
   }
   if (stored) {
-    knownToken = stored;
-    return stored;
+    const normalizedStored = normalizeTokenCandidate(stored);
+    if (normalizedStored) {
+      knownToken = normalizedStored;
+      return normalizedStored;
+    }
   }
   try {
     const local = localStorage.getItem('akuvox_ll_token');
@@ -580,9 +596,8 @@ function scanTokenStorage(storage) {
         const token = extractTokenFromAuth(parsed);
         if (token) return token;
       } catch (err) {
-        if (typeof raw === 'string' && raw.trim()) {
-          return persistTokens(raw.trim());
-        }
+        const fallback = normalizeTokenCandidate(raw);
+        if (fallback) return persistTokens(fallback);
       }
     }
     for (const key of Object.keys(storage)) {
@@ -600,8 +615,9 @@ function scanTokenStorage(storage) {
         const token = extractTokenFromAuth(parsed);
         if (token) return token;
       } catch (err) {
-        if (typeof rawValue === 'string' && rawValue.trim()) {
-          const token = persistTokens(rawValue.trim());
+        const fallback = normalizeTokenCandidate(rawValue);
+        if (fallback) {
+          const token = persistTokens(fallback);
           if (token) return token;
         }
       }
