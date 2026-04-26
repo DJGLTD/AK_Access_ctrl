@@ -4131,13 +4131,16 @@ class SyncManager:
                             and any(diff in ("face status", "face url") for diff in diffs)
                         )
                         if face_mismatch and device_type_raw.lower() == "intercom":
+                            profile_face_status = str(
+                                (registry.get(ha_key) or {}).get("face_status") or ""
+                            ).strip().lower()
+                            force_recreate_on_error = profile_face_status == "error"
                             expected_face = _face_flag_from_record(desired)
                             expected_url = str(
                                 desired.get("FaceUrl") or desired.get("FaceURL") or ""
                             ).strip()
                             if expected_url or expected_face:
-                                error_count = await self._bump_face_error_count(ha_key)
-                                if error_count >= FACE_SYNC_ERROR_THRESHOLD:
+                                if force_recreate_on_error:
                                     try:
                                         await self._recreate_user_for_face_mismatch(
                                             api,
@@ -4145,19 +4148,51 @@ class SyncManager:
                                             desired,
                                             local,
                                         )
-                                        await self._reset_face_error_count(ha_key)
+                                        try:
+                                            if users_store:
+                                                await users_store.upsert_profile(
+                                                    ha_key,
+                                                    face_status="pending",
+                                                    face_error_count=0,
+                                                )
+                                        except Exception:
+                                            pass
                                         try:
                                             coord._append_event(
-                                                f"Recreated {ha_key} after {error_count} face sync errors"
+                                                f"Recreated {ha_key} due to face sync error state"
                                             )  # type: ignore[attr-defined]
                                         except Exception:
                                             pass
+                                        continue
                                     except Exception as err:
                                         _LOGGER.warning(
-                                            "Failed to recreate user %s after face sync errors: %s",
+                                            "Failed to recreate user %s after face error state: %s",
                                             ha_key,
                                             err,
                                         )
+                                else:
+                                    error_count = await self._bump_face_error_count(ha_key)
+                                    if error_count >= FACE_SYNC_ERROR_THRESHOLD:
+                                        try:
+                                            await self._recreate_user_for_face_mismatch(
+                                                api,
+                                                ha_key,
+                                                desired,
+                                                local,
+                                            )
+                                            await self._reset_face_error_count(ha_key)
+                                            try:
+                                                coord._append_event(
+                                                    f"Recreated {ha_key} after {error_count} face sync errors"
+                                                )  # type: ignore[attr-defined]
+                                            except Exception:
+                                                pass
+                                        except Exception as err:
+                                            _LOGGER.warning(
+                                                "Failed to recreate user %s after face sync errors: %s",
+                                                ha_key,
+                                                err,
+                                            )
                         mismatch_reason = f"{ha_key} mismatch: {', '.join(diffs)}"
                         break
 
