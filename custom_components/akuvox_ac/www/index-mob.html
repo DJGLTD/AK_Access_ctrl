@@ -1836,7 +1836,9 @@ function renderUsers(devs, registryUsers, kpis){
     if (accessLower === 'deleted') {
       faceBadge = badge('Deleted', 'inactive');
     } else if (faceStatusLower === 'error' || u.face_register_mismatch) {
-      faceBadge = badge('Error', 'offline');
+      const errorCount = Number(u.face_error_count || 0);
+      const errorLabel = errorCount > 0 ? `Error (${errorCount})` : 'Error';
+      faceBadge = badge(errorLabel, 'offline');
     } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
       faceBadge = badge('Pending remote enrolment', 'pending');
     } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {
