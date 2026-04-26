@@ -87,6 +87,13 @@
     }
     .badge.method.get{ background:rgba(13,202,240,0.18); color:#0dcaf0; }
     .badge.method.post{ background:rgba(111,66,193,0.22); color:#d5b7ff; }
+    .badge.diag-action-badge{
+      background:rgba(111,66,193,0.28);
+      color:#e8d6ff;
+      letter-spacing:0.05em;
+      text-transform:uppercase;
+      font-size:0.7rem;
+    }
     .badge.diag-type-badge{
       background:rgba(13,110,253,0.18);
       color:#9bbcff;
@@ -1288,6 +1295,29 @@ function requestHasError(req){
   return Number.isFinite(status) && status >= 400;
 }
 
+function requestActionValue(req){
+  if (!req || typeof req !== 'object') return '';
+  const direct = req.action;
+  if (direct !== undefined && direct !== null){
+    const text = String(direct).trim();
+    if (text) return text;
+  }
+  const payload = req.payload;
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)){
+    const fromPayload = payload.action;
+    if (fromPayload !== undefined && fromPayload !== null){
+      const text = String(fromPayload).trim();
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function isDeviceFunctionCommand(req){
+  const action = requestActionValue(req).toLowerCase();
+  return action !== 'get';
+}
+
 function collectDeviceCommands(devices = DIAG_DATA){
   const rows = [];
   (Array.isArray(devices) ? devices : []).forEach((device) => {
@@ -1296,6 +1326,7 @@ function collectDeviceCommands(devices = DIAG_DATA){
       if (!req || typeof req !== 'object') return;
       const method = String(req.method || 'GET').toUpperCase();
       if (method !== 'POST') return;
+      if (!isDeviceFunctionCommand(req)) return;
       rows.push({
         deviceName: device?.name || device?.entry_id || 'Device',
         deviceId: device?.entry_id || '',
@@ -1332,6 +1363,7 @@ function renderSyncErrors(devices = DIAG_DATA){
   syncErrorsListEl.innerHTML = filteredRows.map((row) => {
     const req = row.request || {};
     const method = String(req.method || 'GET').toUpperCase();
+    const action = requestActionValue(req);
     const status = req.status != null ? String(req.status) : '—';
     const path = req.path || req.url || '—';
     const hasError = requestHasError(req);
@@ -1342,6 +1374,7 @@ function renderSyncErrors(devices = DIAG_DATA){
       <details class="diag-request">
         <summary>
           <span class="badge method ${escapeHtml(method.toLowerCase())}">${escapeHtml(method)}</span>
+          ${action ? `<span class="badge diag-action-badge">${escapeHtml(action)}</span>` : ''}
           <code>${escapeHtml(path)}</code>
           <span class="diag-summary-meta">
             <span>${escapeHtml(row.deviceName)}</span>
@@ -1352,6 +1385,7 @@ function renderSyncErrors(devices = DIAG_DATA){
         </summary>
         <div class="diag-request-body">
           <div class="diag-row"><strong>Device</strong><span>${escapeHtml(row.deviceName)}${row.deviceId ? ` (${escapeHtml(row.deviceId)})` : ''}</span></div>
+          ${action ? `<div class="diag-row"><strong>Action</strong><span>${escapeHtml(action)}</span></div>` : ''}
           ${hasError ? `<div class="diag-row"><strong>Error</strong><span class="diag-error-text">${escapeHtml(message)}</span></div>` : ''}
           ${req.payload ? `<div class="diag-section"><div class="diag-section-title">Request body</div><pre>${escapeHtml(formatBody(req.payload))}</pre></div>` : ''}
           ${req.response_excerpt ? `<div class="diag-section"><div class="diag-section-title">Response preview</div><pre>${escapeHtml(formatBody(req.response_excerpt))}</pre></div>` : ''}
