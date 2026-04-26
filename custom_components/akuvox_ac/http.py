@@ -1618,14 +1618,18 @@ def _signed_paths_for_request(
     return signed
 
 
-def _inject_signed_paths(html: str, signed: Dict[str, str]) -> str:
-    if not signed:
+def _inject_signed_paths(
+    html: str, signed: Dict[str, str], *, clear_cache: bool = False
+) -> str:
+    if not signed and not clear_cache:
         return html
 
-    try:
-        payload = json.dumps(signed)
-    except Exception:  # pragma: no cover - shouldn't happen
-        return html
+    payload = "{}"
+    if signed:
+        try:
+            payload = json.dumps(signed)
+        except Exception:  # pragma: no cover - shouldn't happen
+            payload = "{}"
 
     script = (
         "<script>"
@@ -1637,9 +1641,19 @@ def _inject_signed_paths(html: str, signed: Dict[str, str]) -> str:
         "    try { sessionStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
         "    try { localStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
         "  } catch (err) {}"
+        "%s"
         "})();"
         "</script>"
-    ) % payload
+    ) % (
+        payload,
+        (
+            "try { window.AK_AC_SIGNED_PATHS = {}; } catch (err) {};"
+            "try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {};"
+            "try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {};"
+            if clear_cache and not signed
+            else ""
+        ),
+    )
 
     lowered = html.lower()
     head_index = lowered.find("</head>")
@@ -2596,7 +2610,7 @@ class AkuvoxDashboardView(HomeAssistantView):
                 html = asset.read_text(encoding="utf-8")
             except Exception:
                 html = asset.read_text()
-            html = _inject_signed_paths(html, signed)
+            html = _inject_signed_paths(html, signed, clear_cache=not bool(signed))
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
             return response
