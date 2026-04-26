@@ -1401,6 +1401,7 @@ const FACE_STATUS_FIELDS = [
   'has_face','hasFace','HasFace'
 ];
 const FACE_STATE_FIELDS = ['face_status','faceStatus','FaceStatus'];
+const FACE_REGISTER_FIELDS = ['FaceRegister','face_register','faceRegister','FaceRegisterStatus','faceRegisterStatus'];
 
 function normalizeFaceFlag(value){
   if (typeof value === 'boolean') return value;
@@ -1467,6 +1468,26 @@ function computeFaceActive(record){
   const url = extractFaceUrl(record);
   if (url) return true;
   return false;
+}
+
+function extractFaceRegisterFlag(record){
+  if (!record || typeof record !== 'object') return null;
+  for (const key of FACE_REGISTER_FIELDS){
+    if (!(key in record)) continue;
+    const normalized = normalizeFaceFlag(record[key]);
+    if (normalized !== null){
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function hasFaceRegistrationMismatch(record){
+  if (!record || typeof record !== 'object') return false;
+  const url = extractFaceUrl(record);
+  if (!url) return false;
+  const registerFlag = extractFaceRegisterFlag(record);
+  return registerFlag === false;
 }
 
 function scheduleDisplayId(rawId){
@@ -1545,6 +1566,7 @@ function renderUsers(devs, registryUsers, kpis){
         ? r.face_active
         : (statusHint === 'active' ? true : computeFaceActive(r)),
       face_error_count: Number(r.face_error_count || 0),
+      face_register_mismatch: hasFaceRegistrationMismatch(r),
       _seenOn: new Set(),
       _denied: false,
       _pinOnDevice: false
@@ -1567,6 +1589,7 @@ function renderUsers(devs, registryUsers, kpis){
       const last = u.LastAccess || u.last_access || '';
       const deviceFaceUrl = extractFaceUrl(u);
       const deviceFaceActive = computeFaceActive(u);
+      const deviceFaceMismatch = hasFaceRegistrationMismatch(u);
       const devicePin = extractPin(u);
 
       if (!by.has(key)) {
@@ -1587,6 +1610,7 @@ function renderUsers(devs, registryUsers, kpis){
           face_status: deviceFaceActive ? 'active' : '',
           face_active: deviceFaceActive,
           face_error_count: 0,
+          face_register_mismatch: deviceFaceMismatch,
           _pinOnDevice: !!devicePin
         });
         return;
@@ -1620,6 +1644,7 @@ function renderUsers(devs, registryUsers, kpis){
       if (!cur.face_url && deviceFaceUrl) {
         cur.face_url = deviceFaceUrl;
       }
+      cur.face_register_mismatch = !!cur.face_register_mismatch || deviceFaceMismatch;
       const deviceScheduleName = u.ScheduleName || u.schedule_name || '';
       const deviceScheduleId = u.ScheduleId || u.schedule_id || '';
       const deviceAccessLevel = u.AccessLevel || u.access_level || '';
@@ -1701,8 +1726,12 @@ function renderUsers(devs, registryUsers, kpis){
     const statusLower = String(rest.face_status || '').trim().toLowerCase();
     let faceStatusFinal = statusLower;
     let faceActiveFinal;
+    const faceMismatch = !!rest.face_register_mismatch || hasFaceRegistrationMismatch(rest);
 
-    if (faceStatusFinal === 'active') {
+    if (faceMismatch) {
+      faceStatusFinal = 'error';
+      faceActiveFinal = false;
+    } else if (faceStatusFinal === 'active') {
       faceActiveFinal = true;
     } else if (faceStatusFinal === 'pending') {
       faceActiveFinal = false;
@@ -1765,6 +1794,7 @@ function renderUsers(devs, registryUsers, kpis){
       pendingDevices: pendingDevices.length,
       face_active: !!faceActiveFinal,
       face_status: faceStatusFinal,
+      face_register_mismatch: faceMismatch,
       access_schedule: scheduleDisplay
     };
   }).filter(u => {
@@ -1805,6 +1835,8 @@ function renderUsers(devs, registryUsers, kpis){
     const hasFaceProfile = !!u.face_url || u.face_active;
     if (accessLower === 'deleted') {
       faceBadge = badge('Deleted', 'inactive');
+    } else if (faceStatusLower === 'error' || u.face_register_mismatch) {
+      faceBadge = badge('Error', 'offline');
     } else if (faceStatusLower === 'pending' && u.remote_enrol_pending) {
       faceBadge = badge('Pending remote enrolment', 'pending');
     } else if (faceStatusLower === 'active' || (faceStatusLower === '' && u.face_active)) {

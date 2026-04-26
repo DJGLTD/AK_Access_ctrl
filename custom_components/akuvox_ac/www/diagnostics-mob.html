@@ -1313,6 +1313,18 @@ function requestActionValue(req){
   return '';
 }
 
+function requestOverviewIdentity(req){
+  if (!req || typeof req !== 'object') return { userId: '', name: '' };
+  const payload = req.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { userId: '', name: '' };
+  const userIdRaw = payload.USERID ?? payload.UserID ?? payload.userId ?? payload.userid ?? '';
+  const nameRaw = payload.NAME ?? payload.Name ?? payload.name ?? '';
+  return {
+    userId: String(userIdRaw || '').trim(),
+    name: String(nameRaw || '').trim(),
+  };
+}
+
 function isDeviceFunctionCommand(req){
   const action = requestActionValue(req).toLowerCase();
   return action !== 'get';
@@ -1366,6 +1378,7 @@ function renderSyncErrors(devices = DIAG_DATA){
     const action = requestActionValue(req);
     const status = req.status != null ? String(req.status) : '—';
     const path = req.path || req.url || '—';
+    const overviewIdentity = requestOverviewIdentity(req);
     const hasError = requestHasError(req);
     const message = req.error || 'No explicit error message was returned.';
     const statusBadgeClass = hasError ? 'diag-status-error' : 'diag-status-ok';
@@ -1375,6 +1388,8 @@ function renderSyncErrors(devices = DIAG_DATA){
         <summary>
           <span class="badge method ${escapeHtml(method.toLowerCase())}">${escapeHtml(method)}</span>
           ${action ? `<span class="badge diag-action-badge">${escapeHtml(action)}</span>` : ''}
+          ${overviewIdentity.userId ? `<span class="badge diag-type-badge">USERID: ${escapeHtml(overviewIdentity.userId)}</span>` : ''}
+          ${overviewIdentity.name ? `<span class="badge diag-type-badge">NAME: ${escapeHtml(overviewIdentity.name)}</span>` : ''}
           <code>${escapeHtml(path)}</code>
           <span class="diag-summary-meta">
             <span>${escapeHtml(row.deviceName)}</span>
@@ -1834,9 +1849,12 @@ function renderRequestList(container, device){
     details.className = 'diag-request';
     if (idx === 0) details.open = true;
     const method = String(req.method || 'GET').toUpperCase();
+    const overviewIdentity = requestOverviewIdentity(req);
     const methodBadge = `<span class="badge method ${method.toLowerCase()}">${escapeHtml(method)}</span>`;
     const typeLabel = requestTypeLabelFromValue(requestTypeValue(req));
     const typeBadge = typeLabel ? `<span class="badge diag-type-badge">${escapeHtml(typeLabel)}</span>` : '';
+    const userIdBadge = overviewIdentity.userId ? `<span class="badge diag-type-badge">USERID: ${escapeHtml(overviewIdentity.userId)}</span>` : '';
+    const nameBadge = overviewIdentity.name ? `<span class="badge diag-type-badge">NAME: ${escapeHtml(overviewIdentity.name)}</span>` : '';
     const path = req.path || '';
     const status = req.status != null ? String(req.status) : '—';
     const ok = req.ok === true;
@@ -1844,6 +1862,8 @@ function renderRequestList(container, device){
     summary.innerHTML = `
       ${methodBadge}
       ${typeBadge}
+      ${userIdBadge}
+      ${nameBadge}
       <code>${escapeHtml(path || (req.url || ''))}</code>
       <span class="diag-summary-meta">
         <span>Status: ${escapeHtml(status)}</span>
