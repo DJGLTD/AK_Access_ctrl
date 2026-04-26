@@ -1609,7 +1609,7 @@ def _signed_paths_for_request(
             signed[key] = async_sign_path(
                 hass,
                 path,
-                dt.timedelta(minutes=10),
+                dt.timedelta(hours=12),
                 refresh_token_id=refresh_id,
             )
         except Exception as err:  # pragma: no cover - best effort
