@@ -9,6 +9,7 @@ custom_components/akuvox_ac/
 ├── ...                        # Platforms, coordinator, api, etc.
 └── www/                       # Web assets served from /api/AK_AC/*
 hacs.json                      # Allows adding this repo as a HACS custom repository
+icon.svg                       # Repository icon used by Home Assistant/HACS listings (text-only, PR-safe)
 .gitignore
 README.md
 ```
