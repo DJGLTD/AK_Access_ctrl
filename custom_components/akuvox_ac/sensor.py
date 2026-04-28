@@ -49,7 +49,7 @@ class _Base(AkuvoxOnlineSensor := object):
         pass
 
     def _coord_updated(self) -> None:
-        self.async_write_ha_state()
+        self.schedule_update_ha_state()
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:

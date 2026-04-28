@@ -6,6 +6,7 @@ import logging
 import json
 import re
 import time
+from functools import partial
 from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
@@ -2638,9 +2639,11 @@ class AkuvoxDashboardView(HomeAssistantView):
             hass: HomeAssistant = request.app["hass"]
             signed = _signed_paths_for_request(hass, request)
             try:
-                html = asset.read_text(encoding="utf-8")
+                html = await hass.async_add_executor_job(
+                    partial(asset.read_text, encoding="utf-8")
+                )
             except Exception:
-                html = asset.read_text()
+                html = await hass.async_add_executor_job(asset.read_text)
             html = _inject_signed_paths(html, signed, clear_cache=not bool(signed))
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
