@@ -1149,6 +1149,12 @@ const EVENT_CALL_USER_KEYS = [
 const EVENT_PIN_KEYS = [
   'Pin','PIN','Passcode','Password','Credential','CardNumber','CardNo','digits',
 ];
+const EVENT_USER_ID_KEYS = [
+  'UserID','user_id','UserId','userid','ID','id',
+];
+const EVENT_USER_NAME_KEYS = [
+  'UserName','user_name','userName','Name','name','User','user',
+];
 const EVENT_DETAIL_KEYS = {
   call: [
     'status_label','status','call_type','CallType','CallStatus','CallMode','CallNumber','CallNo','CallNum','number','digits',
@@ -1208,6 +1214,22 @@ function pickFirstEventText(event, keys){
   return '';
 }
 
+function userSummaryForEvent(event){
+  const userId = pickFirstEventText(event, EVENT_USER_ID_KEYS);
+  const userNameRaw = pickFirstEventText(event, EVENT_USER_NAME_KEYS);
+  const userName = userNameRaw && userId && String(userNameRaw).trim() === String(userId).trim() ? '' : userNameRaw;
+  if (userName && userId) return `${userName} (${userId})`;
+  if (userName) return userName;
+  if (userId) return userId;
+  return '';
+}
+
+function isUserUpdateEvent(typeLabel, fallbackMessage){
+  const detail = `${typeLabel || ''} ${fallbackMessage || ''}`.toLowerCase();
+  if (!detail.includes('user')) return false;
+  return /\b(update|updated|edit|edited|modify|modified)\b/.test(detail);
+}
+
 function describeEventForDisplay(event){
   const category = normalizeEventCategory(event && event._category) || categorizeEvent(event);
   const normalizedCategory = category || 'system';
@@ -1251,6 +1273,10 @@ function describeEventForDisplay(event){
   const parts = [label];
   if (device) parts.push(device);
   if (detail) parts.push(detail);
+  if (isUserUpdateEvent(typeLabel, fallbackMessage)) {
+    const userSummary = userSummaryForEvent(event);
+    if (userSummary) parts.push(userSummary);
+  }
   return {
     category: normalizedCategory,
     title: parts.join(' - '),
