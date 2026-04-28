@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Akuvox Access Control</title>
+  <desc id="desc">Blue shield icon with AK monogram.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f2b4b" />
+      <stop offset="100%" stop-color="#1f6db4" />
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="28" fill="url(#bg)" />
+  <path d="M128 42 186 64v58c0 38-24 69-58 90-34-21-58-52-58-90V64z" fill="#e6f4ff" />
+  <path d="M128 66 168 82v39c0 28-16 50-40 68-24-18-40-40-40-68V82z" fill="#1e5d9b" />
+  <path d="M90 96h10v64H90zm10 0h24v10h-24zm0 24h20v10h-20zM136 96h10v64h-10zm10 28 22-28h13l-22 28 22 36h-13z" fill="#f4fbff" />
+</svg>
