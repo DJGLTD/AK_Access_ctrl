@@ -3993,17 +3993,22 @@ class SyncManager:
             except Exception:
                 pass
 
-        # 3) Update changed users (update in place)
+        # 3) Update changed users (delete + recreate to preserve face profile integrity)
         if not add_missing_only:
             for ha_key, desired, existing in update_batch:
                 try:
-                    await self._set_user_on_device(
+                    await self._replace_user_on_device(
                         api,
-                        desired,
                         ha_key,
-                        existing,
-                        storage=getattr(coord, "storage", None),
+                        desired,
+                        existing=existing,
                     )
+                    try:
+                        coord._append_event(  # type: ignore[attr-defined]
+                            f"User {ha_key} recreated from update payload"
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     latest: Optional[Dict[str, Any]] = None
                     try:
