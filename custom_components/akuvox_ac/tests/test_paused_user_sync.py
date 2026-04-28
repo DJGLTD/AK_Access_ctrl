@@ -79,3 +79,37 @@ def test_prepare_user_set_payload_keeps_existing_face_url_and_status():
     assert payload.get("FaceUrl") == ""
     assert payload.get("FaceRegisterStatus") == "1"
     assert payload.get("ContactID") == "16"
+
+
+def test_record_matches_desired_fields_treats_face_register_status_as_registered():
+    local = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceRegisterStatus": "1",
+    }
+    desired = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceRegister": 1,
+    }
+
+    assert integration._record_matches_desired_fields(local, desired) is True
+
+
+def test_record_matches_desired_fields_detects_missing_face_registration():
+    local = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceRegisterStatus": "0",
+    }
+    desired = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceRegister": 1,
+    }
+
+    assert integration._record_matches_desired_fields(local, desired) is False

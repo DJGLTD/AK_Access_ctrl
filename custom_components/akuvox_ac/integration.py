@@ -1299,6 +1299,38 @@ def _integrity_field_differences(
     return diffs
 
 
+def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any]) -> bool:
+    """Return True when ``local`` already satisfies the desired payload values."""
+
+    if not isinstance(local, dict) or not isinstance(desired, dict):
+        return False
+
+    def _text(value: Any) -> str:
+        return str(value or "").strip()
+
+    def _face_flag(record: Dict[str, Any]) -> Optional[bool]:
+        raw = record.get("FaceRegister")
+        if raw in (None, ""):
+            raw = record.get("FaceRegisterStatus")
+        return _normalize_boolish(raw)
+
+    for key, desired_value in desired.items():
+        if key == "FaceRegister":
+            expected_face = _normalize_boolish(desired_value)
+            actual_face = _face_flag(local)
+            if expected_face is True and actual_face is not True:
+                return False
+            if expected_face is False and actual_face is True:
+                return False
+            continue
+
+        local_value = local.get(key)
+        if _text(local_value) != _text(desired_value):
+            return False
+
+    return True
+
+
 def _schedule_times_out_of_order(spec: Mapping[str, Any]) -> bool:
     start = AkuvoxSchedulesStore._time_to_minutes(spec.get("start"))
     end = AkuvoxSchedulesStore._time_to_minutes(spec.get("end"))
@@ -3914,8 +3946,10 @@ class SyncManager:
                 elif not local:
                     add_batch.append(desired_base)
                 else:
-                    replace = full or str(prof.get("status") or "").lower() == "pending" or any(
-                        str(local.get(k)) != str(v) for k, v in desired_base.items()
+                    replace = (
+                        full
+                        or str(prof.get("status") or "").lower() == "pending"
+                        or not _record_matches_desired_fields(local, desired_base)
                     )
                     if replace or needs_group_move:
                         update_batch.append((ha_key, desired_base, local))
