@@ -242,8 +242,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     self._append_event("Device came online")
                     await self._kick_sync_now()
                 elif prev is None and not self.health.get("last_sync"):
-                    # First time we see it online after startup and never synced
-                    await self._kick_sync_now()
+                    # Avoid repairing users during HA startup before FaceData routes
+                    # are guaranteed to be registered. Pending profile work is picked
+                    # up by SyncQueue after Home Assistant has fully started.
+                    pass
                 if alerts_state.get("offline_since"):
                     alerts_state["offline_since"] = None
                     alerts_state["offline_notified"] = False
