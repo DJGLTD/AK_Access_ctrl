@@ -55,6 +55,22 @@ class _SettingsStub:
         return list(self.targets)
 
 
+class _HealthAPIStub:
+    async def ping_info(self) -> Dict[str, Any]:
+        return {"ok": True}
+
+    async def user_list(self) -> List[Dict[str, Any]]:
+        return []
+
+
+class _SyncQueueStub:
+    def __init__(self) -> None:
+        self.calls: List[str] = []
+
+    async def sync_now(self, entry_id: str) -> None:
+        self.calls.append(entry_id)
+
+
 def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord = object.__new__(AkuvoxCoordinator)
     coord.api = api
@@ -65,6 +81,50 @@ def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord._publish_access_history = lambda events: None  # type: ignore[attr-defined]
     coord.users = []
     return coord
+
+
+def _build_health_coordinator(queue: _SyncQueueStub) -> AkuvoxCoordinator:
+    storage = _StorageStub()
+    coord = _build_coordinator(_HealthAPIStub(), storage)
+    coord.hass.data = {DOMAIN: {"sync_queue": queue}}
+    coord.events = []
+    coord.users = []
+    coord.health = {
+        "name": "Akuvox",
+        "online": False,
+        "status": "offline",
+        "sync_status": "pending",
+        "last_sync": None,
+        "last_error": None,
+        "last_ping": None,
+    }
+    coord._process_door_events = _async_noop_events  # type: ignore[method-assign]
+    return coord
+
+
+async def _async_noop_events(*_args, **_kwargs):
+    return []
+
+
+def test_initial_online_refresh_does_not_sync_during_startup():
+    queue = _SyncQueueStub()
+    coord = _build_health_coordinator(queue)
+    coord._was_online = None
+
+    asyncio.run(coord._async_update_data())
+
+    assert coord.health["online"] is True
+    assert queue.calls == []
+
+
+def test_offline_to_online_refresh_still_syncs():
+    queue = _SyncQueueStub()
+    coord = _build_health_coordinator(queue)
+    coord._was_online = False
+
+    asyncio.run(coord._async_update_data())
+
+    assert queue.calls == ["device-1"]
 
 
 def test_resolve_event_user_id_matches_profile_name_to_canonical_id():
