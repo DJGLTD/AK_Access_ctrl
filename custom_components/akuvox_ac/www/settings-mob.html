@@ -919,7 +919,7 @@ function friendlyName(service){
 function normalizedUserKey(value){
   const text = String(value ?? '').trim();
   const match = text.match(/^(HA|TMP)-?(\d+)$/i);
-  if (match) return `${match[1].toUpperCase()}${match[2]}`.toLowerCase();
+  if (match) return `${match[1].toUpperCase()}${match[2].padStart(3, '0')}`.toLowerCase();
   return text.toLowerCase();
 }
 

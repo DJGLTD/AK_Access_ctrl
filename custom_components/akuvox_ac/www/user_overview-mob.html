@@ -806,7 +806,7 @@ function normalizeHaUserId(value){
   let suffix = text.slice(2);
   if (suffix.startsWith('-')) suffix = suffix.slice(1);
   if (!suffix || !/^\d+$/.test(suffix)) return '';
-  return `HA${suffix}`;
+  return `HA${suffix.padStart(3, '0')}`;
 }
 
 function parseHaUserIdNumber(value){
@@ -1090,7 +1090,7 @@ function scheduleDisplayId(rawId){
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
   const suffix = numeric >= 1000 ? numeric - 1000 : numeric;
   if (suffix <= 0) return '';
-  return `HA${suffix}`;
+  return `HA${String(suffix).padStart(3, '0')}`;
 }
 
 function formatScheduleDisplay(rawId, label){

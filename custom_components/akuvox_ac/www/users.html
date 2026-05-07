@@ -953,7 +953,7 @@ function escapeHtml(value){
 function normalizedUserKey(value){
   const text = String(value ?? '').trim();
   const match = text.match(/^(HA|TMP)-?(\d+)$/i);
-  if (match) return `${match[1].toUpperCase()}${match[2]}`.toLowerCase();
+  if (match) return `${match[1].toUpperCase()}${match[2].padStart(3, '0')}`.toLowerCase();
   return text.toLowerCase();
 }
 
@@ -1368,7 +1368,7 @@ function selectExistingUser(id, options = {}){
 }
 
 // ---------- schedule id mapping helpers ----------
-let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access", display:"HA1 - 24/7 Access"}, ...]
+let SCHED_MAP = []; // [{id:"1001", name:"24/7 Access", label:"24/7 Access", display:"HA001 - 24/7 Access"}, ...]
 
 function scheduleDisplayId(rawId){
   const text = String(rawId ?? '').trim();
@@ -1377,10 +1377,10 @@ function scheduleDisplayId(rawId){
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
   if (numeric >= 1000){
     const adjusted = numeric - 901;
-    return adjusted > 0 ? `HA${adjusted}` : '';
+    return adjusted > 0 ? `HA${String(adjusted).padStart(3, '0')}` : '';
   }
   if (numeric >= 100){
-    return `HA${numeric}`;
+    return `HA${String(numeric).padStart(3, '0')}`;
   }
   return '';
 }

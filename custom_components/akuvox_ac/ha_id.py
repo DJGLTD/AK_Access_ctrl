@@ -29,7 +29,7 @@ def normalize_ha_id(value: Any) -> Optional[str]:
     if not suffix or not suffix.isdigit():
         return None
 
-    return f"HA{suffix}"
+    return f"HA{int(suffix):03d}"
 
 
 def normalize_temp_id(value: Any) -> Optional[str]:
@@ -57,7 +57,7 @@ def normalize_temp_id(value: Any) -> Optional[str]:
     if not suffix or not suffix.isdigit():
         return None
 
-    return f"TMP{suffix}"
+    return f"TMP{int(suffix):03d}"
 
 
 def normalize_user_id(value: Any) -> Optional[str]:

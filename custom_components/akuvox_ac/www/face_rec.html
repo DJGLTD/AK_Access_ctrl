@@ -224,9 +224,9 @@ const API_UPLOAD_FACE = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face
 function qsGet(k){ return new URLSearchParams(location.search).get(k) || ''; }
 function normalizeHaId(value){
   if (!value) return '';
-  const match = String(value).trim().match(/^HA-?(\d{3,})$/i);
+  const match = String(value).trim().match(/^HA-?(\d+)$/i);
   if (!match) return '';
-  return `HA${match[1]}`;
+  return `HA${match[1].padStart(3, '0')}`;
 }
 const RAW_USER_ID = qsGet('user');      // e.g. HA001 or HA-001
 const USER_ID = normalizeHaId(RAW_USER_ID);
