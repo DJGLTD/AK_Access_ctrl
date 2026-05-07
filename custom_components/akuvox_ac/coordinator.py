@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED, DEFAULT_ACCESS_HISTORY_LIMIT
-from .ha_id import normalize_ha_id
+from .ha_id import normalize_ha_id, normalize_user_id
 from .api import AkuvoxAPI
 from .http import (
     _build_phone_index,
@@ -54,12 +54,34 @@ def _now_iso(hass: HomeAssistant) -> str:
     return dt_util.utcnow().isoformat() + "Z"
 
 
+def _canonical_notify_user_id(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    text = _safe_str(value).strip()
+    if not text:
+        return None
+    return normalize_user_id(text) or text
+
+
+def _notify_user_matches(candidate: Any, user_id: Any) -> bool:
+    candidate_text = _canonical_notify_user_id(candidate)
+    user_text = _canonical_notify_user_id(user_id)
+    if not candidate_text or not user_text:
+        return False
+
+    candidate_norm = normalize_user_id(candidate_text)
+    user_norm = normalize_user_id(user_text)
+    if candidate_norm and user_norm:
+        return candidate_norm == user_norm
+    return candidate_text.casefold() == user_text.casefold()
+
+
 def _derive_targets_from_raw(raw: Any, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
     out: List[str] = []
     if not isinstance(raw, dict):
         return out
 
-    norm_user = str(user_id).strip() if user_id not in (None, "") else None
+    norm_user = _canonical_notify_user_id(user_id)
     for target, cfg in raw.items():
         if not isinstance(target, str) or not target:
             continue
@@ -71,19 +93,25 @@ def _derive_targets_from_raw(raw: Any, event_type: str, *, user_id: Optional[str
         elif event_type == "any_denied" and config.get("any_denied"):
             out.append(target)
         elif event_type == "user_granted":
-            granted_cfg = config.get("granted") if isinstance(config.get("granted"), dict) else {}
-            any_flag = bool(granted_cfg.get("any")) if isinstance(granted_cfg, dict) else bool(config.get("granted_any"))
-            users_raw = granted_cfg.get("users") if isinstance(granted_cfg, dict) else config.get("granted_users")
+            granted_cfg = config.get("granted")
+            if isinstance(granted_cfg, dict):
+                any_flag = bool(granted_cfg.get("any"))
+                users_raw = granted_cfg.get("users")
+                specific_flag = bool(granted_cfg.get("specific")) if "specific" in granted_cfg else bool(users_raw)
+            else:
+                any_flag = bool(config.get("granted_any"))
+                users_raw = config.get("granted_users")
+                specific_flag = bool(users_raw)
             if any_flag:
                 out.append(target)
-            elif norm_user and users_raw:
+            elif norm_user and specific_flag and users_raw:
                 if isinstance(users_raw, (list, tuple, set)):
-                    normalized = {str(u).strip() for u in users_raw if str(u).strip()}
+                    normalized = [str(u).strip() for u in users_raw if str(u).strip()]
                 elif isinstance(users_raw, str):
-                    normalized = {users_raw.strip()}
+                    normalized = [users_raw.strip()]
                 else:
-                    normalized = set()
-                if norm_user in normalized:
+                    normalized = []
+                if any(_notify_user_matches(item, norm_user) for item in normalized):
                     out.append(target)
     return out
 
@@ -597,7 +625,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not raw_text:
             return None
 
-        normalized_raw = normalize_ha_id(raw_text)
+        normalized_raw = normalize_user_id(raw_text)
         resolved = normalized_raw or raw_text
 
         users = self.users if isinstance(self.users, list) else []
@@ -605,14 +633,20 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             return resolved
 
         def _user_id_from_record(record: Dict[str, Any]) -> Optional[str]:
-            for key in ("ID", "UserID", "UserId", "id", "user_id"):
+            for key in ("UserID", "UserId", "user_id", "id"):
                 value = record.get(key)
                 if value in (None, ""):
                     continue
                 text = _safe_str(value).strip()
                 if not text:
                     continue
-                return normalize_ha_id(text) or text
+                return normalize_user_id(text) or text
+
+            device_id = record.get("ID")
+            if device_id not in (None, ""):
+                text = _safe_str(device_id).strip()
+                if text:
+                    return normalize_user_id(text) or text
             return None
 
         for user in users:
@@ -621,23 +655,31 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             user_id = _user_id_from_record(user)
             if not user_id:
                 continue
-            if user_id == resolved:
-                return user_id
-            if normalize_ha_id(user_id) and normalize_ha_id(user_id) == normalized_raw:
-                return user_id
-
-        raw_lower = raw_text.casefold()
-        for user in users:
-            if not isinstance(user, dict):
-                continue
-            user_id = _user_id_from_record(user)
-            if not user_id:
-                continue
-            for key in ("Name", "name", "UserName", "username", "User", "user"):
+            for key in (
+                "ID",
+                "UserID",
+                "UserId",
+                "id",
+                "user_id",
+                "Name",
+                "name",
+                "UserName",
+                "username",
+                "User",
+                "user",
+                "CardNo",
+                "CardNumber",
+            ):
                 value = user.get(key)
                 if value in (None, ""):
                     continue
-                if _safe_str(value).strip().casefold() == raw_lower:
+                text = _safe_str(value).strip()
+                if not text:
+                    continue
+                if text.casefold() == raw_text.casefold():
+                    return user_id
+                candidate_norm = normalize_user_id(text)
+                if candidate_norm and normalized_raw and candidate_norm == normalized_raw:
                     return user_id
 
         return resolved

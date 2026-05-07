@@ -918,6 +918,19 @@ function friendlyName(service){
   return service;
 }
 
+function normalizedUserKey(value){
+  const text = String(value ?? '').trim();
+  const match = text.match(/^(HA|TMP)-?(\d+)$/i);
+  if (match) return `${match[1].toUpperCase()}${match[2]}`.toLowerCase();
+  return text.toLowerCase();
+}
+
+function grantedUsersInclude(users, userId){
+  const key = normalizedUserKey(userId);
+  if (!key || !Array.isArray(users)) return false;
+  return users.some(item => normalizedUserKey(item) === key);
+}
+
 function ensureTargetDefaults(target){
   if (!ALERT_TARGETS[target] || typeof ALERT_TARGETS[target] !== 'object'){
     ALERT_TARGETS[target] = {
@@ -1134,7 +1147,7 @@ function renderAlerts(){
         const row = document.createElement('div');
         row.className = 'form-check';
         row.innerHTML = `
-          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${userId}" ${cfg.granted.users.includes(userId) ? 'checked' : ''}>
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_users" data-user-id="${userId}" ${grantedUsersInclude(cfg.granted.users, userId) ? 'checked' : ''}>
           <label class="form-check-label">${user.name} (${userId})</label>
         `;
         list.appendChild(row);
