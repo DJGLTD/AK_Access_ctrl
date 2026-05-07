@@ -33,6 +33,7 @@ CALLER_LOOKBACK_SECONDS = 120
 CALLER_CLEAR_DELAY_SECONDS = 10
 CALLER_EVENT_WINDOW_SECONDS = 30
 ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS = 10
+NOTIFICATION_DIAGNOSTICS_LIMIT = 200
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +126,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         notifications = self.storage.data.get("notifications")
         if not isinstance(notifications, dict):
             self.storage.data["notifications"] = {}
+        notification_diagnostics = self.storage.data.get("notification_diagnostics")
+        if not isinstance(notification_diagnostics, list):
+            self.storage.data["notification_diagnostics"] = []
         alerts_state = self.storage.data.get("alerts_state")
         if not isinstance(alerts_state, dict):
             self.storage.data["alerts_state"] = {}
@@ -343,7 +347,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         """Fetch recent door events and handle non-key access notifications."""
 
         notifications = self.storage.data.get("notifications") or {}
-        notify_targets: List[str] = [] if suppress_notifications else list(notifications.get("targets") or [])
+        configured_notify_targets: List[str] = list(notifications.get("targets") or [])
+        notify_targets: List[str] = [] if suppress_notifications else configured_notify_targets
 
         events: List[Dict[str, Any]] = []
 
@@ -411,6 +416,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     if suppress_notifications:
                         latest_event = dict(latest_event)
                         latest_event["_skip_notifications"] = True
+                        latest_event["_suppressed_notification_targets"] = configured_notify_targets
                     storage_dirty = await self._handle_door_event(latest_event, notify_targets)
                     if storage_dirty:
                         try:
@@ -434,6 +440,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             if suppress_notifications:
                 event = dict(event)
                 event["_skip_notifications"] = True
+                event["_suppressed_notification_targets"] = configured_notify_targets
             if await self._handle_door_event(event, notify_targets):
                 storage_dirty = True
             last_processed_key = key
@@ -754,13 +761,50 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         notifications = self.storage.data.get("notifications") or {}
         notify_targets: List[str] = list(notifications.get("targets") or [])
+        notification_diag_dirty = False
         if self._is_access_permitted_button_event(event):
-            if not self._has_recent_door_event(ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS):
+            try:
+                user_id = self._resolve_event_user_id(event)
+            except Exception:
+                user_id = self._extract_event_user_id(event)
+            user_name = self._extract_event_user_name(event)
+            alert_targets = _alert_targets_for_event(
+                self.hass,
+                "user_granted",
+                user_id=user_id,
+            )
+            planned_targets = self._dedupe_notification_target_items(
+                self._notification_target_items(
+                    notify_targets,
+                    channel="access_notification",
+                )
+                + self._notification_target_items(
+                    alert_targets,
+                    channel="alert_notification",
+                )
+            )
+            has_recent_door_event = self._has_recent_door_event(
+                ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS
+            )
+            if not has_recent_door_event:
                 event["_skip_notifications"] = True
                 notify_targets = []
+            notification_diag_dirty = self._record_notification_diagnostic(
+                source="access_permitted_button",
+                channel="decision",
+                event_type="user_granted",
+                status="ready" if has_recent_door_event else "skipped",
+                targets=planned_targets,
+                user_id=user_id,
+                user_name=user_name,
+                event_summary=self._notification_event_summary(event),
+                reason=None
+                if has_recent_door_event
+                else "No recent door event was available for the Access Permitted button.",
+            )
 
         storage_dirty = await self._handle_door_event(event, notify_targets)
-        if storage_dirty:
+        if storage_dirty or notification_diag_dirty:
             try:
                 await self.storage.async_save()
             except Exception as err:
@@ -952,6 +996,14 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             event_kind = "granted"
 
         if event_kind:
+            if skip_notifications and self._record_suppressed_notification_diagnostic(
+                event,
+                event_kind=event_kind,
+                user_id=user_id,
+                summary=summary_text or None,
+                notify_targets=notify_targets,
+            ):
+                storage_changed = True
             self._update_access_state(event_kind, event, user_id=user_id, summary=summary_text or None)
             if event_kind == "granted":
                 manager = self.hass.data.get(DOMAIN, {}).get("sync_manager")
@@ -1532,6 +1584,181 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             summary=summary,
         )
 
+    def _notification_event_summary(self, event: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(event, dict):
+            return ""
+        for key in ("Event", "EventType", "Description", "Message", "Result", "Type"):
+            value = event.get(key)
+            if value in (None, ""):
+                continue
+            text = _safe_str(value).strip()
+            if text:
+                return text
+        return ""
+
+    def _notification_target_items(
+        self,
+        targets: List[Any],
+        *,
+        channel: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        for target in targets or []:
+            text = _safe_str(target).strip()
+            if not text:
+                continue
+            item = {
+                "target": text,
+                "target_label": self._format_notification_target(text),
+            }
+            if channel:
+                item["channel"] = channel
+            items.append(item)
+        return items
+
+    @staticmethod
+    def _dedupe_notification_target_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen: set[Tuple[str, str]] = set()
+        out: List[Dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            target = _safe_str(item.get("target")).strip()
+            if not target:
+                continue
+            channel = _safe_str(item.get("channel")).strip()
+            key = (channel, target)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(dict(item))
+        return out
+
+    def _record_notification_diagnostic(
+        self,
+        *,
+        source: str,
+        channel: str,
+        event_type: str,
+        status: str,
+        target: Optional[Any] = None,
+        targets: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        message: Optional[str] = None,
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        event_summary: Optional[str] = None,
+        reason: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        data = getattr(self.storage, "data", None)
+        if not isinstance(data, dict):
+            return False
+
+        diagnostics = data.get("notification_diagnostics")
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+            data["notification_diagnostics"] = diagnostics
+
+        record: Dict[str, Any] = {
+            "timestamp": _now_iso(self.hass),
+            "entry_id": self.entry_id,
+            "device_name": self.device_name,
+            "source": source,
+            "channel": channel,
+            "event_type": event_type,
+            "status": status,
+        }
+
+        target_text = _safe_str(target).strip() if target not in (None, "") else ""
+        if target_text:
+            record["target"] = target_text
+            record["target_label"] = self._format_notification_target(target_text)
+
+        if targets is not None:
+            record["targets"] = self._dedupe_notification_target_items(targets)
+
+        for key, value in (
+            ("title", title),
+            ("message", message),
+            ("user_id", user_id),
+            ("user_name", user_name),
+            ("event_summary", event_summary),
+            ("reason", reason),
+            ("error", error),
+        ):
+            if value in (None, ""):
+                continue
+            record[key] = _safe_str(value)
+
+        diagnostics.insert(0, record)
+        del diagnostics[NOTIFICATION_DIAGNOSTICS_LIMIT:]
+        return True
+
+    def _record_suppressed_notification_diagnostic(
+        self,
+        event: Dict[str, Any],
+        *,
+        event_kind: str,
+        user_id: Optional[str],
+        summary: Optional[str],
+        notify_targets: List[str],
+    ) -> bool:
+        if self._is_access_permitted_button_event(event):
+            return False
+
+        alert_event_type = "user_granted" if event_kind == "granted" else "any_denied"
+        alert_targets = _alert_targets_for_event(
+            self.hass,
+            alert_event_type,
+            user_id=user_id,
+        )
+
+        suppressed_targets_raw = event.get("_suppressed_notification_targets")
+        access_targets: List[str] = []
+        if isinstance(suppressed_targets_raw, (list, tuple, set)):
+            access_targets = [
+                str(target).strip()
+                for target in suppressed_targets_raw
+                if target not in (None, "") and str(target).strip()
+            ]
+        elif isinstance(suppressed_targets_raw, str) and suppressed_targets_raw.strip():
+            access_targets = [suppressed_targets_raw.strip()]
+        elif notify_targets:
+            access_targets = list(notify_targets)
+
+        planned_targets = self._dedupe_notification_target_items(
+            self._notification_target_items(
+                access_targets,
+                channel="access_notification",
+            )
+            + self._notification_target_items(
+                alert_targets,
+                channel="alert_notification",
+            )
+        )
+
+        return self._record_notification_diagnostic(
+            source="suppressed_door_event",
+            channel="decision",
+            event_type=alert_event_type,
+            status="skipped",
+            targets=planned_targets,
+            user_id=user_id,
+            user_name=self._extract_event_user_name(event),
+            event_summary=self._notification_event_summary(event) or summary,
+            reason="Notifications were suppressed for this access history refresh.",
+        )
+
+    async def _async_save_notification_diagnostics(self) -> None:
+        saver = getattr(self.storage, "async_save", None)
+        if not callable(saver):
+            return
+        try:
+            await saver()
+        except Exception as err:
+            _LOGGER.debug("Failed to persist notification diagnostics: %s", _safe_str(err))
+
     async def _dispatch_notification(self, event: Dict[str, Any], notify_targets: List[str]) -> None:
         """Send notifications for a door event (best effort)."""
 
@@ -1540,6 +1767,21 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
         service = getattr(self.hass, "services", None)
         if service is None or not hasattr(service, "async_call"):
+            for target in notify_targets:
+                self._record_notification_diagnostic(
+                    source="access_event",
+                    channel="access_notification",
+                    event_type="non_key_access",
+                    status="skipped",
+                    target=target,
+                    title=self.device_name,
+                    message=self._notification_event_summary(event),
+                    user_id=self._extract_event_user_id(event),
+                    user_name=self._extract_event_user_name(event),
+                    event_summary=self._notification_event_summary(event),
+                    reason="Home Assistant notify service was unavailable.",
+                )
+            await self._async_save_notification_diagnostics()
             return
 
         message = _safe_str(event.get("Event") or event.get("EventType") or "Akuvox access granted")
@@ -1549,19 +1791,47 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "data": {"event": event, "device_name": self.device_name},
         }
 
+        notification_diag_dirty = False
         for target in notify_targets:
             target_label = self._format_notification_target(target)
+            user_label = self._extract_event_user_name(event) or self._extract_event_user_id(event) or "Unknown user"
             try:
                 await service.async_call("notify", target, data, blocking=False)
-                user_label = self._extract_event_user_name(event) or self._extract_event_user_id(event) or "Unknown user"
                 self._append_event(
                     f"System notification sent to {target_label} — {user_label} accessed the gate"
                 )
+                notification_diag_dirty = self._record_notification_diagnostic(
+                    source="access_event",
+                    channel="access_notification",
+                    event_type="non_key_access",
+                    status="sent",
+                    target=target,
+                    title=self.device_name,
+                    message=message,
+                    user_id=self._extract_event_user_id(event),
+                    user_name=user_label,
+                    event_summary=self._notification_event_summary(event),
+                ) or notification_diag_dirty
             except Exception as err:
                 self._append_event(
                     f"System notification failed for {target_label} — {_safe_str(err)}"
                 )
+                notification_diag_dirty = self._record_notification_diagnostic(
+                    source="access_event",
+                    channel="access_notification",
+                    event_type="non_key_access",
+                    status="failed",
+                    target=target,
+                    title=self.device_name,
+                    message=message,
+                    user_id=self._extract_event_user_id(event),
+                    user_name=user_label,
+                    event_summary=self._notification_event_summary(event),
+                    error=_safe_str(err),
+                ) or notification_diag_dirty
                 _LOGGER.debug("Failed to dispatch notification to %s: %s", target, _safe_str(err))
+        if notification_diag_dirty:
+            await self._async_save_notification_diagnostics()
 
     @staticmethod
     def _format_notification_target(target: Any) -> str:
@@ -1622,8 +1892,24 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         title = f"Akuvox • {self.device_name}"
         service = getattr(self.hass, "services", None)
         if not service or not hasattr(service, "async_call"):
+            for target in targets:
+                self._record_notification_diagnostic(
+                    source="system_alert",
+                    channel="alert_notification",
+                    event_type=event_type,
+                    status="skipped",
+                    target=target,
+                    title=title,
+                    message=message,
+                    user_id=user_id,
+                    user_name=who if event_type == "user_granted" else None,
+                    event_summary=summary,
+                    reason="Home Assistant notify service was unavailable.",
+                )
+            await self._async_save_notification_diagnostics()
             return
 
+        notification_diag_dirty = False
         for target in targets:
             try:
                 await service.async_call(
@@ -1632,5 +1918,32 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     {"title": title, "message": message, "data": data},
                     blocking=False,
                 )
+                notification_diag_dirty = self._record_notification_diagnostic(
+                    source="system_alert",
+                    channel="alert_notification",
+                    event_type=event_type,
+                    status="sent",
+                    target=target,
+                    title=title,
+                    message=message,
+                    user_id=user_id,
+                    user_name=who if event_type == "user_granted" else None,
+                    event_summary=summary,
+                ) or notification_diag_dirty
             except Exception as err:
+                notification_diag_dirty = self._record_notification_diagnostic(
+                    source="system_alert",
+                    channel="alert_notification",
+                    event_type=event_type,
+                    status="failed",
+                    target=target,
+                    title=title,
+                    message=message,
+                    user_id=user_id,
+                    user_name=who if event_type == "user_granted" else None,
+                    event_summary=summary,
+                    error=_safe_str(err),
+                ) or notification_diag_dirty
                 _LOGGER.debug("Failed to notify %s: %s", target, _safe_str(err))
+        if notification_diag_dirty:
+            await self._async_save_notification_diagnostics()

@@ -4013,6 +4013,176 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 
         return results
 
+    @staticmethod
+    def _format_notification_target(target: Any) -> str:
+        raw = str(target or "").strip()
+        if not raw:
+            return "unknown target"
+        normalized = raw
+        if normalized.lower().startswith("mobile_app_"):
+            normalized = normalized[len("mobile_app_") :]
+        normalized = normalized.replace("_", " ").replace(".", " ")
+        normalized = " ".join(part for part in normalized.split() if part)
+        return normalized or raw
+
+    @classmethod
+    def _notification_target_item(
+        cls,
+        target: Any,
+        *,
+        channel: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        text = str(target or "").strip()
+        if not text:
+            return None
+        item: Dict[str, Any] = {
+            "target": text,
+            "target_label": cls._format_notification_target(text),
+        }
+        if channel:
+            item["channel"] = channel
+        return item
+
+    def _notification_rules_snapshot(
+        self,
+        root: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        alert_targets: List[Dict[str, Any]] = []
+        settings = root.get("settings_store")
+        targets: Dict[str, Any] = {}
+        if settings and hasattr(settings, "get_alert_targets"):
+            try:
+                targets = settings.get_alert_targets()
+            except Exception:
+                targets = {}
+        elif settings:
+            data = getattr(settings, "data", {})
+            alerts = data.get("alerts") if isinstance(data, dict) else {}
+            raw_targets = alerts.get("targets") if isinstance(alerts, dict) else {}
+            if isinstance(raw_targets, dict):
+                targets = raw_targets
+
+        if isinstance(targets, dict):
+            for target, cfg in sorted(targets.items(), key=lambda pair: str(pair[0])):
+                item = self._notification_target_item(
+                    target,
+                    channel="alert_notification",
+                )
+                if not item:
+                    continue
+                config = cfg if isinstance(cfg, dict) else {}
+                granted = config.get("granted") if isinstance(config.get("granted"), dict) else {}
+                users_raw = granted.get("users") if isinstance(granted, dict) else []
+                if isinstance(users_raw, (list, tuple, set)):
+                    granted_users = [
+                        str(user).strip()
+                        for user in users_raw
+                        if user not in (None, "") and str(user).strip()
+                    ]
+                elif isinstance(users_raw, str) and users_raw.strip():
+                    granted_users = [users_raw.strip()]
+                else:
+                    granted_users = []
+                item.update(
+                    {
+                        "device_offline": bool(config.get("device_offline")),
+                        "integrity_failed": bool(config.get("integrity_failed")),
+                        "any_denied": bool(config.get("any_denied")),
+                        "granted_any": bool(granted.get("any")),
+                        "granted_users": granted_users,
+                    }
+                )
+                alert_targets.append(item)
+
+        access_targets_by_device: List[Dict[str, Any]] = []
+        manager = root.get("sync_manager")
+        if manager:
+            try:
+                for entry_id, coord, _api, _opts in manager._devices():  # type: ignore[attr-defined]
+                    storage = getattr(coord, "storage", None)
+                    data = getattr(storage, "data", {}) if storage else {}
+                    notifications = data.get("notifications") if isinstance(data, dict) else {}
+                    raw_targets = (
+                        notifications.get("targets")
+                        if isinstance(notifications, dict)
+                        else []
+                    )
+                    target_items: List[Dict[str, Any]] = []
+                    if isinstance(raw_targets, (list, tuple, set)):
+                        for target in raw_targets:
+                            item = self._notification_target_item(
+                                target,
+                                channel="access_notification",
+                            )
+                            if item:
+                                target_items.append(item)
+                    elif isinstance(raw_targets, str) and raw_targets.strip():
+                        item = self._notification_target_item(
+                            raw_targets,
+                            channel="access_notification",
+                        )
+                        if item:
+                            target_items.append(item)
+
+                    name = (
+                        getattr(coord, "display_name", None)
+                        or getattr(coord, "device_name", None)
+                        or entry_id
+                    )
+                    access_targets_by_device.append(
+                        {
+                            "entry_id": entry_id,
+                            "device_name": name,
+                            "targets": target_items,
+                        }
+                    )
+            except Exception as err:  # pragma: no cover - best effort
+                _LOGGER.debug("Failed to assemble notification rules: %s", err)
+
+        return {
+            "alert_targets": alert_targets,
+            "access_targets_by_device": access_targets_by_device,
+        }
+
+    def _notification_diagnostics_snapshot(
+        self,
+        root: Dict[str, Any],
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        records: List[Dict[str, Any]] = []
+        manager = root.get("sync_manager")
+        if manager:
+            try:
+                for entry_id, coord, _api, _opts in manager._devices():  # type: ignore[attr-defined]
+                    device_name = (
+                        getattr(coord, "display_name", None)
+                        or getattr(coord, "device_name", None)
+                        or entry_id
+                    )
+                    storage = getattr(coord, "storage", None)
+                    data = getattr(storage, "data", {}) if storage else {}
+                    raw_records = (
+                        data.get("notification_diagnostics")
+                        if isinstance(data, dict)
+                        else []
+                    )
+                    if not isinstance(raw_records, list):
+                        continue
+                    for raw in raw_records:
+                        if not isinstance(raw, dict):
+                            continue
+                        record = self._copy_json(raw)
+                        if not isinstance(record, dict):
+                            continue
+                        record.setdefault("entry_id", entry_id)
+                        record.setdefault("device_name", device_name)
+                        records.append(record)
+            except Exception as err:  # pragma: no cover - best effort
+                _LOGGER.debug("Failed to assemble notification diagnostics: %s", err)
+
+        records.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+        return records[: max(1, int(limit or 1))]
+
     async def _build_payload(
         self, root: Dict[str, Any], limit_override: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -4119,6 +4289,8 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
             "max_history_limit": max_limit,
             "face_attempts": self._summarize_face_attempts(devices),
             "access_events": aggregated_events,
+            "notification_events": self._notification_diagnostics_snapshot(root),
+            "notification_rules": self._notification_rules_snapshot(root),
             "access_event_limit": access_limit,
             "min_access_event_limit": min_access,
             "max_access_event_limit": max_access,

@@ -8,6 +8,7 @@ from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac.access_history import AccessHistory
+from custom_components.akuvox_ac.const import DOMAIN
 from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator
 
 
@@ -46,6 +47,14 @@ class _ServiceStub:
             raise RuntimeError("push unavailable")
 
 
+class _SettingsStub:
+    def __init__(self, targets: List[str]) -> None:
+        self.targets = list(targets)
+
+    def targets_for_event(self, event_type: str, *, user_id: str | None = None) -> List[str]:
+        return list(self.targets)
+
+
 def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord = object.__new__(AkuvoxCoordinator)
     coord.api = api
@@ -54,6 +63,7 @@ def _build_coordinator(api, storage) -> AkuvoxCoordinator:
     coord.device_name = "Akuvox"
     coord.hass = type("H", (), {"data": {}, "loop": None})()
     coord._publish_access_history = lambda events: None  # type: ignore[attr-defined]
+    coord.users = []
     return coord
 
 
@@ -100,6 +110,10 @@ def test_dispatch_notification_appends_system_event_on_success():
         coord.events[0]["Event"]
         == "System notification sent to elles iphone — Neil smalley accessed the gate"
     )
+    diag = storage.data["notification_diagnostics"]
+    assert diag[0]["status"] == "sent"
+    assert diag[0]["channel"] == "access_notification"
+    assert diag[0]["target"] == "mobile_app_elles_iphone"
 
 
 def test_dispatch_notification_appends_system_event_on_failure():
@@ -119,6 +133,86 @@ def test_dispatch_notification_appends_system_event_on_failure():
 
     assert len(coord.events) == 1
     assert coord.events[0]["Event"].startswith("System notification failed for elles iphone —")
+    diag = storage.data["notification_diagnostics"]
+    assert diag[0]["status"] == "failed"
+    assert diag[0]["error"] == "push unavailable"
+
+
+def test_send_alert_notification_records_system_notification():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.hass.services = _ServiceStub()
+    coord.hass.data = {DOMAIN: {"settings_store": _SettingsStub(["mobile_app_admin_phone"])}}
+
+    asyncio.run(
+        coord._send_alert_notification(
+            "user_granted",
+            user_id="HA007",
+            summary="access granted",
+            extra={"event": {"UserName": "Alice"}},
+        )
+    )
+
+    diag = storage.data["notification_diagnostics"]
+    assert diag[0]["status"] == "sent"
+    assert diag[0]["channel"] == "alert_notification"
+    assert diag[0]["event_type"] == "user_granted"
+    assert diag[0]["message"] == "Alice opened the gate."
+
+
+def test_access_permitted_button_records_would_notify_targets_when_skipped():
+    storage = _StorageStub()
+    storage.data["notifications"] = {"targets": ["mobile_app_gate_phone"]}
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.hass.data = {DOMAIN: {"settings_store": _SettingsStub(["mobile_app_admin_phone"])}}
+    coord._has_recent_door_event = lambda _window: False  # type: ignore[method-assign]
+
+    handled: List[Dict[str, Any]] = []
+
+    async def _handle(event, _targets):
+        handled.append(dict(event))
+        return False
+
+    coord._handle_door_event = _handle  # type: ignore[attr-defined]
+
+    asyncio.run(coord.async_handle_manual_event({"Event": "Access permitted button pressed"}))
+
+    assert handled[0]["_skip_notifications"] is True
+    diag = storage.data["notification_diagnostics"]
+    assert diag[0]["source"] == "access_permitted_button"
+    assert diag[0]["status"] == "skipped"
+    assert [item["target"] for item in diag[0]["targets"]] == [
+        "mobile_app_gate_phone",
+        "mobile_app_admin_phone",
+    ]
+
+
+def test_suppressed_door_event_records_user_specific_notification_targets():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.hass.data = {DOMAIN: {"settings_store": _SettingsStub(["mobile_app_admin_phone"])}}
+
+    recorded = coord._record_suppressed_notification_diagnostic(
+        {
+            "Event": "Door unlocked",
+            "UserID": "HA007",
+            "UserName": "Alice",
+            "_suppressed_notification_targets": ["mobile_app_gate_phone"],
+        },
+        event_kind="granted",
+        user_id="HA007",
+        summary="door unlocked",
+        notify_targets=[],
+    )
+
+    assert recorded is True
+    diag = storage.data["notification_diagnostics"]
+    assert diag[0]["source"] == "suppressed_door_event"
+    assert diag[0]["user_id"] == "HA007"
+    assert [item["target"] for item in diag[0]["targets"]] == [
+        "mobile_app_gate_phone",
+        "mobile_app_admin_phone",
+    ]
 
 
 def test_process_door_events_skips_events_not_newer_than_last_timestamp():
