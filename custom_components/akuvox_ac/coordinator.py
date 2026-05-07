@@ -602,31 +602,121 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         for key in (
             "UserID",
             "UserId",
-            "ID",
-            "CardNo",
-            "CardNumber",
             "User",
             "UserName",
             "Name",
+            "CardNo",
+            "CardNumber",
+            "ID",
         ):
             val = event.get(key)
             if val not in (None, ""):
                 return _safe_str(val)
         return None
 
+    @staticmethod
+    def _event_user_candidates(event: Dict[str, Any]) -> List[str]:
+        candidates: List[str] = []
+        seen: set[str] = set()
+        for key in (
+            "UserID",
+            "UserId",
+            "user_id",
+            "User",
+            "UserName",
+            "user_name",
+            "Name",
+            "name",
+            "CardNo",
+            "CardNumber",
+            "ID",
+        ):
+            value = event.get(key)
+            if value in (None, ""):
+                continue
+            text = _safe_str(value).strip()
+            if not text:
+                continue
+            lookup_key = text.casefold()
+            if lookup_key in seen:
+                continue
+            seen.add(lookup_key)
+            candidates.append(text)
+        return candidates
+
     def _resolve_event_user_id(self, event: Dict[str, Any]) -> Optional[str]:
         """Resolve an event user reference to a canonical profile identifier when possible."""
 
-        raw_user = self._extract_event_user_id(event)
-        if raw_user in (None, ""):
+        candidates = self._event_user_candidates(event)
+        if not candidates:
             return None
 
-        raw_text = _safe_str(raw_user).strip()
+        raw_text = candidates[0]
         if not raw_text:
             return None
 
         normalized_raw = normalize_user_id(raw_text)
         resolved = normalized_raw or raw_text
+
+        def _candidate_matches(value: Any, candidate: str) -> bool:
+            text = _safe_str(value).strip()
+            if not text:
+                return False
+            if text.casefold() == candidate.casefold():
+                return True
+            text_norm = normalize_user_id(text)
+            candidate_norm = normalize_user_id(candidate)
+            return bool(text_norm and candidate_norm and text_norm == candidate_norm)
+
+        def _matches_any(value: Any) -> bool:
+            return any(_candidate_matches(value, candidate) for candidate in candidates)
+
+        try:
+            storage_data = getattr(self.storage, "data", {}) or {}
+        except Exception:
+            storage_data = {}
+        stored_user_ids = storage_data.get("user_ids") if isinstance(storage_data, dict) else {}
+        if isinstance(stored_user_ids, dict):
+            for ha_key, device_id in stored_user_ids.items():
+                canonical = normalize_user_id(ha_key) or _safe_str(ha_key).strip()
+                if not canonical:
+                    continue
+                if _matches_any(ha_key) or _matches_any(device_id):
+                    return canonical
+
+        try:
+            root = self.hass.data.get(DOMAIN, {}) or {}
+            users_store = root.get("users_store")
+            registry = users_store.all() if users_store and hasattr(users_store, "all") else {}
+        except Exception:
+            registry = {}
+        if isinstance(registry, dict):
+            for key, profile in registry.items():
+                canonical = normalize_user_id(key) or _safe_str(key).strip()
+                if not canonical:
+                    continue
+                values: List[Any] = [key, canonical]
+                if isinstance(profile, dict):
+                    values.extend(
+                        [
+                            profile.get("name"),
+                            profile.get("Name"),
+                            profile.get("UserName"),
+                            profile.get("UserID"),
+                            profile.get("UserId"),
+                            profile.get("ID"),
+                            profile.get("device_id"),
+                            profile.get("card_code"),
+                            profile.get("CardCode"),
+                        ]
+                    )
+                    device_ids = profile.get("device_ids") or profile.get("device_user_ids")
+                    if isinstance(device_ids, dict):
+                        values.extend(device_ids.values())
+                    elif isinstance(device_ids, (list, tuple, set)):
+                        values.extend(device_ids)
+                if any(_matches_any(value) for value in values):
+                    return canonical
 
         users = self.users if isinstance(self.users, list) else []
         if not users:
@@ -676,10 +766,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 text = _safe_str(value).strip()
                 if not text:
                     continue
-                if text.casefold() == raw_text.casefold():
-                    return user_id
-                candidate_norm = normalize_user_id(text)
-                if candidate_norm and normalized_raw and candidate_norm == normalized_raw:
+                if any(_candidate_matches(text, candidate) for candidate in candidates):
                     return user_id
 
         return resolved
