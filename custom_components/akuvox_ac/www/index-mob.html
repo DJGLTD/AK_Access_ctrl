@@ -884,7 +884,7 @@ function normalizeHaUserId(value){
   let suffix = text.slice(2);
   if (suffix.startsWith('-')) suffix = suffix.slice(1);
   if (!suffix || !/^\d+$/.test(suffix)) return '';
-  return `HA${suffix}`;
+  return `HA${suffix.padStart(3, '0')}`;
 }
 
 function parseHaUserIdNumber(value){
@@ -1523,10 +1523,10 @@ function scheduleDisplayId(rawId){
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
   if (numeric >= 1000){
     const adjusted = numeric - 901;
-    return adjusted > 0 ? `HA${adjusted}` : '';
+    return adjusted > 0 ? `HA${String(adjusted).padStart(3, '0')}` : '';
   }
   if (numeric >= 100){
-    return `HA${numeric}`;
+    return `HA${String(numeric).padStart(3, '0')}`;
   }
   return '';
 }
