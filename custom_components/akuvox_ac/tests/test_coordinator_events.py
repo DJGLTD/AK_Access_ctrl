@@ -55,6 +55,14 @@ class _SettingsStub:
         return list(self.targets)
 
 
+class _UsersStoreStub:
+    def __init__(self, users: Dict[str, Dict[str, Any]]) -> None:
+        self._users = users
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
+        return dict(self._users)
+
+
 class _HealthAPIStub:
     async def ping_info(self) -> Dict[str, Any]:
         return {"ok": True}
@@ -168,6 +176,36 @@ def test_resolve_event_user_id_prefers_canonical_user_id_for_name_match():
     resolved = coord._resolve_event_user_id({"UserName": "walt"})
 
     assert resolved == "HA012"
+
+
+def test_resolve_event_user_id_uses_stored_device_id_map_when_device_users_are_missing():
+    storage = _StorageStub()
+    storage.data["user_ids"] = {"HA004": "8124"}
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = []
+
+    resolved = coord._resolve_event_user_id({"UserID": "8124"})
+
+    assert resolved == "HA004"
+
+
+def test_resolve_event_user_id_uses_registry_name_when_device_users_are_missing():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = []
+    coord.hass.data = {
+        DOMAIN: {
+            "users_store": _UsersStoreStub(
+                {"HA004": {"name": "Daniel Gallagher (Geeves)"}}
+            )
+        }
+    }
+
+    resolved = coord._resolve_event_user_id(
+        {"ID": "event-log-row", "Name": "Daniel Gallagher (Geeves)"}
+    )
+
+    assert resolved == "HA004"
 
 
 def test_derive_targets_from_raw_matches_normalized_specific_user_ids():
