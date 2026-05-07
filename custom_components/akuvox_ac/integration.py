@@ -278,6 +278,81 @@ def _sync_notify_on_access_targets(
     return targets, changed
 
 
+def _active_notification_user_ids(users_store: Any) -> Set[str]:
+    """Return user IDs still present in the local user table."""
+
+    if not users_store or not hasattr(users_store, "all"):
+        return set()
+    try:
+        users = users_store.all() or {}
+    except Exception:
+        return set()
+    if not isinstance(users, Mapping):
+        return set()
+
+    active: Set[str] = set()
+    for key, profile in users.items():
+        canonical = normalize_user_id(key)
+        if not canonical:
+            continue
+        if not isinstance(profile, Mapping):
+            continue
+        if _profile_is_empty_reserved(profile):
+            continue
+        status = str(profile.get("status") or "").strip().lower()
+        if status == "deleted":
+            continue
+        active.add(canonical)
+    return active
+
+
+def _prune_notify_targets_to_users(
+    raw_targets: Any,
+    active_user_ids: Set[str],
+) -> Tuple[Dict[str, Dict[str, Any]], bool]:
+    targets: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_targets, dict):
+        for target, cfg in raw_targets.items():
+            if not isinstance(target, str) or not target.strip():
+                continue
+            targets[target] = dict(cfg) if isinstance(cfg, dict) else {}
+
+    changed = False
+    for target, cfg in list(targets.items()):
+        granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
+        original_users_raw = granted.get("users") or []
+        if isinstance(original_users_raw, (list, tuple, set)):
+            original_users = [
+                str(item).strip() for item in original_users_raw if str(item or "").strip()
+            ]
+        elif isinstance(original_users_raw, str) and original_users_raw.strip():
+            original_users = [original_users_raw.strip()]
+        else:
+            original_users = []
+
+        next_users: List[str] = []
+        seen: Set[str] = set()
+        for user in original_users:
+            canonical = normalize_user_id(user)
+            if not canonical or canonical not in active_user_ids or canonical in seen:
+                changed = True
+                continue
+            if canonical != user:
+                changed = True
+            seen.add(canonical)
+            next_users.append(canonical)
+
+        if next_users != original_users:
+            changed = True
+            granted["users"] = next_users
+            if not next_users:
+                granted["specific"] = False
+            cfg["granted"] = granted
+            targets[target] = cfg
+
+    return targets, changed
+
+
 async def _set_notify_on_access_for_user(
     settings_store: Any,
     user_id: Any,
@@ -2618,6 +2693,14 @@ class AkuvoxSettingsStore(Store):
         self.data.setdefault("alerts", {})["targets"] = self._sanitize_alert_targets(targets)
         await self.async_save()
 
+    async def prune_stale_alert_users(self, users_store: Any) -> bool:
+        active_user_ids = _active_notification_user_ids(users_store)
+        targets = self.get_alert_targets()
+        updated, changed = _prune_notify_targets_to_users(targets, active_user_ids)
+        if changed:
+            await self.set_alert_targets(updated)
+        return changed
+
     def targets_for_event(self, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
         mapping = self.get_alert_targets()
         out: List[str] = []
@@ -3230,6 +3313,18 @@ class SyncManager:
     def _settings_store(self) -> AkuvoxSettingsStore:
         return self._root().get("settings_store")
 
+    async def _prune_stale_alert_users(self) -> None:
+        settings = self._settings_store()
+        users_store = self._users_store()
+        if not settings or not users_store:
+            return
+        if not hasattr(settings, "prune_stale_alert_users"):
+            return
+        try:
+            await settings.prune_stale_alert_users(users_store)
+        except Exception:
+            pass
+
     def _devices(self) -> List[Tuple[str, AkuvoxCoordinator, AkuvoxAPI, Dict[str, Any]]]:
         out: List[Tuple[str, AkuvoxCoordinator, AkuvoxAPI, Dict[str, Any]]] = []
         for k, v in self._root().items():
@@ -3828,6 +3923,7 @@ class SyncManager:
         except Exception:
             registry_all = {}
 
+        removed_profile = False
         for key, profile in (registry_all or {}).items():
             status_raw = str((profile or {}).get("status") or "").strip().lower()
             if status_raw != "deleted":
@@ -3837,8 +3933,12 @@ class SyncManager:
             if canonical and canonical not in active_device_keys:
                 try:
                     await users_store.delete(canonical)
+                    removed_profile = True
                 except Exception:
                     continue
+
+        if removed_profile:
+            await self._prune_stale_alert_users()
 
     async def _push_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]):
         if not schedules:
@@ -4026,6 +4126,7 @@ class SyncManager:
                         )
                     except Exception:
                         pass
+                await self._prune_stale_alert_users()
 
             await self._remove_missing_users(api, local_users, reg_key_set)
 
@@ -4524,6 +4625,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         settings = AkuvoxSettingsStore(hass)
         await settings.async_load()
         root["settings_store"] = settings
+
+    settings_store = root.get("settings_store")
+    users_store = root.get("users_store")
+    if settings_store and users_store and hasattr(settings_store, "prune_stale_alert_users"):
+        try:
+            await settings_store.prune_stale_alert_users(users_store)
+        except Exception:
+            pass
 
     if "sync_manager" not in root:
         root["sync_manager"] = SyncManager(hass)
@@ -5175,6 +5284,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                         updated = True
                 if updated:
                     await settings_store.set_alert_targets(targets)
+                if users_store and hasattr(settings_store, "prune_stale_alert_users"):
+                    await settings_store.prune_stale_alert_users(users_store)
             except Exception:
                 pass
 
