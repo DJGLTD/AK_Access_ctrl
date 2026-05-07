@@ -165,6 +165,22 @@
     .diag-event-meta span{ display:inline-flex; align-items:center; gap:0.35rem; }
     .diag-event-empty{ color:var(--muted); font-style:italic; }
     .diag-event-filters .btn{ min-width:72px; }
+    .diag-notification-list{ display:flex; flex-direction:column; gap:0.75rem; }
+    .diag-notification{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; background:#0b172d; }
+    .diag-notification-title{ display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; font-weight:600; }
+    .diag-notification-meta{ margin-top:0.35rem; color:var(--muted); font-size:0.85rem; display:flex; flex-wrap:wrap; gap:0.65rem; }
+    .diag-notification-meta span{ display:inline-flex; align-items:center; gap:0.35rem; }
+    .diag-target-list{ margin-top:0.65rem; display:flex; gap:0.45rem; flex-wrap:wrap; }
+    .diag-target-chip{ display:inline-flex; align-items:center; gap:0.3rem; border:1px solid #264064; border-radius:999px; padding:0.18rem 0.6rem; color:var(--text); background:rgba(13,110,253,0.14); font-size:0.78rem; }
+    .diag-notification-rules{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:0.75rem; }
+    .diag-notification-rule{ border:1px solid #1c2e4f; border-radius:0.75rem; padding:0.85rem 1rem; background:#0b172d; }
+    .diag-notification-rule-title{ font-weight:600; margin-bottom:0.35rem; }
+    .diag-notification-rule-meta{ color:var(--muted); font-size:0.85rem; }
+    .badge.notification-status{ font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; }
+    .badge.notification-status.sent{ background:rgba(25,135,84,0.22); color:#2ff0c4; }
+    .badge.notification-status.failed{ background:rgba(220,53,69,0.25); color:#ff7d8a; }
+    .badge.notification-status.skipped{ background:rgba(255,193,7,0.16); color:#ffd86b; }
+    .badge.notification-status.ready{ background:rgba(13,202,240,0.18); color:#9ee7ff; }
     @media (max-width: 768px){
       .diag-container{ max-width:100%; padding:0 1rem; }
       .diag-toggle{ padding:0.85rem 1rem; }
@@ -552,6 +568,7 @@ function openInApp(view, params = {}, options = {}) {
   <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
     <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
     <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
+    <button class="nav-link" type="button" data-tab-target="notifications">Notifications</button>
     <button class="nav-link" type="button" data-tab-target="sync-errors">Device commands</button>
     <button class="nav-link" type="button" data-tab-target="face">Manual diagnostics</button>
   </div>
@@ -611,6 +628,32 @@ function openInApp(view, params = {}, options = {}) {
             <button class="btn btn-sm btn-outline-info" type="button" data-event-filter="call">Call</button>
           </div>
           <div id="eventsList" class="diag-events-list mt-3"></div>
+        </div>
+      </div>
+    </div>
+    <div class="diag-tab-pane" id="tabNotifications" data-tab="notifications" hidden>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+              <div class="form-label text-uppercase small muted mb-1">Notification diagnostics</div>
+              <div class="h3 mb-0" id="notificationsCount">—</div>
+              <div class="form-text" id="notificationsMeta">—</div>
+            </div>
+            <button class="btn btn-info" type="button" id="btnRefreshNotifications"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+          </div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <h5 class="mb-2">Current notification rules</h5>
+          <div id="notificationRules" class="diag-notification-rules"></div>
+        </div>
+      </div>
+      <div class="diag-settings-card card">
+        <div class="card-body">
+          <h5 class="mb-2">Notification log</h5>
+          <div id="notificationsList" class="diag-notification-list"></div>
         </div>
       </div>
     </div>
@@ -703,12 +746,19 @@ const eventsLimitHelperEl = document.getElementById('eventsLimitHelper');
 const eventsStatusEl = document.getElementById('eventsStatus');
 const btnRefreshEvents = document.getElementById('btnRefreshEvents');
 const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
+const notificationsListEl = document.getElementById('notificationsList');
+const notificationsCountEl = document.getElementById('notificationsCount');
+const notificationsMetaEl = document.getElementById('notificationsMeta');
+const notificationRulesEl = document.getElementById('notificationRules');
+const btnRefreshNotifications = document.getElementById('btnRefreshNotifications');
 const syncErrorsListEl = document.getElementById('syncErrorsList');
 const syncTypeFilterHelperEl = document.getElementById('syncTypeFilterHelper');
 let DIAG_DATA = [];
 let FACE_ATTEMPTS = [];
+let NOTIFICATION_EVENTS = [];
+let NOTIFICATION_RULES = { alert_targets: [], access_targets_by_device: [] };
 let ACTIVE_TAB = 'requests';
-const VALID_TABS = Object.freeze(['requests', 'events', 'sync-errors', 'face']);
+const VALID_TABS = Object.freeze(['requests', 'events', 'notifications', 'sync-errors', 'face']);
 let HISTORY_LIMIT = 50;
 let MIN_HISTORY_LIMIT = 10;
 let MAX_HISTORY_LIMIT = 200;
@@ -1693,6 +1743,179 @@ function applyEventsResponse(data){
   updateEventsSummary();
 }
 
+function notificationStatusLabel(status){
+  const value = String(status || '').toLowerCase();
+  if (value === 'sent') return 'Sent';
+  if (value === 'failed') return 'Failed';
+  if (value === 'skipped') return 'Skipped';
+  if (value === 'ready') return 'Would notify';
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Recorded';
+}
+
+function notificationSourceLabel(record){
+  const source = String(record?.source || '').toLowerCase();
+  const channel = String(record?.channel || '').toLowerCase();
+  if (source === 'access_permitted_button') return 'Access permitted button';
+  if (channel === 'access_notification') return 'Access notification';
+  if (channel === 'alert_notification') return 'System alert';
+  return source ? source.replace(/_/g, ' ') : 'Notification';
+}
+
+function notificationEventLabel(record){
+  const raw = record?.event_type || record?.eventType || '';
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  return text.replace(/_/g, ' ');
+}
+
+function notificationTargets(record){
+  const out = [];
+  const targets = Array.isArray(record?.targets) ? record.targets : [];
+  targets.forEach((target) => {
+    if (!target || typeof target !== 'object') return;
+    const label = String(target.target_label || target.label || target.target || '').trim();
+    if (!label) return;
+    const channel = String(target.channel || '').replace(/_/g, ' ');
+    out.push({ label, channel });
+  });
+  const single = String(record?.target_label || record?.target || '').trim();
+  if (single){
+    out.push({ label: single, channel: String(record?.channel || '').replace(/_/g, ' ') });
+  }
+  const seen = new Set();
+  return out.filter((item) => {
+    const key = `${item.channel}:${item.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function notificationTargetChips(record){
+  const targets = notificationTargets(record);
+  if (!targets.length){
+    return '<div class="diag-notification-meta"><span><i class="bi bi-bell-slash"></i>No matched notification targets</span></div>';
+  }
+  const chips = targets.map((target) => {
+    const channel = target.channel ? ` <small>${escapeHtml(target.channel)}</small>` : '';
+    return `<span class="diag-target-chip"><i class="bi bi-phone"></i>${escapeHtml(target.label)}${channel}</span>`;
+  }).join('');
+  return `<div class="diag-target-list">${chips}</div>`;
+}
+
+function renderNotificationRules(rules = NOTIFICATION_RULES){
+  if (!notificationRulesEl) return;
+  const alertTargets = Array.isArray(rules?.alert_targets) ? rules.alert_targets : [];
+  const accessDevices = Array.isArray(rules?.access_targets_by_device) ? rules.access_targets_by_device : [];
+  const cards = [];
+
+  alertTargets.forEach((target) => {
+    const bits = [];
+    if (target.device_offline) bits.push('device offline');
+    if (target.integrity_failed) bits.push('integrity failed');
+    if (target.any_denied) bits.push('any denied access');
+    if (target.granted_any) bits.push('any gate open');
+    const users = Array.isArray(target.granted_users) ? target.granted_users.filter(Boolean) : [];
+    if (users.length) bits.push(`specific gate opens: ${users.join(', ')}`);
+    cards.push(`
+      <div class="diag-notification-rule">
+        <div class="diag-notification-rule-title">${escapeHtml(target.target_label || target.target || 'Target')}</div>
+        <div class="diag-notification-rule-meta">${escapeHtml(bits.join(' • ') || 'No enabled alert rules')}</div>
+      </div>
+    `);
+  });
+
+  accessDevices.forEach((device) => {
+    const targets = Array.isArray(device.targets) ? device.targets : [];
+    const chips = targets.length
+      ? targets.map((target) => `<span class="diag-target-chip"><i class="bi bi-phone"></i>${escapeHtml(target.target_label || target.target || 'Target')}</span>`).join('')
+      : '<span class="diag-notification-rule-meta">No access notification targets</span>';
+    cards.push(`
+      <div class="diag-notification-rule">
+        <div class="diag-notification-rule-title">${escapeHtml(device.device_name || device.entry_id || 'Device')}</div>
+        <div class="diag-notification-rule-meta mb-2">Access permitted and non-key access notifications</div>
+        <div class="diag-target-list">${chips}</div>
+      </div>
+    `);
+  });
+
+  notificationRulesEl.innerHTML = cards.length
+    ? cards.join('')
+    : '<div class="diag-event-empty">No notification rules are configured yet.</div>';
+}
+
+function renderNotifications(events = NOTIFICATION_EVENTS){
+  if (!notificationsListEl) return;
+  const list = (Array.isArray(events) ? events : [])
+    .slice()
+    .sort((a, b) => String(b?.timestamp || '').localeCompare(String(a?.timestamp || '')));
+
+  if (!list.length){
+    notificationsListEl.innerHTML = '<div class="diag-event-empty">No notification diagnostics have been recorded yet.</div>';
+    return;
+  }
+
+  notificationsListEl.innerHTML = list.map((record) => {
+    const status = String(record?.status || 'recorded').toLowerCase();
+    const title = record?.event_summary || record?.message || notificationSourceLabel(record);
+    const source = notificationSourceLabel(record);
+    const eventLabel = notificationEventLabel(record);
+    const device = record?.device_name || record?.entry_id || '';
+    const user = record?.user_name || record?.user_id || '';
+    const when = formatDateTime(record?.timestamp);
+    const detail = record?.error || record?.reason || '';
+    const detailHtml = detail ? `<div class="diag-notification-meta"><span><i class="bi bi-info-circle"></i>${escapeHtml(detail)}</span></div>` : '';
+    const eventMeta = eventLabel ? `<span><i class="bi bi-tag"></i>${escapeHtml(eventLabel)}</span>` : '';
+    const userMeta = user ? `<span><i class="bi bi-person-badge"></i>${escapeHtml(user)}</span>` : '';
+    const deviceMeta = device ? `<span><i class="bi bi-hdd-network"></i>${escapeHtml(device)}</span>` : '';
+    return `
+      <div class="diag-notification">
+        <div class="diag-notification-title">
+          <span class="badge notification-status ${escapeHtml(status)}">${escapeHtml(notificationStatusLabel(status))}</span>
+          <span>${escapeHtml(title)}</span>
+        </div>
+        <div class="diag-notification-meta">
+          <span><i class="bi bi-clock-history"></i>${escapeHtml(when)}</span>
+          <span><i class="bi bi-bell"></i>${escapeHtml(source)}</span>
+          ${eventMeta}
+          ${deviceMeta}
+          ${userMeta}
+        </div>
+        ${notificationTargetChips(record)}
+        ${detailHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+function updateNotificationsSummary(){
+  const total = Array.isArray(NOTIFICATION_EVENTS) ? NOTIFICATION_EVENTS.length : 0;
+  if (notificationsCountEl) notificationsCountEl.textContent = String(total);
+  if (notificationsMetaEl){
+    const latest = NOTIFICATION_EVENTS
+      .map((item) => item?.timestamp)
+      .filter(Boolean)
+      .sort()
+      .pop();
+    notificationsMetaEl.textContent = latest ? `Last notification ${formatDateTime(latest)}` : 'No notifications recorded';
+  }
+}
+
+function applyNotificationsResponse(data){
+  if (data && typeof data === 'object'){
+    NOTIFICATION_EVENTS = Array.isArray(data.notification_events) ? data.notification_events : [];
+    NOTIFICATION_RULES = data.notification_rules && typeof data.notification_rules === 'object'
+      ? data.notification_rules
+      : { alert_targets: [], access_targets_by_device: [] };
+  } else {
+    NOTIFICATION_EVENTS = [];
+    NOTIFICATION_RULES = { alert_targets: [], access_targets_by_device: [] };
+  }
+  renderNotificationRules(NOTIFICATION_RULES);
+  renderNotifications(NOTIFICATION_EVENTS);
+  updateNotificationsSummary();
+}
+
 async function requestEventsRefresh(){
   const response = await fetchWithAuth(API_ACTION, {
     method: 'POST',
@@ -1936,6 +2159,7 @@ async function loadDiagnostics(){
     const data = await response.json();
     applyHistoryLimitResponse(data);
     applyEventsResponse(data);
+    applyNotificationsResponse(data);
     setHistoryLimitStatus('');
     DIAG_DATA = Array.isArray(data.devices) ? data.devices : [];
     FACE_ATTEMPTS = Array.isArray(data.face_attempts) ? data.face_attempts : [];
@@ -1999,6 +2223,9 @@ document.addEventListener('DOMContentLoaded', () => {
   btnRefreshEvents?.addEventListener('click', () => {
     refreshAccessEvents();
   });
+  btnRefreshNotifications?.addEventListener('click', () => {
+    loadDiagnostics();
+  });
   btnOpenEventHistory?.addEventListener('click', (ev) => {
     ev.preventDefault();
     openInApp('event_history');
@@ -2008,6 +2235,7 @@ document.addEventListener('DOMContentLoaded', () => {
   updateCommandDeviceOptions(DIAG_DATA);
   renderFaceAttempts(FACE_ATTEMPTS);
   renderSyncErrors(DIAG_DATA);
+  applyNotificationsResponse({});
   syncCommandPayloadState();
   setEventFilter(EVENT_FILTER_MODE);
   setActiveTab(ACTIVE_TAB);
