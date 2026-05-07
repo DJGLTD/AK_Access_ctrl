@@ -92,6 +92,8 @@ HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit overr
 
 _LOGGER = logging.getLogger(__name__)
 FACE_SYNC_ERROR_THRESHOLD = 5
+LEGACY_INTEGRATION_DEVICE_NAME = "Akuvox Access Control"
+LEGACY_INTEGRATION_DEVICE_MODEL = "Home Assistant Integration"
 
 
 def _register_admin_dashboard(hass: HomeAssistant) -> bool:
@@ -133,6 +135,148 @@ def _remove_admin_dashboard(hass: HomeAssistant) -> None:
         frontend.async_remove_panel(hass, ADMIN_DASHBOARD_URL_PATH)
     except Exception:
         return
+
+
+def _device_config_entry_ids(device: Any) -> Set[str]:
+    raw = getattr(device, "config_entries", None)
+    if raw is None:
+        raw = getattr(device, "config_entry_ids", None)
+    if raw is None:
+        raw = getattr(device, "config_entry_id", None)
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        return {raw}
+    try:
+        return {str(item) for item in raw if item not in (None, "")}
+    except TypeError:
+        return {str(raw)}
+
+
+def _device_text_values(device: Any, *names: str) -> Set[str]:
+    values: Set[str] = set()
+    for name in names:
+        value = getattr(device, name, None)
+        if value not in (None, ""):
+            values.add(str(value).strip())
+    return {value for value in values if value}
+
+
+def _contains_text(values: Set[str], expected: str) -> bool:
+    expected_folded = str(expected or "").casefold()
+    return any(str(value or "").casefold() == expected_folded for value in values)
+
+
+def _device_has_legacy_identifier(device: Any) -> bool:
+    identifiers = getattr(device, "identifiers", None) or set()
+    try:
+        iterator = iter(identifiers)
+    except TypeError:
+        return False
+    legacy_ids = {
+        DOMAIN,
+        LEGACY_INTEGRATION_DEVICE_NAME,
+        LEGACY_INTEGRATION_DEVICE_NAME.lower().replace(" ", "_"),
+        "home_assistant_integration",
+        "integration",
+    }
+    for identifier in iterator:
+        if not isinstance(identifier, (tuple, list)) or len(identifier) < 2:
+            continue
+        domain, key = identifier[0], identifier[1]
+        if str(domain) == DOMAIN and str(key) in legacy_ids:
+            return True
+    return False
+
+
+def _is_legacy_integration_device(device: Any, entry_id: str) -> bool:
+    if entry_id not in _device_config_entry_ids(device):
+        return False
+    names = _device_text_values(device, "name", "name_by_user", "original_name")
+    if not _contains_text(names, LEGACY_INTEGRATION_DEVICE_NAME):
+        return False
+    models = _device_text_values(device, "model", "model_id")
+    return _contains_text(
+        models,
+        LEGACY_INTEGRATION_DEVICE_MODEL,
+    ) or _device_has_legacy_identifier(device)
+
+
+def _registry_entries(registry: Any, attr: str) -> List[Any]:
+    values = getattr(registry, attr, None)
+    if values is None:
+        return []
+    if isinstance(values, Mapping):
+        return list(values.values())
+    if hasattr(values, "values"):
+        return list(values.values())
+    try:
+        return list(values)
+    except TypeError:
+        return []
+
+
+async def _remove_legacy_integration_device(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    try:
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+    except Exception:
+        return
+
+    try:
+        device_registry = dr.async_get(hass)
+        entity_registry = er.async_get(hass)
+    except Exception:
+        return
+
+    try:
+        devices = list(dr.async_entries_for_config_entry(device_registry, entry.entry_id))
+    except Exception:
+        devices = _registry_entries(device_registry, "devices")
+
+    for device in devices:
+        if not _is_legacy_integration_device(device, entry.entry_id):
+            continue
+
+        device_id = getattr(device, "id", None)
+        if not device_id:
+            continue
+
+        try:
+            entity_entries = list(
+                er.async_entries_for_device(
+                    entity_registry,
+                    device_id,
+                    include_disabled_entities=True,
+                )
+            )
+        except TypeError:
+            try:
+                entity_entries = list(er.async_entries_for_device(entity_registry, device_id))
+            except Exception:
+                entity_entries = []
+        except Exception:
+            entity_entries = [
+                item
+                for item in _registry_entries(entity_registry, "entities")
+                if getattr(item, "device_id", None) == device_id
+            ]
+
+        for entity_entry in entity_entries:
+            if getattr(entity_entry, "platform", DOMAIN) != DOMAIN:
+                continue
+            entity_id = getattr(entity_entry, "entity_id", None)
+            if not entity_id:
+                continue
+            try:
+                entity_registry.async_remove(entity_id)
+            except Exception:
+                pass
+
+        try:
+            device_registry.async_remove_device(device_id)
+        except Exception:
+            pass
 
 
 def _is_ha_group_record(record: Mapping[str, Any]) -> bool:
@@ -4533,6 +4677,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     if "sync_queue" not in root:
         root["sync_queue"] = SyncQueue(hass)
+
+    await _remove_legacy_integration_device(hass, entry)
 
     settings = root.get("settings_store")
     if settings:
