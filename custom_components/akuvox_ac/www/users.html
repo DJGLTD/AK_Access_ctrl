@@ -951,7 +951,10 @@ function escapeHtml(value){
 }
 
 function normalizedUserKey(value){
-  return String(value ?? '').trim().toLowerCase();
+  const text = String(value ?? '').trim();
+  const match = text.match(/^(HA|TMP)-?(\d+)$/i);
+  if (match) return `${match[1].toUpperCase()}${match[2]}`.toLowerCase();
+  return text.toLowerCase();
 }
 
 function isRegistryUser(userId){
@@ -1491,11 +1494,14 @@ function allNotifyTargets(){
 
 function getNotifyTargetsForUser(userId){
   if (!userId) return [];
+  const userKey = normalizedUserKey(userId);
   const out = [];
   Object.keys(ALERT_TARGETS || {}).forEach(service => {
     ensureAlertTargetDefaults(service);
-    const users = ALERT_TARGETS[service].granted.users || [];
-    if (users.includes(userId)) out.push(service);
+    const granted = ALERT_TARGETS[service].granted || {};
+    if (granted.specific === false) return;
+    const users = granted.users || [];
+    if (users.some(item => normalizedUserKey(item) === userKey)) out.push(service);
   });
   return out;
 }
@@ -2175,6 +2181,8 @@ function fillPhones(){
 
 function applyNotifyTargetsForUser(userId, selectedServices, enabled){
   if (!userId) return;
+  const userKey = normalizedUserKey(userId);
+  const storedUserId = String(userId || '').trim();
   const selected = new Set(enabled ? (selectedServices || []) : []);
   const allTargets = new Set([
     ...Object.keys(ALERT_TARGETS || {}),
@@ -2185,24 +2193,32 @@ function applyNotifyTargetsForUser(userId, selectedServices, enabled){
     const users = Array.isArray(ALERT_TARGETS[service].granted.users)
       ? [...ALERT_TARGETS[service].granted.users]
       : [];
-    const hasUser = users.includes(userId);
+    const filtered = users.filter(item => normalizedUserKey(item) !== userKey);
+    const hasUser = filtered.length !== users.length;
     const shouldHave = selected.has(service);
-    if (shouldHave && !hasUser) users.push(userId);
-    if (!shouldHave && hasUser) {
-      ALERT_TARGETS[service].granted.users = users.filter(u => u !== userId);
-    } else {
-      ALERT_TARGETS[service].granted.users = users;
+    if (shouldHave) filtered.push(storedUserId);
+    ALERT_TARGETS[service].granted.users = filtered;
+    if (shouldHave || hasUser) {
+      ALERT_TARGETS[service].granted.specific = filtered.length > 0;
     }
   });
 }
 
-async function saveNotifyTargets(){
-  if (!CURRENT || !CURRENT.id) return;
+function collectNotifySelection(){
+  if (!CURRENT || !CURRENT.id) return { enabled: false, targets: [] };
   const toggle = document.getElementById('notify_on_access');
   const enabled = !!(toggle && toggle.checked);
   const selected = enabled
     ? Array.from(document.querySelectorAll('input[data-notify-target]:checked')).map(el => el.dataset.notifyTarget)
     : [];
+  return { enabled, targets: selected.filter(Boolean) };
+}
+
+async function saveNotifyTargets(){
+  if (!CURRENT || !CURRENT.id) return;
+  const selection = collectNotifySelection();
+  const enabled = selection.enabled;
+  const selected = selection.targets;
   applyNotifyTargetsForUser(CURRENT.id, selected, enabled);
   CURRENT.notify_targets = selected;
   await apiPost(API_SETTINGS, { alerts: { targets: ALERT_TARGETS } });
@@ -2292,6 +2308,10 @@ async function save(){
     CURRENT.access_start = payload.access_start;
     CURRENT.access_end = payload.access_end;
 
+    const notifySelection = collectNotifySelection();
+    payload.notify_on_access = notifySelection.enabled;
+    payload.notify_targets = notifySelection.targets;
+
     // Save/update the profile against the reserved ID
     const saveRes = await fetchWithAuth(API_EDIT_USER, {
       method:'POST',
@@ -2306,12 +2326,8 @@ async function save(){
     }
     try { await saveRes.json(); } catch {}
 
-    try {
-      await saveNotifyTargets();
-    } catch (err) {
-      if (handleAuthError(err)) return;
-      alert('Failed to update access notifications: ' + (err && err.message ? err.message : err));
-    }
+    applyNotifyTargetsForUser(CURRENT.id, notifySelection.targets, notifySelection.enabled);
+    CURRENT.notify_targets = notifySelection.targets;
 
     // If a photo is selected, upload it now
     const fileInput = document.getElementById('facefile');

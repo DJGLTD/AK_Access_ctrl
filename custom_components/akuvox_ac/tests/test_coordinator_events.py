@@ -9,7 +9,7 @@ ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac.access_history import AccessHistory
 from custom_components.akuvox_ac.const import DOMAIN
-from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator
+from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator, _derive_targets_from_raw
 
 
 class _StorageStub:
@@ -148,6 +148,48 @@ def test_resolve_event_user_id_keeps_canonical_id_when_present():
     resolved = coord._resolve_event_user_id({"UserID": "ha005"})
 
     assert resolved == "HA005"
+
+
+def test_resolve_event_user_id_maps_device_row_id_to_canonical_user_id():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = [{"ID": "8011", "UserID": "HA012", "Name": "Walt"}]
+
+    resolved = coord._resolve_event_user_id({"UserID": "8011"})
+
+    assert resolved == "HA012"
+
+
+def test_resolve_event_user_id_prefers_canonical_user_id_for_name_match():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = [{"ID": "8011", "UserID": "HA012", "Name": "Walt"}]
+
+    resolved = coord._resolve_event_user_id({"UserName": "walt"})
+
+    assert resolved == "HA012"
+
+
+def test_derive_targets_from_raw_matches_normalized_specific_user_ids():
+    targets = {
+        "mobile_app_lees_iphone": {
+            "granted": {"specific": True, "users": ["ha-012"]}
+        }
+    }
+
+    assert _derive_targets_from_raw(targets, "user_granted", user_id="HA012") == [
+        "mobile_app_lees_iphone"
+    ]
+
+
+def test_derive_targets_from_raw_ignores_specific_users_when_disabled():
+    targets = {
+        "mobile_app_lees_iphone": {
+            "granted": {"specific": False, "users": ["HA012"]}
+        }
+    }
+
+    assert _derive_targets_from_raw(targets, "user_granted", user_id="HA012") == []
 
 
 def test_dispatch_notification_appends_system_event_on_success():

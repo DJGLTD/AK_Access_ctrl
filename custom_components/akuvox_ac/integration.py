@@ -165,6 +165,148 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _canonical_notify_user_id(value: Any) -> str:
+    try:
+        text = str(value or "").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    return normalize_user_id(text) or text
+
+
+def _notify_user_matches(candidate: Any, user_id: Any) -> bool:
+    candidate_text = _canonical_notify_user_id(candidate)
+    user_text = _canonical_notify_user_id(user_id)
+    if not candidate_text or not user_text:
+        return False
+
+    candidate_norm = normalize_user_id(candidate_text)
+    user_norm = normalize_user_id(user_text)
+    if candidate_norm and user_norm:
+        return candidate_norm == user_norm
+    return candidate_text.casefold() == user_text.casefold()
+
+
+def _normalize_notify_target_services(raw: Any) -> List[str]:
+    if isinstance(raw, (list, tuple, set)):
+        values = raw
+    elif raw in (None, ""):
+        values = []
+    else:
+        values = [raw]
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        try:
+            text = str(value or "").strip()
+        except Exception:
+            continue
+        if text.lower().startswith("notify."):
+            text = text.split(".", 1)[1].strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _sync_notify_on_access_targets(
+    raw_targets: Any,
+    user_id: Any,
+    *,
+    enabled: bool,
+    selected_targets: Any,
+) -> Tuple[Dict[str, Dict[str, Any]], bool]:
+    user_key = _canonical_notify_user_id(user_id)
+    if not user_key:
+        return raw_targets if isinstance(raw_targets, dict) else {}, False
+
+    targets: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_targets, dict):
+        for target, cfg in raw_targets.items():
+            if not isinstance(target, str) or not target.strip():
+                continue
+            targets[target] = dict(cfg) if isinstance(cfg, dict) else {}
+
+    selected = set(_normalize_notify_target_services(selected_targets)) if enabled else set()
+    changed = False
+
+    for target in selected:
+        if target not in targets:
+            targets[target] = {}
+            changed = True
+
+    for target, cfg in list(targets.items()):
+        granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
+        original_users_raw = granted.get("users") or []
+        if isinstance(original_users_raw, (list, tuple, set)):
+            original_users = [str(item).strip() for item in original_users_raw if str(item or "").strip()]
+        elif isinstance(original_users_raw, str) and original_users_raw.strip():
+            original_users = [original_users_raw.strip()]
+        else:
+            original_users = []
+
+        next_users: List[str] = []
+        removed_user = False
+        for existing in original_users:
+            if _notify_user_matches(existing, user_key):
+                removed_user = True
+                continue
+            if not any(_notify_user_matches(existing, kept) for kept in next_users):
+                next_users.append(existing)
+
+        should_have_user = enabled and target in selected
+        added_user = False
+        if should_have_user and not any(_notify_user_matches(existing, user_key) for existing in next_users):
+            next_users.append(user_key)
+            added_user = True
+
+        if removed_user or added_user:
+            granted["users"] = next_users
+            granted["specific"] = bool(next_users)
+            cfg["granted"] = granted
+            targets[target] = cfg
+            changed = True
+        elif should_have_user and not bool(granted.get("specific")):
+            granted["specific"] = True
+            cfg["granted"] = granted
+            targets[target] = cfg
+            changed = True
+
+    return targets, changed
+
+
+async def _set_notify_on_access_for_user(
+    settings_store: Any,
+    user_id: Any,
+    *,
+    enabled: bool,
+    selected_targets: Any,
+) -> None:
+    if not settings_store or not hasattr(settings_store, "get_alert_targets"):
+        return
+    if not hasattr(settings_store, "set_alert_targets"):
+        return
+    try:
+        targets = settings_store.get_alert_targets()
+        updated, changed = _sync_notify_on_access_targets(
+            targets,
+            user_id,
+            enabled=enabled,
+            selected_targets=selected_targets,
+        )
+        if changed:
+            await settings_store.set_alert_targets(updated)
+    except Exception as err:
+        _LOGGER.debug(
+            "Failed to update notify-on-access targets for %s: %s",
+            _canonical_notify_user_id(user_id) or user_id,
+            err,
+        )
+
+
 def _context_user_name(hass: HomeAssistant, context) -> str:
     """Best-effort friendly name for the actor behind a service/http call."""
 
@@ -2437,10 +2579,13 @@ class AkuvoxSettingsStore(Store):
 
                 users_raw = []
                 specific_flag = False
+                specific_supplied = False
                 if isinstance(granted_cfg, dict):
                     users_raw = granted_cfg.get("users") or []
                     any_flag = bool(granted_cfg.get("any"))
-                    specific_flag = bool(granted_cfg.get("specific"))
+                    if "specific" in granted_cfg:
+                        specific_flag = bool(granted_cfg.get("specific"))
+                        specific_supplied = True
                 else:
                     any_flag = False
 
@@ -2453,7 +2598,7 @@ class AkuvoxSettingsStore(Store):
                 elif isinstance(users_raw, str) and users_raw.strip():
                     users_list = [users_raw.strip()]
 
-                if not specific_flag and users_list:
+                if not specific_supplied and users_list:
                     specific_flag = True
 
                 data["granted"] = {
@@ -2476,7 +2621,7 @@ class AkuvoxSettingsStore(Store):
     def targets_for_event(self, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
         mapping = self.get_alert_targets()
         out: List[str] = []
-        norm_user = str(user_id).strip() if user_id not in (None, "") else None
+        norm_user = _canonical_notify_user_id(user_id)
         for target, cfg in mapping.items():
             if event_type == "device_offline" and cfg.get("device_offline"):
                 out.append(target)
@@ -2488,7 +2633,11 @@ class AkuvoxSettingsStore(Store):
                 granted = cfg.get("granted") or {}
                 if granted.get("any"):
                     out.append(target)
-                elif norm_user and norm_user in (granted.get("users") or []):
+                elif (
+                    norm_user
+                    and granted.get("specific")
+                    and any(_notify_user_matches(user, norm_user) for user in (granted.get("users") or []))
+                ):
                     out.append(target)
         return out
 
@@ -4690,6 +4839,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             exit_permission=d.get("exit_permission"),
         )
 
+        if "notify_on_access" in d or "notify_targets" in d:
+            settings_store: Optional[AkuvoxSettingsStore] = hass.data[DOMAIN].get("settings_store")
+            await _set_notify_on_access_for_user(
+                settings_store,
+                temp_id,
+                enabled=_coerce_bool(d.get("notify_on_access")) is True,
+                selected_targets=d.get("notify_targets"),
+            )
+
         phone_for_contact = str(d.get("phone") or "").strip()
         if phone_for_contact:
             manager: Optional[SyncManager] = hass.data.get(DOMAIN, {}).get("sync_manager")
@@ -4719,16 +4877,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await users_store.async_save()
 
         one_time = bool(d.get("one_time") or d.get("one_time_use") or d.get("one_time_code"))
-        notify_on_access = bool(d.get("notify_on_access"))
-        notify_targets_raw = d.get("notify_targets")
-        notify_targets = []
-        if isinstance(notify_targets_raw, (list, tuple, set)):
-            notify_targets = [
-                str(target).strip()
-                for target in notify_targets_raw
-                if str(target).strip()
-            ]
-        notify_targets = list(dict.fromkeys(notify_targets))
+        notify_on_access = _coerce_bool(d.get("notify_on_access")) is True
         access_start = d.get("access_start")
         access_end = d.get("access_end")
         expires_at = d.get("expires_at") or d.get("temporary_expires_at")
@@ -4754,31 +4903,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             temporary_created_at=dt_util.now(),
         )
 
-        if notify_on_access:
+        if "notify_on_access" in d or "notify_targets" in d:
             settings_store: Optional[AkuvoxSettingsStore] = hass.data[DOMAIN].get("settings_store")
-            if settings_store:
-                targets = settings_store.get_alert_targets()
-                updated = False
-                if notify_targets:
-                    for target in notify_targets:
-                        if target not in targets:
-                            targets[target] = {}
-                            updated = True
-                for target, cfg in targets.items():
-                    if notify_targets and target not in notify_targets:
-                        continue
-                    if not isinstance(cfg, dict):
-                        cfg = {}
-                    granted = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
-                    users = list(granted.get("users") or [])
-                    if temp_id not in users:
-                        users.append(temp_id)
-                        granted["users"] = users
-                        cfg["granted"] = granted
-                        targets[target] = cfg
-                        updated = True
-                if updated:
-                    await settings_store.set_alert_targets(targets)
+            await _set_notify_on_access_for_user(
+                settings_store,
+                temp_id,
+                enabled=notify_on_access,
+                selected_targets=d.get("notify_targets"),
+            )
 
         hass.data[DOMAIN]["sync_queue"].mark_change(
             None,
@@ -4893,6 +5025,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             paused_schedule_id=paused_schedule_id,
             paused_schedule_name=paused_schedule_name,
         )
+
+        if "notify_on_access" in d or "notify_targets" in d:
+            settings_store: Optional[AkuvoxSettingsStore] = hass.data[DOMAIN].get("settings_store")
+            await _set_notify_on_access_for_user(
+                settings_store,
+                effective_id,
+                enabled=_coerce_bool(d.get("notify_on_access")) is True,
+                selected_targets=d.get("notify_targets"),
+            )
 
         if paused_flag is not True:
             old_name = str(existing_profile.get("name") or "").strip()

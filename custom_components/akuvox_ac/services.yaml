@@ -27,6 +27,15 @@ add_user:
             - match
             - working_days
             - always
+    notify_on_access:
+      required: false
+      selector:
+        boolean:
+    notify_targets:
+      required: false
+      example: ["notify.mobile_app_phone"]
+      selector:
+        object:
     relays:
       required: false
       example: "3"
@@ -133,6 +142,15 @@ edit_user:
             - match
             - working_days
             - always
+    notify_on_access:
+      required: false
+      selector:
+        boolean:
+    notify_targets:
+      required: false
+      example: ["notify.mobile_app_phone"]
+      selector:
+        object:
     face_image_path:
       required: false
       selector:
