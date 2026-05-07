@@ -3495,6 +3495,8 @@ class AkuvoxUISettings(HomeAssistantView):
             except Exception:
                 access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
             try:
+                if users_store and hasattr(settings, "prune_stale_alert_users"):
+                    await settings.prune_stale_alert_users(users_store)
                 alerts = {"targets": settings.get_alert_targets()}
             except Exception:
                 data = getattr(settings, "data", {})
@@ -3511,6 +3513,9 @@ class AkuvoxUISettings(HomeAssistantView):
                     if not canonical:
                         continue
                     if _profile_is_empty_reserved(prof):
+                        continue
+                    status = str((prof or {}).get("status") or "").strip().lower()
+                    if status == "deleted":
                         continue
                     name = prof.get("name") or canonical
                     registry_users.append({"id": canonical, "name": name})
@@ -3581,6 +3586,7 @@ class AkuvoxUISettings(HomeAssistantView):
             payload = {}
 
         settings = root.get("settings_store")
+        users_store = root.get("users_store")
         manager = root.get("sync_manager")
         queue = root.get("sync_queue")
 
@@ -3686,6 +3692,8 @@ class AkuvoxUISettings(HomeAssistantView):
             targets = alerts_payload.get("targets") if isinstance(alerts_payload, dict) else {}
             try:
                 await settings.set_alert_targets(targets)
+                if users_store and hasattr(settings, "prune_stale_alert_users"):
+                    await settings.prune_stale_alert_users(users_store)
                 response["alerts"] = {"targets": settings.get_alert_targets()}
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
@@ -4228,6 +4236,13 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
                 _LOGGER.debug("Failed to assemble diagnostics payload: %s", err)
 
         settings_store = root.get("settings_store")
+        users_store = root.get("users_store")
+        if settings_store and users_store and hasattr(settings_store, "prune_stale_alert_users"):
+            try:
+                await settings_store.prune_stale_alert_users(users_store)
+            except Exception:
+                pass
+
         access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
         access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
         if settings_store and hasattr(settings_store, "get_access_history_limit"):
