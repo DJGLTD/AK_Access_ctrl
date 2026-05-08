@@ -2655,6 +2655,7 @@ class AkuvoxDashboardView(HomeAssistantView):
             html = _inject_signed_paths(html, signed)
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
+            response.headers["Cache-Control"] = "no-store"
             return response
 
         return web.FileResponse(asset, headers={"X-AK-AC-Variant": variant})
