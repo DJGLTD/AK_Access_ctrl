@@ -605,6 +605,13 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "remote_enrol": "/api/akuvox_ac/ui/remote_enrol",
     "devices": "/api/akuvox_ac/ui/devices",
     "service_edit_user": "/api/services/akuvox_ac/edit_user",
+    "service_hacs_update_check": "/api/services/akuvox_ac/hacs_update_check",
+    "service_sync_now": "/api/services/akuvox_ac/sync_now",
+    "service_force_full_sync": "/api/services/akuvox_ac/force_full_sync",
+    "service_refresh_events": "/api/services/akuvox_ac/refresh_events",
+    "service_reboot_device": "/api/services/akuvox_ac/reboot_device",
+    "service_delete_user": "/api/services/akuvox_ac/delete_user",
+    "service_reactivate_temporary_user": "/api/services/akuvox_ac/reactivate_temporary_user",
 }
 
 _LOGGER = logging.getLogger(__name__)
