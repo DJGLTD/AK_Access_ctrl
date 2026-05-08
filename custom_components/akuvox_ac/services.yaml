@@ -221,6 +221,10 @@ sync_now:
       selector:
         text:
 
+hacs_update_check:
+  name: Check HACS update
+  description: Force a HACS update entity refresh and install the Akuvox Access Control update if one is available.
+
 add_missing_users:
   name: Add missing users
   description: Bulk create only users that do not exist on the device.
