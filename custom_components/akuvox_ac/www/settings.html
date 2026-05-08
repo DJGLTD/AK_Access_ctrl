@@ -562,6 +562,7 @@ let SETTINGS_DATA = {
   min_access_event_limit: 5,
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
+  hacs_auto_update: { enabled: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
 };
 let PHONES = [];
 let USERS = [];
@@ -580,6 +581,8 @@ let healthSaving = false;
 let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
+let hacsUpdateSaving = false;
+let hacsUpdateChecking = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -770,6 +773,20 @@ function setEventLimitStatus(text, tone = 'muted') {
   if (tone === 'error') el.classList.add('text-danger');
   else el.classList.add('muted');
 }
+function setHacsAutoUpdateStatus(text, tone = 'muted') {
+  const el = document.getElementById('hacsAutoUpdateStatus');
+  if (!el) return;
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small';
+  if (tone === 'error') el.classList.add('text-danger');
+  else if (tone === 'success') el.classList.add('text-success');
+  else el.classList.add('muted');
+}
 function setAlertsStatus(text, tone = 'muted') {
   const el = document.getElementById('alertsStatus');
   if (!el) return;
@@ -804,6 +821,138 @@ function eventLimitRange(){
   let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 200;
   if (max < min) max = min;
   return { min, max };
+}
+
+function hacsAutoUpdateRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_hacs_auto_update_interval_hours);
+  const maxRaw = Number(SETTINGS_DATA?.max_hacs_auto_update_interval_hours);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 1;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 168;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function coerceHacsBool(value){
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return ['1','true','yes','on','enabled'].includes(value.trim().toLowerCase());
+  return false;
+}
+
+function sanitizeHacsAutoUpdate(raw){
+  const { min, max } = hacsAutoUpdateRange();
+  const base = {
+    enabled: false,
+    interval_hours: 24,
+    update_entity: '',
+    backup: false,
+    last_checked: null,
+    last_installed: null,
+    last_result: 'disabled',
+    last_error: null,
+    last_entity_id: null,
+    installed_version: null,
+    latest_version: null,
+    active: false,
+  };
+  if (raw && typeof raw === 'object'){
+    base.enabled = coerceHacsBool(raw.enabled);
+    base.backup = coerceHacsBool(raw.backup);
+    const interval = Number(raw.interval_hours);
+    if (Number.isFinite(interval)) base.interval_hours = Math.round(interval);
+    base.update_entity = String(raw.update_entity || '').trim();
+    ['last_checked','last_installed','last_result','last_error','last_entity_id','installed_version','latest_version'].forEach((key) => {
+      if (raw[key] !== undefined && raw[key] !== null && raw[key] !== '') base[key] = String(raw[key]);
+    });
+    base.active = coerceHacsBool(raw.active);
+  }
+  if (base.interval_hours < min) base.interval_hours = min;
+  if (base.interval_hours > max) base.interval_hours = max;
+  if (!base.last_result) base.last_result = base.enabled ? 'enabled' : 'disabled';
+  return base;
+}
+
+function formatHacsDate(value){
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+function hacsStatusTone(config){
+  const result = String(config?.last_result || '').toLowerCase();
+  if (['check_failed','install_failed','entity_not_found'].includes(result)) return 'error';
+  if (['installed','up_to_date','enabled'].includes(result)) return 'success';
+  return 'muted';
+}
+
+function describeHacsResult(config){
+  const result = String(config?.last_result || '').toLowerCase();
+  if (result === 'installed') return 'Update installed. Restart Home Assistant to load it.';
+  if (result === 'up_to_date') return 'No update available.';
+  if (result === 'check_failed') return 'Update check failed.';
+  if (result === 'install_failed') return 'Update install failed.';
+  if (result === 'entity_not_found') return 'HACS update entity was not found.';
+  if (result === 'disabled') return 'Automatic HACS updates are disabled.';
+  if (config?.enabled) return config?.active ? 'Automatic HACS updates are enabled.' : 'Automatic HACS updates will start after reload.';
+  return 'Automatic HACS updates are disabled.';
+}
+
+function readHacsAutoUpdateForm(){
+  const cfg = sanitizeHacsAutoUpdate(SETTINGS_DATA.hacs_auto_update);
+  const { min, max } = hacsAutoUpdateRange();
+  const toggle = document.getElementById('hacsAutoUpdateToggle');
+  const intervalInput = document.getElementById('hacsAutoUpdateInterval');
+  const entityInput = document.getElementById('hacsAutoUpdateEntity');
+  const backupInput = document.getElementById('hacsAutoUpdateBackup');
+  if (toggle) cfg.enabled = !!toggle.checked;
+  if (backupInput) cfg.backup = !!backupInput.checked;
+  if (entityInput) cfg.update_entity = String(entityInput.value || '').trim();
+  if (intervalInput){
+    const raw = String(intervalInput.value || '').trim();
+    const interval = Number(raw);
+    if (!raw || !Number.isFinite(interval)){
+      throw new Error(`Enter a number between ${min} and ${max}`);
+    }
+    const value = Math.round(interval);
+    if (value < min || value > max){
+      throw new Error(`Enter a number between ${min} and ${max}`);
+    }
+    cfg.interval_hours = value;
+  }
+  return cfg;
+}
+
+function renderHacsAutoUpdate(){
+  const cfg = sanitizeHacsAutoUpdate(SETTINGS_DATA.hacs_auto_update);
+  SETTINGS_DATA.hacs_auto_update = cfg;
+  const { min, max } = hacsAutoUpdateRange();
+  const toggle = document.getElementById('hacsAutoUpdateToggle');
+  const intervalInput = document.getElementById('hacsAutoUpdateInterval');
+  const entityInput = document.getElementById('hacsAutoUpdateEntity');
+  const backupInput = document.getElementById('hacsAutoUpdateBackup');
+  const checkBtn = document.getElementById('hacsUpdateCheckBtn');
+  const meta = document.getElementById('hacsAutoUpdateMeta');
+  if (toggle) toggle.checked = !!cfg.enabled;
+  if (backupInput) backupInput.checked = !!cfg.backup;
+  if (intervalInput){
+    intervalInput.min = String(min);
+    intervalInput.max = String(max);
+    intervalInput.value = String(cfg.interval_hours);
+  }
+  if (entityInput) entityInput.value = cfg.update_entity || '';
+  if (checkBtn) checkBtn.disabled = hacsUpdateChecking;
+  if (meta){
+    const details = [
+      `Last checked: ${formatHacsDate(cfg.last_checked)}`,
+    ];
+    if (cfg.last_installed) details.push(`Last installed: ${formatHacsDate(cfg.last_installed)}`);
+    if (cfg.last_entity_id) details.push(`Entity: ${cfg.last_entity_id}`);
+    if (cfg.installed_version || cfg.latest_version) details.push(`Version: ${cfg.installed_version || 'unknown'} to ${cfg.latest_version || 'unknown'}`);
+    if (cfg.last_error) details.push(`Error: ${cfg.last_error}`);
+    meta.textContent = details.join(' | ');
+  }
+  setHacsAutoUpdateStatus(describeHacsResult(cfg), hacsStatusTone(cfg));
 }
 
 function renderAutoSyncDelay(){
@@ -883,6 +1032,54 @@ async function saveEventLimit(){
     alert('Failed to update event history limit: ' + (err && err.message ? err.message : err));
   } finally {
     eventLimitSaving = false;
+  }
+}
+
+async function saveHacsAutoUpdate(patch = {}){
+  if (hacsUpdateSaving) return;
+  let next;
+  try {
+    next = { ...readHacsAutoUpdateForm(), ...patch };
+  } catch (err) {
+    setHacsAutoUpdateStatus(err && err.message ? err.message : String(err), 'error');
+    return;
+  }
+  SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(next);
+  hacsUpdateSaving = true;
+  setHacsAutoUpdateStatus('Saving...');
+  try {
+    const res = await apiPost(API_SETTINGS, { hacs_auto_update: SETTINGS_DATA.hacs_auto_update });
+    if (res && res.hacs_auto_update){
+      SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(res.hacs_auto_update);
+    }
+    renderHacsAutoUpdate();
+    setHacsAutoUpdateStatus('Saved', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setHacsAutoUpdateStatus(err && err.message ? err.message : 'Failed to save HACS auto update settings', 'error');
+  } finally {
+    hacsUpdateSaving = false;
+  }
+}
+
+async function runHacsUpdateCheck(){
+  if (hacsUpdateChecking) return;
+  hacsUpdateChecking = true;
+  renderHacsAutoUpdate();
+  setHacsAutoUpdateStatus('Checking HACS update entity...');
+  try {
+    const res = await callAction('hacs_update_check');
+    if (res && res.hacs_auto_update){
+      SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(res.hacs_auto_update);
+    }
+    renderHacsAutoUpdate();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setHacsAutoUpdateStatus(err && err.message ? err.message : 'HACS update check failed', 'error');
+  } finally {
+    hacsUpdateChecking = false;
+    const checkBtn = document.getElementById('hacsUpdateCheckBtn');
+    if (checkBtn) checkBtn.disabled = false;
   }
 }
 
@@ -1913,6 +2110,7 @@ async function loadData(){
       auto_sync_delay_minutes: 30,
       health_check_interval_seconds: 30,
       access_event_limit: 30,
+      hacs_auto_update: { enabled: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
       alerts: { targets: {} },
       registry_users: [],
     };
@@ -1986,6 +2184,15 @@ async function loadData(){
       ? { ...settingsResp.capabilities }
       : { alarm_relay: false };
     SETTINGS_DATA.credential_prompts = sanitizeCredentialPrompts(settingsResp?.credential_prompts);
+    const minHacsHours = Number(settingsResp?.min_hacs_auto_update_interval_hours);
+    const maxHacsHours = Number(settingsResp?.max_hacs_auto_update_interval_hours);
+    const safeMinHacsHours = Number.isFinite(minHacsHours) ? Math.max(1, Math.round(minHacsHours)) : 1;
+    const safeMaxHacsHours = Number.isFinite(maxHacsHours)
+      ? Math.max(safeMinHacsHours, Math.round(maxHacsHours))
+      : Math.max(safeMinHacsHours, 168);
+    SETTINGS_DATA.min_hacs_auto_update_interval_hours = safeMinHacsHours;
+    SETTINGS_DATA.max_hacs_auto_update_interval_hours = safeMaxHacsHours;
+    SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(settingsResp?.hacs_auto_update);
     const rawSchedules = settingsResp?.schedules;
     if (rawSchedules && typeof rawSchedules === 'object'){
       SCHEDULES = {};
@@ -2000,6 +2207,7 @@ async function loadData(){
     renderAutoSyncDelay();
     renderHealthInterval();
     renderEventLimit();
+    renderHacsAutoUpdate();
     renderIntegrity();
     renderCredentialPrompts();
     renderDeviceAccess();
@@ -2015,6 +2223,7 @@ async function loadData(){
     renderAutoSyncDelay();
     renderHealthInterval();
     renderEventLimit();
+    renderHacsAutoUpdate();
     renderIntegrity();
     renderCredentialPrompts();
     renderDeviceAccess();
@@ -2144,6 +2353,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   eventLimitInput?.addEventListener('change', commitEventLimit);
   eventLimitInput?.addEventListener('blur', commitEventLimit);
+
+  const hacsToggle = document.getElementById('hacsAutoUpdateToggle');
+  hacsToggle?.addEventListener('change', async () => {
+    await saveHacsAutoUpdate({ enabled: !!hacsToggle.checked });
+  });
+  const hacsInterval = document.getElementById('hacsAutoUpdateInterval');
+  const commitHacsAutoUpdate = async () => {
+    await saveHacsAutoUpdate();
+  };
+  hacsInterval?.addEventListener('input', () => { setHacsAutoUpdateStatus(''); });
+  hacsInterval?.addEventListener('change', commitHacsAutoUpdate);
+  hacsInterval?.addEventListener('blur', commitHacsAutoUpdate);
+  const hacsEntity = document.getElementById('hacsAutoUpdateEntity');
+  hacsEntity?.addEventListener('input', () => { setHacsAutoUpdateStatus(''); });
+  hacsEntity?.addEventListener('change', commitHacsAutoUpdate);
+  hacsEntity?.addEventListener('blur', commitHacsAutoUpdate);
+  const hacsBackup = document.getElementById('hacsAutoUpdateBackup');
+  hacsBackup?.addEventListener('change', async () => {
+    await saveHacsAutoUpdate({ backup: !!hacsBackup.checked });
+  });
+  document.getElementById('hacsUpdateCheckBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await runHacsUpdateCheck();
+  });
 
   const integrityInput = document.getElementById('integrityInput');
   const commitIntegrity = async () => {
@@ -2281,6 +2514,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header">HACS Auto Update</div>
+    <div class="card-body">
+      <p class="muted">Automatically refresh the HACS update entity for this integration and install an available update. Home Assistant still needs a restart after an integration update is installed.</p>
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="hacsAutoUpdateToggle">
+        <label class="form-check-label" for="hacsAutoUpdateToggle">Enable automatic HACS updates</label>
+      </div>
+      <div class="row g-2 mt-3">
+        <div class="col-md-4">
+          <label class="form-label" for="hacsAutoUpdateInterval">Check every (hours)</label>
+          <input id="hacsAutoUpdateInterval" class="form-control" type="number" min="1" max="168" step="1" />
+        </div>
+        <div class="col-md-8">
+          <label class="form-label" for="hacsAutoUpdateEntity">Update entity</label>
+          <input id="hacsAutoUpdateEntity" class="form-control" placeholder="Auto detect" />
+          <div class="form-text muted">Leave empty to detect the Akuvox HACS update entity automatically.</div>
+        </div>
+      </div>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="hacsAutoUpdateBackup">
+        <label class="form-check-label" for="hacsAutoUpdateBackup">Request a backup before install when supported</label>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+        <button id="hacsUpdateCheckBtn" class="btn btn-outline-info btn-sm" type="button"><i class="bi bi-arrow-repeat me-1"></i>Check now</button>
+        <span id="hacsAutoUpdateStatus" class="visually-hidden small"></span>
+      </div>
+      <div id="hacsAutoUpdateMeta" class="muted small mt-2"></div>
     </div>
   </div>
 

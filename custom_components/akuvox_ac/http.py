@@ -2263,6 +2263,7 @@ _SPECIAL_DEVICE_KEYS = {
     "settings_store",
     "sync_manager",
     "sync_queue",
+    "hacs_auto_updater",
     "_ui_registered",
     "_panel_registered",
 }
@@ -2998,6 +2999,17 @@ class AkuvoxUIAction(AkuvoxUIView):
                 _LOGGER.debug("Refresh-events service call failed via UI: %s", service_err)
                 return err(service_err)
 
+        if action == "hacs_update_check":
+            updater = root.get("hacs_auto_updater")
+            if not updater or not hasattr(updater, "async_run_check"):
+                return err("HACS auto updater is unavailable", code=500)
+            try:
+                status = await updater.async_run_check(reason="manual", force=True)
+                return web.json_response({"ok": True, "hacs_auto_update": status})
+            except Exception as service_err:
+                _LOGGER.debug("HACS update check failed via UI: %s", service_err)
+                return err(service_err)
+
         if action in ("force_full_sync", "sync_all"):
             queue = root.get("sync_queue")
             manager = root.get("sync_manager")
@@ -3549,6 +3561,23 @@ class AkuvoxUISettings(HomeAssistantView):
                 "face": True,
             }
         )
+        hacs_auto_update = (
+            settings.get_hacs_auto_update()
+            if settings and hasattr(settings, "get_hacs_auto_update")
+            else {
+                "enabled": False,
+                "interval_hours": 24,
+                "update_entity": "",
+                "backup": False,
+                "last_result": "disabled",
+            }
+        )
+        updater = root.get("hacs_auto_updater")
+        if updater and hasattr(updater, "status"):
+            try:
+                hacs_auto_update = updater.status()
+            except Exception:
+                pass
 
         return web.json_response(
             {
@@ -3572,6 +3601,9 @@ class AkuvoxUISettings(HomeAssistantView):
                 "min_access_event_limit": access_bounds[0],
                 "max_access_event_limit": access_bounds[1],
                 "credential_prompts": credential_prompts,
+                "hacs_auto_update": hacs_auto_update,
+                "min_hacs_auto_update_interval_hours": 1,
+                "max_hacs_auto_update_interval_hours": 168,
                 "groups": groups,
             }
         )
@@ -3704,6 +3736,23 @@ class AkuvoxUISettings(HomeAssistantView):
             try:
                 updated = await settings.set_credential_prompts(payload.get("credential_prompts"))
                 response["credential_prompts"] = updated
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "hacs_auto_update" in payload:
+            if not settings or not hasattr(settings, "set_hacs_auto_update"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                updated = await settings.set_hacs_auto_update(payload.get("hacs_auto_update"))
+                updater = root.get("hacs_auto_updater")
+                if updater and hasattr(updater, "apply_settings"):
+                    updater.apply_settings()
+                if updater and hasattr(updater, "status"):
+                    try:
+                        updated = updater.status()
+                    except Exception:
+                        pass
+                response["hacs_auto_update"] = updated
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
 

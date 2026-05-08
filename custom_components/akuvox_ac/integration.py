@@ -2515,6 +2515,8 @@ class AkuvoxSettingsStore(Store):
     DEFAULT_HEALTH_SECONDS = DEFAULT_POLL_INTERVAL
     MIN_HEALTH_SECONDS = MIN_HEALTH_CHECK_INTERVAL
     MAX_HEALTH_SECONDS = MAX_HEALTH_CHECK_INTERVAL
+    MIN_HACS_AUTO_UPDATE_HOURS = 1
+    MAX_HACS_AUTO_UPDATE_HOURS = 168
 
     DEFAULT_INTEGRITY_MINUTES = 15
     DEFAULT_FACE_INTEGRITY_ENABLED = True
@@ -2524,6 +2526,19 @@ class AkuvoxSettingsStore(Store):
         "anpr": False,
         "face": True,
         "phone": True,
+    }
+    DEFAULT_HACS_AUTO_UPDATE = {
+        "enabled": False,
+        "interval_hours": 24,
+        "update_entity": "",
+        "backup": False,
+        "last_checked": None,
+        "last_installed": None,
+        "last_result": "disabled",
+        "last_error": None,
+        "last_entity_id": None,
+        "installed_version": None,
+        "latest_version": None,
     }
 
     def __init__(self, hass: HomeAssistant):
@@ -2539,6 +2554,7 @@ class AkuvoxSettingsStore(Store):
             "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
             "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
+            "hacs_auto_update": dict(self.DEFAULT_HACS_AUTO_UPDATE),
         }
 
     async def async_load(self):
@@ -2597,6 +2613,9 @@ class AkuvoxSettingsStore(Store):
         self.data["credential_prompts"] = self._sanitize_credential_prompts(
             self.data.get("credential_prompts")
         )
+        self.data["hacs_auto_update"] = self._sanitize_hacs_auto_update(
+            self.data.get("hacs_auto_update")
+        )
 
         try:
             access_limit = self._normalize_access_history_limit(
@@ -2636,6 +2655,70 @@ class AkuvoxSettingsStore(Store):
         self.data["credential_prompts"] = sanitized
         await self.async_save()
         return sanitized
+
+    def _normalize_hacs_auto_update_hours(self, hours: Any) -> int:
+        try:
+            value = int(hours)
+        except Exception:
+            value = self.DEFAULT_HACS_AUTO_UPDATE["interval_hours"]
+        if value < self.MIN_HACS_AUTO_UPDATE_HOURS:
+            return self.MIN_HACS_AUTO_UPDATE_HOURS
+        if value > self.MAX_HACS_AUTO_UPDATE_HOURS:
+            return self.MAX_HACS_AUTO_UPDATE_HOURS
+        return value
+
+    def _sanitize_hacs_auto_update(self, raw: Any) -> Dict[str, Any]:
+        cfg = dict(self.DEFAULT_HACS_AUTO_UPDATE)
+        if not isinstance(raw, dict):
+            return cfg
+
+        enabled = _coerce_bool(raw.get("enabled"))
+        backup = _coerce_bool(raw.get("backup"))
+        cfg["enabled"] = bool(enabled) if enabled is not None else False
+        cfg["backup"] = bool(backup) if backup is not None else False
+        cfg["interval_hours"] = self._normalize_hacs_auto_update_hours(
+            raw.get("interval_hours")
+        )
+        cfg["update_entity"] = str(raw.get("update_entity") or "").strip()
+
+        for key in (
+            "last_checked",
+            "last_installed",
+            "last_result",
+            "last_error",
+            "last_entity_id",
+            "installed_version",
+            "latest_version",
+        ):
+            value = raw.get(key)
+            cfg[key] = str(value).strip() if value not in (None, "") else None
+        if not cfg["last_result"]:
+            cfg["last_result"] = "enabled" if cfg["enabled"] else "disabled"
+        return cfg
+
+    def get_hacs_auto_update(self) -> Dict[str, Any]:
+        return self._sanitize_hacs_auto_update(self.data.get("hacs_auto_update"))
+
+    async def set_hacs_auto_update(self, config: Any) -> Dict[str, Any]:
+        current = self.get_hacs_auto_update()
+        if isinstance(config, dict):
+            current.update(config)
+        sanitized = self._sanitize_hacs_auto_update(current)
+        if sanitized["enabled"] and sanitized.get("last_result") == "disabled":
+            sanitized["last_result"] = "enabled"
+        if not sanitized["enabled"]:
+            sanitized["last_result"] = "disabled"
+        self.data["hacs_auto_update"] = sanitized
+        await self.async_save()
+        return dict(sanitized)
+
+    async def update_hacs_auto_update_status(self, **updates: Any) -> Dict[str, Any]:
+        current = self.get_hacs_auto_update()
+        current.update(updates)
+        sanitized = self._sanitize_hacs_auto_update(current)
+        self.data["hacs_auto_update"] = sanitized
+        await self.async_save()
+        return dict(sanitized)
 
     def get_auto_sync_time(self) -> Optional[str]:
         return self.data.get("auto_sync_time")
@@ -2867,6 +2950,309 @@ class AkuvoxSettingsStore(Store):
                 ):
                     out.append(target)
         return out
+
+
+class HacsAutoUpdater:
+    """Managed HACS update checker for this custom integration."""
+
+    REPOSITORY = "DJGLTD/AK_Access_ctrl"
+    MATCHERS = (
+        "djgltd/ak_access_ctrl",
+        "ak_access_ctrl",
+        "akuvox_ac",
+        "akuvox_access_control",
+        "akuvox access control",
+        "ak access control",
+    )
+
+    def __init__(self, hass: HomeAssistant):
+        self.hass = hass
+        self._interval_unsub: Optional[Callable[[], None]] = None
+        self._startup_unsub: Optional[Callable[[], None]] = None
+        self._lock = asyncio.Lock()
+
+    def _root(self) -> Dict[str, Any]:
+        return self.hass.data.get(DOMAIN, {}) or {}
+
+    def _settings_store(self) -> Any:
+        settings = self._root().get("settings_store")
+        return settings if hasattr(settings, "get_hacs_auto_update") else None
+
+    def _config(self) -> Dict[str, Any]:
+        settings = self._settings_store()
+        if settings and hasattr(settings, "get_hacs_auto_update"):
+            try:
+                return settings.get_hacs_auto_update()
+            except Exception:
+                pass
+        return dict(AkuvoxSettingsStore.DEFAULT_HACS_AUTO_UPDATE)
+
+    def status(self) -> Dict[str, Any]:
+        status = self._config()
+        status["active"] = self._interval_unsub is not None
+        return status
+
+    def start(self) -> None:
+        self.apply_settings()
+        if self._startup_unsub is not None:
+            return
+        try:
+            self._startup_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED,
+                self._handle_hass_started,
+            )
+        except Exception:
+            self._startup_unsub = None
+
+    def shutdown(self) -> None:
+        self._cancel_interval()
+        if self._startup_unsub:
+            try:
+                self._startup_unsub()
+            except Exception:
+                pass
+            self._startup_unsub = None
+
+    def apply_settings(self) -> None:
+        self._cancel_interval()
+        config = self._config()
+        if not config.get("enabled"):
+            return
+
+        hours = config.get("interval_hours", 24)
+        try:
+            hours = int(hours)
+        except Exception:
+            hours = 24
+        hours = max(
+            AkuvoxSettingsStore.MIN_HACS_AUTO_UPDATE_HOURS,
+            min(AkuvoxSettingsStore.MAX_HACS_AUTO_UPDATE_HOURS, hours),
+        )
+
+        def _schedule(_now):
+            self.hass.async_create_task(self.async_run_check(reason="scheduled"))
+
+        try:
+            self._interval_unsub = async_track_time_interval(
+                self.hass,
+                _schedule,
+                timedelta(hours=hours),
+            )
+        except Exception:
+            self._interval_unsub = None
+
+    def _cancel_interval(self) -> None:
+        if self._interval_unsub:
+            try:
+                self._interval_unsub()
+            except Exception:
+                pass
+            self._interval_unsub = None
+
+    def _handle_hass_started(self, _event) -> None:
+        self._startup_unsub = None
+        config = self._config()
+        if not config.get("enabled"):
+            return
+        if self._last_check_is_fresh(config):
+            return
+        self.hass.async_create_task(self.async_run_check(reason="startup"))
+
+    def _last_check_is_fresh(self, config: Mapping[str, Any]) -> bool:
+        last_checked = str(config.get("last_checked") or "").strip()
+        if not last_checked:
+            return False
+        try:
+            parsed = dt_util.parse_datetime(last_checked)
+        except Exception:
+            parsed = None
+        if parsed is None or parsed.tzinfo is None:
+            return False
+        try:
+            hours = int(config.get("interval_hours", 24) or 24)
+        except Exception:
+            hours = 24
+        hours = max(
+            AkuvoxSettingsStore.MIN_HACS_AUTO_UPDATE_HOURS,
+            min(AkuvoxSettingsStore.MAX_HACS_AUTO_UPDATE_HOURS, hours),
+        )
+        return dt_util.now() - parsed < timedelta(hours=hours)
+
+    def _score_update_entity(self, state: Any) -> int:
+        attrs = getattr(state, "attributes", {}) or {}
+        fields = [
+            getattr(state, "entity_id", ""),
+            attrs.get("title"),
+            attrs.get("friendly_name"),
+            attrs.get("repository"),
+            attrs.get("repository_name"),
+            attrs.get("release_url"),
+            attrs.get("entity_picture"),
+        ]
+        text = " ".join(str(field or "").lower() for field in fields)
+        score = 0
+        if self.REPOSITORY.lower() in text:
+            score += 100
+        for matcher in self.MATCHERS:
+            if matcher in text:
+                score += 30
+        if "hacs" in text:
+            score += 5
+        return score
+
+    def _find_update_entity(self, configured: Any = None) -> Optional[str]:
+        entity_id = str(configured or "").strip()
+        if entity_id:
+            state = self.hass.states.get(entity_id)
+            return entity_id if state is not None else None
+
+        try:
+            states = self.hass.states.async_all("update")
+        except TypeError:
+            try:
+                states = [
+                    state
+                    for state in self.hass.states.async_all()
+                    if str(getattr(state, "entity_id", "")).startswith("update.")
+                ]
+            except Exception:
+                states = []
+        except Exception:
+            states = []
+
+        best_entity: Optional[str] = None
+        best_score = 0
+        for state in states:
+            score = self._score_update_entity(state)
+            if score > best_score:
+                best_score = score
+                best_entity = getattr(state, "entity_id", None)
+
+        return best_entity if best_score >= 30 else None
+
+    def _update_available(self, state: Any) -> bool:
+        state_value = str(getattr(state, "state", "") or "").strip().lower()
+        if state_value == "on":
+            return True
+        if state_value == "off":
+            return False
+
+        attrs = getattr(state, "attributes", {}) or {}
+        installed = str(attrs.get("installed_version") or "").strip()
+        latest = str(attrs.get("latest_version") or "").strip()
+        skipped = str(attrs.get("skipped_version") or "").strip()
+        return bool(latest and installed and latest != installed and latest != skipped)
+
+    async def _record_status(self, **updates: Any) -> Dict[str, Any]:
+        settings = self._settings_store()
+        if settings and hasattr(settings, "update_hacs_auto_update_status"):
+            return await settings.update_hacs_auto_update_status(**updates)
+        status = self.status()
+        status.update(updates)
+        return status
+
+    async def _create_restart_notification(self, entity_id: str) -> None:
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": "akuvox_ac_hacs_auto_update",
+                    "title": "Akuvox Access Control updated",
+                    "message": (
+                        f"HACS installed an update for `{entity_id}`. "
+                        "Restart Home Assistant to load the new integration code."
+                    ),
+                },
+                blocking=False,
+            )
+        except Exception:
+            pass
+
+    async def async_run_check(
+        self, *, reason: str = "manual", force: bool = False
+    ) -> Dict[str, Any]:
+        config = self._config()
+        if not config.get("enabled") and not force:
+            return await self._record_status(last_result="disabled", last_error=None)
+
+        async with self._lock:
+            checked_at = dt_util.now().isoformat()
+            entity_id = self._find_update_entity(config.get("update_entity"))
+            if not entity_id:
+                return await self._record_status(
+                    last_checked=checked_at,
+                    last_result="entity_not_found",
+                    last_error="Could not find the HACS update entity for Akuvox Access Control.",
+                    last_entity_id=None,
+                )
+
+            try:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "update_entity",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+            except Exception as err:
+                return await self._record_status(
+                    last_checked=checked_at,
+                    last_result="check_failed",
+                    last_error=str(err),
+                    last_entity_id=entity_id,
+                )
+
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                return await self._record_status(
+                    last_checked=checked_at,
+                    last_result="entity_not_found",
+                    last_error=f"{entity_id} is no longer available.",
+                    last_entity_id=entity_id,
+                )
+
+            attrs = getattr(state, "attributes", {}) or {}
+            installed = attrs.get("installed_version")
+            latest = attrs.get("latest_version")
+            base_status = {
+                "last_checked": checked_at,
+                "last_entity_id": entity_id,
+                "installed_version": installed,
+                "latest_version": latest,
+            }
+
+            if not self._update_available(state):
+                return await self._record_status(
+                    **base_status,
+                    last_result="up_to_date",
+                    last_error=None,
+                )
+
+            service_data: Dict[str, Any] = {"entity_id": entity_id}
+            if config.get("backup"):
+                service_data["backup"] = True
+
+            try:
+                await self.hass.services.async_call(
+                    "update",
+                    "install",
+                    service_data,
+                    blocking=True,
+                )
+            except Exception as err:
+                return await self._record_status(
+                    **base_status,
+                    last_result="install_failed",
+                    last_error=str(err),
+                )
+
+            await self._create_restart_notification(entity_id)
+            return await self._record_status(
+                **base_status,
+                last_installed=dt_util.now().isoformat(),
+                last_result="installed",
+                last_error=None,
+            )
 
 
 # ---------------------- Robust device user lookup + delete ---------------------- #
@@ -4787,6 +5173,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     if "sync_queue" not in root:
         root["sync_queue"] = SyncQueue(hass)
 
+    if "hacs_auto_updater" not in root:
+        root["hacs_auto_updater"] = HacsAutoUpdater(hass)
+    try:
+        root["hacs_auto_updater"].start()
+    except Exception:
+        pass
+
     await _remove_legacy_integration_device(hass, entry)
 
     settings = root.get("settings_store")
@@ -5626,6 +6019,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         entry_id = data.get("entry_id")
         await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id, trigger="sync_now service")
 
+    async def svc_hacs_update_check(call):
+        root = hass.data.get(DOMAIN, {})
+        updater = root.get("hacs_auto_updater") if isinstance(root, dict) else None
+        if updater and hasattr(updater, "async_run_check"):
+            await updater.async_run_check(reason="service", force=True)
+
     async def svc_add_missing_users(call):
         data = call.data if isinstance(call.data, Mapping) else {}
         entry_id = data.get("entry_id")
@@ -5702,6 +6101,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "refresh_events", svc_refresh_events)
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)
+    hass.services.async_register(DOMAIN, "hacs_update_check", svc_hacs_update_check)
     hass.services.async_register(DOMAIN, "add_missing_users", svc_add_missing_users)
     hass.services.async_register(DOMAIN, "create_group", svc_create_group)
     hass.services.async_register(DOMAIN, "delete_groups", svc_delete_groups)
@@ -5761,6 +6161,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "settings_store",
                 "sync_manager",
                 "sync_queue",
+                "hacs_auto_updater",
                 "_ui_registered",
                 "_panel_registered",
             )
@@ -5780,6 +6181,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
                     except Exception:
                         pass
                     root["sync_queue"]._handle = None  # type: ignore[attr-defined]
+
+            updater = root.get("hacs_auto_updater")
+            if updater and hasattr(updater, "shutdown"):
+                try:
+                    updater.shutdown()
+                except Exception:
+                    pass
 
             if root.pop("_panel_registered", False):
                 _remove_admin_dashboard(hass)
