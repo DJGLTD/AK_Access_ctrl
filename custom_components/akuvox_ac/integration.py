@@ -2998,6 +2998,8 @@ class HacsAutoUpdater:
     """Managed HACS update checker for this custom integration."""
 
     REPOSITORY = "DJGLTD/AK_Access_ctrl"
+    DEFAULT_BRANCH = "main"
+    GITHUB_COMMIT_URL = f"https://api.github.com/repos/{REPOSITORY}/commits/{DEFAULT_BRANCH}"
     MATCHERS = (
         "djgltd/ak_access_ctrl",
         "ak_access_ctrl",
@@ -3185,6 +3187,67 @@ class HacsAutoUpdater:
         skipped = str(attrs.get("skipped_version") or "").strip()
         return bool(latest and installed and latest != installed and latest != skipped)
 
+    @staticmethod
+    def _version_text(version: Any) -> str:
+        return str(version or "").strip()
+
+    @classmethod
+    def _short_version(cls, version: Any) -> Optional[str]:
+        text = cls._version_text(version)
+        if not text:
+            return None
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", text):
+            return text[:7].lower()
+        return text
+
+    @classmethod
+    def _versions_match(cls, left: Any, right: Any) -> bool:
+        left_text = cls._version_text(left).lower()
+        right_text = cls._version_text(right).lower()
+        if not left_text or not right_text:
+            return False
+        if left_text == right_text:
+            return True
+        if re.fullmatch(r"[0-9a-f]{7,40}", left_text) and re.fullmatch(
+            r"[0-9a-f]{7,40}", right_text
+        ):
+            return left_text.startswith(right_text) or right_text.startswith(left_text)
+        return False
+
+    async def _fetch_latest_github_sha(self) -> Optional[str]:
+        session = async_get_clientsession(self.hass)
+        if asyncio.iscoroutine(session):
+            session = await session
+        if session is None or not hasattr(session, "get"):
+            return None
+
+        response_cm = session.get(
+            self.GITHUB_COMMIT_URL,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "HomeAssistant-Akuvox-Access-Control",
+            },
+            timeout=20,
+        )
+        async with response_cm as response:
+            status = int(getattr(response, "status", 0) or 0)
+            if status >= 400:
+                body = ""
+                try:
+                    body = await response.text()
+                except Exception:
+                    body = ""
+                message = f"GitHub latest commit check failed with HTTP {status}"
+                if body:
+                    message = f"{message}: {body[:200]}"
+                raise RuntimeError(message)
+            payload = await response.json()
+
+        sha = str((payload or {}).get("sha") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise RuntimeError("GitHub latest commit response did not include a valid SHA.")
+        return sha
+
     async def _record_status(self, **updates: Any) -> Dict[str, Any]:
         settings = self._settings_store()
         if settings and hasattr(settings, "update_hacs_auto_update_status"):
@@ -3255,7 +3318,17 @@ class HacsAutoUpdater:
 
             attrs = getattr(state, "attributes", {}) or {}
             installed = attrs.get("installed_version")
-            latest = attrs.get("latest_version")
+            hacs_latest = attrs.get("latest_version")
+            latest = hacs_latest
+            github_latest_sha: Optional[str] = None
+            github_error: Optional[str] = None
+            try:
+                github_latest_sha = await self._fetch_latest_github_sha()
+            except Exception as err:
+                github_error = str(err)
+            if github_latest_sha:
+                latest = self._short_version(github_latest_sha)
+
             base_status = {
                 "last_checked": checked_at,
                 "last_entity_id": entity_id,
@@ -3263,7 +3336,19 @@ class HacsAutoUpdater:
                 "latest_version": latest,
             }
 
-            if not self._update_available(state):
+            install_version: Optional[str] = None
+            has_update = self._update_available(state)
+            if github_latest_sha and not self._versions_match(installed, github_latest_sha):
+                has_update = True
+                install_version = github_latest_sha
+
+            if not has_update:
+                if github_error:
+                    return await self._record_status(
+                        **base_status,
+                        last_result="check_failed",
+                        last_error=github_error,
+                    )
                 return await self._record_status(
                     **base_status,
                     last_result="up_to_date",
@@ -3271,6 +3356,8 @@ class HacsAutoUpdater:
                 )
 
             service_data: Dict[str, Any] = {"entity_id": entity_id}
+            if install_version:
+                service_data["version"] = install_version
             if config.get("backup"):
                 service_data["backup"] = True
 
