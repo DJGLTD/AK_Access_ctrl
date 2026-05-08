@@ -2644,7 +2644,7 @@ class AkuvoxDashboardView(HomeAssistantView):
                 )
             except Exception:
                 html = await hass.async_add_executor_job(asset.read_text)
-            html = _inject_signed_paths(html, signed, clear_cache=not bool(signed))
+            html = _inject_signed_paths(html, signed)
             response = web.Response(text=html, content_type="text/html")
             response.headers["X-AK-AC-Variant"] = variant
             return response

@@ -959,6 +959,10 @@ function signedPath(key, fallback){
   return fallback;
 }
 
+function isSignedPath(url){
+  return typeof url === 'string' && /[?&]authSig=/.test(url);
+}
+
 const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
 const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
 
@@ -967,8 +971,6 @@ function buildUrl(view, params = {}){
   Object.entries(params || {}).forEach(([k,v]) => {
     if (v !== undefined && v !== null && v !== '') search.set(k, v);
   });
-  const token = getToken();
-  if (token) search.set('token', token);
   const authSig = currentAuthSig();
   if (authSig) search.set('authSig', authSig);
   const query = search.toString();
@@ -1176,7 +1178,13 @@ function paramsFromButton(btn){
 }
 
 async function postJson(url, body = {}){
-  const token = getToken();
+  const signedRequest = isSignedPath(url);
+  const token = null;
+  if (!signedRequest) {
+    const error = new Error('authentication required');
+    error.status = 401;
+    throw error;
+  }
   const headers = new Headers({ 'Content-Type': 'application/json' });
   if (token) headers.set('Authorization', 'Bearer ' + token);
   let response;
@@ -1295,7 +1303,13 @@ async function runDashboardAction(action){
 async function fetchVersion(){
   const badge = document.getElementById('appVersion');
   const footer = document.getElementById('appFooter');
-  const token = getToken();
+  const signedRequest = isSignedPath(API_STATE);
+  const token = null;
+  if (!signedRequest) {
+    if (badge) badge.textContent = 'Version unavailable';
+    if (footer) footer.textContent = '';
+    return;
+  }
   const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
   try {
     const res = await fetch(API_STATE, {
