@@ -16,7 +16,15 @@ from urllib.parse import urlencode, urlsplit, unquote
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.components.http.auth import async_sign_path
-from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
+try:
+    from homeassistant.components.http.const import (
+        KEY_HASS_REFRESH_TOKEN_ID,
+        KEY_HASS_USER,
+    )
+except ImportError:  # pragma: no cover - compatibility for older/stubbed HA installs
+    from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID
+
+    KEY_HASS_USER = "hass_user"
 from homeassistant.components.persistent_notification import async_create as notify
 from homeassistant.core import HomeAssistant
 
@@ -620,6 +628,115 @@ _LOGGER = logging.getLogger(__name__)
 CALL_LOG_LOOKBACK_SECONDS_DEFAULT = 60
 CALL_LOG_LOOKBACK_MIN_SECONDS = 5
 CALL_LOG_LOOKBACK_MAX_SECONDS = 600
+
+
+def _request_hass_user(request: web.Request) -> Any:
+    try:
+        return request.get(KEY_HASS_USER)
+    except Exception:
+        return None
+
+
+def _ha_user_id(user: Any) -> str:
+    return str(getattr(user, "id", "") or "").strip()
+
+
+def _ha_user_name(user: Any) -> str:
+    for attr in ("name", "username", "email"):
+        value = getattr(user, attr, None)
+        if value not in (None, ""):
+            text = str(value).strip()
+            if text:
+                return text
+    return _ha_user_id(user) or "Home Assistant user"
+
+
+def _ha_user_is_admin(user: Any) -> bool:
+    try:
+        return bool(getattr(user, "is_admin", False))
+    except Exception:
+        return False
+
+
+def _dashboard_access_denied_response() -> web.Response:
+    return web.json_response(
+        {"ok": False, "error": "dashboard access denied"},
+        status=403,
+    )
+
+
+def _dashboard_allowed_user_ids(settings: Any) -> Set[str]:
+    if not settings or not hasattr(settings, "get_dashboard_access"):
+        return set()
+    try:
+        config = settings.get_dashboard_access()
+    except Exception:
+        return set()
+    raw = config.get("allowed_user_ids") if isinstance(config, dict) else []
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(item).strip() for item in raw if str(item or "").strip()}
+
+
+def _request_can_access_dashboard(hass: HomeAssistant, request: web.Request) -> bool:
+    user = _request_hass_user(request)
+    if not user:
+        return False
+    if _ha_user_is_admin(user):
+        return True
+    user_id = _ha_user_id(user)
+    if not user_id:
+        return False
+    root = hass.data.get(DOMAIN, {}) or {}
+    return user_id in _dashboard_allowed_user_ids(root.get("settings_store"))
+
+
+def _request_can_manage_dashboard_access(request: web.Request) -> bool:
+    return _ha_user_is_admin(_request_hass_user(request))
+
+
+async def _dashboard_access_payload(
+    hass: HomeAssistant,
+    settings: Any,
+    request: web.Request,
+) -> Dict[str, Any]:
+    user = _request_hass_user(request)
+    current_user_id = _ha_user_id(user)
+    can_manage = _ha_user_is_admin(user)
+    allowed = _dashboard_allowed_user_ids(settings)
+
+    users: List[Dict[str, Any]] = []
+    if can_manage:
+        try:
+            ha_users = await hass.auth.async_get_users()
+        except Exception:
+            ha_users = []
+        for item in ha_users or []:
+            item_id = _ha_user_id(item)
+            if not item_id:
+                continue
+            if bool(getattr(item, "system_generated", False)):
+                continue
+            active = bool(getattr(item, "is_active", True))
+            admin = _ha_user_is_admin(item)
+            users.append(
+                {
+                    "id": item_id,
+                    "name": _ha_user_name(item),
+                    "is_admin": admin,
+                    "is_active": active,
+                    "allowed": admin or item_id in allowed,
+                }
+            )
+
+    users.sort(key=lambda item: (not bool(item.get("is_admin")), str(item.get("name") or "").lower()))
+    return {
+        "can_manage": can_manage,
+        "current_user_id": current_user_id,
+        "current_user_is_admin": can_manage,
+        "allowed_user_ids": sorted(allowed),
+        "users": users,
+    }
 
 _CALL_TYPE_MAP = {
     "0": "all",
@@ -2641,10 +2758,17 @@ class AkuvoxDashboardView(HomeAssistantView):
         if not target:
             raise web.HTTPNotFound()
 
+        hass: HomeAssistant = request.app["hass"]
+        if (
+            target not in ("unauthorized", "unauthorized-mob")
+            and _request_hass_user(request) is not None
+            and not _request_can_access_dashboard(hass, request)
+        ):
+            target = "unauthorized-mob" if target.endswith("-mob") else "unauthorized"
+
         asset = _resolve_dashboard_asset(target, request)
         variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
         if asset.suffix.lower() == ".html":
-            hass: HomeAssistant = request.app["hass"]
             signed = _signed_paths_for_request(hass, request)
             try:
                 html = await hass.async_add_executor_job(
@@ -2668,6 +2792,8 @@ class AkuvoxUIView(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
@@ -2943,6 +3069,8 @@ class AkuvoxUIAction(AkuvoxUIView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         raw_root = hass.data.get(DOMAIN, {}) or {}
         root = raw_root if isinstance(raw_root, dict) else {}
 
@@ -3442,6 +3570,8 @@ class AkuvoxUIDevices(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         out: List[Dict[str, str]] = []
@@ -3466,6 +3596,8 @@ class AkuvoxUISettings(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -3586,6 +3718,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 hacs_auto_update = updater.status()
             except Exception:
                 pass
+        dashboard_access = await _dashboard_access_payload(hass, settings, request)
 
         return web.json_response(
             {
@@ -3613,11 +3746,14 @@ class AkuvoxUISettings(HomeAssistantView):
                 "min_hacs_auto_update_interval_hours": 1,
                 "max_hacs_auto_update_interval_hours": 168,
                 "groups": groups,
+                "dashboard_access": dashboard_access,
             }
         )
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
@@ -3631,6 +3767,22 @@ class AkuvoxUISettings(HomeAssistantView):
         queue = root.get("sync_queue")
 
         response: Dict[str, Any] = {"ok": True}
+
+        if "dashboard_access" in payload:
+            if not _request_can_manage_dashboard_access(request):
+                return web.json_response(
+                    {"ok": False, "error": "administrator access required"},
+                    status=403,
+                )
+            if not settings or not hasattr(settings, "set_dashboard_access"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                await settings.set_dashboard_access(payload.get("dashboard_access"))
+                response["dashboard_access"] = await _dashboard_access_payload(
+                    hass, settings, request
+                )
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
 
         if "integrity_interval_minutes" in payload:
             minutes = payload.get("integrity_interval_minutes")
@@ -3778,6 +3930,8 @@ class AkuvoxUIPhones(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         phones: List[Dict[str, str]] = []
 
         try:
@@ -4371,12 +4525,16 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
         payload = await self._build_payload(root)
         return web.json_response(payload)
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -4431,6 +4589,8 @@ class AkuvoxUIReserveId(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4526,6 +4686,8 @@ class AkuvoxUIReleaseId(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4572,6 +4734,8 @@ class AkuvoxUIReservationPing(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -4627,6 +4791,8 @@ class AkuvoxUIUploadFace(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         id_val_raw: Optional[str] = None
@@ -4763,6 +4929,8 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:

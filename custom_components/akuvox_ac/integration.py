@@ -97,7 +97,11 @@ LEGACY_INTEGRATION_DEVICE_MODEL = "Home Assistant Integration"
 
 
 def _register_admin_dashboard(hass: HomeAssistant) -> bool:
-    """Register the Akuvox admin dashboard panel."""
+    """Register the Akuvox dashboard panel.
+
+    Home Assistant only supports sidebar visibility for admins or everyone.
+    Akuvox enforces the per-user allow-list inside its own UI/API views.
+    """
 
     try:
         from homeassistant.components import frontend
@@ -114,7 +118,7 @@ def _register_admin_dashboard(hass: HomeAssistant) -> bool:
             ADMIN_DASHBOARD_ICON,
             frontend_url_path=ADMIN_DASHBOARD_URL_PATH,
             config=panel_config,
-            require_admin=True,
+            require_admin=False,
             update=True,
         )
     except Exception:
@@ -2555,6 +2559,7 @@ class AkuvoxSettingsStore(Store):
             "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "hacs_auto_update": dict(self.DEFAULT_HACS_AUTO_UPDATE),
+            "dashboard_access": {"allowed_user_ids": []},
         }
 
     async def async_load(self):
@@ -2616,6 +2621,9 @@ class AkuvoxSettingsStore(Store):
         self.data["hacs_auto_update"] = self._sanitize_hacs_auto_update(
             self.data.get("hacs_auto_update")
         )
+        self.data["dashboard_access"] = self._sanitize_dashboard_access(
+            self.data.get("dashboard_access")
+        )
 
         try:
             access_limit = self._normalize_access_history_limit(
@@ -2655,6 +2663,40 @@ class AkuvoxSettingsStore(Store):
         self.data["credential_prompts"] = sanitized
         await self.async_save()
         return sanitized
+
+    def _sanitize_dashboard_access(self, raw: Any) -> Dict[str, Any]:
+        allowed_raw: Any = []
+        if isinstance(raw, dict):
+            allowed_raw = raw.get("allowed_user_ids") or raw.get("users") or []
+        elif isinstance(raw, (list, tuple, set)):
+            allowed_raw = raw
+
+        allowed: List[str] = []
+        seen: Set[str] = set()
+        if isinstance(allowed_raw, str):
+            allowed_iterable: Iterable[Any] = [allowed_raw]
+        elif isinstance(allowed_raw, (list, tuple, set)):
+            allowed_iterable = allowed_raw
+        else:
+            allowed_iterable = []
+
+        for item in allowed_iterable:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            allowed.append(text)
+
+        return {"allowed_user_ids": allowed}
+
+    def get_dashboard_access(self) -> Dict[str, Any]:
+        return self._sanitize_dashboard_access(self.data.get("dashboard_access"))
+
+    async def set_dashboard_access(self, config: Any) -> Dict[str, Any]:
+        sanitized = self._sanitize_dashboard_access(config)
+        self.data["dashboard_access"] = sanitized
+        await self.async_save()
+        return dict(sanitized)
 
     def _normalize_hacs_auto_update_hours(self, hours: Any) -> int:
         try:
