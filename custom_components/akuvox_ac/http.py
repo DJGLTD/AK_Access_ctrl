@@ -3146,6 +3146,35 @@ class AkuvoxUIAction(AkuvoxUIView):
                 _LOGGER.debug("HACS update check failed via UI: %s", service_err)
                 return err(service_err)
 
+        if action == "restart_homeassistant":
+            if not _request_can_manage_dashboard_access(request):
+                return err("administrator access required", code=403)
+            try:
+                await hass.services.async_call(
+                    "homeassistant",
+                    "restart",
+                    {},
+                    blocking=False,
+                    context=ctx,
+                )
+                status = None
+                settings = root.get("settings_store")
+                if settings and hasattr(settings, "update_hacs_auto_update_status"):
+                    try:
+                        status = await settings.update_hacs_auto_update_status(
+                            last_result="restart_requested",
+                            last_error=None,
+                        )
+                    except Exception:
+                        status = None
+                response = {"ok": True}
+                if status is not None:
+                    response["hacs_auto_update"] = status
+                return web.json_response(response)
+            except Exception as service_err:
+                _LOGGER.debug("Home Assistant restart failed via UI: %s", service_err)
+                return err(service_err)
+
         if action in ("force_full_sync", "sync_all"):
             queue = root.get("sync_queue")
             manager = root.get("sync_manager")
