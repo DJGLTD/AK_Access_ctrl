@@ -143,9 +143,17 @@ function signedPath(key, fallback) {
   return signed[key] || fallback;
 }
 
+function isSignedPath(url) {
+  return typeof url === 'string' && /[?&]authSig=/.test(url);
+}
+
 async function callService(service, data) {
-  const token = getAuthToken();
   const url = signedPath(`service_${service}`, `/api/services/akuvox_ac/${service}`);
+  const signedRequest = isSignedPath(url);
+  const token = null;
+  if (!signedRequest) {
+    throw new Error('authentication required');
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -167,7 +175,11 @@ function escapeHtml(value){
 }
 
 async function fetchWithAuth(url, options = {}) {
-  const token = getAuthToken();
+  const signedRequest = isSignedPath(url);
+  const token = null;
+  if (!signedRequest) {
+    return new Response('authentication required', { status: 401 });
+  }
   const headers = { ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
   return fetch(url, { ...options, headers });

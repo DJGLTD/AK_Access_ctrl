@@ -354,8 +354,12 @@ function nextBearerToken(){
 
 async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
   const originalHeaders = { ...(options.headers || {}) };
-  let bearer = allowRetry ? nextBearerToken() : null;
-  let usedBearer = !!bearer;
+  const signedRequest = typeof url === 'string' && /[?&]authSig=/.test(url);
+  let bearer = null;
+  let usedBearer = false;
+  if (!signedRequest) {
+    return new Response('authentication required', { status: 401 });
+  }
   const headers = { ...originalHeaders };
   if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
 

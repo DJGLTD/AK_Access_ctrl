@@ -393,7 +393,11 @@ function currentAuthSig(){
 }
 
 async function fetchWithAuth(url, options = {}) {
-  const token = findHaToken();
+  const signedRequest = typeof url === 'string' && /[?&]authSig=/.test(url);
+  const token = null;
+  if (!signedRequest) {
+    return new Response('authentication required', { status: 401 });
+  }
   const headers = new Headers(options.headers || {});
   if (token && !REJECTED_TOKENS.has(token)) {
     headers.set('Authorization', 'Bearer ' + token);
