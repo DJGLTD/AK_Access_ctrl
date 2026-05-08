@@ -125,9 +125,57 @@ function scanTokenStorage(storage) {
 }
 
 function getAuthToken() {
-  const direct = sessionStorage.getItem('akuvox_ll_token') || localStorage.getItem('akuvox_ll_token');
-  if (direct) return direct;
-  return scanTokenStorage(sessionStorage) || scanTokenStorage(localStorage) || null;
+  const windows = [window];
+  try {
+    if (window.parent && window.parent !== window) windows.push(window.parent);
+  } catch (err) {}
+  try {
+    if (window.opener) windows.push(window.opener);
+  } catch (err) {}
+  for (const win of windows) {
+    const token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+    if (token) {
+      try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+      return token;
+    }
+  }
+  for (const win of windows) {
+    try {
+      const direct = win.sessionStorage.getItem('akuvox_ll_token') || win.localStorage.getItem('akuvox_ll_token');
+      if (direct) return direct;
+    } catch (err) {}
+  }
+  return null;
+}
+
+const REJECTED_TOKENS = new Set();
+
+function nextBearerToken() {
+  const token = getAuthToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+function clearSignedPathCache(){
+  try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { window.AK_AC_SIGNED_PATHS = {}; } catch (err) {}
+  try {
+    if (typeof SIGNED_PATHS !== 'undefined' && SIGNED_PATHS && typeof SIGNED_PATHS === 'object') {
+      Object.keys(SIGNED_PATHS).forEach((key) => { delete SIGNED_PATHS[key]; });
+    }
+  } catch (err) {}
+}
+
+function stripAuthSig(url){
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.delete('authSig');
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch (err) {
+    return url;
+  }
 }
 
 function signedPath(key, fallback) {
@@ -150,19 +198,35 @@ function isSignedPath(url) {
 async function callService(service, data) {
   const url = signedPath(`service_${service}`, `/api/services/akuvox_ac/${service}`);
   const signedRequest = isSignedPath(url);
-  const token = null;
-  if (!signedRequest) {
+  const token = signedRequest ? null : nextBearerToken();
+  if (!signedRequest && !token) {
     throw new Error('authentication required');
   }
-  const res = await fetch(url, {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  };
+  let res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    },
+    credentials: 'same-origin',
+    headers,
     body: JSON.stringify(data || {})
   });
+  if ((res.status === 401 || res.status === 403) && signedRequest) {
+    clearSignedPathCache();
+    const retryToken = nextBearerToken();
+    if (retryToken) {
+      res = await fetch(stripAuthSig(url), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${retryToken}` },
+        body: JSON.stringify(data || {})
+      });
+      if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
+    }
+  }
   if (!res.ok) {
+    if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
     const text = await res.text();
     throw new Error(text || `Service ${service} failed`);
   }
@@ -176,13 +240,27 @@ function escapeHtml(value){
 
 async function fetchWithAuth(url, options = {}) {
   const signedRequest = isSignedPath(url);
-  const token = null;
-  if (!signedRequest) {
+  const token = signedRequest ? null : nextBearerToken();
+  if (!signedRequest && !token) {
     return new Response('authentication required', { status: 401 });
   }
   const headers = { ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  return fetch(url, { ...options, headers });
+  let res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
+  if ((res.status === 401 || res.status === 403) && signedRequest) {
+    clearSignedPathCache();
+    const retryToken = nextBearerToken();
+    if (retryToken) {
+      res = await fetch(stripAuthSig(url), {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: `Bearer ${retryToken}` },
+        credentials: 'same-origin'
+      });
+      if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
+    }
+  }
+  if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
+  return res;
 }
 
 async function apiGet(url) {

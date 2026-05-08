@@ -490,6 +490,7 @@ let isMobileMode = mobileMedia.matches;
 let mobileStage = isMobileMode ? 'nav' : 'content';
 let knownToken = null;
 let tokenRefreshScheduled = false;
+const REJECTED_TOKENS = new Set();
 
 const INVALID_TOKEN_LITERALS = new Set(['null', 'undefined', 'none', 'false', 'true', 'nan', '[object object]']);
 
@@ -536,6 +537,8 @@ function rememberToken(value) {
 
 function getToken(){
   if (knownToken) return knownToken;
+  const currentStored = scanTokenStorage(sessionStorage) || scanTokenStorage(localStorage);
+  if (currentStored) return rememberToken(currentStored);
   let stored = null;
   try { stored = sessionStorage.getItem('akuvox_ll_token'); } catch (err) {
     stored = null;
@@ -566,6 +569,34 @@ function getToken(){
     return discovered;
   }
   return null;
+}
+
+function getUsableToken(){
+  const token = getToken();
+  if (!token) return null;
+  if (REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+function clearSignedPathCache(){
+  try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { window.AK_AC_SIGNED_PATHS = {}; } catch (err) {}
+  try {
+    if (typeof SIGNED_PATHS !== 'undefined' && SIGNED_PATHS && typeof SIGNED_PATHS === 'object') {
+      Object.keys(SIGNED_PATHS).forEach((key) => { delete SIGNED_PATHS[key]; });
+    }
+  } catch (err) {}
+}
+
+function stripAuthSig(url){
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.delete('authSig');
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch (err) {
+    return url;
+  }
 }
 
 function persistTokens(access, refresh) {
@@ -1179,8 +1210,8 @@ function paramsFromButton(btn){
 
 async function postJson(url, body = {}){
   const signedRequest = isSignedPath(url);
-  const token = null;
-  if (!signedRequest) {
+  const token = signedRequest ? null : getUsableToken();
+  if (!signedRequest && !token) {
     const error = new Error('authentication required');
     error.status = 401;
     throw error;
@@ -1199,6 +1230,19 @@ async function postJson(url, body = {}){
     const error = new Error(err?.message || 'Network request failed');
     error.cause = err;
     throw error;
+  }
+  if ((response.status === 401 || response.status === 403) && signedRequest) {
+    clearSignedPathCache();
+    const retryToken = getUsableToken();
+    if (retryToken) {
+      response = await fetch(stripAuthSig(url), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: new Headers({ 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + retryToken }),
+        body: JSON.stringify(body)
+      });
+      if (response.status === 401 || response.status === 403) REJECTED_TOKENS.add(retryToken);
+    }
   }
   if (!response.ok) {
     let text = '';
@@ -1219,7 +1263,9 @@ async function postJson(url, body = {}){
 }
 
 async function callService(domain, service, data = {}){
-  const url = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const fallback = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const key = domain === 'akuvox_ac' ? `service_${service}` : '';
+  const url = key ? signedPath(key, fallback) : fallback;
   return postJson(url, data);
 }
 
@@ -1304,18 +1350,29 @@ async function fetchVersion(){
   const badge = document.getElementById('appVersion');
   const footer = document.getElementById('appFooter');
   const signedRequest = isSignedPath(API_STATE);
-  const token = null;
-  if (!signedRequest) {
+  const token = signedRequest ? null : getUsableToken();
+  if (!signedRequest && !token) {
     if (badge) badge.textContent = 'Version unavailable';
     if (footer) footer.textContent = '';
     return;
   }
   const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
   try {
-    const res = await fetch(API_STATE, {
+    let res = await fetch(API_STATE, {
       credentials: 'same-origin',
       headers
     });
+    if ((res.status === 401 || res.status === 403) && signedRequest) {
+      clearSignedPathCache();
+      const retryToken = getUsableToken();
+      if (retryToken) {
+        res = await fetch(stripAuthSig(API_STATE), {
+          credentials: 'same-origin',
+          headers: { 'Authorization': 'Bearer ' + retryToken }
+        });
+        if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
+      }
+    }
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     const label = data?.kpis?.version || '—';

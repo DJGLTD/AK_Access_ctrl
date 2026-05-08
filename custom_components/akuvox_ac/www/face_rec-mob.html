@@ -23,7 +23,58 @@
   const qsToken = qs.get('token');
   if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
 })();
-function findHaToken(){ const t = sessionStorage.getItem('akuvox_ll_token'); return t || null; }
+function scanTokenStorage(storage) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = parsed?.access_token || parsed?.accessToken || parsed?.token?.access_token;
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = parsed?.access_token || parsed?.accessToken || parsed?.token?.access_token;
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function authWindows() {
+  const windows = [window];
+  try {
+    if (window.parent && window.parent !== window) windows.push(window.parent);
+  } catch (err) {}
+  try {
+    if (window.opener) windows.push(window.opener);
+  } catch (err) {}
+  return windows;
+}
+
+function findHaToken(){
+  for (const win of authWindows()) {
+    const token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+    if (token) {
+      try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+      return token;
+    }
+  }
+  for (const win of authWindows()) {
+    try {
+      const direct = win.sessionStorage.getItem('akuvox_ll_token') || win.localStorage.getItem('akuvox_ll_token');
+      if (direct) return direct;
+    } catch (err) {}
+  }
+  return null;
+}
 const SAME_ORIGIN = { credentials: 'same-origin' };
 const REJECTED_TOKENS = new Set();
 
@@ -104,18 +155,51 @@ function nextBearerToken(){
   return token;
 }
 
+function clearSignedPathCache(){
+  try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { window.AK_AC_SIGNED_PATHS = {}; } catch (err) {}
+  try {
+    if (typeof SIGNED_PATHS !== 'undefined' && SIGNED_PATHS && typeof SIGNED_PATHS === 'object') {
+      Object.keys(SIGNED_PATHS).forEach((key) => { delete SIGNED_PATHS[key]; });
+    }
+  } catch (err) {}
+}
+
+function stripAuthSig(url){
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.delete('authSig');
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch (err) {
+    return url;
+  }
+}
+
 async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
   const originalHeaders = { ...(options.headers || {}) };
   const signedRequest = typeof url === 'string' && /[?&]authSig=/.test(url);
-  let bearer = null;
-  let usedBearer = false;
-  if (!signedRequest) {
+  let bearer = signedRequest ? null : nextBearerToken();
+  let usedBearer = !!bearer;
+  if (!signedRequest && !bearer) {
     return new Response('authentication required', { status: 401 });
   }
   const headers = { ...originalHeaders };
   if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
 
   const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
+  if (allowRetry && signedRequest && (response.status === 401 || response.status === 403)) {
+    clearSignedPathCache();
+    const retryToken = nextBearerToken();
+    if (retryToken) {
+      const retryHeaders = { ...originalHeaders, 'Authorization': 'Bearer ' + retryToken };
+      const retryResponse = await fetch(stripAuthSig(url), { ...options, headers: retryHeaders, credentials: 'same-origin' });
+      if (retryResponse.status === 401 || retryResponse.status === 403) {
+        REJECTED_TOKENS.add(retryToken);
+      }
+      return retryResponse;
+    }
+  }
 
   if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
     REJECTED_TOKENS.add(bearer);
