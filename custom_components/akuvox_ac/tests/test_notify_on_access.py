@@ -146,3 +146,17 @@ def test_prune_stale_alert_users_disables_empty_specific_list():
     granted = store.get_alert_targets()["mobile_app_elles_iphone"]["granted"]
     assert granted["specific"] is False
     assert granted["users"] == []
+
+
+def test_dashboard_access_sanitizes_allowed_user_ids():
+    store = _settings_store({})
+
+    updated = asyncio.run(
+        store.set_dashboard_access(
+            {"allowed_user_ids": [" user-a ", "", "user-a", "user-b"]}
+        )
+    )
+
+    assert updated == {"allowed_user_ids": ["user-a", "user-b"]}
+    assert store.get_dashboard_access() == {"allowed_user_ids": ["user-a", "user-b"]}
+    assert store.saved == 1
