@@ -6,10 +6,11 @@ This repository packages the **Ak Access Control** custom integration for Home A
 ```text
 custom_components/akuvox_ac/
 ├── __init__.py                # Integration entry point
+├── brand/                     # Home Assistant integration icon/logo assets
 ├── ...                        # Platforms, coordinator, api, etc.
 └── www/                       # Web assets served from /api/AK_AC/*
 hacs.json                      # Allows adding this repo as a HACS custom repository
-icon.svg                       # Repository icon used by Home Assistant/HACS listings (text-only, PR-safe)
+icon.svg                       # Source artwork for the repository icon
 .gitignore
 README.md
 ```
@@ -34,6 +35,7 @@ Follow the on‑screen steps. See the in‑integration options and services for 
 - Uploaded face images are stored in the Home Assistant config at `config/akuvox_ac/FaceData/` and are preserved across updates.
 - Hidden Akuvox dashboards are available at `/akuvox-ac/index`, `/akuvox-ac/users`, `/akuvox-ac/device-edit`, `/akuvox-ac/schedules`, and `/akuvox-ac/face-rec`; they respect the same authentication (HA session or `?token=` query parameter).
 - The included `manifest.json` declares the domain as `akuvox_ac`.
+- Home Assistant brand images are shipped in `custom_components/akuvox_ac/brand/` so the integration card can display the logo and icon locally.
 - If you previously used a different folder layout (e.g., "Config Files" / "WWW Files"), that has been normalized to the Home Assistant conventions here.
 
 ---
