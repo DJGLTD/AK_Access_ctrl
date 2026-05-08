@@ -94,6 +94,68 @@ _LOGGER = logging.getLogger(__name__)
 FACE_SYNC_ERROR_THRESHOLD = 5
 LEGACY_INTEGRATION_DEVICE_NAME = "Akuvox Access Control"
 LEGACY_INTEGRATION_DEVICE_MODEL = "Home Assistant Integration"
+OBSOLETE_ENTITY_UNIQUE_SUFFIXES: Dict[str, Set[str]] = {
+    "button": {
+        "access_denied",
+        "refresh_caller",
+        "refresh_caller_id",
+    },
+    "sensor": {
+        "caller_id",
+        "denied_access",
+        "events",
+        "granted_access",
+        "granted_access_key_holder",
+        "sync",
+        "users",
+    },
+    "binary_sensor": {
+        "denied_access",
+        "granted_access",
+        "granted_access_key_holder",
+        "sync",
+        "users",
+    },
+}
+OBSOLETE_ENTITY_NAME_SUFFIXES: Dict[str, Set[str]] = {
+    "button": {
+        "access denied",
+        "refresh caller",
+        "refresh caller id",
+    },
+    "sensor": {
+        "caller id",
+        "denied access",
+        "events",
+        "granted access",
+        "granted access key holder",
+        "sync",
+        "users",
+    },
+    "binary_sensor": {
+        "denied access",
+        "granted access",
+        "granted access key holder",
+        "sync",
+        "users",
+    },
+}
+CURRENT_ENTITY_UNIQUE_SUFFIXES: Set[str] = {
+    "access_permitted",
+    "call_end",
+    "last_access_user",
+    "last_accessed",
+    "last_sync",
+    "online",
+}
+CURRENT_ENTITY_NAME_SUFFIXES: Set[str] = {
+    "access permitted",
+    "call ended",
+    "last access user",
+    "last accessed",
+    "last sync",
+    "online",
+}
 
 
 def _register_admin_dashboard(hass: HomeAssistant) -> bool:
@@ -218,6 +280,117 @@ def _registry_entries(registry: Any, attr: str) -> List[Any]:
         return list(values)
     except TypeError:
         return []
+
+
+def _entity_config_entry_ids(entity_entry: Any) -> Set[str]:
+    raw = getattr(entity_entry, "config_entry_id", None)
+    if raw is None:
+        raw = getattr(entity_entry, "config_entry_ids", None)
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        return {raw}
+    try:
+        return {str(item) for item in raw if item not in (None, "")}
+    except TypeError:
+        return {str(raw)}
+
+
+def _entity_domain(entity_entry: Any) -> str:
+    domain = getattr(entity_entry, "domain", None)
+    if domain:
+        return str(domain).strip().lower()
+    entity_id = str(getattr(entity_entry, "entity_id", "") or "").strip().lower()
+    if "." in entity_id:
+        return entity_id.split(".", 1)[0]
+    return ""
+
+
+def _entity_slug(entity_entry: Any) -> str:
+    entity_id = str(getattr(entity_entry, "entity_id", "") or "").strip().lower()
+    if "." in entity_id:
+        return entity_id.split(".", 1)[1]
+    return entity_id
+
+
+def _entity_name_values(entity_entry: Any) -> Set[str]:
+    return _device_text_values(
+        entity_entry,
+        "name",
+        "name_by_user",
+        "original_name",
+        "translation_key",
+    )
+
+
+def _is_obsolete_akuvox_entity(entity_entry: Any, entry_id: str) -> bool:
+    platform = str(getattr(entity_entry, "platform", DOMAIN) or "").strip()
+    if platform and platform != DOMAIN:
+        return False
+    if entry_id not in _entity_config_entry_ids(entity_entry):
+        return False
+
+    domain = _entity_domain(entity_entry)
+    unique_suffixes = OBSOLETE_ENTITY_UNIQUE_SUFFIXES.get(domain)
+    name_suffixes = OBSOLETE_ENTITY_NAME_SUFFIXES.get(domain)
+    if not unique_suffixes and not name_suffixes:
+        return False
+
+    unique_id = str(getattr(entity_entry, "unique_id", "") or "").strip()
+    slug = _entity_slug(entity_entry)
+    name_values = _entity_name_values(entity_entry)
+
+    for suffix in CURRENT_ENTITY_UNIQUE_SUFFIXES:
+        if unique_id == f"{entry_id}_{suffix}" or unique_id.endswith(f"_{suffix}"):
+            return False
+        if slug == suffix or slug.endswith(f"_{suffix}"):
+            return False
+
+    for value in name_values:
+        folded = value.casefold()
+        if any(
+            folded == suffix or folded.endswith(f" {suffix}")
+            for suffix in CURRENT_ENTITY_NAME_SUFFIXES
+        ):
+            return False
+
+    for suffix in unique_suffixes or set():
+        if unique_id == f"{entry_id}_{suffix}" or unique_id == suffix:
+            return True
+
+    for suffix in unique_suffixes or set():
+        if slug == suffix or slug.endswith(f"_{suffix}"):
+            return True
+
+    for value in name_values:
+        folded = value.casefold()
+        if any(folded == suffix or folded.endswith(f" {suffix}") for suffix in name_suffixes or set()):
+            return True
+
+    return False
+
+
+async def _remove_obsolete_device_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    try:
+        from homeassistant.helpers import entity_registry as er
+    except Exception:
+        return
+
+    try:
+        entity_registry = er.async_get(hass)
+    except Exception:
+        return
+
+    for entity_entry in list(_registry_entries(entity_registry, "entities")):
+        if not _is_obsolete_akuvox_entity(entity_entry, entry.entry_id):
+            continue
+        entity_id = getattr(entity_entry, "entity_id", None)
+        if not entity_id:
+            continue
+        try:
+            entity_registry.async_remove(entity_id)
+        except Exception:
+            pass
 
 
 async def _remove_legacy_integration_device(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -5310,6 +5483,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         pass
 
     await _remove_legacy_integration_device(hass, entry)
+    await _remove_obsolete_device_entities(hass, entry)
 
     settings = root.get("settings_store")
     if settings:
