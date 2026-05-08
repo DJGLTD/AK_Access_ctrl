@@ -415,7 +415,9 @@ async function apiPost(url, body) {
   return res.json();
 }
 async function callService(domain, service, data = {}) {
-  const url = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const fallback = `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(service)}`;
+  const key = domain === 'akuvox_ac' ? `service_${service}` : '';
+  const url = key ? signedPath(key, fallback) : fallback;
   const res = await fetchWithAuth(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
