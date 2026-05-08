@@ -2293,6 +2293,75 @@ async function forceFullSync(){
   refresh();
 }
 
+function hacsUpdateButtonLabel(status){
+  const result = String(status?.last_result || '').toLowerCase();
+  if (result === 'installed') return 'Update Installed';
+  if (result === 'up_to_date') return 'No Update';
+  if (result === 'entity_not_found') return 'Update Entity Missing';
+  if (result === 'check_failed' || result === 'install_failed') return 'Update Failed';
+  return 'Check Sent';
+}
+
+async function runHacsAutoUpdate(){
+  const btn = document.getElementById('btnHacsAutoUpdate');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.setAttribute('disabled', 'disabled');
+    btn.classList.add('disabled');
+    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Checking...';
+  }
+
+  let ok = false;
+  let lastError = '';
+  let status = null;
+
+  try {
+    const res = await apiPost(actionUrl, { action: 'hacs_update_check' });
+    if (res && typeof res === 'object') {
+      ok = res.ok !== false;
+      status = res.hacs_auto_update || null;
+      if (!ok) lastError = res.error || '';
+    } else if (res === true) {
+      ok = true;
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    lastError = err?.message || String(err);
+  }
+
+  if (!ok) {
+    try {
+      await callService('akuvox_ac','hacs_update_check', {});
+      ok = true;
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      if (!lastError) lastError = err?.message || String(err);
+    }
+  }
+
+  if (!ok) {
+    alert(`HACS update check failed${lastError ? `: ${lastError}` : ''}`);
+  } else {
+    const result = String(status?.last_result || '').toLowerCase();
+    if (btn) {
+      btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+    }
+    if (result === 'installed') {
+      alert('Update installed. Restart Home Assistant to load it.');
+    } else if (['entity_not_found','check_failed','install_failed'].includes(result)) {
+      alert(status?.last_error || 'HACS update check did not complete.');
+    }
+  }
+
+  if (btn) {
+    setTimeout(() => {
+      btn.innerHTML = originalHtml;
+      btn.removeAttribute('disabled');
+      btn.classList.remove('disabled');
+    }, ok ? 2500 : 0);
+  }
+}
+
 async function rebootAll(){
   let ok = false;
   try {
@@ -2354,6 +2423,8 @@ window.addEventListener('message', (event) => {
     forceFullSync();
   } else if (action === 'sync_now') {
     syncAllNow();
+  } else if (action === 'hacs_update_check' || action === 'hacs_auto_update') {
+    runHacsAutoUpdate();
   }
 });
 
@@ -2362,6 +2433,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnUpdateAccessEvents')?.addEventListener('click', updateAccessEvents);
+  document.getElementById('btnHacsAutoUpdate')?.addEventListener('click', runHacsAutoUpdate);
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
   document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -2497,6 +2569,7 @@ setInterval(refresh, 5000);
         </div>
         <button id="btnForceFull" class="btn btn-sm btn-outline-light"><i class="bi bi-lightning-charge-fill"></i> Force Full Sync</button>
         <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-journal-arrow-down"></i> Update Access Events</button>
+        <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light"><i class="bi bi-cloud-arrow-down"></i> Check HACS Update</button>
         <button id="btnRebootAll" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-repeat"></i> Reboot All</button>
         <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear-wide-connected"></i> Global Settings</button>
       </div>
