@@ -1719,6 +1719,12 @@ function attachPinRevealHandlers(container){
   });
 }
 
+function renderUsersTableHeader(tableBody, showPinColumn){
+  const headerRow = tableBody?.closest('table')?.querySelector('thead tr');
+  if (!headerRow) return;
+  headerRow.innerHTML = `<th>Name</th>${showPinColumn ? '<th>Pin</th>' : ''}<th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th>`;
+}
+
 function renderUsers(devs, registryUsers, kpis){
   const tableBody = document.getElementById('tblUsers');
   if (!tableBody) return;
@@ -2054,6 +2060,10 @@ function renderUsers(devs, registryUsers, kpis){
     dedupedByName.push(entry);
   });
 
+  const showPinColumn = dedupedByName.some(u => String(u.pin || '').trim());
+  const columnCount = showPinColumn ? 7 : 6;
+  renderUsersTableHeader(tableBody, showPinColumn);
+
   const listById = new Map(list.map(user => [String(user.id || ''), user]));
   const rows = dedupedByName.map(u => {
     const scheduleRaw = u.access_schedule
@@ -2140,10 +2150,11 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const pinCell = renderPinCell(u.pin, u.name);
+    const pinColumn = showPinColumn ? `<td>${pinCell}</td>` : '';
 
     return `<tr>
       <td>${escapeHtml(u.name)}</td>
-      <td>${pinCell}</td>
+      ${pinColumn}
       <td>${faceBadge}</td>
       <td>${accessBadge}</td>
       <td>${escapeHtml(formatLastAccess(u.last))}</td>
@@ -2157,7 +2168,7 @@ function renderUsers(devs, registryUsers, kpis){
     kpiUsers.textContent = String(dedupedByName.length);
   }
 
-  tableBody.innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
+  tableBody.innerHTML = rows || `<tr><td colspan="${columnCount}" class="text-muted">No users</td></tr>`;
 
   tableBody.querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2900,9 +2911,9 @@ setInterval(refresh, 5000);
           <div id="usersTableWrap">
             <table class="table table-sm table-dark mb-0 table-center">
               <thead>
-                <tr><th>Name</th><th>Pin</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
               </thead>
-              <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
+              <tbody id="tblUsers"><tr><td colspan="6" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
