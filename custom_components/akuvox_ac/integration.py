@@ -2717,6 +2717,9 @@ class AkuvoxSettingsStore(Store):
         "last_entity_id": None,
         "installed_version": None,
         "latest_version": None,
+        "pending_version": None,
+        "pending_version_full": None,
+        "restart_scheduled_for": None,
     }
     DEFAULT_EXPIRY_REMINDERS = {
         "last_sent": {},
@@ -2912,6 +2915,9 @@ class AkuvoxSettingsStore(Store):
             "last_entity_id",
             "installed_version",
             "latest_version",
+            "pending_version",
+            "pending_version_full",
+            "restart_scheduled_for",
         ):
             value = raw.get(key)
             cfg[key] = str(value).strip() if value not in (None, "") else None
@@ -3232,6 +3238,7 @@ class HacsAutoUpdater:
         self.hass = hass
         self._interval_unsub: Optional[Callable[[], None]] = None
         self._startup_unsub: Optional[Callable[[], None]] = None
+        self._restart_unsub: Optional[Callable[[], None]] = None
         self._lock = asyncio.Lock()
 
     def _root(self) -> Dict[str, Any]:
@@ -3257,6 +3264,7 @@ class HacsAutoUpdater:
 
     def start(self) -> None:
         self.apply_settings()
+        self.apply_restart_schedule()
         if self._startup_unsub is not None:
             return
         try:
@@ -3269,6 +3277,7 @@ class HacsAutoUpdater:
 
     def shutdown(self) -> None:
         self._cancel_interval()
+        self._cancel_restart_schedule()
         if self._startup_unsub:
             try:
                 self._startup_unsub()
@@ -3311,6 +3320,111 @@ class HacsAutoUpdater:
             except Exception:
                 pass
             self._interval_unsub = None
+
+    def _cancel_restart_schedule(self) -> None:
+        if self._restart_unsub:
+            try:
+                self._restart_unsub()
+            except Exception:
+                pass
+            self._restart_unsub = None
+
+    @staticmethod
+    def _parse_restart_time(value: Any) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = dt_util.parse_datetime(text)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            try:
+                parsed = datetime.fromisoformat(text)
+            except Exception:
+                return None
+        if parsed.tzinfo is None:
+            try:
+                parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+            except Exception:
+                parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        try:
+            return dt_util.as_utc(parsed)
+        except Exception:
+            return parsed
+
+    def apply_restart_schedule(self) -> None:
+        self._cancel_restart_schedule()
+        config = self._config()
+        restart_at = self._parse_restart_time(config.get("restart_scheduled_for"))
+        if restart_at is None:
+            return
+
+        now = dt_util.utcnow()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=restart_at.tzinfo)
+        remaining = (restart_at - now).total_seconds()
+        if remaining <= 0:
+            self.hass.async_create_task(
+                self._record_status(restart_scheduled_for=None)
+            )
+            return
+
+        def _restart_cb(_now):
+            self.hass.async_create_task(self.async_restart_now(reason="scheduled"))
+
+        try:
+            self._restart_unsub = async_call_later(self.hass, remaining, _restart_cb)
+        except Exception:
+            self._restart_unsub = None
+
+    async def async_schedule_restart(self, restart_at: Any) -> Dict[str, Any]:
+        parsed = self._parse_restart_time(restart_at)
+        if parsed is None:
+            raise ValueError("Enter a valid restart date and time.")
+
+        now = dt_util.utcnow()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=parsed.tzinfo)
+        if parsed <= now:
+            raise ValueError("Choose a restart time in the future.")
+
+        status = await self._record_status(
+            last_result="restart_scheduled",
+            last_error=None,
+            restart_scheduled_for=parsed.isoformat(),
+        )
+        self.apply_restart_schedule()
+        return status
+
+    async def async_cancel_restart(self) -> Dict[str, Any]:
+        self._cancel_restart_schedule()
+        return await self._record_status(
+            last_result="installed",
+            last_error=None,
+            restart_scheduled_for=None,
+        )
+
+    async def async_restart_now(self, *, reason: str = "manual") -> Dict[str, Any]:
+        self._cancel_restart_schedule()
+        try:
+            await self.hass.services.async_call(
+                "homeassistant",
+                "restart",
+                {},
+                blocking=False,
+            )
+        except Exception as err:
+            return await self._record_status(
+                last_result="restart_failed",
+                last_error=str(err),
+                restart_scheduled_for=None,
+            )
+        return await self._record_status(
+            last_result="restart_requested",
+            last_error=None,
+            restart_scheduled_for=None,
+        )
 
     def _handle_hass_started(self, _event) -> None:
         self._startup_unsub = None
@@ -3493,6 +3607,29 @@ class HacsAutoUpdater:
         except Exception:
             pass
 
+    async def _create_update_available_notification(
+        self, entity_id: str, *, installed: Any = None, latest: Any = None
+    ) -> None:
+        try:
+            suffix = ""
+            if installed or latest:
+                suffix = f" Current: `{installed or 'unknown'}`. Available: `{latest or 'unknown'}`."
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "notification_id": "akuvox_ac_hacs_update_available",
+                    "title": "Akuvox Access Control update available",
+                    "message": (
+                        f"`{entity_id}` has an update available.{suffix} "
+                        "Open the Akuvox dashboard to review and install it."
+                    ),
+                },
+                blocking=False,
+            )
+        except Exception:
+            pass
+
     async def async_run_check(
         self, *, reason: str = "manual", force: bool = False
     ) -> Dict[str, Any]:
@@ -3555,11 +3692,15 @@ class HacsAutoUpdater:
                 "latest_version": latest,
             }
 
-            install_version: Optional[str] = None
+            pending_version_full: Optional[str] = None
             has_update = self._update_available(state)
             if github_latest_sha and not self._versions_match(installed, github_latest_sha):
                 has_update = True
-                install_version = github_latest_sha
+                pending_version_full = github_latest_sha
+            elif has_update and hacs_latest:
+                pending_version_full = self._version_text(hacs_latest)
+
+            pending_version = self._short_version(pending_version_full)
 
             if not has_update:
                 if github_error:
@@ -3567,13 +3708,48 @@ class HacsAutoUpdater:
                         **base_status,
                         last_result="check_failed",
                         last_error=github_error,
+                        pending_version=None,
+                        pending_version_full=None,
                     )
                 return await self._record_status(
                     **base_status,
                     last_result="up_to_date",
                     last_error=None,
+                    pending_version=None,
+                    pending_version_full=None,
                 )
 
+            await self._create_update_available_notification(
+                entity_id,
+                installed=installed,
+                latest=pending_version or latest,
+            )
+            return await self._record_status(
+                **base_status,
+                last_result="update_available",
+                last_error=github_error,
+                pending_version=pending_version,
+                pending_version_full=pending_version_full,
+            )
+
+    async def async_install_update(
+        self, *, reason: str = "manual", force: bool = False
+    ) -> Dict[str, Any]:
+        check_status = await self.async_run_check(reason=f"{reason}_preinstall", force=True)
+        if str(check_status.get("last_result") or "").lower() != "update_available":
+            return check_status
+
+        config = self._config()
+        async with self._lock:
+            entity_id = str(check_status.get("last_entity_id") or "").strip()
+            if not entity_id:
+                return await self._record_status(
+                    last_result="entity_not_found",
+                    last_error="Could not find the HACS update entity for Akuvox Access Control.",
+                    last_entity_id=None,
+                )
+
+            install_version = str(check_status.get("pending_version_full") or "").strip()
             service_data: Dict[str, Any] = {"entity_id": entity_id}
             if install_version:
                 service_data["version"] = install_version
@@ -3589,17 +3765,71 @@ class HacsAutoUpdater:
                 )
             except Exception as err:
                 return await self._record_status(
-                    **base_status,
+                    last_checked=dt_util.now().isoformat(),
+                    last_entity_id=entity_id,
+                    installed_version=check_status.get("installed_version"),
+                    latest_version=check_status.get("latest_version"),
                     last_result="install_failed",
                     last_error=str(err),
                 )
 
+            try:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "update_entity",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+            except Exception:
+                pass
+
+            state_after = self.hass.states.get(entity_id)
+            attrs_after = getattr(state_after, "attributes", {}) if state_after is not None else {}
+            installed_after = attrs_after.get("installed_version") or check_status.get("installed_version")
+            latest_after = attrs_after.get("latest_version") or check_status.get("latest_version")
+            pending_short = self._short_version(install_version)
+            confirmed = False
+            if install_version and self._versions_match(installed_after, install_version):
+                confirmed = True
+            elif pending_short and self._versions_match(installed_after, pending_short):
+                confirmed = True
+            elif (
+                not install_version
+                and state_after is not None
+                and not self._update_available(state_after)
+                and installed_after
+                and latest_after
+                and self._versions_match(installed_after, latest_after)
+            ):
+                confirmed = True
+
+            if not confirmed:
+                return await self._record_status(
+                    last_checked=dt_util.now().isoformat(),
+                    last_entity_id=entity_id,
+                    installed_version=installed_after,
+                    latest_version=pending_short or latest_after,
+                    last_result="install_unconfirmed",
+                    last_error=(
+                        "Install command was sent, but HACS still reports "
+                        f"{entity_id} at {installed_after or 'unknown'}."
+                    ),
+                    pending_version=pending_short or check_status.get("pending_version"),
+                    pending_version_full=install_version or check_status.get("pending_version_full"),
+                )
+
             await self._create_restart_notification(entity_id)
             return await self._record_status(
-                **base_status,
+                last_checked=dt_util.now().isoformat(),
+                last_entity_id=entity_id,
+                installed_version=installed_after,
+                latest_version=pending_short or latest_after,
                 last_installed=dt_util.now().isoformat(),
                 last_result="installed",
                 last_error=None,
+                pending_version=None,
+                pending_version_full=None,
+                restart_scheduled_for=None,
             )
 
 
@@ -6610,6 +6840,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if updater and hasattr(updater, "async_run_check"):
             await updater.async_run_check(reason="service", force=True)
 
+    async def svc_hacs_update_install(call):
+        root = hass.data.get(DOMAIN, {})
+        updater = root.get("hacs_auto_updater") if isinstance(root, dict) else None
+        if updater and hasattr(updater, "async_install_update"):
+            await updater.async_install_update(reason="service", force=True)
+
     async def svc_add_missing_users(call):
         data = call.data if isinstance(call.data, Mapping) else {}
         entry_id = data.get("entry_id")
@@ -6687,6 +6923,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)
     hass.services.async_register(DOMAIN, "hacs_update_check", svc_hacs_update_check)
+    hass.services.async_register(DOMAIN, "hacs_update_install", svc_hacs_update_install)
     hass.services.async_register(DOMAIN, "add_missing_users", svc_add_missing_users)
     hass.services.async_register(DOMAIN, "create_group", svc_create_group)
     hass.services.async_register(DOMAIN, "delete_groups", svc_delete_groups)
