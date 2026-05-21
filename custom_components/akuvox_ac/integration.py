@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set, Coroutine
+from urllib.parse import urlencode
 
 from homeassistant.const import Platform
 
@@ -2717,6 +2718,9 @@ class AkuvoxSettingsStore(Store):
         "installed_version": None,
         "latest_version": None,
     }
+    DEFAULT_EXPIRY_REMINDERS = {
+        "last_sent": {},
+    }
 
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, f"{DOMAIN}_settings.json")
@@ -2733,6 +2737,7 @@ class AkuvoxSettingsStore(Store):
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "hacs_auto_update": dict(self.DEFAULT_HACS_AUTO_UPDATE),
             "dashboard_access": {"allowed_user_ids": []},
+            "expiry_reminders": {"last_sent": {}},
         }
 
     async def async_load(self):
@@ -2771,6 +2776,9 @@ class AkuvoxSettingsStore(Store):
         targets = alerts.get("targets") if isinstance(alerts, dict) else {}
         alerts["targets"] = self._sanitize_alert_targets(targets)
         self.data["alerts"] = alerts
+        self.data["expiry_reminders"] = self._sanitize_expiry_reminders(
+            self.data.get("expiry_reminders")
+        )
 
         try:
             history_limit = self._normalize_diagnostics_history_limit(
@@ -3081,6 +3089,7 @@ class AkuvoxSettingsStore(Store):
                 if isinstance(cfg, dict):
                     data["device_offline"] = bool(cfg.get("device_offline"))
                     data["integrity_failed"] = bool(cfg.get("integrity_failed"))
+                    data["access_expiring"] = bool(cfg.get("access_expiring"))
                     data["any_denied"] = bool(cfg.get("any_denied"))
                     granted_cfg = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
                     if not granted_cfg and isinstance(cfg.get("granted_users"), list):
@@ -3091,6 +3100,7 @@ class AkuvoxSettingsStore(Store):
                 else:
                     data["device_offline"] = False
                     data["integrity_failed"] = False
+                    data["access_expiring"] = False
                     data["any_denied"] = False
                     granted_cfg = {}
 
@@ -3143,6 +3153,40 @@ class AkuvoxSettingsStore(Store):
             await self.set_alert_targets(updated)
         return changed
 
+    def _sanitize_expiry_reminders(self, raw: Any) -> Dict[str, Any]:
+        last_sent: Dict[str, str] = {}
+        if isinstance(raw, dict):
+            raw_last_sent = raw.get("last_sent")
+            if isinstance(raw_last_sent, dict):
+                for key, value in raw_last_sent.items():
+                    canonical = normalize_user_id(key) or str(key or "").strip()
+                    normalized_date = _normalize_access_date(value)
+                    if canonical and normalized_date:
+                        last_sent[canonical] = normalized_date
+        return {"last_sent": last_sent}
+
+    def get_expiry_reminders(self) -> Dict[str, Any]:
+        return self._sanitize_expiry_reminders(self.data.get("expiry_reminders"))
+
+    def expiry_reminder_sent(self, user_id: Any, access_end: Any) -> bool:
+        canonical = normalize_user_id(user_id) or str(user_id or "").strip()
+        normalized_date = _normalize_access_date(access_end)
+        if not canonical or not normalized_date:
+            return False
+        last_sent = self.get_expiry_reminders().get("last_sent") or {}
+        return str(last_sent.get(canonical) or "") == normalized_date
+
+    async def mark_expiry_reminder_sent(self, user_id: Any, access_end: Any) -> None:
+        canonical = normalize_user_id(user_id) or str(user_id or "").strip()
+        normalized_date = _normalize_access_date(access_end)
+        if not canonical or not normalized_date:
+            return
+        state = self.get_expiry_reminders()
+        last_sent = state.setdefault("last_sent", {})
+        last_sent[canonical] = normalized_date
+        self.data["expiry_reminders"] = self._sanitize_expiry_reminders(state)
+        await self.async_save()
+
     def targets_for_event(self, event_type: str, *, user_id: Optional[str] = None) -> List[str]:
         mapping = self.get_alert_targets()
         out: List[str] = []
@@ -3151,6 +3195,8 @@ class AkuvoxSettingsStore(Store):
             if event_type == "device_offline" and cfg.get("device_offline"):
                 out.append(target)
             elif event_type == "integrity_failed" and cfg.get("integrity_failed"):
+                out.append(target)
+            elif event_type == "access_expiring" and cfg.get("access_expiring"):
                 out.append(target)
             elif event_type == "any_denied" and cfg.get("any_denied"):
                 out.append(target)
@@ -4072,6 +4118,7 @@ class SyncManager:
         self._integrity_unsub = None
         self._temp_cleanup_unsub = None
         self._temp_midnight_unsub = None
+        self._expiry_reminder_unsub = None
         self._temp_cleanup_lock = asyncio.Lock()
         self._integrity_minutes = 15
         self._apply_integrity_interval(self._integrity_minutes)
@@ -4097,6 +4144,13 @@ class SyncManager:
             hass,
             self._temporary_cleanup_midnight,
             hour=0,
+            minute=0,
+            second=0,
+        )
+        self._expiry_reminder_unsub = async_track_time_change(
+            hass,
+            self._access_expiry_reminder_morning,
+            hour=8,
             minute=0,
             second=0,
         )
@@ -4229,8 +4283,16 @@ class SyncManager:
     async def _temporary_cleanup_interval(self, now):
         await self._cleanup_temporary_users(reason="interval")
 
+    async def _startup_user_cleanup(self) -> None:
+        await self._cleanup_temporary_users(reason="startup")
+        await self._cleanup_expired_access_users(reason="startup")
+
     async def _temporary_cleanup_midnight(self, now):
         await self._cleanup_temporary_users(reason="midnight")
+        await self._cleanup_expired_access_users(reason="midnight")
+
+    async def _access_expiry_reminder_morning(self, now):
+        await self._send_access_expiry_reminders()
 
     async def _expire_temporary_user(
         self,
@@ -4311,7 +4373,7 @@ class SyncManager:
 
                 if reason == "midnight":
                     access_end = _parse_access_date(profile.get("access_end"))
-                    if access_end and access_end <= today:
+                    if access_end and access_end < today:
                         to_expire.append((str(key), False))
 
             if not to_expire:
@@ -4324,6 +4386,226 @@ class SyncManager:
                     today=today,
                     used=used,
                 )
+
+    @staticmethod
+    def _profile_can_expire(profile: Mapping[str, Any]) -> bool:
+        if not isinstance(profile, Mapping):
+            return False
+        if _profile_is_empty_reserved(profile):
+            return False
+        status = str(profile.get("status") or "").strip().lower()
+        return status != "deleted"
+
+    async def _delete_expired_access_user(
+        self,
+        key: str,
+        profile: Mapping[str, Any],
+        *,
+        today: date,
+        reason: str,
+    ) -> None:
+        users_store = self._users_store()
+        if not users_store:
+            return
+
+        canonical = normalize_user_id(key) or str(key or "").strip()
+        if not canonical:
+            return
+
+        access_end = _parse_access_date(profile.get("access_end")) or today
+        name = str(profile.get("name") or canonical).strip()
+        phone = str(profile.get("phone") or "").strip()
+
+        try:
+            await users_store.upsert_profile(
+                canonical,
+                status="deleted",
+                groups=["No Access"],
+                schedule_name="No Access",
+                schedule_id="1002",
+                access_end=access_end.isoformat(),
+            )
+        except Exception:
+            return
+
+        self._remove_face_files_for_user({canonical, str(key or "").strip()})
+        await self._prune_stale_alert_users()
+
+        for _entry_id, coord, api, _opts in self._devices():
+            try:
+                if name or phone:
+                    await self._delete_contacts(api, name=name, phone=phone)
+            except Exception:
+                pass
+            try:
+                id_records = await _lookup_device_user_ids_by_ha_key(
+                    api,
+                    canonical,
+                    allow_non_ha_group=True,
+                )
+            except Exception:
+                id_records = []
+            for rec in id_records or []:
+                try:
+                    await _delete_user_every_way(api, rec)
+                except Exception:
+                    pass
+            try:
+                coord._append_event(
+                    f"Expired user removed: {name or canonical} ({reason})"
+                )  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                await coord.async_request_refresh()
+            except Exception:
+                pass
+
+        try:
+            sync_queue = self._root().get("sync_queue")
+            if sync_queue:
+                sync_queue.mark_change(
+                    None,
+                    delay_minutes=0,
+                    full=True,
+                    trigger=f"expired user cleanup: {canonical}",
+                )
+        except Exception:
+            pass
+
+    def _remove_face_files_for_user(self, user_ids: Iterable[str]) -> None:
+        cleaned_ids = {str(item or "").strip() for item in user_ids if str(item or "").strip()}
+        if not cleaned_ids:
+            return
+
+        face_dirs: List[Path] = []
+        try:
+            face_dirs.append(face_storage_dir(self.hass))
+        except Exception:
+            pass
+        face_dirs.append(Path(__file__).parent / "www" / "FaceData")
+        try:
+            face_dirs.append(Path(self.hass.config.path("www")) / "AK_Access_ctrl" / "FaceData")
+        except Exception:
+            pass
+
+        for base in face_dirs:
+            try:
+                resolved_base = base.resolve()
+            except Exception:
+                continue
+            for ext in FACE_FILE_EXTENSIONS:
+                for user_id in cleaned_ids:
+                    try:
+                        candidate = (resolved_base / f"{user_id}.{ext}").resolve()
+                        candidate.relative_to(resolved_base)
+                    except Exception:
+                        continue
+                    if candidate.exists():
+                        try:
+                            candidate.unlink()
+                        except Exception:
+                            pass
+
+    async def _cleanup_expired_access_users(self, *, reason: str) -> None:
+        if self._temp_cleanup_lock.locked():
+            return
+
+        async with self._temp_cleanup_lock:
+            users_store = self._users_store()
+            if not users_store:
+                return
+            try:
+                profiles = users_store.all() or {}
+            except Exception:
+                return
+
+            today = dt_util.now().date()
+            to_delete: List[Tuple[str, Mapping[str, Any]]] = []
+            for key, profile in profiles.items():
+                if not self._profile_can_expire(profile):
+                    continue
+                access_end = _parse_access_date(profile.get("access_end"))
+                if access_end and access_end < today:
+                    to_delete.append((str(key), profile))
+
+            for key, profile in to_delete:
+                await self._delete_expired_access_user(
+                    key,
+                    profile,
+                    today=today,
+                    reason=reason,
+                )
+
+    async def _send_access_expiry_reminders(self) -> None:
+        settings = self._settings_store()
+        users_store = self._users_store()
+        if not settings or not users_store:
+            return
+        if not hasattr(settings, "targets_for_event"):
+            return
+
+        try:
+            targets = list(settings.targets_for_event("access_expiring"))
+        except Exception:
+            targets = []
+        if not targets:
+            return
+
+        try:
+            profiles = users_store.all() or {}
+        except Exception:
+            return
+
+        today = dt_util.now().date()
+        for key, profile in profiles.items():
+            if not self._profile_can_expire(profile):
+                continue
+            access_end = _parse_access_date(profile.get("access_end"))
+            if access_end != today:
+                continue
+
+            canonical = normalize_user_id(key) or str(key or "").strip()
+            if not canonical:
+                continue
+            if hasattr(settings, "expiry_reminder_sent"):
+                try:
+                    if settings.expiry_reminder_sent(canonical, access_end):
+                        continue
+                except Exception:
+                    pass
+
+            name = str(profile.get("name") or canonical).strip()
+            review_url = "/akuvox-ac/expiry-review?" + urlencode(
+                {
+                    "id": canonical,
+                    "name": name,
+                    "access_end": access_end.isoformat(),
+                }
+            )
+            message = f"{name}'s Access expires today, Would you like to extend"
+            sent = False
+            for target in targets:
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        target,
+                        {
+                            "title": "Akuvox: Access expires today",
+                            "message": message,
+                            "data": {"url": review_url},
+                        },
+                        blocking=False,
+                    )
+                    sent = True
+                except Exception:
+                    pass
+
+            if sent and hasattr(settings, "mark_expiry_reminder_sent"):
+                try:
+                    await settings.mark_expiry_reminder_sent(canonical, access_end)
+                except Exception:
+                    pass
 
     async def _bump_face_error_count(self, ha_key: str) -> int:
         users_store = self._users_store()
@@ -5469,7 +5751,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     if "sync_manager" not in root:
         root["sync_manager"] = SyncManager(hass)
         hass.async_create_task(
-            root["sync_manager"]._cleanup_temporary_users(reason="startup")
+            root["sync_manager"]._startup_user_cleanup()
         )
 
     if "sync_queue" not in root:

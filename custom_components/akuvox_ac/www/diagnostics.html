@@ -1859,6 +1859,7 @@ function renderNotificationRules(rules = NOTIFICATION_RULES){
     const bits = [];
     if (target.device_offline) bits.push('device offline');
     if (target.integrity_failed) bits.push('integrity failed');
+    if (target.access_expiring) bits.push('access expiring today');
     if (target.any_denied) bits.push('any denied access');
     if (target.granted_any) bits.push('any gate open');
     const users = Array.isArray(target.granted_users) ? target.granted_users.filter(Boolean) : [];

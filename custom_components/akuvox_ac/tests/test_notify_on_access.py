@@ -13,7 +13,7 @@ from custom_components.akuvox_ac.integration import (  # noqa: E402
 
 def _settings_store(targets: Dict[str, Any]) -> AkuvoxSettingsStore:
     store = object.__new__(AkuvoxSettingsStore)
-    store.data = {"alerts": {"targets": targets}}
+    store.data = {"alerts": {"targets": targets}, "expiry_reminders": {"last_sent": {}}}
     store.saved = 0
 
     async def _async_save():
@@ -75,6 +75,29 @@ def test_settings_store_treats_legacy_user_list_as_specific():
     assert store.targets_for_event("user_granted", user_id="ha-012") == [
         "mobile_app_lees_iphone"
     ]
+
+
+def test_settings_store_targets_access_expiring_alerts():
+    store = _settings_store(
+        {
+            "mobile_app_lees_iphone": {"access_expiring": True},
+            "mobile_app_verns_iphone": {"access_expiring": False},
+        }
+    )
+
+    assert store.targets_for_event("access_expiring") == ["mobile_app_lees_iphone"]
+
+
+def test_settings_store_tracks_expiry_reminder_sent_date():
+    store = _settings_store({})
+
+    assert store.expiry_reminder_sent("ha-004", "2026-05-21") is False
+
+    asyncio.run(store.mark_expiry_reminder_sent("ha-004", "2026-05-21"))
+
+    assert store.expiry_reminder_sent("HA004", "2026-05-21") is True
+    assert store.expiry_reminder_sent("HA004", "2026-05-22") is False
+    assert store.saved == 1
 
 
 def test_sync_notify_on_access_targets_replaces_per_user_targets():

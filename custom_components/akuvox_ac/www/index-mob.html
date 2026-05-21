@@ -799,7 +799,7 @@ function computeAccessState(startStr, endStr){
   return {
     startDate,
     endDate,
-    expired: !!(endDate && endDate <= today),
+    expired: !!(endDate && endDate < today),
     notStarted: !!(startDate && startDate > today)
   };
 }

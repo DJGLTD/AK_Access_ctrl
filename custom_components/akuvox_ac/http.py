@@ -1496,6 +1496,9 @@ DASHBOARD_ROUTES: Dict[str, str] = {
     "temp-user-mob": "temp_user-mob",
     "temp_user-mob": "temp_user-mob",
     "temp_user-mob.html": "temp_user-mob",
+    "expiry-review": "expiry_review",
+    "expiry_review": "expiry_review",
+    "expiry_review.html": "expiry_review",
     "settings": "settings",
     "settings.html": "settings",
     "settings-mob": "settings-mob",
@@ -2982,7 +2985,7 @@ class AkuvoxUIView(HomeAssistantView):
                             "access_level": prof.get("access_level") or "",
                             "access_start": access_start.isoformat() if access_start else "",
                             "access_end": access_end.isoformat() if access_end else "",
-                            "access_expired": bool(access_end and access_end <= today),
+                            "access_expired": bool(access_end and access_end < today),
                             "access_in_future": bool(access_start and access_start > today),
                             "temporary": bool(prof.get("temporary")),
                             "temporary_one_time": bool(prof.get("temporary_one_time")),
@@ -3106,6 +3109,76 @@ class AkuvoxUIAction(AkuvoxUIView):
                 days = payload.get("days") or []
                 root["sync_manager"].set_auto_reboot(t, days)
                 return web.json_response({"ok": True})
+            except Exception as e:
+                return err(e)
+
+        if action == "extend_user_access":
+            raw_user_id = payload.get("id") or payload.get("user_id")
+            user_id = normalize_user_id(raw_user_id) or str(raw_user_id or "").strip()
+            if not user_id:
+                return err("user id is required")
+            access_end = _parse_access_date(payload.get("access_end"))
+            if not access_end:
+                return err("access_end is required")
+
+            users_store = root.get("users_store")
+            if not users_store:
+                return err("users store unavailable", code=500)
+            try:
+                profile = users_store.get(user_id) or {}
+            except Exception:
+                profile = {}
+            if not isinstance(profile, dict):
+                profile = {}
+
+            schedule_name = None
+            schedule_id = None
+            status = str(profile.get("status") or "").strip().lower()
+            if (
+                status == "deleted"
+                or str(profile.get("schedule_id") or "").strip() == "1002"
+                or str(profile.get("schedule_name") or "").strip().lower() == "no access"
+            ):
+                schedule_name = "24/7 Access"
+                schedule_id = "1001"
+
+            try:
+                await users_store.upsert_profile(
+                    user_id,
+                    access_end=access_end.isoformat(),
+                    status="active",
+                    schedule_name=schedule_name,
+                    schedule_id=schedule_id,
+                    temporary_used_at="",
+                )
+                queue = root.get("sync_queue")
+                if queue:
+                    queue.mark_change(
+                        None,
+                        delay_minutes=0,
+                        full=True,
+                        trigger=f"extend user access: {user_id}",
+                    )
+                return web.json_response(
+                    {"ok": True, "id": user_id, "access_end": access_end.isoformat()}
+                )
+            except Exception as e:
+                return err(e)
+
+        if action == "revoke_user_access":
+            raw_user_id = payload.get("id") or payload.get("user_id")
+            user_id = normalize_user_id(raw_user_id) or str(raw_user_id or "").strip()
+            if not user_id:
+                return err("user id is required")
+            try:
+                await hass.services.async_call(
+                    DOMAIN,
+                    "delete_user",
+                    {"id": user_id},
+                    blocking=True,
+                    context=ctx,
+                )
+                return web.json_response({"ok": True, "id": user_id})
             except Exception as e:
                 return err(e)
 
@@ -4335,6 +4408,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
                     {
                         "device_offline": bool(config.get("device_offline")),
                         "integrity_failed": bool(config.get("integrity_failed")),
+                        "access_expiring": bool(config.get("access_expiring")),
                         "any_denied": bool(config.get("any_denied")),
                         "granted_any": bool(granted.get("any")),
                         "granted_users": granted_users,
