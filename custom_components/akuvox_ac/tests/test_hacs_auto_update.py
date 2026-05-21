@@ -14,7 +14,8 @@ from custom_components.akuvox_ac.integration import (  # noqa: E402
 )
 
 
-LATEST_SHA = "71d1bd2556e9377b183e73b73a8fda88fdfa89cc"
+LATEST_TAG = "v3.2.0"
+LATEST_VERSION = "3.2.0"
 
 
 class _State:
@@ -23,8 +24,8 @@ class _State:
     attributes = {
         "friendly_name": "Akuvox Access Control update",
         "repository": "DJGLTD/AK_Access_ctrl",
-        "installed_version": "3175ae3",
-        "latest_version": "3175ae3",
+        "installed_version": "3.1.0",
+        "latest_version": "3.1.0",
     }
 
 
@@ -56,7 +57,7 @@ class _Services:
     ) -> None:
         self.calls.append((domain, service, dict(data or {}), blocking))
         if domain == "update" and service == "install" and self._confirm_install:
-            version = str((data or {}).get("version") or LATEST_SHA)[:7]
+            version = HacsAutoUpdater._display_version((data or {}).get("version") or LATEST_TAG)
             self._state.attributes = dict(self._state.attributes)
             self._state.attributes["installed_version"] = version
             self._state.attributes["latest_version"] = version
@@ -83,7 +84,7 @@ class _GithubResponse:
         return None
 
     async def json(self) -> Dict[str, str]:
-        return {"sha": LATEST_SHA}
+        return {"tag_name": LATEST_TAG}
 
 
 class _GithubSession:
@@ -111,7 +112,7 @@ def _settings_store() -> AkuvoxSettingsStore:
     return store
 
 
-def test_hacs_auto_update_check_detects_github_head_when_hacs_entity_is_stale(monkeypatch):
+def test_hacs_auto_update_check_detects_latest_release_when_hacs_entity_is_stale(monkeypatch):
     store = _settings_store()
     hass = _Hass(store)
     monkeypatch.setattr(
@@ -127,13 +128,13 @@ def test_hacs_auto_update_check_detects_github_head_when_hacs_entity_is_stale(mo
     ]
     assert install_calls == []
     assert status["last_result"] == "update_available"
-    assert status["installed_version"] == "3175ae3"
-    assert status["latest_version"] == "71d1bd2"
-    assert status["pending_version"] == "71d1bd2"
-    assert status["pending_version_full"] == LATEST_SHA
+    assert status["installed_version"] == "3.1.0"
+    assert status["latest_version"] == LATEST_VERSION
+    assert status["pending_version"] == LATEST_VERSION
+    assert status["pending_version_full"] == LATEST_TAG
 
 
-def test_hacs_auto_update_install_confirms_github_head(monkeypatch):
+def test_hacs_auto_update_install_confirms_latest_release(monkeypatch):
     store = _settings_store()
     hass = _Hass(store)
     monkeypatch.setattr(
@@ -153,14 +154,14 @@ def test_hacs_auto_update_install_confirms_github_head(monkeypatch):
             "install",
             {
                 "entity_id": "update.akuvox_access_control_update",
-                "version": LATEST_SHA,
+                "version": LATEST_TAG,
             },
             True,
         )
     ]
     assert status["last_result"] == "installed"
-    assert status["installed_version"] == "71d1bd2"
-    assert status["latest_version"] == "71d1bd2"
+    assert status["installed_version"] == LATEST_VERSION
+    assert status["latest_version"] == LATEST_VERSION
     assert status["pending_version"] is None
 
 
@@ -176,8 +177,8 @@ def test_hacs_auto_update_install_requires_hacs_confirmation(monkeypatch):
     status = asyncio.run(HacsAutoUpdater(hass).async_install_update(force=True))
 
     assert status["last_result"] == "install_unconfirmed"
-    assert status["installed_version"] == "3175ae3"
-    assert status["pending_version"] == "71d1bd2"
+    assert status["installed_version"] == "3.1.0"
+    assert status["pending_version"] == LATEST_VERSION
 
 
 def test_hacs_auto_update_schedules_and_cancels_restart(monkeypatch):
@@ -204,6 +205,8 @@ def test_hacs_auto_update_schedules_and_cancels_restart(monkeypatch):
     assert status["restart_scheduled_for"] is None
 
 
-def test_hacs_auto_update_matches_short_and_full_commit_versions():
-    assert HacsAutoUpdater._versions_match("71d1bd2", LATEST_SHA) is True
-    assert HacsAutoUpdater._versions_match("3175ae3", LATEST_SHA) is False
+def test_hacs_auto_update_matches_release_versions():
+    assert HacsAutoUpdater._versions_match("v3.1.0", "3.1") is True
+    assert HacsAutoUpdater._versions_match("3.1.1", "v3.1.1") is True
+    assert HacsAutoUpdater._versions_match("3.1.1", "3.2.0") is False
+    assert HacsAutoUpdater._versions_match("71d1bd2", "3.2.0") is False
