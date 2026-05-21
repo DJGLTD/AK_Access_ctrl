@@ -3219,33 +3219,77 @@ class AkuvoxUIAction(AkuvoxUIView):
                 _LOGGER.debug("HACS update check failed via UI: %s", service_err)
                 return err(service_err)
 
+        if action == "hacs_update_install":
+            updater = root.get("hacs_auto_updater")
+            if not updater or not hasattr(updater, "async_install_update"):
+                return err("HACS auto updater is unavailable", code=500)
+            try:
+                status = await updater.async_install_update(reason="manual", force=True)
+                return web.json_response({"ok": True, "hacs_auto_update": status})
+            except Exception as service_err:
+                _LOGGER.debug("HACS update install failed via UI: %s", service_err)
+                return err(service_err)
+
         if action == "restart_homeassistant":
             if not _request_can_manage_dashboard_access(request):
                 return err("administrator access required", code=403)
+            updater = root.get("hacs_auto_updater")
             try:
-                await hass.services.async_call(
-                    "homeassistant",
-                    "restart",
-                    {},
-                    blocking=False,
-                    context=ctx,
-                )
-                status = None
-                settings = root.get("settings_store")
-                if settings and hasattr(settings, "update_hacs_auto_update_status"):
-                    try:
-                        status = await settings.update_hacs_auto_update_status(
-                            last_result="restart_requested",
-                            last_error=None,
-                        )
-                    except Exception:
-                        status = None
+                if updater and hasattr(updater, "async_restart_now"):
+                    status = await updater.async_restart_now(reason="manual")
+                else:
+                    await hass.services.async_call(
+                        "homeassistant",
+                        "restart",
+                        {},
+                        blocking=False,
+                        context=ctx,
+                    )
+                    status = None
+                    settings = root.get("settings_store")
+                    if settings and hasattr(settings, "update_hacs_auto_update_status"):
+                        try:
+                            status = await settings.update_hacs_auto_update_status(
+                                last_result="restart_requested",
+                                last_error=None,
+                                restart_scheduled_for=None,
+                            )
+                        except Exception:
+                            status = None
                 response = {"ok": True}
                 if status is not None:
                     response["hacs_auto_update"] = status
                 return web.json_response(response)
             except Exception as service_err:
                 _LOGGER.debug("Home Assistant restart failed via UI: %s", service_err)
+                return err(service_err)
+
+        if action == "schedule_homeassistant_restart":
+            if not _request_can_manage_dashboard_access(request):
+                return err("administrator access required", code=403)
+            updater = root.get("hacs_auto_updater")
+            if not updater or not hasattr(updater, "async_schedule_restart"):
+                return err("HACS auto updater is unavailable", code=500)
+            try:
+                payload_map = payload if isinstance(payload, Mapping) else {}
+                restart_at = payload_map.get("restart_at")
+                status = await updater.async_schedule_restart(restart_at)
+                return web.json_response({"ok": True, "hacs_auto_update": status})
+            except Exception as service_err:
+                _LOGGER.debug("Home Assistant restart schedule failed via UI: %s", service_err)
+                return err(service_err)
+
+        if action == "cancel_homeassistant_restart":
+            if not _request_can_manage_dashboard_access(request):
+                return err("administrator access required", code=403)
+            updater = root.get("hacs_auto_updater")
+            if not updater or not hasattr(updater, "async_cancel_restart"):
+                return err("HACS auto updater is unavailable", code=500)
+            try:
+                status = await updater.async_cancel_restart()
+                return web.json_response({"ok": True, "hacs_auto_update": status})
+            except Exception as service_err:
+                _LOGGER.debug("Home Assistant restart schedule cancel failed via UI: %s", service_err)
                 return err(service_err)
 
         if action in ("force_full_sync", "sync_all"):
@@ -3812,6 +3856,9 @@ class AkuvoxUISettings(HomeAssistantView):
                 "update_entity": "",
                 "backup": False,
                 "last_result": "disabled",
+                "pending_version": None,
+                "pending_version_full": None,
+                "restart_scheduled_for": None,
             }
         )
         updater = root.get("hacs_auto_updater")

@@ -223,7 +223,11 @@ sync_now:
 
 hacs_update_check:
   name: Check HACS update
-  description: Force a HACS update entity refresh and install the Akuvox Access Control update if one is available.
+  description: Force a HACS update entity refresh and record whether an Akuvox Access Control update is available.
+
+hacs_update_install:
+  name: Install HACS update
+  description: Install the currently available Akuvox Access Control HACS update after it has been checked.
 
 add_missing_users:
   name: Add missing users

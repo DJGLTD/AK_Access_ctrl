@@ -2332,10 +2332,35 @@ async function forceFullSync(){
 function hacsUpdateButtonLabel(status){
   const result = String(status?.last_result || '').toLowerCase();
   if (result === 'installed') return 'Update Installed';
+  if (result === 'update_available') return 'Update Available';
+  if (result === 'install_unconfirmed') return 'Install Unconfirmed';
+  if (result === 'restart_scheduled') return 'Restart Scheduled';
+  if (result === 'restart_requested') return 'Restart Sent';
   if (result === 'up_to_date') return 'No Update';
   if (result === 'entity_not_found') return 'Update Entity Missing';
-  if (result === 'check_failed' || result === 'install_failed') return 'Update Failed';
+  if (result === 'check_failed' || result === 'install_failed' || result === 'restart_failed') return 'Update Failed';
   return 'Check Sent';
+}
+
+async function promptForHacsRestart(status){
+  if (!status || String(status.last_result || '').toLowerCase() !== 'installed') return status;
+  if (confirm('Update installed. Restart Home Assistant now? Press Cancel to schedule it for later.')) {
+    const restartRes = await apiPost(actionUrl, { action: 'restart_homeassistant' });
+    return restartRes?.hacs_auto_update || status;
+  }
+  const minutesText = prompt('Schedule Home Assistant restart in how many minutes?', '30');
+  if (minutesText === null || String(minutesText).trim() === '') return status;
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    alert('Enter a positive number of minutes to schedule the restart.');
+    return status;
+  }
+  const restartAt = new Date(Date.now() + Math.round(minutes) * 60 * 1000).toISOString();
+  const scheduleRes = await apiPost(actionUrl, {
+    action: 'schedule_homeassistant_restart',
+    payload: { restart_at: restartAt },
+  });
+  return scheduleRes?.hacs_auto_update || status;
 }
 
 async function runHacsAutoUpdate(){
@@ -2381,10 +2406,35 @@ async function runHacsAutoUpdate(){
     if (btn) {
       btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
     }
-    if (result === 'installed') {
-      alert('Update installed. Restart Home Assistant to load it.');
+    if (result === 'update_available') {
+      const version = status?.pending_version || status?.latest_version || 'the available version';
+      if (confirm(`Install Akuvox Access Control update ${version}?`)) {
+        try {
+          const installRes = await apiPost(actionUrl, { action: 'hacs_update_install' });
+          status = installRes?.hacs_auto_update || status;
+          if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+          status = await promptForHacsRestart(status);
+          if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+          if (String(status?.last_result || '').toLowerCase() === 'install_unconfirmed') {
+            alert(status?.last_error || 'Install command was sent, but HACS did not confirm the new version.');
+          }
+        } catch (err) {
+          if (handleAuthError(err)) return;
+          alert(`HACS update install failed: ${err?.message || err}`);
+        }
+      }
+    } else if (result === 'installed') {
+      try {
+        status = await promptForHacsRestart(status);
+        if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+      } catch (err) {
+        if (handleAuthError(err)) return;
+        alert(`Home Assistant restart failed: ${err?.message || err}`);
+      }
     } else if (['entity_not_found','check_failed','install_failed'].includes(result)) {
       alert(status?.last_error || 'HACS update check did not complete.');
+    } else if (result === 'install_unconfirmed') {
+      alert(status?.last_error || 'Install command was sent, but HACS did not confirm the new version.');
     }
   }
 

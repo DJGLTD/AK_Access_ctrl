@@ -620,7 +620,9 @@ let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
 let hacsUpdateSaving = false;
 let hacsUpdateChecking = false;
+let hacsUpdateInstalling = false;
 let hacsRestarting = false;
+let hacsRestartScheduling = false;
 let dashboardAccessSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
@@ -824,6 +826,7 @@ function setHacsAutoUpdateStatus(text, tone = 'muted') {
   el.className = 'small';
   if (tone === 'error') el.classList.add('text-danger');
   else if (tone === 'success') el.classList.add('text-success');
+  else if (tone === 'warning') el.classList.add('text-warning');
   else el.classList.add('muted');
 }
 function setAlertsStatus(text, tone = 'muted') {
@@ -900,6 +903,9 @@ function sanitizeHacsAutoUpdate(raw){
     last_entity_id: null,
     installed_version: null,
     latest_version: null,
+    pending_version: null,
+    pending_version_full: null,
+    restart_scheduled_for: null,
     active: false,
   };
   if (raw && typeof raw === 'object'){
@@ -908,7 +914,7 @@ function sanitizeHacsAutoUpdate(raw){
     const interval = Number(raw.interval_hours);
     if (Number.isFinite(interval)) base.interval_hours = Math.round(interval);
     base.update_entity = String(raw.update_entity || '').trim();
-    ['last_checked','last_installed','last_result','last_error','last_entity_id','installed_version','latest_version'].forEach((key) => {
+    ['last_checked','last_installed','last_result','last_error','last_entity_id','installed_version','latest_version','pending_version','pending_version_full','restart_scheduled_for'].forEach((key) => {
       if (raw[key] !== undefined && raw[key] !== null && raw[key] !== '') base[key] = String(raw[key]);
     });
     base.active = coerceHacsBool(raw.active);
@@ -926,24 +932,39 @@ function formatHacsDate(value){
   return date.toLocaleString();
 }
 
+function hacsLocalDateTimeValue(date){
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function defaultHacsRestartValue(){
+  return hacsLocalDateTimeValue(new Date(Date.now() + 30 * 60 * 1000));
+}
+
 function hacsStatusTone(config){
   const result = String(config?.last_result || '').toLowerCase();
-  if (['check_failed','install_failed','entity_not_found'].includes(result)) return 'error';
-  if (['installed','restart_requested','up_to_date','enabled'].includes(result)) return 'success';
+  if (['check_failed','install_failed','install_unconfirmed','restart_failed','entity_not_found'].includes(result)) return 'error';
+  if (['installed','restart_requested','restart_scheduled','up_to_date','enabled'].includes(result)) return 'success';
+  if (result === 'update_available') return 'warning';
   return 'muted';
 }
 
 function describeHacsResult(config){
   const result = String(config?.last_result || '').toLowerCase();
+  if (result === 'update_available') return 'Update available. Review and install when ready.';
   if (result === 'installed') return 'Update installed. Restart Home Assistant to load it.';
   if (result === 'restart_requested') return 'Restart requested. Home Assistant is restarting...';
+  if (result === 'restart_scheduled') return 'Restart scheduled.';
   if (result === 'up_to_date') return 'No update available.';
   if (result === 'check_failed') return 'Update check failed.';
   if (result === 'install_failed') return 'Update install failed.';
+  if (result === 'install_unconfirmed') return 'Install command sent, but HACS has not confirmed the new version.';
+  if (result === 'restart_failed') return 'Home Assistant restart failed.';
   if (result === 'entity_not_found') return 'HACS update entity was not found.';
-  if (result === 'disabled') return 'Automatic HACS updates are disabled.';
-  if (config?.enabled) return config?.active ? 'Automatic HACS updates are enabled.' : 'Automatic HACS updates will start after reload.';
-  return 'Automatic HACS updates are disabled.';
+  if (result === 'disabled') return 'Automatic HACS update checks are disabled.';
+  if (config?.enabled) return config?.active ? 'Automatic HACS update checks are enabled.' : 'Automatic HACS update checks will start after reload.';
+  return 'Automatic HACS update checks are disabled.';
 }
 
 function readHacsAutoUpdateForm(){
@@ -980,9 +1001,16 @@ function renderHacsAutoUpdate(){
   const entityInput = document.getElementById('hacsAutoUpdateEntity');
   const backupInput = document.getElementById('hacsAutoUpdateBackup');
   const checkBtn = document.getElementById('hacsUpdateCheckBtn');
+  const installBtn = document.getElementById('hacsUpdateInstallBtn');
   const restartBtn = document.getElementById('hacsRestartNowBtn');
+  const scheduleWrap = document.getElementById('hacsRestartScheduleWrap');
+  const scheduleInput = document.getElementById('hacsRestartScheduleAt');
+  const scheduleBtn = document.getElementById('hacsRestartScheduleBtn');
+  const cancelScheduleBtn = document.getElementById('hacsRestartCancelScheduleBtn');
   const meta = document.getElementById('hacsAutoUpdateMeta');
-  const updateInstalled = String(cfg.last_result || '').toLowerCase() === 'installed';
+  const result = String(cfg.last_result || '').toLowerCase();
+  const updateAvailable = result === 'update_available';
+  const updateInstalled = ['installed','restart_scheduled','restart_failed'].includes(result);
   const canRestart = !!(SETTINGS_DATA.dashboard_access?.can_manage || SETTINGS_DATA.dashboard_access?.current_user_is_admin);
   if (toggle) toggle.checked = !!cfg.enabled;
   if (backupInput) backupInput.checked = !!cfg.backup;
@@ -993,17 +1021,37 @@ function renderHacsAutoUpdate(){
   }
   if (entityInput) entityInput.value = cfg.update_entity || '';
   if (checkBtn) checkBtn.disabled = hacsUpdateChecking;
+  if (installBtn) {
+    installBtn.classList.toggle('d-none', !updateAvailable);
+    installBtn.disabled = hacsUpdateInstalling;
+  }
   if (restartBtn) {
     restartBtn.classList.toggle('d-none', !(canRestart && (updateInstalled || hacsRestarting)));
     restartBtn.disabled = hacsRestarting;
+  }
+  if (scheduleWrap) {
+    scheduleWrap.classList.toggle('d-none', !(canRestart && updateInstalled));
+  }
+  if (scheduleInput) {
+    if (!scheduleInput.value || cfg.restart_scheduled_for) {
+      const parsed = cfg.restart_scheduled_for ? new Date(cfg.restart_scheduled_for) : null;
+      scheduleInput.value = parsed && !Number.isNaN(parsed.getTime()) ? hacsLocalDateTimeValue(parsed) : defaultHacsRestartValue();
+    }
+  }
+  if (scheduleBtn) scheduleBtn.disabled = hacsRestartScheduling;
+  if (cancelScheduleBtn) {
+    cancelScheduleBtn.classList.toggle('d-none', !cfg.restart_scheduled_for);
+    cancelScheduleBtn.disabled = hacsRestartScheduling;
   }
   if (meta){
     const details = [
       `Last checked: ${formatHacsDate(cfg.last_checked)}`,
     ];
     if (cfg.last_installed) details.push(`Last installed: ${formatHacsDate(cfg.last_installed)}`);
+    if (cfg.pending_version) details.push(`Pending: ${cfg.pending_version}`);
     if (cfg.last_entity_id) details.push(`Entity: ${cfg.last_entity_id}`);
     if (cfg.installed_version || cfg.latest_version) details.push(`Version: ${cfg.installed_version || 'unknown'} to ${cfg.latest_version || 'unknown'}`);
+    if (cfg.restart_scheduled_for) details.push(`Restart scheduled: ${formatHacsDate(cfg.restart_scheduled_for)}`);
     if (cfg.last_error) details.push(`Error: ${cfg.last_error}`);
     meta.textContent = details.join(' | ');
   }
@@ -1138,9 +1186,38 @@ async function runHacsUpdateCheck(){
   }
 }
 
-async function restartHomeAssistantNow(){
+async function installHacsUpdate(){
+  if (hacsUpdateInstalling) return;
+  const cfg = sanitizeHacsAutoUpdate(SETTINGS_DATA.hacs_auto_update);
+  const version = cfg.pending_version || cfg.latest_version || 'the available version';
+  if (!confirm(`Install Akuvox Access Control update ${version}?`)) {
+    return;
+  }
+  hacsUpdateInstalling = true;
+  renderHacsAutoUpdate();
+  setHacsAutoUpdateStatus('Installing HACS update...');
+  try {
+    const res = await callAction('hacs_update_install');
+    if (res && res.hacs_auto_update){
+      SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(res.hacs_auto_update);
+    }
+    renderHacsAutoUpdate();
+    const result = String(SETTINGS_DATA.hacs_auto_update?.last_result || '').toLowerCase();
+    if (result === 'installed' && confirm('Update installed. Restart Home Assistant now? Press Cancel to schedule it for later.')) {
+      await restartHomeAssistantNow({ skipConfirm: true });
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setHacsAutoUpdateStatus(err && err.message ? err.message : 'HACS update install failed', 'error');
+  } finally {
+    hacsUpdateInstalling = false;
+    renderHacsAutoUpdate();
+  }
+}
+
+async function restartHomeAssistantNow(options = {}){
   if (hacsRestarting) return;
-  if (!confirm('Restart Home Assistant now? The dashboard will disconnect while Home Assistant restarts.')) {
+  if (!options.skipConfirm && !confirm('Restart Home Assistant now? The dashboard will disconnect while Home Assistant restarts.')) {
     return;
   }
   hacsRestarting = true;
@@ -1158,6 +1235,59 @@ async function restartHomeAssistantNow(){
     renderHacsAutoUpdate();
     if (handleAuthError(err)) return;
     setHacsAutoUpdateStatus(err && err.message ? err.message : 'Failed to restart Home Assistant', 'error');
+  }
+}
+
+async function scheduleHomeAssistantRestart(){
+  if (hacsRestartScheduling) return;
+  const input = document.getElementById('hacsRestartScheduleAt');
+  const raw = String(input?.value || '').trim();
+  if (!raw) {
+    setHacsAutoUpdateStatus('Choose when Home Assistant should restart.', 'error');
+    return;
+  }
+  const restartAt = new Date(raw);
+  if (Number.isNaN(restartAt.getTime()) || restartAt <= new Date()) {
+    setHacsAutoUpdateStatus('Choose a restart time in the future.', 'error');
+    return;
+  }
+  hacsRestartScheduling = true;
+  renderHacsAutoUpdate();
+  setHacsAutoUpdateStatus('Scheduling Home Assistant restart...');
+  try {
+    const res = await callAction('schedule_homeassistant_restart', { restart_at: restartAt.toISOString() });
+    if (res && res.hacs_auto_update){
+      SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(res.hacs_auto_update);
+    }
+    renderHacsAutoUpdate();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setHacsAutoUpdateStatus(err && err.message ? err.message : 'Failed to schedule Home Assistant restart', 'error');
+  } finally {
+    hacsRestartScheduling = false;
+    renderHacsAutoUpdate();
+  }
+}
+
+async function cancelHomeAssistantRestart(){
+  if (hacsRestartScheduling) return;
+  hacsRestartScheduling = true;
+  renderHacsAutoUpdate();
+  setHacsAutoUpdateStatus('Cancelling scheduled restart...');
+  try {
+    const res = await callAction('cancel_homeassistant_restart');
+    if (res && res.hacs_auto_update){
+      SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(res.hacs_auto_update);
+    }
+    const input = document.getElementById('hacsRestartScheduleAt');
+    if (input) input.value = defaultHacsRestartValue();
+    renderHacsAutoUpdate();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setHacsAutoUpdateStatus(err && err.message ? err.message : 'Failed to cancel scheduled restart', 'error');
+  } finally {
+    hacsRestartScheduling = false;
+    renderHacsAutoUpdate();
   }
 }
 
@@ -2514,9 +2644,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     ev.preventDefault();
     await runHacsUpdateCheck();
   });
+  document.getElementById('hacsUpdateInstallBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await installHacsUpdate();
+  });
   document.getElementById('hacsRestartNowBtn')?.addEventListener('click', async (ev) => {
     ev.preventDefault();
     await restartHomeAssistantNow();
+  });
+  document.getElementById('hacsRestartScheduleBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await scheduleHomeAssistantRestart();
+  });
+  document.getElementById('hacsRestartCancelScheduleBtn')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    await cancelHomeAssistantRestart();
   });
 
   document.getElementById('dashboardAccessUsers')?.addEventListener('change', async (ev) => {
@@ -2710,10 +2852,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   <div class="card mt-3">
     <div class="card-header text-white">HACS Auto Update</div>
     <div class="card-body">
-      <p class="muted">Automatically refresh the HACS update entity for this integration and install an available update. Home Assistant still needs a restart after an integration update is installed.</p>
+      <p class="muted">Automatically refresh the HACS update entity for this integration. When an update is found, review it here before installing. Home Assistant still needs a restart after an integration update is installed.</p>
       <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="hacsAutoUpdateToggle">
-        <label class="form-check-label" for="hacsAutoUpdateToggle">Enable automatic HACS updates</label>
+        <label class="form-check-label" for="hacsAutoUpdateToggle">Enable automatic HACS update checks</label>
       </div>
       <div class="row g-2 mt-3">
         <div class="col-md-4">
@@ -2732,8 +2874,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       </div>
       <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
         <button id="hacsUpdateCheckBtn" class="btn btn-outline-info btn-sm" type="button"><i class="bi bi-arrow-repeat me-1"></i>Check now</button>
+        <button id="hacsUpdateInstallBtn" class="btn btn-success btn-sm d-none" type="button"><i class="bi bi-cloud-arrow-down me-1"></i>Install update</button>
         <button id="hacsRestartNowBtn" class="btn btn-warning btn-sm d-none" type="button"><i class="bi bi-power me-1"></i>Restart Home Assistant</button>
         <span id="hacsAutoUpdateStatus" class="visually-hidden small"></span>
+      </div>
+      <div id="hacsRestartScheduleWrap" class="row g-2 align-items-end mt-2 d-none">
+        <div class="col-md-5">
+          <label class="form-label" for="hacsRestartScheduleAt">Schedule restart for later</label>
+          <input id="hacsRestartScheduleAt" class="form-control" type="datetime-local" />
+        </div>
+        <div class="col-md-auto d-flex flex-wrap gap-2">
+          <button id="hacsRestartScheduleBtn" class="btn btn-outline-warning btn-sm" type="button"><i class="bi bi-clock me-1"></i>Schedule restart</button>
+          <button id="hacsRestartCancelScheduleBtn" class="btn btn-outline-secondary btn-sm d-none" type="button"><i class="bi bi-x-circle me-1"></i>Cancel scheduled restart</button>
+        </div>
       </div>
       <div id="hacsAutoUpdateMeta" class="muted small mt-2"></div>
     </div>

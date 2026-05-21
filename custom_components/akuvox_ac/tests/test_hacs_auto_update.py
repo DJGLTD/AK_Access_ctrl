@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Tuple
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
@@ -39,8 +40,10 @@ class _States:
 
 
 class _Services:
-    def __init__(self) -> None:
+    def __init__(self, state: _State, *, confirm_install: bool = True) -> None:
         self.calls: List[Tuple[str, str, Dict[str, Any], bool]] = []
+        self._state = state
+        self._confirm_install = confirm_install
 
     async def async_call(
         self,
@@ -52,12 +55,21 @@ class _Services:
         **_: Any,
     ) -> None:
         self.calls.append((domain, service, dict(data or {}), blocking))
+        if domain == "update" and service == "install" and self._confirm_install:
+            version = str((data or {}).get("version") or LATEST_SHA)[:7]
+            self._state.attributes = dict(self._state.attributes)
+            self._state.attributes["installed_version"] = version
+            self._state.attributes["latest_version"] = version
+            self._state.state = "off"
 
 
 class _Hass:
-    def __init__(self, settings: AkuvoxSettingsStore) -> None:
-        self.states = _States(_State())
-        self.services = _Services()
+    def __init__(self, settings: AkuvoxSettingsStore, *, confirm_install: bool = True) -> None:
+        self._state = _State()
+        self._state.state = "off"
+        self._state.attributes = dict(_State.attributes)
+        self.states = _States(self._state)
+        self.services = _Services(self._state, confirm_install=confirm_install)
         self.data = {DOMAIN: {"settings_store": settings}}
 
 
@@ -99,7 +111,7 @@ def _settings_store() -> AkuvoxSettingsStore:
     return store
 
 
-def test_hacs_auto_update_installs_github_head_when_hacs_entity_is_stale(monkeypatch):
+def test_hacs_auto_update_check_detects_github_head_when_hacs_entity_is_stale(monkeypatch):
     store = _settings_store()
     hass = _Hass(store)
     monkeypatch.setattr(
@@ -109,6 +121,28 @@ def test_hacs_auto_update_installs_github_head_when_hacs_entity_is_stale(monkeyp
     )
 
     status = asyncio.run(HacsAutoUpdater(hass).async_run_check(force=True))
+
+    install_calls = [
+        call for call in hass.services.calls if call[0] == "update" and call[1] == "install"
+    ]
+    assert install_calls == []
+    assert status["last_result"] == "update_available"
+    assert status["installed_version"] == "3175ae3"
+    assert status["latest_version"] == "71d1bd2"
+    assert status["pending_version"] == "71d1bd2"
+    assert status["pending_version_full"] == LATEST_SHA
+
+
+def test_hacs_auto_update_install_confirms_github_head(monkeypatch):
+    store = _settings_store()
+    hass = _Hass(store)
+    monkeypatch.setattr(
+        integration_module,
+        "async_get_clientsession",
+        lambda _hass: _GithubSession(),
+    )
+
+    status = asyncio.run(HacsAutoUpdater(hass).async_install_update(force=True))
 
     install_calls = [
         call for call in hass.services.calls if call[0] == "update" and call[1] == "install"
@@ -125,8 +159,49 @@ def test_hacs_auto_update_installs_github_head_when_hacs_entity_is_stale(monkeyp
         )
     ]
     assert status["last_result"] == "installed"
-    assert status["installed_version"] == "3175ae3"
+    assert status["installed_version"] == "71d1bd2"
     assert status["latest_version"] == "71d1bd2"
+    assert status["pending_version"] is None
+
+
+def test_hacs_auto_update_install_requires_hacs_confirmation(monkeypatch):
+    store = _settings_store()
+    hass = _Hass(store, confirm_install=False)
+    monkeypatch.setattr(
+        integration_module,
+        "async_get_clientsession",
+        lambda _hass: _GithubSession(),
+    )
+
+    status = asyncio.run(HacsAutoUpdater(hass).async_install_update(force=True))
+
+    assert status["last_result"] == "install_unconfirmed"
+    assert status["installed_version"] == "3175ae3"
+    assert status["pending_version"] == "71d1bd2"
+
+
+def test_hacs_auto_update_schedules_and_cancels_restart(monkeypatch):
+    store = _settings_store()
+    hass = _Hass(store)
+    scheduled: Dict[str, Any] = {}
+
+    def _schedule(_hass, delay, callback):
+        scheduled["delay"] = delay
+        scheduled["callback"] = callback
+        return lambda: scheduled.__setitem__("cancelled", True)
+
+    monkeypatch.setattr(integration_module, "async_call_later", _schedule)
+
+    restart_at = datetime.now(tz=UTC) + timedelta(minutes=30)
+    status = asyncio.run(HacsAutoUpdater(hass).async_schedule_restart(restart_at.isoformat()))
+
+    assert status["last_result"] == "restart_scheduled"
+    assert status["restart_scheduled_for"]
+    assert scheduled["delay"] > 0
+
+    status = asyncio.run(HacsAutoUpdater(hass).async_cancel_restart())
+
+    assert status["restart_scheduled_for"] is None
 
 
 def test_hacs_auto_update_matches_short_and_full_commit_versions():
