@@ -1,11 +1,15 @@
 {
   "domain": "akuvox_ac",
   "name": "Akuvox Access Control",
-  "version": "0.1.0b0",
-  "codeowners": ["@you"],
+  "version": "3.1.0",
+  "codeowners": [
+    "@you"
+  ],
   "config_flow": true,
   "import_executor": true,
   "iot_class": "local_polling",
-  "loggers": ["custom_components.akuvox_ac"],
+  "loggers": [
+    "custom_components.akuvox_ac"
+  ],
   "requirements": []
 }

@@ -30,6 +30,14 @@ README.md
 This integration supports **config flow** (Settings → Devices & services → Add Integration → search for *Akuvox Access Control*).
 Follow the on‑screen steps. See the in‑integration options and services for details.
 
+## Release Versioning
+Releases start at `v3.1.0`. The integration manifest and dashboard version label are updated by the release workflow so HACS and Home Assistant show release versions instead of commit hashes.
+
+- Small fixes and routine changes use patch versions, for example `3.1.0` → `3.1.1`.
+- Larger feature changes use minor versions, for example `3.1.x` → `3.2.0`.
+- Use `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `build:`, or `ci:` commits for patch releases.
+- Use `feat:` or `major:` commits for the next minor release.
+
 ## Notes
 - Web assets (in `custom_components/akuvox_ac/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
 - Uploaded face images are stored in the Home Assistant config at `config/akuvox_ac/FaceData/` and are preserved across updates.

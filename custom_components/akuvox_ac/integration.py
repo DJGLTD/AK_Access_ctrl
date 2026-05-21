@@ -3224,7 +3224,7 @@ class HacsAutoUpdater:
 
     REPOSITORY = "DJGLTD/AK_Access_ctrl"
     DEFAULT_BRANCH = "main"
-    GITHUB_COMMIT_URL = f"https://api.github.com/repos/{REPOSITORY}/commits/{DEFAULT_BRANCH}"
+    GITHUB_RELEASE_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
     MATCHERS = (
         "djgltd/ak_access_ctrl",
         "ak_access_ctrl",
@@ -3509,45 +3509,63 @@ class HacsAutoUpdater:
 
     def _update_available(self, state: Any) -> bool:
         state_value = str(getattr(state, "state", "") or "").strip().lower()
-        if state_value == "on":
-            return True
-        if state_value == "off":
-            return False
-
         attrs = getattr(state, "attributes", {}) or {}
         installed = str(attrs.get("installed_version") or "").strip()
         latest = str(attrs.get("latest_version") or "").strip()
         skipped = str(attrs.get("skipped_version") or "").strip()
-        return bool(latest and installed and latest != installed and latest != skipped)
+        if not latest or not installed:
+            return False
+        if not self._is_release_version(latest):
+            return False
+        if self._versions_match(latest, installed):
+            return False
+        if skipped and self._versions_match(latest, skipped):
+            return False
+        if state_value == "off":
+            return False
+        return True
 
     @staticmethod
     def _version_text(version: Any) -> str:
         return str(version or "").strip()
 
     @classmethod
-    def _short_version(cls, version: Any) -> Optional[str]:
+    def _is_release_version(cls, version: Any) -> bool:
+        text = cls._version_text(version)
+        return bool(re.fullmatch(r"v?\d+(?:\.\d+){1,2}(?:[-+][0-9A-Za-z.-]+)?", text))
+
+    @classmethod
+    def _display_version(cls, version: Any) -> Optional[str]:
         text = cls._version_text(version)
         if not text:
             return None
-        if re.fullmatch(r"[0-9a-fA-F]{7,40}", text):
-            return text[:7].lower()
+        if cls._is_release_version(text):
+            return text[1:] if text.lower().startswith("v") else text
+        return text
+
+    @classmethod
+    def _comparable_version(cls, version: Any) -> str:
+        text = cls._version_text(version).lower()
+        if not text:
+            return ""
+        if text.startswith("v") and len(text) > 1 and text[1].isdigit():
+            text = text[1:]
+        match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?([\-+][0-9a-z.-]+)?", text)
+        if match:
+            patch = match.group(3) if match.group(3) is not None else "0"
+            suffix = match.group(4) or ""
+            return f"{int(match.group(1))}.{int(match.group(2))}.{int(patch)}{suffix}"
         return text
 
     @classmethod
     def _versions_match(cls, left: Any, right: Any) -> bool:
-        left_text = cls._version_text(left).lower()
-        right_text = cls._version_text(right).lower()
+        left_text = cls._comparable_version(left)
+        right_text = cls._comparable_version(right)
         if not left_text or not right_text:
             return False
-        if left_text == right_text:
-            return True
-        if re.fullmatch(r"[0-9a-f]{7,40}", left_text) and re.fullmatch(
-            r"[0-9a-f]{7,40}", right_text
-        ):
-            return left_text.startswith(right_text) or right_text.startswith(left_text)
-        return False
+        return left_text == right_text
 
-    async def _fetch_latest_github_sha(self) -> Optional[str]:
+    async def _fetch_latest_github_release(self) -> Optional[Tuple[str, str]]:
         session = async_get_clientsession(self.hass)
         if asyncio.iscoroutine(session):
             session = await session
@@ -3555,7 +3573,7 @@ class HacsAutoUpdater:
             return None
 
         response_cm = session.get(
-            self.GITHUB_COMMIT_URL,
+            self.GITHUB_RELEASE_URL,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "HomeAssistant-Akuvox-Access-Control",
@@ -3564,22 +3582,25 @@ class HacsAutoUpdater:
         )
         async with response_cm as response:
             status = int(getattr(response, "status", 0) or 0)
+            if status == 404:
+                return None
             if status >= 400:
                 body = ""
                 try:
                     body = await response.text()
                 except Exception:
                     body = ""
-                message = f"GitHub latest commit check failed with HTTP {status}"
+                message = f"GitHub latest release check failed with HTTP {status}"
                 if body:
                     message = f"{message}: {body[:200]}"
                 raise RuntimeError(message)
             payload = await response.json()
 
-        sha = str((payload or {}).get("sha") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise RuntimeError("GitHub latest commit response did not include a valid SHA.")
-        return sha
+        tag = str((payload or {}).get("tag_name") or "").strip()
+        version = self._display_version(tag)
+        if not tag or not version:
+            raise RuntimeError("GitHub latest release response did not include a valid tag.")
+        return tag, version
 
     async def _record_status(self, **updates: Any) -> Dict[str, Any]:
         settings = self._settings_store()
@@ -3675,15 +3696,21 @@ class HacsAutoUpdater:
             attrs = getattr(state, "attributes", {}) or {}
             installed = attrs.get("installed_version")
             hacs_latest = attrs.get("latest_version")
-            latest = hacs_latest
-            github_latest_sha: Optional[str] = None
+            hacs_latest_version = (
+                self._display_version(hacs_latest) if self._is_release_version(hacs_latest) else None
+            )
+            latest = hacs_latest_version
+            github_latest_tag: Optional[str] = None
+            github_latest_version: Optional[str] = None
             github_error: Optional[str] = None
             try:
-                github_latest_sha = await self._fetch_latest_github_sha()
+                latest_release = await self._fetch_latest_github_release()
+                if latest_release:
+                    github_latest_tag, github_latest_version = latest_release
             except Exception as err:
                 github_error = str(err)
-            if github_latest_sha:
-                latest = self._short_version(github_latest_sha)
+            if github_latest_version:
+                latest = github_latest_version
 
             base_status = {
                 "last_checked": checked_at,
@@ -3694,13 +3721,13 @@ class HacsAutoUpdater:
 
             pending_version_full: Optional[str] = None
             has_update = self._update_available(state)
-            if github_latest_sha and not self._versions_match(installed, github_latest_sha):
+            if github_latest_version and not self._versions_match(installed, github_latest_version):
                 has_update = True
-                pending_version_full = github_latest_sha
-            elif has_update and hacs_latest:
+                pending_version_full = github_latest_tag or github_latest_version
+            elif has_update and hacs_latest_version:
                 pending_version_full = self._version_text(hacs_latest)
 
-            pending_version = self._short_version(pending_version_full)
+            pending_version = self._display_version(pending_version_full)
 
             if not has_update:
                 if github_error:
@@ -3787,11 +3814,11 @@ class HacsAutoUpdater:
             attrs_after = getattr(state_after, "attributes", {}) if state_after is not None else {}
             installed_after = attrs_after.get("installed_version") or check_status.get("installed_version")
             latest_after = attrs_after.get("latest_version") or check_status.get("latest_version")
-            pending_short = self._short_version(install_version)
+            pending_display = self._display_version(install_version)
             confirmed = False
             if install_version and self._versions_match(installed_after, install_version):
                 confirmed = True
-            elif pending_short and self._versions_match(installed_after, pending_short):
+            elif pending_display and self._versions_match(installed_after, pending_display):
                 confirmed = True
             elif (
                 not install_version
@@ -3808,13 +3835,13 @@ class HacsAutoUpdater:
                     last_checked=dt_util.now().isoformat(),
                     last_entity_id=entity_id,
                     installed_version=installed_after,
-                    latest_version=pending_short or latest_after,
+                    latest_version=pending_display or latest_after,
                     last_result="install_unconfirmed",
                     last_error=(
                         "Install command was sent, but HACS still reports "
                         f"{entity_id} at {installed_after or 'unknown'}."
                     ),
-                    pending_version=pending_short or check_status.get("pending_version"),
+                    pending_version=pending_display or check_status.get("pending_version"),
                     pending_version_full=install_version or check_status.get("pending_version_full"),
                 )
 
@@ -3823,7 +3850,7 @@ class HacsAutoUpdater:
                 last_checked=dt_util.now().isoformat(),
                 last_entity_id=entity_id,
                 installed_version=installed_after,
-                latest_version=pending_short or latest_after,
+                latest_version=pending_display or latest_after,
                 last_installed=dt_util.now().isoformat(),
                 last_result="installed",
                 last_error=None,
