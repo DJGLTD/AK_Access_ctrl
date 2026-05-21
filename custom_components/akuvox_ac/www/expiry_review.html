@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Access Expiry</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet" />
+  <style>
+    :root{ --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc; --accent:#2ff0c4; }
+    body{ background:var(--bg); color:var(--text); font-family:system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .container-narrow{ max-width:720px; margin:0 auto; padding:1.5rem; }
+    .card{ background:var(--card); border:1px solid var(--border); }
+    .muted{ color:var(--muted); }
+    .form-label{ color:#fff; }
+    .btn-outline-accent{ border-color:rgba(47,240,196,.5); color:var(--text); }
+    .btn-outline-accent:hover{ background:rgba(47,240,196,.2); border-color:var(--accent); color:var(--text); }
+    .status{ min-height:1.5rem; }
+  </style>
+</head>
+<body>
+<script>
+(function(){
+  const qs = new URLSearchParams(location.search);
+  const qsToken = qs.get('token');
+  if (qsToken) sessionStorage.setItem('akuvox_ll_token', qsToken);
+})();
+
+const QUERY = new URLSearchParams(location.search);
+const USER_ID = QUERY.get('id') || QUERY.get('user_id') || '';
+const QUERY_NAME = QUERY.get('name') || '';
+const QUERY_ACCESS_END = QUERY.get('access_end') || '';
+const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
+const REJECTED_TOKENS = new Set();
+
+function signedPath(key, fallback){
+  let signed = {};
+  try { signed = window.AK_AC_SIGNED_PATHS || {}; } catch (err) {}
+  try {
+    const raw = sessionStorage.getItem('akuvox_signed_paths') || localStorage.getItem('akuvox_signed_paths');
+    if (raw) signed = { ...signed, ...JSON.parse(raw) };
+  } catch (err) {}
+  return signed[key] || fallback;
+}
+
+function isSignedPath(url){
+  return typeof url === 'string' && /[?&]authSig=/.test(url);
+}
+
+function clearSignedPathCache(){
+  try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {}
+  try { window.AK_AC_SIGNED_PATHS = {}; } catch (err) {}
+}
+
+function stripAuthSig(url){
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.delete('authSig');
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch (err) {
+    return url;
+  }
+}
+
+function scanTokenStorage(storage){
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem('hassTokens');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const token = parsed?.access_token || parsed?.accessToken || parsed?.token?.access_token;
+        if (token) return token;
+      } catch (err) {
+        if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      }
+    }
+    for (const key of Object.keys(storage)) {
+      if (!/auth|token|hass/i.test(key)) continue;
+      try {
+        const parsed = JSON.parse(storage.getItem(key));
+        const token = parsed?.access_token || parsed?.accessToken || parsed?.token?.access_token;
+        if (token) return token;
+      } catch (err) {}
+    }
+  } catch (err) {}
+  return null;
+}
+
+function getAuthToken(){
+  const windows = [window];
+  try { if (window.parent && window.parent !== window) windows.push(window.parent); } catch (err) {}
+  for (const win of windows) {
+    const token = scanTokenStorage(win.sessionStorage) || scanTokenStorage(win.localStorage);
+    if (token) {
+      try { sessionStorage.setItem('akuvox_ll_token', token); } catch (err) {}
+      return token;
+    }
+  }
+  try { return sessionStorage.getItem('akuvox_ll_token') || localStorage.getItem('akuvox_ll_token'); } catch (err) {}
+  return null;
+}
+
+function nextBearerToken(){
+  const token = getAuthToken();
+  if (!token || REJECTED_TOKENS.has(token)) return null;
+  return token;
+}
+
+async function fetchWithAuth(url, options = {}){
+  const signedRequest = isSignedPath(url);
+  const token = signedRequest ? null : nextBearerToken();
+  if (!signedRequest && !token) return new Response('authentication required', { status: 401 });
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let res = await fetch(url, { ...options, headers, credentials:'same-origin' });
+  if ((res.status === 401 || res.status === 403) && signedRequest) {
+    clearSignedPathCache();
+    const retryToken = nextBearerToken();
+    if (retryToken) {
+      res = await fetch(stripAuthSig(url), {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization:`Bearer ${retryToken}` },
+        credentials:'same-origin'
+      });
+      if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
+    }
+  }
+  if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
+  return res;
+}
+
+async function apiGet(url){
+  const res = await fetchWithAuth(url);
+  if (!res.ok) throw new Error(await res.text() || `Request failed: ${res.status}`);
+  return res.json();
+}
+
+async function apiAction(action, payload){
+  const res = await fetchWithAuth(API_ACTION, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body:JSON.stringify({ action, payload: payload || {} })
+  });
+  if (!res.ok) throw new Error(await res.text() || `Action failed: ${res.status}`);
+  return res.json().catch(() => ({}));
+}
+
+function escapeHtml(value){
+  const lookup = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+  return String(value ?? '').replace(/[&<>"']/g, ch => lookup[ch] ?? ch);
+}
+
+function buildHref(slug, params = {}){
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, value);
+  });
+  const token = sessionStorage.getItem('akuvox_ll_token');
+  if (token) search.set('token', token);
+  return `/akuvox-ac/${String(slug || '').replace(/_/g, '-')}${search.toString() ? `?${search}` : ''}`;
+}
+
+function openInApp(view, params = {}, options = {}){
+  try {
+    if (window.parent && window.parent !== window) {
+      const msg = { type:'akuvox-nav', view:String(view || ''), slug:String(view || ''), params };
+      if (options.replaceState) msg.replaceState = true;
+      window.parent.postMessage(msg, window.location.origin);
+      return;
+    }
+  } catch (err) {}
+  window.location.href = buildHref(view, params);
+}
+
+function setStatus(message, ok = true){
+  const el = document.getElementById('status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = ok ? 'status text-success' : 'status text-danger';
+}
+
+function quickDate(days){
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+async function loadUser(){
+  const title = document.getElementById('userTitle');
+  const meta = document.getElementById('userMeta');
+  const input = document.getElementById('accessEnd');
+  if (!USER_ID) {
+    setStatus('Missing user id.', false);
+    return;
+  }
+  let user = null;
+  try {
+    const state = await apiGet(API_STATE);
+    const users = Array.isArray(state?.registry_users) ? state.registry_users : [];
+    user = users.find(item => String(item.id || '').toUpperCase() === USER_ID.toUpperCase()) || null;
+  } catch (err) {
+    setStatus(err?.message || 'Unable to load user.', false);
+  }
+  const name = user?.name || QUERY_NAME || USER_ID;
+  const accessEnd = user?.access_end || QUERY_ACCESS_END || '';
+  title.textContent = name;
+  meta.textContent = `${USER_ID}${accessEnd ? ` · current expiry ${accessEnd}` : ''}`;
+  input.value = accessEnd || quickDate(7);
+  input.min = new Date().toISOString().slice(0, 10);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnBack')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    openInApp('index');
+  });
+  document.querySelectorAll('[data-quick-days]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('accessEnd').value = quickDate(Number(btn.dataset.quickDays || 0));
+    });
+  });
+  document.getElementById('extendForm')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const accessEnd = document.getElementById('accessEnd').value;
+    if (!accessEnd) {
+      setStatus('Choose an expiry date.', false);
+      return;
+    }
+    try {
+      await apiAction('extend_user_access', { id: USER_ID, access_end: accessEnd });
+      setStatus('Access expiry updated. Syncing to devices shortly.', true);
+    } catch (err) {
+      setStatus(err?.message || 'Failed to update access.', false);
+    }
+  });
+  document.getElementById('revokeBtn')?.addEventListener('click', async () => {
+    if (!confirm('Revoke access now?')) return;
+    try {
+      await apiAction('revoke_user_access', { id: USER_ID });
+      setStatus('Access revoked. Syncing to devices shortly.', true);
+      setTimeout(() => openInApp('index', {}, { replaceState:true }), 800);
+    } catch (err) {
+      setStatus(err?.message || 'Failed to revoke access.', false);
+    }
+  });
+  loadUser();
+});
+</script>
+
+<div class="container-narrow">
+  <div class="card p-4">
+    <div class="d-flex justify-content-between gap-3 align-items-start mb-4">
+      <div>
+        <h2 class="mb-1" id="userTitle">Access Expiry</h2>
+        <div class="muted" id="userMeta"></div>
+      </div>
+      <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
+    </div>
+
+    <form id="extendForm">
+      <label class="form-label" for="accessEnd">Access End</label>
+      <input class="form-control" id="accessEnd" type="date" required />
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-outline-accent btn-sm" type="button" data-quick-days="1">Tomorrow</button>
+        <button class="btn btn-outline-accent btn-sm" type="button" data-quick-days="7">+1 week</button>
+        <button class="btn btn-outline-accent btn-sm" type="button" data-quick-days="30">+30 days</button>
+      </div>
+      <div class="status mt-3" id="status"></div>
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button class="btn btn-success" type="submit"><i class="bi bi-calendar-plus"></i> Update expiry</button>
+        <button class="btn btn-outline-danger" type="button" id="revokeBtn"><i class="bi bi-slash-circle"></i> Revoke access now</button>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>

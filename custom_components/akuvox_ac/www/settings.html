@@ -1217,6 +1217,7 @@ function ensureTargetDefaults(target){
     ALERT_TARGETS[target] = {
       device_offline: false,
       integrity_failed: false,
+      access_expiring: false,
       any_denied: false,
       granted: { any: false, specific: false, users: [] }
     };
@@ -1224,6 +1225,7 @@ function ensureTargetDefaults(target){
     const cfg = ALERT_TARGETS[target];
     if (typeof cfg.device_offline !== 'boolean') cfg.device_offline = Boolean(cfg.device_offline);
     if (typeof cfg.integrity_failed !== 'boolean') cfg.integrity_failed = Boolean(cfg.integrity_failed);
+    if (typeof cfg.access_expiring !== 'boolean') cfg.access_expiring = Boolean(cfg.access_expiring);
     if (typeof cfg.any_denied !== 'boolean') cfg.any_denied = Boolean(cfg.any_denied);
     if (!cfg.granted || typeof cfg.granted !== 'object') cfg.granted = { any: false, specific: false, users: [] };
     if (typeof cfg.granted.any !== 'boolean') cfg.granted.any = Boolean(cfg.granted.any);
@@ -1498,6 +1500,10 @@ function renderAlerts(){
           <label class="form-check-label">Device Integrity Check Failed</label>
         </div>
         <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="access_expiring" ${cfg.access_expiring ? 'checked' : ''}>
+          <label class="form-check-label">User Access Expiring Today</label>
+        </div>
+        <div class="form-check mt-2">
           <input class="form-check-input" type="checkbox" data-target="${service}" data-field="any_denied" ${cfg.any_denied ? 'checked' : ''}>
           <label class="form-check-label">Any User Denied Access</label>
         </div>
@@ -1553,6 +1559,7 @@ function renderAlerts(){
       const checked = input.checked;
       if (field === 'device_offline') cfg.device_offline = checked;
       else if (field === 'integrity_failed') cfg.integrity_failed = checked;
+      else if (field === 'access_expiring') cfg.access_expiring = checked;
       else if (field === 'any_denied') cfg.any_denied = checked;
       else if (field === 'granted_any') cfg.granted.any = checked;
       else if (field === 'granted_specific') {
