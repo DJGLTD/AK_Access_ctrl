@@ -35,8 +35,8 @@ Releases start at `v3.1.0`. The integration manifest and dashboard version label
 
 - Small fixes and routine changes use patch versions, for example `3.1.0` → `3.1.1`.
 - Larger feature changes use minor versions, for example `3.1.x` → `3.2.0`.
-- Use `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `build:`, or `ci:` commits for patch releases.
-- Use `feat:` or `major:` commits for the next minor release.
+- Every merged PR or direct commit to `main` creates at least a patch release.
+- Use `feat:`, `[minor]`, `[feature]`, or `[major]` in the PR title or commit message for the next minor release.
 
 ## Notes
 - Web assets (in `custom_components/akuvox_ac/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
