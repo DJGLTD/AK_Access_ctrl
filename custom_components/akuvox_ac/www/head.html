@@ -1228,14 +1228,6 @@ async function fetchVersion(){
     });
     if ((res.status === 401 || res.status === 403) && signedRequest) {
       clearSignedPathCache();
-      const retryToken = getUsableToken();
-      if (retryToken) {
-        res = await fetch(stripAuthSig(API_STATE), {
-          credentials: 'same-origin',
-          headers: { 'Authorization': 'Bearer ' + retryToken }
-        });
-        if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
-      }
     }
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();

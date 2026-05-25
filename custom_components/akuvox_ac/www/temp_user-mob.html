@@ -214,16 +214,6 @@ async function callService(service, data) {
   });
   if ((res.status === 401 || res.status === 403) && signedRequest) {
     clearSignedPathCache();
-    const retryToken = nextBearerToken();
-    if (retryToken) {
-      res = await fetch(stripAuthSig(url), {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${retryToken}` },
-        body: JSON.stringify(data || {})
-      });
-      if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
-    }
   }
   if (!res.ok) {
     if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
@@ -249,15 +239,6 @@ async function fetchWithAuth(url, options = {}) {
   let res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
   if ((res.status === 401 || res.status === 403) && signedRequest) {
     clearSignedPathCache();
-    const retryToken = nextBearerToken();
-    if (retryToken) {
-      res = await fetch(stripAuthSig(url), {
-        ...options,
-        headers: { ...(options.headers || {}), Authorization: `Bearer ${retryToken}` },
-        credentials: 'same-origin'
-      });
-      if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
-    }
   }
   if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
   return res;

@@ -2721,6 +2721,15 @@ class AkuvoxStaticAssets(HomeAssistantView):
                         return web.FileResponse(candidate)
 
         asset = _static_asset(path)
+        if not is_face_request and asset.suffix.lower() == ".html":
+            route_key = clean.lower().strip("/")
+            if not route_key:
+                route_key = "index"
+            if route_key.endswith(".html"):
+                route_key = route_key[:-5]
+            if route_key in DASHBOARD_ROUTES:
+                raise web.HTTPFound(f"/akuvox-ac/{route_key}")
+
         if is_face_request:
             rel = clean[8:].lstrip("/")
             if rel:
@@ -2747,7 +2756,7 @@ class AkuvoxStaticAssets(HomeAssistantView):
 class AkuvoxDashboardView(HomeAssistantView):
     url = "/akuvox-ac/{slug:.*}"
     name = "akuvox_ac:dashboard"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, slug: str = ""):
         clean = (slug or "").strip().strip("/").lower()
