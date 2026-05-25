@@ -4933,7 +4933,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
 
     Saves to config/akuvox_ac/FaceData/<ID>.jpg
     Updates users_store face_url (public URL) and marks status=pending.
-    Triggers immediate sync.
+    Queues the device update for the next sync cycle.
     """
     url = "/api/akuvox_ac/ui/upload_face"
     name = "api:akuvox_ac:ui_upload_face"
@@ -5051,11 +5051,6 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 queue.mark_change(None)
             except Exception:
                 pass
-
-        try:
-            await _push_face_to_devices(hass, root, id_val, file_bytes, face_url_public)
-        except Exception as err:
-            _LOGGER.debug("Failed to push face to devices for %s: %s", id_val, err)
 
         return web.json_response({"ok": True, "face_url": face_url_public})
 

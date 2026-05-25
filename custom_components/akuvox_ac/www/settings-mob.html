@@ -2413,7 +2413,7 @@ async function loadData(){
     SETTINGS_DATA = settingsResp || {
       integrity_interval_minutes: 15,
       face_integrity_enabled: true,
-      auto_sync_delay_minutes: 30,
+      auto_sync_delay_minutes: 15,
       health_check_interval_seconds: 30,
       access_event_limit: 30,
       hacs_auto_update: { enabled: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
@@ -2433,7 +2433,7 @@ async function loadData(){
     SETTINGS_DATA.max_auto_sync_delay_minutes = safeMaxDelay;
     const rawDelayValue = SETTINGS_DATA.auto_sync_delay_minutes;
     let delayValue = Number(rawDelayValue);
-    if (!Number.isFinite(delayValue) || rawDelayValue === null || rawDelayValue === undefined || rawDelayValue === '') delayValue = 30;
+    if (!Number.isFinite(delayValue) || rawDelayValue === null || rawDelayValue === undefined || rawDelayValue === '') delayValue = 15;
     delayValue = Math.round(delayValue);
     if (delayValue < safeMinDelay) delayValue = safeMinDelay;
     if (delayValue > safeMaxDelay) delayValue = safeMaxDelay;

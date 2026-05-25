@@ -2732,7 +2732,7 @@ class AkuvoxSettingsStore(Store):
             "auto_reboot": {"time": None, "days": []},
             "integrity_interval_minutes": self.DEFAULT_INTEGRITY_MINUTES,
             "face_integrity_enabled": self.DEFAULT_FACE_INTEGRITY_ENABLED,
-            "auto_sync_delay_minutes": 30,
+            "auto_sync_delay_minutes": 15,
             "alerts": {"targets": {}},
             "diagnostics_history_limit": DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
             "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
@@ -2753,11 +2753,11 @@ class AkuvoxSettingsStore(Store):
         if not isinstance(self.data.get("auto_reboot"), dict):
             self.data["auto_reboot"] = {"time": None, "days": []}
 
-        delay = self.data.get("auto_sync_delay_minutes", 30)
+        delay = self.data.get("auto_sync_delay_minutes", 15)
         try:
             delay = int(delay)
         except Exception:
-            delay = 30
+            delay = 15
         delay = max(5, min(60, delay))
         self.data["auto_sync_delay_minutes"] = delay
 
@@ -2965,9 +2965,9 @@ class AkuvoxSettingsStore(Store):
 
     def get_auto_sync_delay_minutes(self) -> int:
         try:
-            value = int(self.data.get("auto_sync_delay_minutes", 30))
+            value = int(self.data.get("auto_sync_delay_minutes", 15))
         except Exception:
-            value = 30
+            value = 15
         return max(5, min(60, value))
 
     async def set_auto_sync_delay_minutes(self, minutes: int):
@@ -3989,7 +3989,7 @@ class SyncQueue:
                 return settings.get_auto_sync_delay_minutes()
             except Exception:
                 pass
-        return 30
+        return 15
 
     def _normalize_delay(self, delay_minutes: Optional[int]) -> int:
         if delay_minutes is None:
@@ -4964,6 +4964,8 @@ class SyncManager:
         self,
         api: AkuvoxAPI,
         profiles: Iterable[Tuple[str, str]],
+        *,
+        prune_extra: bool = False,
     ) -> None:
         """Ensure HA contact entries exist for profile (name, phone) pairs."""
 
@@ -4974,7 +4976,7 @@ class SyncManager:
             if not name or not phone:
                 continue
             desired[name] = phone
-        if not desired:
+        if not desired and not prune_extra:
             return
 
         try:
@@ -4995,6 +4997,13 @@ class SyncManager:
         add_items: List[Dict[str, Any]] = []
         delete_items: List[Dict[str, Any]] = []
         seen_delete: Set[str] = set()
+        if prune_extra:
+            for name in existing_by_name:
+                if name in desired:
+                    continue
+                delete_items.append({"Name": name, "Group": HA_CONTACT_GROUP_NAME})
+                seen_delete.add(name)
+
         for name, phone in desired.items():
             existing = existing_by_name.get(name)
             if existing:
@@ -5673,11 +5682,14 @@ class SyncManager:
                     except Exception:
                         pass
 
-        if contact_profiles:
-            try:
-                await self._sync_contacts_for_profiles(api, contact_profiles)
-            except Exception:
-                pass
+        try:
+            await self._sync_contacts_for_profiles(
+                api,
+                contact_profiles,
+                prune_extra=not add_missing_only,
+            )
+        except Exception:
+            pass
 
         # Mark pending -> active
         try:
@@ -6338,17 +6350,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 selected_targets=d.get("notify_targets"),
             )
 
-        phone_for_contact = str(d.get("phone") or "").strip()
-        if phone_for_contact:
-            manager: Optional[SyncManager] = hass.data.get(DOMAIN, {}).get("sync_manager")
-            if manager:
-                for _, _, api, _ in manager._devices():
-                    try:
-                        await manager._sync_contacts_for_profiles(api, [(name, phone_for_contact)])
-                    except Exception:
-                        pass
-
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="add_user service")
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, trigger="add_user service")
 
     async def svc_add_temporary_user(call):
         d = call.data
@@ -6467,19 +6469,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 else:
                     paused_schedule_name = None
 
-        pause_contact_name: Optional[str] = None
-        pause_contact_phone: Optional[str] = None
-        if paused_flag:
-            if "name" in d:
-                pause_contact_name = str(d.get("name") or "").strip() or None
-            if "phone" in d:
-                pause_contact_phone = str(d.get("phone") or "").strip() or None
-            if existing_profile:
-                if not pause_contact_name:
-                    pause_contact_name = str(existing_profile.get("name") or "").strip() or None
-                if not pause_contact_phone:
-                    pause_contact_phone = str(existing_profile.get("phone") or "").strip() or None
-
         pin_only = (
             pin_payload_edit not in (None, "")
             and not face_reference_supplied
@@ -6525,45 +6514,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 selected_targets=d.get("notify_targets"),
             )
 
-        if paused_flag is not True:
-            old_name = str(existing_profile.get("name") or "").strip()
-            old_phone = str(existing_profile.get("phone") or "").strip()
-            next_name = str(d.get("name") or existing_profile.get("name") or "").strip()
-            next_phone = (
-                str(d.get("phone") if "phone" in d else existing_profile.get("phone") or "").strip()
-            )
-            manager: Optional[SyncManager] = hass.data.get(DOMAIN, {}).get("sync_manager")
-            if manager:
-                for _, _, api, _ in manager._devices():
-                    try:
-                        if old_name and old_phone and (old_name != next_name or old_phone != next_phone):
-                            await manager._delete_contacts(api, name=old_name, phone=old_phone)
-                        elif "phone" in d and not next_phone and old_name:
-                            await manager._delete_contacts(api, name=old_name, phone=old_phone)
-                        if next_name and next_phone:
-                            await manager._sync_contacts_for_profiles(api, [(next_name, next_phone)])
-                    except Exception:
-                        pass
-
-        if paused_flag and (pause_contact_name or pause_contact_phone):
-            root = hass.data.get(DOMAIN, {})
-            manager: SyncManager | None = root.get("sync_manager")  # type: ignore[assignment]
-            if manager:
-                for _, coord, api, _ in manager._devices():
-                    try:
-                        await manager._delete_contacts(
-                            api,
-                            name=pause_contact_name,
-                            phone=pause_contact_phone,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await coord.async_request_refresh()
-                    except Exception:
-                        pass
-
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="edit_user service")
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, trigger="edit_user service")
 
     async def svc_reactivate_temporary_user(call):
         raw_key = call.data.get("id") or call.data.get("key")
@@ -6746,7 +6697,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         face_url = await _ensure_local_face_for_user(canonical or key)
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         await users_store.upsert_profile(canonical or key, face_url=face_url, status="pending")
-        hass.data[DOMAIN]["sync_queue"].mark_change(None, delay_minutes=0, trigger="upload_face service")
+        hass.data[DOMAIN]["sync_queue"].mark_change(None, trigger="upload_face service")
 
     async def svc_reboot_device(call):
         entry_id = call.data.get("entry_id")
