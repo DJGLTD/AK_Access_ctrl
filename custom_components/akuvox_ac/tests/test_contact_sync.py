@@ -93,6 +93,62 @@ def test_sync_contacts_replaces_contact_when_phone_changes():
     }]]
 
 
+def test_sync_contacts_prunes_removed_contact_names():
+    manager = _make_manager()
+    api = _ApiStub(
+        [
+            {
+                "Name": "Old Name",
+                "Phone": "5551112222",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+            },
+            {
+                "Name": "Other System",
+                "Phone": "5553334444",
+                "Group": "Not Home Assistant",
+            },
+        ]
+    )
+
+    import asyncio
+
+    asyncio.run(
+        manager._sync_contacts_for_profiles(
+            api,
+            [("New Name", "5551112222")],
+            prune_extra=True,
+        )
+    )
+
+    assert api.delete_calls == [[{"Name": "Old Name", "Group": integration.HA_CONTACT_GROUP_NAME}]]
+    assert api.add_calls == [[{
+        "Name": "New Name",
+        "Phone": "5551112222",
+        "PhoneNum": "5551112222",
+        "Group": integration.HA_CONTACT_GROUP_NAME,
+    }]]
+
+
+def test_sync_contacts_prunes_all_when_no_profiles_need_contacts():
+    manager = _make_manager()
+    api = _ApiStub(
+        [
+            {
+                "Name": "Jane Doe",
+                "Phone": "5551112222",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+            }
+        ]
+    )
+
+    import asyncio
+
+    asyncio.run(manager._sync_contacts_for_profiles(api, [], prune_extra=True))
+
+    assert api.delete_calls == [[{"Name": "Jane Doe", "Group": integration.HA_CONTACT_GROUP_NAME}]]
+    assert api.add_calls == []
+
+
 def test_delete_contacts_matches_normalized_phone():
     manager = _make_manager()
     api = _ApiStub(

@@ -2417,13 +2417,6 @@ async function save(){
       }
     }
 
-    try {
-      await apiPost(API_ACTION, { action: 'sync_now' });
-    } catch (err) {
-      if (handleAuthError(err)) return;
-      console.warn('Sync request failed after save', err);
-    }
-
     // Back to list
     stopReservationHeartbeat();
     forgetReservationId();
