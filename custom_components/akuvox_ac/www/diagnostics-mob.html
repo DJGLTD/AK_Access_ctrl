@@ -436,16 +436,7 @@ async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}) {
     const response = await fetch(url, merged);
     if (allowRetry && signedRequest && (response.status === 401 || response.status === 403)) {
       clearSignedPathCache();
-      const retryToken = nextBearerToken();
-      if (retryToken) {
-        const retryHeaders = new Headers(options.headers || {});
-        retryHeaders.set('Authorization', 'Bearer ' + retryToken);
-        const retryResponse = await fetch(stripAuthSig(url), { ...options, headers: retryHeaders, ...SAME_ORIGIN });
-        if (retryResponse.status === 401 || retryResponse.status === 403) {
-          REJECTED_TOKENS.add(retryToken);
-        }
-        return retryResponse;
-      }
+      return response;
     }
     if (response.status === 401 || response.status === 403) {
       if (token) REJECTED_TOKENS.add(token);

@@ -1232,17 +1232,9 @@ async function postJson(url, body = {}){
     throw error;
   }
   if ((response.status === 401 || response.status === 403) && signedRequest) {
+
     clearSignedPathCache();
-    const retryToken = getUsableToken();
-    if (retryToken) {
-      response = await fetch(stripAuthSig(url), {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: new Headers({ 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + retryToken }),
-        body: JSON.stringify(body)
-      });
-      if (response.status === 401 || response.status === 403) REJECTED_TOKENS.add(retryToken);
-    }
+
   }
   if (!response.ok) {
     let text = '';
@@ -1364,14 +1356,6 @@ async function fetchVersion(){
     });
     if ((res.status === 401 || res.status === 403) && signedRequest) {
       clearSignedPathCache();
-      const retryToken = getUsableToken();
-      if (retryToken) {
-        res = await fetch(stripAuthSig(API_STATE), {
-          credentials: 'same-origin',
-          headers: { 'Authorization': 'Bearer ' + retryToken }
-        });
-        if (res.status === 401 || res.status === 403) REJECTED_TOKENS.add(retryToken);
-      }
     }
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
