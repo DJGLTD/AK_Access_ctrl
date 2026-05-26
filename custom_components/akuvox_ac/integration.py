@@ -2708,6 +2708,9 @@ class AkuvoxSettingsStore(Store):
     DEFAULT_HACS_AUTO_UPDATE = {
         "enabled": False,
         "interval_hours": 24,
+        "check_time": "02:00",
+        "auto_install": False,
+        "restart_after_install": False,
         "update_entity": "",
         "backup": False,
         "last_checked": None,
@@ -2893,6 +2896,17 @@ class AkuvoxSettingsStore(Store):
             return self.MAX_HACS_AUTO_UPDATE_HOURS
         return value
 
+    def _normalize_hacs_auto_update_time(self, value: Any) -> str:
+        text = str(value or "").strip()
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+        if not match:
+            return str(self.DEFAULT_HACS_AUTO_UPDATE["check_time"])
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return str(self.DEFAULT_HACS_AUTO_UPDATE["check_time"])
+        return f"{hour:02d}:{minute:02d}"
+
     def _sanitize_hacs_auto_update(self, raw: Any) -> Dict[str, Any]:
         cfg = dict(self.DEFAULT_HACS_AUTO_UPDATE)
         if not isinstance(raw, dict):
@@ -2900,11 +2914,18 @@ class AkuvoxSettingsStore(Store):
 
         enabled = _coerce_bool(raw.get("enabled"))
         backup = _coerce_bool(raw.get("backup"))
+        auto_install = _coerce_bool(raw.get("auto_install"))
+        restart_after_install = _coerce_bool(raw.get("restart_after_install"))
         cfg["enabled"] = bool(enabled) if enabled is not None else False
         cfg["backup"] = bool(backup) if backup is not None else False
+        cfg["auto_install"] = bool(auto_install) if auto_install is not None else False
+        cfg["restart_after_install"] = (
+            bool(restart_after_install) if restart_after_install is not None else False
+        )
         cfg["interval_hours"] = self._normalize_hacs_auto_update_hours(
             raw.get("interval_hours")
         )
+        cfg["check_time"] = self._normalize_hacs_auto_update_time(raw.get("check_time"))
         cfg["update_entity"] = str(raw.get("update_entity") or "").strip()
 
         for key in (
@@ -3291,24 +3312,18 @@ class HacsAutoUpdater:
         if not config.get("enabled"):
             return
 
-        hours = config.get("interval_hours", 24)
-        try:
-            hours = int(hours)
-        except Exception:
-            hours = 24
-        hours = max(
-            AkuvoxSettingsStore.MIN_HACS_AUTO_UPDATE_HOURS,
-            min(AkuvoxSettingsStore.MAX_HACS_AUTO_UPDATE_HOURS, hours),
-        )
+        hour, minute = self._check_time_parts(config)
 
         def _schedule(_now):
-            self.hass.async_create_task(self.async_run_check(reason="scheduled"))
+            self.hass.async_create_task(self.async_run_scheduled_update(reason="scheduled"))
 
         try:
-            self._interval_unsub = async_track_time_interval(
+            self._interval_unsub = async_track_time_change(
                 self.hass,
                 _schedule,
-                timedelta(hours=hours),
+                hour=hour,
+                minute=minute,
+                second=0,
             )
         except Exception:
             self._interval_unsub = None
@@ -3433,7 +3448,33 @@ class HacsAutoUpdater:
             return
         if self._last_check_is_fresh(config):
             return
-        self.hass.async_create_task(self.async_run_check(reason="startup"))
+        if not self._startup_check_due(config):
+            return
+        self.hass.async_create_task(self.async_run_scheduled_update(reason="startup"))
+
+    @staticmethod
+    def _check_time_parts(config: Mapping[str, Any]) -> Tuple[int, int]:
+        text = str(
+            config.get("check_time")
+            or AkuvoxSettingsStore.DEFAULT_HACS_AUTO_UPDATE["check_time"]
+        ).strip()
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+        if not match:
+            text = str(AkuvoxSettingsStore.DEFAULT_HACS_AUTO_UPDATE["check_time"])
+            match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+        if not match:
+            return 2, 0
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return 2, 0
+        return hour, minute
+
+    def _startup_check_due(self, config: Mapping[str, Any]) -> bool:
+        now = dt_util.now()
+        hour, minute = self._check_time_parts(config)
+        scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return now >= scheduled_today
 
     def _last_check_is_fresh(self, config: Mapping[str, Any]) -> bool:
         last_checked = str(config.get("last_checked") or "").strip()
@@ -3446,14 +3487,14 @@ class HacsAutoUpdater:
         if parsed is None or parsed.tzinfo is None:
             return False
         try:
-            hours = int(config.get("interval_hours", 24) or 24)
+            now = dt_util.now()
         except Exception:
-            hours = 24
-        hours = max(
-            AkuvoxSettingsStore.MIN_HACS_AUTO_UPDATE_HOURS,
-            min(AkuvoxSettingsStore.MAX_HACS_AUTO_UPDATE_HOURS, hours),
-        )
-        return dt_util.now() - parsed < timedelta(hours=hours)
+            return False
+        try:
+            parsed = parsed.astimezone(now.tzinfo) if now.tzinfo else parsed
+        except Exception:
+            pass
+        return parsed.date() == now.date()
 
     def _score_update_entity(self, state: Any) -> int:
         attrs = getattr(state, "attributes", {}) or {}
@@ -3650,6 +3691,25 @@ class HacsAutoUpdater:
             )
         except Exception:
             pass
+
+    async def async_run_scheduled_update(
+        self, *, reason: str = "scheduled"
+    ) -> Dict[str, Any]:
+        status = await self.async_run_check(reason=reason)
+        if str(status.get("last_result") or "").lower() != "update_available":
+            return status
+
+        config = self._config()
+        if not config.get("auto_install"):
+            return status
+
+        install_status = await self.async_install_update(reason=reason, force=True)
+        if (
+            str(install_status.get("last_result") or "").lower() == "installed"
+            and self._config().get("restart_after_install")
+        ):
+            return await self.async_restart_now(reason=f"{reason}_auto_restart")
+        return install_status
 
     async def async_run_check(
         self, *, reason: str = "manual", force: bool = False

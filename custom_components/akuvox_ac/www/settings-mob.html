@@ -575,7 +575,7 @@ let SETTINGS_DATA = {
   min_access_event_limit: 5,
   max_access_event_limit: 200,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
-  hacs_auto_update: { enabled: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
+  hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
   dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
 };
 let PHONES = [];
@@ -866,11 +866,25 @@ function coerceHacsBool(value){
   return false;
 }
 
+function normalizeHacsCheckTime(value){
+  const fallback = String(SETTINGS_DATA?.default_hacs_auto_update_check_time || '02:00');
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return fallback;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
 function sanitizeHacsAutoUpdate(raw){
   const { min, max } = hacsAutoUpdateRange();
   const base = {
     enabled: false,
     interval_hours: 24,
+    check_time: normalizeHacsCheckTime(),
+    auto_install: false,
+    restart_after_install: false,
     update_entity: '',
     backup: false,
     last_checked: null,
@@ -888,6 +902,9 @@ function sanitizeHacsAutoUpdate(raw){
   if (raw && typeof raw === 'object'){
     base.enabled = coerceHacsBool(raw.enabled);
     base.backup = coerceHacsBool(raw.backup);
+    base.auto_install = coerceHacsBool(raw.auto_install);
+    base.restart_after_install = coerceHacsBool(raw.restart_after_install);
+    base.check_time = normalizeHacsCheckTime(raw.check_time);
     const interval = Number(raw.interval_hours);
     if (Number.isFinite(interval)) base.interval_hours = Math.round(interval);
     base.update_entity = String(raw.update_entity || '').trim();
@@ -946,25 +963,24 @@ function describeHacsResult(config){
 
 function readHacsAutoUpdateForm(){
   const cfg = sanitizeHacsAutoUpdate(SETTINGS_DATA.hacs_auto_update);
-  const { min, max } = hacsAutoUpdateRange();
   const toggle = document.getElementById('hacsAutoUpdateToggle');
-  const intervalInput = document.getElementById('hacsAutoUpdateInterval');
+  const timeInput = document.getElementById('hacsAutoUpdateTime');
   const entityInput = document.getElementById('hacsAutoUpdateEntity');
   const backupInput = document.getElementById('hacsAutoUpdateBackup');
+  const autoInstallInput = document.getElementById('hacsAutoUpdateAutoInstall');
+  const restartAfterInstallInput = document.getElementById('hacsAutoUpdateRestartAfterInstall');
   if (toggle) cfg.enabled = !!toggle.checked;
   if (backupInput) cfg.backup = !!backupInput.checked;
+  if (autoInstallInput) cfg.auto_install = !!autoInstallInput.checked;
+  if (restartAfterInstallInput) cfg.restart_after_install = cfg.auto_install && !!restartAfterInstallInput.checked;
   if (entityInput) cfg.update_entity = String(entityInput.value || '').trim();
-  if (intervalInput){
-    const raw = String(intervalInput.value || '').trim();
-    const interval = Number(raw);
-    if (!raw || !Number.isFinite(interval)){
-      throw new Error(`Enter a number between ${min} and ${max}`);
+  if (timeInput){
+    const raw = String(timeInput.value || '').trim();
+    const normalized = normalizeHacsCheckTime(raw);
+    if (!raw || normalized !== raw){
+      throw new Error('Enter a valid check time.');
     }
-    const value = Math.round(interval);
-    if (value < min || value > max){
-      throw new Error(`Enter a number between ${min} and ${max}`);
-    }
-    cfg.interval_hours = value;
+    cfg.check_time = normalized;
   }
   return cfg;
 }
@@ -972,11 +988,12 @@ function readHacsAutoUpdateForm(){
 function renderHacsAutoUpdate(){
   const cfg = sanitizeHacsAutoUpdate(SETTINGS_DATA.hacs_auto_update);
   SETTINGS_DATA.hacs_auto_update = cfg;
-  const { min, max } = hacsAutoUpdateRange();
   const toggle = document.getElementById('hacsAutoUpdateToggle');
-  const intervalInput = document.getElementById('hacsAutoUpdateInterval');
+  const timeInput = document.getElementById('hacsAutoUpdateTime');
   const entityInput = document.getElementById('hacsAutoUpdateEntity');
   const backupInput = document.getElementById('hacsAutoUpdateBackup');
+  const autoInstallInput = document.getElementById('hacsAutoUpdateAutoInstall');
+  const restartAfterInstallInput = document.getElementById('hacsAutoUpdateRestartAfterInstall');
   const checkBtn = document.getElementById('hacsUpdateCheckBtn');
   const installBtn = document.getElementById('hacsUpdateInstallBtn');
   const restartBtn = document.getElementById('hacsRestartNowBtn');
@@ -991,10 +1008,13 @@ function renderHacsAutoUpdate(){
   const canRestart = !!(SETTINGS_DATA.dashboard_access?.can_manage || SETTINGS_DATA.dashboard_access?.current_user_is_admin);
   if (toggle) toggle.checked = !!cfg.enabled;
   if (backupInput) backupInput.checked = !!cfg.backup;
-  if (intervalInput){
-    intervalInput.min = String(min);
-    intervalInput.max = String(max);
-    intervalInput.value = String(cfg.interval_hours);
+  if (autoInstallInput) autoInstallInput.checked = !!cfg.auto_install;
+  if (restartAfterInstallInput) {
+    restartAfterInstallInput.checked = !!cfg.restart_after_install;
+    restartAfterInstallInput.disabled = !cfg.auto_install;
+  }
+  if (timeInput){
+    timeInput.value = cfg.check_time;
   }
   if (entityInput) entityInput.value = cfg.update_entity || '';
   if (checkBtn) checkBtn.disabled = hacsUpdateChecking;
@@ -1022,6 +1042,9 @@ function renderHacsAutoUpdate(){
   }
   if (meta){
     const details = [
+      `Check at: ${cfg.check_time}`,
+      `Auto install: ${cfg.auto_install ? 'on' : 'off'}`,
+      `Auto restart: ${cfg.restart_after_install ? 'on' : 'off'}`,
       `Last checked: ${formatHacsDate(cfg.last_checked)}`,
     ];
     if (cfg.last_installed) details.push(`Last installed: ${formatHacsDate(cfg.last_installed)}`);
@@ -2393,7 +2416,7 @@ async function loadData(){
       auto_sync_delay_minutes: 15,
       health_check_interval_seconds: 30,
       access_event_limit: 30,
-      hacs_auto_update: { enabled: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
+      hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
       dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
       alerts: { targets: {} },
       registry_users: [],
@@ -2602,13 +2625,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   hacsToggle?.addEventListener('change', async () => {
     await saveHacsAutoUpdate({ enabled: !!hacsToggle.checked });
   });
-  const hacsInterval = document.getElementById('hacsAutoUpdateInterval');
+  const hacsTime = document.getElementById('hacsAutoUpdateTime');
   const commitHacsAutoUpdate = async () => {
     await saveHacsAutoUpdate();
   };
-  hacsInterval?.addEventListener('input', () => { setHacsAutoUpdateStatus(''); });
-  hacsInterval?.addEventListener('change', commitHacsAutoUpdate);
-  hacsInterval?.addEventListener('blur', commitHacsAutoUpdate);
+  hacsTime?.addEventListener('input', () => { setHacsAutoUpdateStatus(''); });
+  hacsTime?.addEventListener('change', commitHacsAutoUpdate);
+  hacsTime?.addEventListener('blur', commitHacsAutoUpdate);
   const hacsEntity = document.getElementById('hacsAutoUpdateEntity');
   hacsEntity?.addEventListener('input', () => { setHacsAutoUpdateStatus(''); });
   hacsEntity?.addEventListener('change', commitHacsAutoUpdate);
@@ -2616,6 +2639,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   const hacsBackup = document.getElementById('hacsAutoUpdateBackup');
   hacsBackup?.addEventListener('change', async () => {
     await saveHacsAutoUpdate({ backup: !!hacsBackup.checked });
+  });
+  const hacsAutoInstall = document.getElementById('hacsAutoUpdateAutoInstall');
+  hacsAutoInstall?.addEventListener('change', async () => {
+    const autoInstall = !!hacsAutoInstall.checked;
+    await saveHacsAutoUpdate({
+      auto_install: autoInstall,
+      restart_after_install: autoInstall && !!document.getElementById('hacsAutoUpdateRestartAfterInstall')?.checked,
+    });
+  });
+  const hacsRestartAfterInstall = document.getElementById('hacsAutoUpdateRestartAfterInstall');
+  hacsRestartAfterInstall?.addEventListener('change', async () => {
+    await saveHacsAutoUpdate({ restart_after_install: !!hacsRestartAfterInstall.checked });
   });
   document.getElementById('hacsUpdateCheckBtn')?.addEventListener('click', async (ev) => {
     ev.preventDefault();
@@ -2829,15 +2864,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   <div class="card mt-3">
     <div class="card-header text-white">HACS Auto Update</div>
     <div class="card-body">
-      <p class="muted">Automatically refresh the HACS update entity for this integration. When an update is found, review it here before installing. Home Assistant still needs a restart after an integration update is installed.</p>
+      <p class="muted">Check the HACS update entity for this integration at a specific time each day. You can let it install available updates automatically and restart Home Assistant afterwards.</p>
       <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="hacsAutoUpdateToggle">
-        <label class="form-check-label" for="hacsAutoUpdateToggle">Enable automatic HACS update checks</label>
+        <label class="form-check-label" for="hacsAutoUpdateToggle">Enable scheduled HACS update checks</label>
       </div>
       <div class="row g-2 mt-3">
         <div class="col-md-4">
-          <label class="form-label" for="hacsAutoUpdateInterval">Check every (hours)</label>
-          <input id="hacsAutoUpdateInterval" class="form-control" type="number" min="1" max="168" step="1" />
+          <label class="form-label" for="hacsAutoUpdateTime">Check at</label>
+          <input id="hacsAutoUpdateTime" class="form-control" type="time" step="60" />
         </div>
         <div class="col-md-8">
           <label class="form-label" for="hacsAutoUpdateEntity">Update entity</label>
@@ -2848,6 +2883,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div class="form-check mt-3">
         <input class="form-check-input" type="checkbox" id="hacsAutoUpdateBackup">
         <label class="form-check-label" for="hacsAutoUpdateBackup">Request a backup before install when supported</label>
+      </div>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" id="hacsAutoUpdateAutoInstall">
+        <label class="form-check-label" for="hacsAutoUpdateAutoInstall">Install available updates automatically after the scheduled check</label>
+      </div>
+      <div class="form-check mt-2">
+        <input class="form-check-input" type="checkbox" id="hacsAutoUpdateRestartAfterInstall">
+        <label class="form-check-label" for="hacsAutoUpdateRestartAfterInstall">Restart Home Assistant automatically after a successful scheduled install</label>
       </div>
       <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
         <button id="hacsUpdateCheckBtn" class="btn btn-outline-info btn-sm" type="button"><i class="bi bi-arrow-repeat me-1"></i>Check now</button>
