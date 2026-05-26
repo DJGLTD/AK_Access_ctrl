@@ -3950,6 +3950,9 @@ class AkuvoxUISettings(HomeAssistantView):
             else {
                 "enabled": False,
                 "interval_hours": 24,
+                "check_time": "02:00",
+                "auto_install": False,
+                "restart_after_install": False,
                 "update_entity": "",
                 "backup": False,
                 "last_result": "disabled",
@@ -3991,6 +3994,7 @@ class AkuvoxUISettings(HomeAssistantView):
                 "hacs_auto_update": hacs_auto_update,
                 "min_hacs_auto_update_interval_hours": 1,
                 "max_hacs_auto_update_interval_hours": 168,
+                "default_hacs_auto_update_check_time": "02:00",
                 "groups": groups,
                 "dashboard_access": dashboard_access,
             }
