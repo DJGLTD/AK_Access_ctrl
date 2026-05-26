@@ -98,6 +98,9 @@ def _settings_store() -> AkuvoxSettingsStore:
         "hacs_auto_update": {
             "enabled": True,
             "interval_hours": 24,
+            "check_time": "02:00",
+            "auto_install": False,
+            "restart_after_install": False,
             "update_entity": "",
             "backup": False,
             "last_result": "enabled",
@@ -110,6 +113,52 @@ def _settings_store() -> AkuvoxSettingsStore:
 
     store.async_save = _async_save
     return store
+
+
+def test_hacs_auto_update_sanitizes_daily_schedule_options():
+    store = object.__new__(AkuvoxSettingsStore)
+
+    cfg = store._sanitize_hacs_auto_update(
+        {
+            "enabled": "yes",
+            "check_time": "2:05",
+            "auto_install": "on",
+            "restart_after_install": 1,
+        }
+    )
+
+    assert cfg["enabled"] is True
+    assert cfg["check_time"] == "02:05"
+    assert cfg["auto_install"] is True
+    assert cfg["restart_after_install"] is True
+
+    invalid = store._sanitize_hacs_auto_update({"check_time": "25:99"})
+
+    assert invalid["check_time"] == "02:00"
+
+
+def test_hacs_auto_update_schedules_daily_check(monkeypatch):
+    store = _settings_store()
+    store.data["hacs_auto_update"]["check_time"] = "03:15"
+    hass = _Hass(store)
+    scheduled: Dict[str, Any] = {}
+
+    def _track_time_change(_hass, callback, *, hour=None, minute=None, second=None):
+        scheduled["callback"] = callback
+        scheduled["hour"] = hour
+        scheduled["minute"] = minute
+        scheduled["second"] = second
+        return lambda: scheduled.__setitem__("cancelled", True)
+
+    monkeypatch.setattr(integration_module, "async_track_time_change", _track_time_change)
+
+    updater = HacsAutoUpdater(hass)
+    updater.apply_settings()
+
+    assert scheduled["hour"] == 3
+    assert scheduled["minute"] == 15
+    assert scheduled["second"] == 0
+    assert updater.status()["active"] is True
 
 
 def test_hacs_auto_update_check_detects_latest_release_when_hacs_entity_is_stale(monkeypatch):
@@ -163,6 +212,32 @@ def test_hacs_auto_update_install_confirms_latest_release(monkeypatch):
     assert status["installed_version"] == LATEST_VERSION
     assert status["latest_version"] == LATEST_VERSION
     assert status["pending_version"] is None
+
+
+def test_hacs_auto_update_scheduled_install_can_restart(monkeypatch):
+    store = _settings_store()
+    store.data["hacs_auto_update"]["auto_install"] = True
+    store.data["hacs_auto_update"]["restart_after_install"] = True
+    hass = _Hass(store)
+    monkeypatch.setattr(
+        integration_module,
+        "async_get_clientsession",
+        lambda _hass: _GithubSession(),
+    )
+
+    status = asyncio.run(HacsAutoUpdater(hass).async_run_scheduled_update())
+
+    install_calls = [
+        call for call in hass.services.calls if call[0] == "update" and call[1] == "install"
+    ]
+    restart_calls = [
+        call
+        for call in hass.services.calls
+        if call[0] == "homeassistant" and call[1] == "restart"
+    ]
+    assert install_calls
+    assert restart_calls
+    assert status["last_result"] == "restart_requested"
 
 
 def test_hacs_auto_update_install_requires_hacs_confirmation(monkeypatch):
