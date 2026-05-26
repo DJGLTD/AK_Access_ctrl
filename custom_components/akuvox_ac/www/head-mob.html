@@ -995,6 +995,29 @@ function isSignedPath(url){
 }
 
 const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
+
+async function ensureDashboardSignedPaths(){
+  const paths = window.AK_AC_API_PATHS || {};
+  const signer = window.AK_AC_SIGN_PATH;
+  if (!paths || typeof signer !== 'function') return false;
+  const entries = Object.entries(paths).filter(([key, path]) => {
+    return !(SIGNED_PATHS && typeof SIGNED_PATHS[key] === 'string' && isSignedPath(SIGNED_PATHS[key]))
+      && typeof path === 'string'
+      && path;
+  });
+  if (!entries.length) return true;
+  await Promise.all(entries.map(async ([key, path]) => {
+    try {
+      const signed = await signer(path, 43200);
+      if (typeof signed === 'string' && isSignedPath(signed)) {
+        SIGNED_PATHS[key] = signed;
+      }
+    } catch (err) {}
+  }));
+  try { sessionStorage.setItem('akuvox_signed_paths', JSON.stringify(SIGNED_PATHS)); } catch (err) {}
+  try { localStorage.setItem('akuvox_signed_paths', JSON.stringify(SIGNED_PATHS)); } catch (err) {}
+  return true;
+}
 const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
 
 function buildUrl(view, params = {}){
@@ -1193,7 +1216,8 @@ function reloadActiveView(options = {}){
   loadView(view, params, { updateHistory: options.updateHistory ?? false, replaceState: !!options.replaceState });
 }
 
-function handleTokenChanged(){
+async function handleTokenChanged(){
+  await ensureDashboardSignedPaths();
   reloadActiveView({ updateHistory: false, replaceState: false });
   try { fetchVersion(); } catch (err) {}
 }
@@ -1209,18 +1233,17 @@ function paramsFromButton(btn){
 }
 
 async function postJson(url, body = {}){
-  const signedRequest = isSignedPath(url);
-  const token = signedRequest ? null : getUsableToken();
-  if (!signedRequest && !token) {
+  const signedUrl = window.AK_AC_SIGN_URL ? await window.AK_AC_SIGN_URL(url, 43200) : url;
+  const signedRequest = isSignedPath(signedUrl);
+  if (!signedRequest) {
     const error = new Error('authentication required');
     error.status = 401;
     throw error;
   }
   const headers = new Headers({ 'Content-Type': 'application/json' });
-  if (token) headers.set('Authorization', 'Bearer ' + token);
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetch(signedUrl, {
       method: 'POST',
       credentials: 'same-origin',
       headers,
@@ -1341,19 +1364,15 @@ async function runDashboardAction(action){
 async function fetchVersion(){
   const badge = document.getElementById('appVersion');
   const footer = document.getElementById('appFooter');
-  const signedRequest = isSignedPath(API_STATE);
-  const token = signedRequest ? null : getUsableToken();
-  if (!signedRequest && !token) {
+  const stateUrl = signedPath('state', API_STATE);
+  const signedRequest = isSignedPath(stateUrl);
+  if (!signedRequest) {
     if (badge) badge.textContent = 'Version unavailable';
     if (footer) footer.textContent = '';
     return;
   }
-  const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
   try {
-    let res = await fetch(API_STATE, {
-      credentials: 'same-origin',
-      headers
-    });
+    let res = await fetch(stateUrl, { credentials: 'same-origin' });
     if ((res.status === 401 || res.status === 403) && signedRequest) {
       clearSignedPathCache();
     }
@@ -1501,7 +1520,8 @@ window.addEventListener('popstate', (event) => {
   loadView(view, params, { updateHistory: false });
 });
 
-(function init(){
+(async function init(){
+  await ensureDashboardSignedPaths();
   const searchParams = new URLSearchParams(location.search);
   const initialView = normalizeView(searchParams.get('view') || DEFAULT_VIEW);
   const params = paramsFromSearch(location.search);

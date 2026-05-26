@@ -180,16 +180,13 @@ function isSignedPath(url) {
 
 async function callService(service, data) {
   const url = signedPath(`service_${service}`, `/api/services/akuvox_ac/${service}`);
-  const signedRequest = isSignedPath(url);
-  const token = signedRequest ? null : nextBearerToken();
-  if (!signedRequest && !token) {
+  const signedUrl = window.AK_AC_SIGN_URL ? await window.AK_AC_SIGN_URL(url, 43200) : url;
+  const signedRequest = isSignedPath(signedUrl);
+  if (!signedRequest) {
     throw new Error('authentication required');
   }
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {})
-  };
-  let res = await fetch(url, {
+  const headers = { 'Content-Type': 'application/json' };
+  let res = await fetch(signedUrl, {
     method: 'POST',
     credentials: 'same-origin',
     headers,
@@ -199,7 +196,6 @@ async function callService(service, data) {
     clearSignedPathCache();
   }
   if (!res.ok) {
-    if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
     const text = await res.text();
     throw new Error(text || `Service ${service} failed`);
   }
@@ -211,20 +207,18 @@ function escapeHtml(value){
   return String(value ?? '').replace(/[&<>"']/g, ch => lookup[ch] ?? ch);
 }
 
-async function fetchWithAuth(url, options = {}) {
-  const signedRequest = isSignedPath(url);
-  const token = signedRequest ? null : nextBearerToken();
-  if (!signedRequest && !token) {
+async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
+  const signedUrl = window.AK_AC_SIGN_URL ? await window.AK_AC_SIGN_URL(url, 43200) : url;
+  const signedRequest = typeof signedUrl === 'string' && /[?&]authSig=/.test(signedUrl);
+  if (!signedRequest) {
     return new Response('authentication required', { status: 401 });
   }
   const headers = { ...(options.headers || {}) };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  let res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
-  if ((res.status === 401 || res.status === 403) && signedRequest) {
+  const response = await fetch(signedUrl, { ...options, headers, credentials: 'same-origin' });
+  if (allowRetry && (response.status === 401 || response.status === 403)) {
     clearSignedPathCache();
   }
-  if (token && (res.status === 401 || res.status === 403)) REJECTED_TOKENS.add(token);
-  return res;
+  return response;
 }
 
 async function apiGet(url) {
