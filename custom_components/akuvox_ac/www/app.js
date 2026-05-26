@@ -1,25 +1,25 @@
-// Minimal helper to call HA API using the frontend's stored token.
-function getAccessToken() {
-  try {
-    const raw = localStorage.getItem("hassTokens");
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    return obj?.access_token || null;
-  } catch (e) {
-    return null;
+// Minimal helper to call HA API using signed paths provided by Home Assistant.
+async function signedApiUrl(path) {
+  if (window.AK_AC_SIGN_URL) {
+    return window.AK_AC_SIGN_URL(path, 43200);
   }
+  return path;
 }
-const authHeader = () => ({ "Authorization": "Bearer " + getAccessToken() });
 
 async function haGet(path) {
-  const r = await fetch(path, { headers: authHeader() });
+  const url = await signedApiUrl(path);
+  if (!/[?&]authSig=/.test(url)) throw new Error("authentication required");
+  const r = await fetch(url, { credentials: "same-origin" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 async function haPost(path, data = {}) {
-  const r = await fetch(path, {
+  const url = await signedApiUrl(path);
+  if (!/[?&]authSig=/.test(url)) throw new Error("authentication required");
+  const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeader() },
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   if (!r.ok) throw new Error(await r.text());

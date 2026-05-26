@@ -361,31 +361,16 @@ function stripAuthSig(url){
 }
 
 async function fetchWithAuth(url, options = {}, { allowRetry = true } = {}){
-  const originalHeaders = { ...(options.headers || {}) };
-  const signedRequest = typeof url === 'string' && /[?&]authSig=/.test(url);
-  let bearer = signedRequest ? null : nextBearerToken();
-  let usedBearer = !!bearer;
-  if (!signedRequest && !bearer) {
+  const signedUrl = window.AK_AC_SIGN_URL ? await window.AK_AC_SIGN_URL(url, 43200) : url;
+  const signedRequest = typeof signedUrl === 'string' && /[?&]authSig=/.test(signedUrl);
+  if (!signedRequest) {
     return new Response('authentication required', { status: 401 });
   }
-  const headers = { ...originalHeaders };
-  if (bearer) headers['Authorization'] = 'Bearer ' + bearer;
-
-  const response = await fetch(url, { ...SAME_ORIGIN, ...options, headers });
-  if (allowRetry && signedRequest && (response.status === 401 || response.status === 403)) {
+  const headers = { ...(options.headers || {}) };
+  const response = await fetch(signedUrl, { ...options, headers, credentials: 'same-origin' });
+  if (allowRetry && (response.status === 401 || response.status === 403)) {
     clearSignedPathCache();
-    return response;
   }
-
-  if (allowRetry && usedBearer && (response.status === 401 || response.status === 403)){
-    REJECTED_TOKENS.add(bearer);
-    const retryToken = nextBearerToken();
-    if (retryToken && retryToken !== bearer){
-      return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: true });
-    }
-    return fetchWithAuth(url, { ...options, headers: originalHeaders }, { allowRetry: false });
-  }
-
   return response;
 }
 
