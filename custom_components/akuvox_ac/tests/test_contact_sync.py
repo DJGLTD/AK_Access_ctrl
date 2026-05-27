@@ -46,6 +46,38 @@ class _ReplaceApiStub:
         self.add_calls.append(items)
 
 
+class _FaceApiStub:
+    def __init__(self):
+        self.upload_calls = []
+        self.set_calls = []
+
+    async def face_upload(self, face_bytes, *, filename):
+        self.upload_calls.append({"bytes": face_bytes, "filename": filename})
+        return {"path": "/mnt/Face/HA001.jpg"}
+
+    async def user_set(self, items):
+        self.set_calls.append(items)
+
+
+class _FaceHassStub:
+    def __init__(self, root):
+        self._root = root
+        self.data = {integration.DOMAIN: {}}
+
+    @property
+    def config(self):
+        root = self._root
+
+        class _Config:
+            def path(self, *parts):
+                return str(root.joinpath(*parts))
+
+        return _Config()
+
+    async def async_add_executor_job(self, func, *args):
+        return func(*args)
+
+
 def _make_manager():
     hass = SimpleNamespace(data={integration.DOMAIN: {}}, config=SimpleNamespace(path=lambda *parts: "/tmp"))
     return integration.SyncManager(hass)
@@ -198,3 +230,40 @@ def test_replace_user_on_device_deletes_existing_before_add():
         "AnalogReplace": "",
         "AnalogProxyAddress": "",
     }]]
+
+
+def test_upload_face_asset_links_device_import_path(tmp_path):
+    hass = _FaceHassStub(tmp_path)
+    manager = integration.SyncManager(hass)
+    api = _FaceApiStub()
+    coord = SimpleNamespace(health={"device_type": "intercom"}, events=[], _append_event=lambda item: None)
+
+    face_dir = tmp_path / integration.DOMAIN / "FaceData"
+    face_dir.mkdir(parents=True)
+    (face_dir / "HA001.jpg").write_bytes(b"face-bytes")
+
+    import asyncio
+
+    uploaded = asyncio.run(
+        manager._upload_face_asset_to_device(
+            api,
+            coord,
+            "HA001",
+            {
+                "UserID": "HA001",
+                "Name": "Lee Fletcher",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+                "FaceUrl": "http://ha.local/api/AK_AC/FaceData/HA001.jpg",
+                "FaceRegister": 1,
+            },
+            {"face_status": "pending"},
+            existing={"ID": "42", "UserID": "HA001", "Name": "Lee Fletcher"},
+            force=True,
+        )
+    )
+
+    assert uploaded is True
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
+    assert api.set_calls[0][0]["ID"] == "42"
+    assert api.set_calls[0][0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
+    assert api.set_calls[0][0]["FaceRegisterStatus"] == "1"
