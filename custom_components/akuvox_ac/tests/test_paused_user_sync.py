@@ -81,6 +81,41 @@ def test_prepare_user_set_payload_keeps_existing_face_url_and_status():
     assert payload.get("ContactID") == "16"
 
 
+def test_prepare_user_set_payload_links_uploaded_face_like_web_ui():
+    payload = integration._prepare_user_set_payload(
+        "HA001",
+        {
+            "UserID": "HA001",
+            "Name": "User One",
+            "FaceUrl": "/mnt/Face/HA001.jpg",
+            "FaceRegister": 1,
+        },
+        {"ID": "368", "UserID": "HA001", "Name": "User One"},
+    )
+
+    assert "FaceUrl" not in payload
+    assert payload["FaceFileName"] == "HA001.jpg"
+    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert payload["FaceRegisterStatus"] == "1"
+
+
+def test_prepare_user_add_payload_links_uploaded_face_like_web_ui():
+    payload = integration._prepare_user_add_payload(
+        "HA001",
+        {
+            "UserID": "HA001",
+            "Name": "User One",
+            "FaceUrl": "/mnt/Face/HA001.jpg",
+            "FaceRegister": 1,
+        },
+    )
+
+    assert "FaceUrl" not in payload
+    assert payload["FaceFileName"] == "HA001.jpg"
+    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert payload["FaceRegister"] == 1
+
+
 def test_record_matches_desired_fields_treats_face_register_status_as_registered():
     local = {
         "UserID": "HA001",

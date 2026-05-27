@@ -62,8 +62,8 @@ FACE_DATA_PATH = "/api/AK_AC/FaceData"
 FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 SUPPORT_BUNDLE_LOG_TAIL_BYTES = 192 * 1024
 SUPPORT_BUNDLE_MAX_LOG_LINES = 240
-SUPPORT_BUNDLE_REQUEST_LIMIT = min(80, MAX_DIAGNOSTICS_HISTORY_LIMIT)
-SUPPORT_BUNDLE_VALUE_TEXT_LIMIT = 2500
+SUPPORT_BUNDLE_REQUEST_LIMIT = min(40, MAX_DIAGNOSTICS_HISTORY_LIMIT)
+SUPPORT_BUNDLE_VALUE_TEXT_LIMIT = 1200
 
 EXIT_PERMISSION_MATCH = "match"
 EXIT_PERMISSION_WORKING_DAYS = "working_days"
@@ -5363,13 +5363,22 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
 
         if diag_type.startswith("upload:face"):
             return True
-        if diag_type.startswith(("user:", "contact:", "group:", "schedule:", "relay:")):
+        if diag_type in {"user:add", "user:set", "user:del", "user:delete", "user:get"}:
             return True
-        if any(token in path for token in ("/user/", "user/", "filetool", "face")):
-            return True
-        if method == "POST" and not any(
-            token in path for token in ("event", "history", "record", "log")
+        if any(
+            token in path
+            for token in (
+                "filetool/import",
+                "/face/",
+                "/api/user/add",
+                "/api/user/set",
+                "/api/user/del",
+                "/api/user/delete",
+                "/api/user/get",
+            )
         ):
+            return True
+        if method == "POST" and "face" in path:
             return True
 
         return False
@@ -5405,12 +5414,21 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
     def _filter_support_requests(cls, requests: Any) -> List[Dict[str, Any]]:
         if not isinstance(requests, list):
             return []
-        filtered = [
-            cls._slim_support_request(request)
-            for request in requests
-            if cls._support_request_is_relevant(request)
-        ]
-        return filtered[:SUPPORT_BUNDLE_REQUEST_LIMIT]
+        primary: List[Dict[str, Any]] = []
+        user_get: List[Dict[str, Any]] = []
+        for request in requests:
+            if not cls._support_request_is_relevant(request):
+                continue
+            slim = cls._slim_support_request(request)
+            diag_type = str(request.get("diag_type") or "").strip().lower()
+            path = str(request.get("path") or request.get("url") or "").strip().lower()
+            if diag_type == "user:get" or "/api/user/get" in path:
+                user_get.append(slim)
+            else:
+                primary.append(slim)
+
+        remaining = max(0, SUPPORT_BUNDLE_REQUEST_LIMIT - len(primary))
+        return (primary + user_get[: min(6, remaining)])[:SUPPORT_BUNDLE_REQUEST_LIMIT]
 
     @classmethod
     def _device_support_snapshot(cls, root: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -107,7 +107,31 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
     )
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
+    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert normalized[0]["FaceRegister"] == 1
+
+
+def test_normalize_user_set_uses_web_face_import_fields_for_device_file():
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=_SessionStub())
+
+    normalized = api._normalize_user_items_for_add_or_set(
+        [
+            {
+                "UserID": "HA001",
+                "ID": "7",
+                "Name": "Test",
+                "FaceUrl": "/mnt/Face/HA001.jpg",
+                "FaceRegisterStatus": "1",
+            }
+        ],
+        allow_face_url=True,
+        for_set=True,
+    )
+
+    assert normalized[0]["FaceFileName"] == "HA001.jpg"
+    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert "FaceUrl" not in normalized[0]
+    assert normalized[0]["FaceRegisterStatus"] == "1"
 
 
 def test_normalize_user_set_preserves_face_url_field():
@@ -141,6 +165,7 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert any(url.startswith("https://") for url in session.get_urls)
     assert any(url.startswith("http://") for url in session.get_urls)
     assert session.post_urls[0].startswith("http://")
+    assert "/api/web/filetool/import" in session.post_urls[0]
 
 
 def test_face_upload_infers_device_face_path_when_upload_response_has_no_path():
