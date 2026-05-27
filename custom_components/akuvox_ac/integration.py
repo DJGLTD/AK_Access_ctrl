@@ -1120,6 +1120,61 @@ def _face_asset_exists(hass: HomeAssistant, user_id: str) -> bool:
     return False
 
 
+def _face_asset_path(
+    hass: HomeAssistant,
+    user_id: str,
+    reference: Optional[Any] = None,
+) -> Optional[Path]:
+    """Return the best local face image path for a user/reference."""
+
+    names: List[str] = []
+    if reference not in (None, ""):
+        try:
+            name = face_filename_from_reference(str(reference), user_id)
+        except Exception:
+            name = ""
+        if name:
+            names.append(name)
+
+    clean_user_id = str(user_id or "").strip()
+    if clean_user_id:
+        for ext in FACE_FILE_EXTENSIONS:
+            names.append(f"{clean_user_id}.{ext}")
+
+    unique_names = [name for name in dict.fromkeys(names) if str(name or "").strip()]
+    if not unique_names:
+        return None
+
+    search_paths: List[Path] = []
+    try:
+        search_paths.append(face_storage_dir(hass))
+    except Exception:
+        pass
+
+    search_paths.append(Path(__file__).parent / "www" / "FaceData")
+
+    try:
+        search_paths.append(Path(hass.config.path("www")) / "AK_Access_ctrl" / "FaceData")
+    except Exception:
+        pass
+
+    for base in search_paths:
+        try:
+            resolved_base = base.resolve()
+        except Exception:
+            continue
+        for name in unique_names:
+            try:
+                candidate = (resolved_base / Path(name).name).resolve()
+                candidate.relative_to(resolved_base)
+            except Exception:
+                continue
+            if candidate.is_file():
+                return candidate
+
+    return None
+
+
 _FACE_FILENAME_KEYS = (
     "FaceFileName",
     "faceFileName",
@@ -4961,6 +5016,124 @@ class SyncManager:
     ) -> None:
         await self._replace_user_on_device(api, ha_key, desired, existing=existing)
 
+    async def _upload_face_asset_to_device(
+        self,
+        api: AkuvoxAPI,
+        coord: AkuvoxCoordinator,
+        ha_key: str,
+        desired: Dict[str, Any],
+        profile: Optional[Dict[str, Any]] = None,
+        *,
+        existing: Optional[Dict[str, Any]] = None,
+        force: bool = False,
+    ) -> bool:
+        """Upload a stored HA face image directly to a device and link it to the user."""
+
+        device_type = str((getattr(coord, "health", {}) or {}).get("device_type") or "").strip().lower()
+        if device_type == "keypad":
+            return False
+
+        face_reference = str(
+            (desired or {}).get("FaceUrl")
+            or (desired or {}).get("FaceURL")
+            or (profile or {}).get("face_url")
+            or ""
+        ).strip()
+        if not face_reference:
+            return False
+
+        face_status = str((profile or {}).get("face_status") or "").strip().lower()
+        if not force and face_status not in {"pending", "error"}:
+            return False
+
+        face_path = _face_asset_path(self.hass, ha_key, face_reference)
+        if not face_path:
+            try:
+                coord._append_event(f"Face upload skipped for {ha_key}: local image not found")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return False
+
+        try:
+            face_bytes = await self.hass.async_add_executor_job(face_path.read_bytes)
+        except Exception:
+            try:
+                face_bytes = face_path.read_bytes()
+            except Exception as err:
+                _LOGGER.debug("Unable to read face asset for %s: %s", ha_key, err)
+                return False
+
+        try:
+            filename = face_filename_from_reference(face_reference or face_path.name, ha_key)
+        except Exception:
+            filename = face_path.name
+        if not filename:
+            filename = face_path.name or f"{ha_key}.jpg"
+
+        try:
+            upload_result = await api.face_upload(face_bytes, filename=filename)
+        except Exception as err:
+            _LOGGER.debug("Direct face upload failed for %s: %s", ha_key, err)
+            try:
+                coord._append_event(f"Direct face upload failed for {ha_key}: {err}")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return False
+
+        face_device_reference = ""
+        if isinstance(upload_result, dict):
+            raw_path = upload_result.get("path")
+            if isinstance(raw_path, str):
+                face_device_reference = raw_path.strip()
+            if not face_device_reference:
+                raw = upload_result.get("raw")
+                if isinstance(raw, str):
+                    face_device_reference = raw.strip()
+        elif isinstance(upload_result, str):
+            face_device_reference = upload_result.strip()
+
+        if not face_device_reference:
+            face_device_reference = face_reference
+
+        device_record = existing if isinstance(existing, dict) else None
+        if not device_record or not str(device_record.get("ID") or "").strip():
+            try:
+                matches = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+            except Exception:
+                matches = []
+            if matches:
+                device_record = matches[0]
+
+        payload = dict(desired or {})
+        payload["FaceUrl"] = face_device_reference
+        payload["FaceRegister"] = 1
+        set_payload = _prepare_user_set_payload(ha_key, payload, device_record)
+        set_payload["FaceRegisterStatus"] = "1"
+
+        try:
+            await api.user_set([set_payload])
+        except Exception as err:
+            _LOGGER.debug("Failed to link uploaded face for %s: %s", ha_key, err)
+            try:
+                coord._append_event(f"Face uploaded but link failed for {ha_key}: {err}")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return False
+
+        try:
+            coord._append_event(f"Uploaded face image for {ha_key} directly to device")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        try:
+            users_store = self._users_store()
+            if users_store:
+                await users_store.upsert_profile(ha_key, face_error_count=0)
+        except Exception:
+            pass
+
+        return True
+
     async def _replace_user_on_device(
         self,
         api: AkuvoxAPI,
@@ -5682,6 +5855,22 @@ class SyncManager:
                 await _store_device_user_ids(getattr(coord, "storage", None), local_users)
             except Exception:
                 pass
+            for candidate in add_batch:
+                ha_candidate = _key_of_user(candidate)
+                if not ha_candidate:
+                    continue
+                try:
+                    await self._upload_face_asset_to_device(
+                        api,
+                        coord,
+                        ha_candidate,
+                        candidate,
+                        registry.get(ha_candidate) or {},
+                        existing=_find_local_by_key(ha_candidate),
+                        force=True,
+                    )
+                except Exception as err:
+                    _LOGGER.debug("Post-add face upload failed for %s: %s", ha_candidate, err)
 
         # 3) Update changed users (delete + recreate to preserve face profile integrity)
         if not add_missing_only:
@@ -5699,6 +5888,17 @@ class SyncManager:
                         )
                     except Exception:
                         pass
+                    try:
+                        await self._upload_face_asset_to_device(
+                            api,
+                            coord,
+                            ha_key,
+                            desired,
+                            registry.get(ha_key) or {},
+                            force=True,
+                        )
+                    except Exception as err:
+                        _LOGGER.debug("Post-update face upload failed for %s: %s", ha_key, err)
                 except Exception:
                     latest: Optional[Dict[str, Any]] = None
                     try:
@@ -5739,6 +5939,17 @@ class SyncManager:
                                 )
                         except Exception:
                             pass
+                        try:
+                            await self._upload_face_asset_to_device(
+                                api,
+                                coord,
+                                ha_key,
+                                desired,
+                                registry.get(ha_key) or {},
+                                force=True,
+                            )
+                        except Exception as err:
+                            _LOGGER.debug("Post-retry face upload failed for %s: %s", ha_key, err)
                     except Exception:
                         pass
 
