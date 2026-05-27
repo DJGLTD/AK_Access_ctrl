@@ -31,6 +31,7 @@ def test_dashboard_post_views_use_dashboard_session_token_instead_of_signed_post
     assert http_module.AkuvoxUIView.requires_auth is False
     assert http_module.AkuvoxUIAction.requires_auth is False
     assert http_module.AkuvoxUISettings.requires_auth is False
+    assert http_module.AkuvoxUISupportBundle.requires_auth is False
     assert "refresh_events" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
     assert "delete_user" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
 
