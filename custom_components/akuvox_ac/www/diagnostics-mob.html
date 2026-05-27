@@ -77,6 +77,17 @@
       max-height:320px;
       overflow:auto;
     }
+    .support-log-panel textarea{
+      min-height:360px;
+      background:#07101f;
+      border:1px solid var(--border);
+      color:var(--text);
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size:0.82rem;
+      line-height:1.35;
+      white-space:pre;
+    }
+    .support-log-panel textarea:focus{ background:#07101f; color:var(--text); border-color:var(--accent); box-shadow:0 0 0 0.2rem rgba(47,240,196,0.2); }
     code{ font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .badge.method{
       background:rgba(47,240,196,0.12);
@@ -585,12 +596,21 @@ function openInApp(view, params = {}, options = {}) {
   <div class="d-flex align-items-center gap-2 flex-wrap">
     <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
     <h2 class="m-0 flex-grow-1 text-white">Device Diagnostics</h2>
-    <button class="btn btn-outline-info" id="btnDownloadSupportBundle" type="button"><i class="bi bi-download"></i> Download logs</button>
+    <button class="btn btn-outline-info" id="btnDownloadSupportBundle" type="button"><i class="bi bi-file-earmark-text"></i> View logs</button>
     <button class="btn btn-outline-info" id="btnRefresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
   <p class="muted mt-2">Review the most recent HTTP requests sent from Home Assistant to each Akuvox device. Entries include the request payload, status and timing so you can validate what was delivered.</p>
   <div id="statusMessage" class="alert alert-danger d-none" role="alert"></div>
+  <div class="support-log-panel card mt-3" id="supportLogPanel" hidden>
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <h5 class="mb-0">Support logs</h5>
+        <button class="btn btn-sm btn-outline-info" id="copySupportLogBtn" type="button"><i class="bi bi-clipboard me-1"></i>Copy to clipboard</button>
+      </div>
+      <textarea class="form-control mt-3" id="supportLogText" readonly spellcheck="false"></textarea>
+    </div>
+  </div>
   <div class="nav nav-tabs diag-tabs" id="diagTabNav" role="tablist">
     <button class="nav-link active" type="button" data-tab-target="requests">Request history</button>
     <button class="nav-link" type="button" data-tab-target="events">Event storage</button>
@@ -2206,46 +2226,72 @@ async function loadDiagnostics(){
   }
 }
 
-function supportBundleFilename(response){
-  const fallback = 'akuvox-support-bundle.zip';
-  try {
-    const disposition = response.headers.get('Content-Disposition') || '';
-    const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utfMatch && utfMatch[1]) return decodeURIComponent(utfMatch[1].trim());
-    const match = disposition.match(/filename="?([^";]+)"?/i);
-    if (match && match[1]) return match[1].trim();
-  } catch (err) {}
-  return fallback;
+async function fetchSupportBundleResponse(){
+  if (window.AK_AC_DASHBOARD_FETCH) {
+    try {
+      const response = await window.AK_AC_DASHBOARD_FETCH('/api/akuvox_ac/ui/support_bundle', { method: 'GET' });
+      if (response && (response.ok || (response.status !== 401 && response.status !== 403))) {
+        return response;
+      }
+    } catch (err) {}
+  }
+  return fetchWithAuth(API_SUPPORT_BUNDLE);
 }
 
-async function downloadSupportBundle(){
+function showSupportLogText(text){
+  const panel = document.getElementById('supportLogPanel');
+  const textarea = document.getElementById('supportLogText');
+  if (!panel || !textarea) return;
+  textarea.value = text || '';
+  panel.hidden = false;
+  textarea.focus();
+}
+
+async function copySupportLogText(){
+  const textarea = document.getElementById('supportLogText');
+  if (!textarea || !textarea.value) {
+    showStatus('No logs to copy yet.', 'warning');
+    return;
+  }
+  try {
+    if (!navigator.clipboard || !window.isSecureContext) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(textarea.value);
+    showStatus('Logs copied to clipboard.', 'success');
+  } catch (err) {
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    try {
+      if (document.execCommand('copy')) {
+        showStatus('Logs copied to clipboard.', 'success');
+        return;
+      }
+    } catch (copyErr) {}
+    showStatus('Logs selected. Press Ctrl+C to copy.', 'warning');
+  }
+}
+
+async function viewSupportLogs(){
   if (!btnDownloadSupportBundle) return;
   const original = btnDownloadSupportBundle.innerHTML;
   btnDownloadSupportBundle.disabled = true;
   btnDownloadSupportBundle.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Preparing';
   showStatus('');
   try {
-    const response = await fetchWithAuth(API_SUPPORT_BUNDLE);
+    const response = await fetchSupportBundleResponse();
+    const text = await response.text();
     if (!response.ok){
-      const text = await response.text();
       const err = buildError(response, text);
-      if (!handleAuthError(err)) throw err;
-      return;
+      throw err;
     }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = supportBundleFilename(response);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showStatus('Support bundle downloaded.');
+    showSupportLogText(text);
+    showStatus('Logs ready to copy.', 'success');
   } catch (err) {
-    if (handleAuthError(err)) return;
-    console.error('Failed to download support bundle', err);
-    showStatus('Failed to download logs: ' + (err && err.message ? err.message : err));
+    console.error('Failed to load support logs', err);
+    const message = isAuthError(err)
+      ? 'Home Assistant rejected the log request. Refresh this page and try again.'
+      : 'Failed to load logs: ' + (err && err.message ? err.message : err);
+    showStatus(message);
   } finally {
     btnDownloadSupportBundle.disabled = false;
     btnDownloadSupportBundle.innerHTML = original;
@@ -2263,7 +2309,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   btnDownloadSupportBundle?.addEventListener('click', (ev) => {
     ev.preventDefault();
-    downloadSupportBundle();
+    viewSupportLogs();
+  });
+  document.getElementById('copySupportLogBtn')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    copySupportLogText();
   });
   document.querySelectorAll('[data-tab-target]')?.forEach((btn) => {
     btn.addEventListener('click', (ev) => {

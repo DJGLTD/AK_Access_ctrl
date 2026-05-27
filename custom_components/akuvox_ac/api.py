@@ -139,6 +139,8 @@ class AkuvoxAPI:
         configured_port: Optional[int] = self.port
         _add_combo(True, configured_port, False)
         _add_combo(True, 443, False)
+        _add_combo(False, configured_port)
+        _add_combo(False, 80)
 
         # Deduplicate preserving order
         seen = set()
@@ -1708,6 +1710,8 @@ class AkuvoxAPI:
             _add_base(True, configured_port, verify)
         _add_base(True, 443, False)
         _add_base(True, 443, True)
+        _add_base(False, configured_port)
+        _add_base(False, 80)
 
         for use_https, port, verify in bases:
             for rel in rel_paths:

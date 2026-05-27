@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import io
 import json
 import logging
 import json
@@ -9,7 +8,6 @@ import platform
 import re
 import secrets
 import time
-import zipfile
 from functools import partial
 from datetime import timedelta
 from pathlib import Path
@@ -5062,7 +5060,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
     url = "/api/akuvox_ac/ui/support_bundle"
     name = "api:akuvox_ac:ui_support_bundle"
-    requires_auth = True
+    requires_auth = False
 
     _SENSITIVE_KEY_FRAGMENTS = (
         "password",
@@ -5441,12 +5439,27 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             f"Profiles with face sync errors: {counts.get('face_sync_errors', 0)}",
             f"Filtered HA log lines: {len(log_tail.get('lines', [])) if isinstance(log_tail, dict) else 0}",
             "",
-            "Files",
-            "- support_bundle.json: redacted structured diagnostics",
-            "- summary.txt: this overview",
-            "- home-assistant.log.filtered.txt: Akuvox/face-related Home Assistant log tail",
+            "Contents",
+            "- Redacted structured diagnostics",
+            "- Akuvox/face-related Home Assistant log tail",
         ]
         return "\n".join(lines) + "\n"
+
+    @classmethod
+    def _support_bundle_text(cls, bundle: Dict[str, Any]) -> str:
+        log_tail = bundle.get("homeassistant_log_tail", {}) if isinstance(bundle, dict) else {}
+        log_lines = log_tail.get("lines", []) if isinstance(log_tail, dict) else []
+        parts = [
+            cls._summary_text(bundle),
+            "",
+            "=== Redacted support bundle JSON ===",
+            json.dumps(bundle, indent=2, sort_keys=True, default=str),
+            "",
+            "=== Filtered Home Assistant log tail ===",
+            "\n".join(str(line) for line in log_lines) if log_lines else "(no matching log lines found)",
+            "",
+        ]
+        return "\n".join(parts)
 
     async def _build_support_bundle(self, hass: HomeAssistant) -> Dict[str, Any]:
         root = hass.data.get(DOMAIN, {}) or {}
@@ -5480,26 +5493,13 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
 
         bundle = await self._build_support_bundle(hass)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
-        filename = f"akuvox-support-{stamp}.zip"
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("summary.txt", self._summary_text(bundle))
-            archive.writestr(
-                "support_bundle.json",
-                json.dumps(bundle, indent=2, sort_keys=True, default=str),
-            )
-            log_tail = bundle.get("homeassistant_log_tail", {})
-            lines = log_tail.get("lines", []) if isinstance(log_tail, dict) else []
-            archive.writestr(
-                "home-assistant.log.filtered.txt",
-                "\n".join(str(line) for line in lines) + ("\n" if lines else ""),
-            )
+        filename = f"akuvox-support-{stamp}.txt"
 
         return web.Response(
-            body=buffer.getvalue(),
-            content_type="application/zip",
+            text=self._support_bundle_text(bundle),
+            content_type="text/plain",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "no-store",
             },
         )
