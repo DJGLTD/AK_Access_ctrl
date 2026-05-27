@@ -7,6 +7,8 @@ const { spawnSync } = require("node:child_process");
 const root = path.resolve(__dirname, "..");
 const repo = process.env.GITHUB_REPOSITORY || "DJGLTD/AK_Access_ctrl";
 const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+const prLookupAttempts = Number(process.env.RELEASE_PR_LOOKUP_ATTEMPTS || 6);
+const prLookupDelayMs = Number(process.env.RELEASE_PR_LOOKUP_DELAY_MS || 5000);
 
 function git(args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, {
@@ -80,13 +82,15 @@ function compareVersions(left, right) {
 }
 
 async function githubJson(url) {
-  if (!token) return null;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
   const response = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers,
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -95,16 +99,62 @@ async function githubJson(url) {
   return response.json();
 }
 
-async function associatedPullRequest() {
-  const sha = process.env.GITHUB_SHA || git(["rev-parse", "HEAD"], { allowFailure: true });
-  if (repo && sha && token) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function strongestPullRequest(pulls) {
+  if (!Array.isArray(pulls) || !pulls.length) return null;
+  return pulls
+    .slice()
+    .sort((a, b) => Number(b.number || 0) - Number(a.number || 0))[0];
+}
+
+async function associatedPullRequestFromCommitApi(sha) {
+  if (repo && sha) {
     const pulls = await githubJson(
       `https://api.github.com/repos/${repo}/commits/${sha}/pulls`,
     );
-    if (Array.isArray(pulls) && pulls.length) {
-      return pulls
-        .slice()
-        .sort((a, b) => Number(b.number || 0) - Number(a.number || 0))[0];
+    const pr = strongestPullRequest(pulls);
+    if (pr) return pr;
+  }
+  return null;
+}
+
+async function mergedPullRequestFromRecentClosed(sha) {
+  if (!repo || !sha) return null;
+  const pulls = await githubJson(
+    `https://api.github.com/repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50`,
+  );
+  if (!Array.isArray(pulls) || !pulls.length) return null;
+  return (
+    pulls.find((pr) => String(pr.merge_commit_sha || "").toLowerCase() === sha.toLowerCase())
+    || null
+  );
+}
+
+async function associatedPullRequestFromApi(sha) {
+  if (!repo || !sha) return null;
+  return (await associatedPullRequestFromCommitApi(sha))
+    || (await mergedPullRequestFromRecentClosed(sha));
+}
+
+async function associatedPullRequest() {
+  const sha = process.env.GITHUB_SHA || git(["rev-parse", "HEAD"], { allowFailure: true });
+  const attempts = Math.max(1, Number.isFinite(prLookupAttempts) ? prLookupAttempts : 1);
+  const delayMs = Math.max(0, Number.isFinite(prLookupDelayMs) ? prLookupDelayMs : 0);
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const pr = await associatedPullRequestFromApi(sha);
+      if (pr) return pr;
+    } catch (err) {
+      console.warn(`Unable to look up PR for ${sha}: ${err.message}`);
+    }
+
+    if (attempt < attempts && delayMs > 0) {
+      console.log(`No associated PR found for ${sha}; retrying in ${delayMs}ms (${attempt}/${attempts}).`);
+      await sleep(delayMs);
     }
   }
 
@@ -237,6 +287,11 @@ function createTagAndRelease(version, pr, previousTag) {
 async function main() {
   if (process.argv[2] === "--version-from-pr") {
     console.log(versionFromPrNumber(process.argv[3]));
+    return;
+  }
+  if (process.argv[2] === "--associated-pr-number") {
+    const pr = await associatedPullRequest();
+    console.log(pr?.number || "");
     return;
   }
 
