@@ -705,6 +705,63 @@ class AkuvoxAPI:
         cleaned = str(name or "").strip()
         return cleaned or candidate
 
+    @staticmethod
+    def _is_device_face_import_reference(reference: Any) -> bool:
+        """Return True when a face reference points at the device import store."""
+
+        if reference in (None, ""):
+            return False
+        text = str(reference or "").strip().replace("\\", "/").lower()
+        return text.startswith("/mnt/face/") or text.startswith("mnt/face/")
+
+    @classmethod
+    def _face_import_filename_from_item(cls, item: Dict[str, Any]) -> str:
+        """Extract the filename used by Akuvox web UI face import payloads."""
+
+        if not isinstance(item, dict):
+            return ""
+
+        import_file = item.get("importFile") or item.get("ImportFile")
+        if isinstance(import_file, dict):
+            for key in ("fileName", "filename", "name", "FileName"):
+                value = import_file.get(key)
+                if value not in (None, ""):
+                    filename = Path(str(value)).name
+                    if filename:
+                        return filename
+
+        for key in ("FaceFileName", "faceFileName", "face_filename", "face_file_name"):
+            value = item.get(key)
+            if value not in (None, ""):
+                filename = Path(str(value)).name
+                if filename:
+                    return filename
+
+        for key in ("FaceUrl", "FaceURL", "face_url", "faceUrl"):
+            value = item.get(key)
+            if value not in (None, "") and cls._is_device_face_import_reference(value):
+                filename = cls._face_reference_to_filename(value)
+                if filename:
+                    return Path(filename).name
+
+        return ""
+
+    @classmethod
+    def _apply_face_import_fields(cls, item: Dict[str, Any]) -> None:
+        """Mirror the Akuvox web UI face-link fields when a file was imported."""
+
+        filename = cls._face_import_filename_from_item(item)
+        if not filename:
+            return
+
+        item["FaceFileName"] = filename
+        item["importFile"] = {"fileName": filename, "fileData": {}}
+
+        face_url = item.get("FaceUrl") or item.get("FaceURL")
+        if cls._is_device_face_import_reference(face_url):
+            item.pop("FaceUrl", None)
+            item.pop("FaceURL", None)
+
     def _normalize_user_items_for_add_or_set(
         self,
         items: List[Dict[str, Any]],
@@ -953,7 +1010,7 @@ class AkuvoxAPI:
                 if not had_user_id_alias:
                     d.pop("UserId", None)
             if for_set:
-                face_source = d.pop("FaceFileName", None)
+                face_source = d.get("FaceFileName")
             else:
                 face_source = d.get("FaceFileName")
             if not face_source and isinstance(d.get("FaceUrl"), str):
@@ -973,6 +1030,7 @@ class AkuvoxAPI:
                     current = d.get("FaceRegister")
                     if self._coerce_int(current) != 1:
                         d["FaceRegister"] = 1
+            self._apply_face_import_fields(d)
             if for_set:
                 d.setdefault("PrivatePIN", "")
                 d.setdefault("AnalogNumber", "")
@@ -1016,7 +1074,10 @@ class AkuvoxAPI:
             "CardCode": "",
             "ContactID": "-1",
             "DialAccount": "0",
+            "FaceFileName": "",
             "FaceRegisterStatus": "0",
+            "FaceUrl": "",
+            "importFile": {"fileName": "", "fileData": {}},
             "LiftFloorNum": "0",
             "PhoneNum": "",
             "PriorityCall": "0",
@@ -1033,7 +1094,7 @@ class AkuvoxAPI:
             return {"ok": False, "errors": ["Payload item is not an object"]}
 
         template = cls._user_set_working_template()
-        optional_keys = {"ID"}
+        optional_keys = {"ID", "FaceFileName", "FaceUrl", "importFile"}
         required_keys = set(template.keys()) - optional_keys
         forbidden_keys = {"ScheduleRelay", "BLE_AuthCode", "FaceRegister", "Priority"}
         string_fields = {
@@ -1052,6 +1113,8 @@ class AkuvoxAPI:
             "BLEAuthCode",
             "BLE_Expired",
             "BLE_Status",
+            "FaceFileName",
+            "FaceUrl",
             "PrivatePIN",
             "AnalogNumber",
             "AnalogReplace",
@@ -1101,7 +1164,7 @@ class AkuvoxAPI:
             return {"missing": [], "unexpected": [], "type_mismatches": []}
 
         template = cls._user_set_working_template()
-        optional_keys = {"ID"}
+        optional_keys = {"ID", "FaceFileName", "FaceUrl", "importFile"}
         missing = [key for key in template if key not in record and key not in optional_keys]
         unexpected = [key for key in record if key not in template]
         type_mismatches: List[Dict[str, str]] = []
@@ -1598,10 +1661,10 @@ class AkuvoxAPI:
         query = urlencode(params)
 
         base_paths = (
-            "/api/filetool/import",
-            "/filetool/import",
             "/api/web/filetool/import",
             "/web/filetool/import",
+            "/api/filetool/import",
+            "/filetool/import",
         )
         rel_paths = tuple(f"{path}?{query}" if query else path for path in base_paths)
 
@@ -1670,10 +1733,15 @@ class AkuvoxAPI:
                 _LOGGER.debug(
                     "POST %s (face upload) filename=%s size=%s", url, safe_filename, len(file_bytes)
                 )
+                origin = f"{scheme}://{self.host}:{port}"
                 async with self._session.post(
                     url,
                     data=form,
-                    headers={"Accept": "application/json, text/plain, */*"},
+                    headers={
+                        "Accept": "application/json, text/plain, */*",
+                        "Origin": origin,
+                        "Referer": f"{origin}/",
+                    },
                     ssl=(verify if use_https else None),
                     timeout=30,
                     auth=self._auth,
@@ -1997,6 +2065,7 @@ class AkuvoxAPI:
             "Room": tuple(),
             "PhoneNum": ("phone", "phone_num"),
             "FaceUrl": ("face_url", "FaceURL"),
+            "FaceFileName": ("faceFileName", "face_filename", "face_file_name"),
         }
 
         for target, aliases in optional_string.items():
@@ -2017,6 +2086,14 @@ class AkuvoxAPI:
                 pin_text = str(pin_value).strip()
                 if pin_text:
                     base["PrivatePIN"] = pin_text
+
+        import_file = item.get("importFile") or item.get("ImportFile")
+        if isinstance(import_file, dict):
+            filename = self._face_import_filename_from_item({"importFile": import_file})
+            if filename:
+                base["importFile"] = {"fileName": filename, "fileData": {}}
+
+        self._apply_face_import_fields(base)
 
         return base
 

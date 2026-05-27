@@ -265,5 +265,7 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     assert uploaded is True
     assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
     assert api.set_calls[0][0]["ID"] == "42"
-    assert api.set_calls[0][0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
+    assert "FaceUrl" not in api.set_calls[0][0]
+    assert api.set_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert api.set_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert api.set_calls[0][0]["FaceRegisterStatus"] == "1"

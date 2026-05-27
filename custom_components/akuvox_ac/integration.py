@@ -1199,6 +1199,66 @@ _FACE_REGISTER_KEYS = (
 )
 
 
+def _face_reference_is_device_import(reference: Any) -> bool:
+    if reference in (None, ""):
+        return False
+    text = str(reference or "").strip().replace("\\", "/").lower()
+    return text.startswith("/mnt/face/") or text.startswith("mnt/face/")
+
+
+def _face_import_filename_from_sources(
+    ha_key: str,
+    *sources: Optional[Dict[str, Any]],
+) -> str:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        import_file = source.get("importFile") or source.get("ImportFile")
+        if isinstance(import_file, dict):
+            for key in ("fileName", "filename", "name", "FileName"):
+                value = import_file.get(key)
+                if value not in (None, ""):
+                    name = Path(str(value)).name
+                    if name:
+                        return name
+        for key in _FACE_FILENAME_KEYS:
+            value = source.get(key)
+            if value not in (None, ""):
+                name = Path(str(value)).name
+                if name:
+                    return name
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in _FACE_URL_KEYS:
+            value = source.get(key)
+            if value not in (None, "") and _face_reference_is_device_import(value):
+                try:
+                    name = face_filename_from_reference(str(value), ha_key)
+                except Exception:
+                    name = Path(str(value)).name
+                if name:
+                    return Path(str(name)).name
+
+    return ""
+
+
+def _apply_face_import_fields(
+    payload: Dict[str, Any],
+    *,
+    ha_key: str,
+    sources: Tuple[Optional[Dict[str, Any]], ...],
+) -> bool:
+    filename = _face_import_filename_from_sources(ha_key, payload, *sources)
+    if not filename:
+        return False
+
+    payload["FaceFileName"] = filename
+    payload["importFile"] = {"fileName": filename, "fileData": {}}
+    return True
+
+
 def _ensure_face_payload_fields(
     payload: Dict[str, Any],
     *,
@@ -1220,15 +1280,25 @@ def _ensure_face_payload_fields(
                     return text
         return None
 
-    face_url = _extract_first(_FACE_URL_KEYS)
+    raw_face_url = _extract_first(_FACE_URL_KEYS)
+    face_url = raw_face_url
     if not face_url:
         face_url = _extract_first(_FACE_FILENAME_KEYS)
 
-    if face_url:
+    import_linked = _apply_face_import_fields(
+        payload,
+        ha_key=ha_key,
+        sources=sources,
+    )
+
+    if face_url and not (import_linked and (not raw_face_url or _face_reference_is_device_import(raw_face_url))):
         payload["FaceUrl"] = str(face_url)
+    elif import_linked:
+        payload.pop("FaceUrl", None)
 
     for key in _FACE_FILENAME_KEYS:
-        payload.pop(key, None)
+        if key != "FaceFileName":
+            payload.pop(key, None)
     for key in _FACE_URL_KEYS:
         if key != "FaceUrl":
             payload.pop(key, None)
@@ -1366,7 +1436,7 @@ def _prepare_user_set_payload(
         "LicensePlate": [{}, {}, {}, {}, {}],
         "LicensePlateTime": [{}, {}, {}, {}, {}],
     }
-    base_keys = set(payload.keys()) | {"ID"}
+    base_keys = set(payload.keys()) | {"ID", "FaceUrl", "FaceFileName", "importFile"}
 
     if isinstance(existing, dict):
         payload.update({k: v for k, v in _remap_user_set_keys(existing).items() if v is not None})
@@ -1385,11 +1455,13 @@ def _prepare_user_set_payload(
         payload["UserID"] = str(ha_key)
 
     face_url_value: Optional[str] = None
+    raw_face_url_value: Optional[str] = None
     face_url_present = False
+    face_filename_value = _face_import_filename_from_sources(ha_key, desired, existing, payload)
     for source in (desired, existing, payload):
         if not isinstance(source, dict):
             continue
-        for key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS):
+        for key in _FACE_URL_KEYS:
             if key not in source:
                 continue
             face_url_present = True
@@ -1399,17 +1471,26 @@ def _prepare_user_set_payload(
             text = str(raw_value).strip()
             if text:
                 face_url_value = text
+                raw_face_url_value = text
                 break
         if face_url_value is not None:
             break
 
-    if face_url_value is not None:
+    if face_filename_value:
+        payload["FaceFileName"] = face_filename_value
+        payload["importFile"] = {"fileName": face_filename_value, "fileData": {}}
+
+    if face_url_value is not None and not (
+        face_filename_value and _face_reference_is_device_import(raw_face_url_value)
+    ):
         payload["FaceUrl"] = face_url_value
+    elif face_filename_value and _face_reference_is_device_import(raw_face_url_value):
+        payload.pop("FaceUrl", None)
     elif face_url_present:
         payload["FaceUrl"] = ""
 
     for key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS):
-        if key != "FaceUrl":
+        if key not in {"FaceUrl", "FaceFileName"}:
             payload.pop(key, None)
 
     for key in ("ScheduleID", "Type", "Id", "id"):
@@ -1424,6 +1505,13 @@ def _prepare_user_set_payload(
 
     if str(payload.get("FaceUrl") or "").strip() and str(payload.get("FaceRegisterStatus") or "").strip() != "1":
         payload["FaceRegisterStatus"] = "1"
+
+    if "FaceRegisterStatus" in payload:
+        face_status_flag = _normalize_boolish(payload.get("FaceRegisterStatus"))
+        if face_status_flag is None:
+            payload["FaceRegisterStatus"] = str(payload.get("FaceRegisterStatus") or "")
+        else:
+            payload["FaceRegisterStatus"] = "1" if face_status_flag else "0"
 
     payload["LicensePlate"] = _normalize_fixed_plate(payload.get("LicensePlate"))
     payload["LicensePlateTime"] = _normalize_fixed_plate(payload.get("LicensePlateTime"))
@@ -1918,6 +2006,12 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
             if expected_face is False and actual_face is True:
                 return False
             continue
+
+        if key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS, "importFile"):
+            expected_face = _face_flag_from_record(desired)
+            actual_face = _face_flag(local)
+            if expected_face is True and actual_face is True:
+                continue
 
         local_value = local.get(key)
         if _text(local_value) != _text(desired_value):
