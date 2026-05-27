@@ -5062,7 +5062,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
 class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
     url = "/api/akuvox_ac/ui/support_bundle"
     name = "api:akuvox_ac:ui_support_bundle"
-    requires_auth = True
+    requires_auth = False
 
     _SENSITIVE_KEY_FRAGMENTS = (
         "password",
