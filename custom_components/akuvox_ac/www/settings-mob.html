@@ -558,6 +558,7 @@ function escapeHtml(value){
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
+const API_SUPPORT_BUNDLE = signedPath('support_bundle', '/api/akuvox_ac/ui/support_bundle');
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 
@@ -622,6 +623,60 @@ let scheduleReadOnly = false;
 const DEVICE_SAVE_STATE = new Map();
 
 function setBusy(yes){ document.getElementById('busy').style.display = yes ? 'inline-block':'none'; }
+
+function supportBundleFilename(response){
+  const fallback = 'akuvox-support-bundle.zip';
+  const header = response && response.headers ? response.headers.get('Content-Disposition') : '';
+  if (!header) return fallback;
+  const match = header.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+  if (!match) return fallback;
+  const raw = match[1] || match[2] || fallback;
+  try { return decodeURIComponent(raw); } catch (err) { return raw || fallback; }
+}
+
+function setSupportBundleStatus(message = '', kind = ''){
+  const el = document.getElementById('supportBundleStatus');
+  if (!el) return;
+  el.textContent = message;
+  el.className = `small mt-2 ${kind === 'error' ? 'text-danger' : kind === 'success' ? 'text-success' : 'muted'}`;
+}
+
+async function downloadSupportBundle(){
+  const btn = document.getElementById('downloadSupportBundleBtn');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Preparing';
+  }
+  setSupportBundleStatus('Preparing support bundle...');
+  try {
+    const response = await fetchWithAuth(API_SUPPORT_BUNDLE);
+    if (!response.ok) {
+      const text = await response.text();
+      const err = buildError(response, text);
+      if (handleAuthError(err)) return;
+      throw err;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = supportBundleFilename(response);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setSupportBundleStatus('Support bundle downloaded.', 'success');
+  } catch (err) {
+    console.error('Failed to download support bundle', err);
+    setSupportBundleStatus('Failed to download logs: ' + (err && err.message ? err.message : err), 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = original;
+    }
+  }
+}
 
 function hideIntegritySavedOverlay(){
   const overlay = document.getElementById('integritySavedOverlay');
@@ -2553,6 +2608,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  document.getElementById('downloadSupportBundleBtn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    downloadSupportBundle();
+  });
+
   const autoSyncInput = document.getElementById('autoSyncDelayInput');
   const commitAutoSyncDelay = async () => {
     if (!autoSyncInput) return;
@@ -2810,9 +2870,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
       <div>
         <div class="fw-semibold">Device diagnostics</div>
-        <div class="muted small">Open the diagnostics dashboard to inspect the last HTTP requests sent to each Akuvox device.</div>
+        <div class="muted small">Download troubleshooting logs or inspect the diagnostics dashboard for the last HTTP requests sent to each Akuvox device.</div>
+        <div id="supportBundleStatus" class="small mt-2 muted"></div>
       </div>
-      <a class="btn btn-outline-info" id="openDiagnosticsBtn" href="/akuvox-ac/diagnostics"><i class="bi bi-activity me-1"></i>Open diagnostics</a>
+      <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-outline-light" id="downloadSupportBundleBtn" type="button"><i class="bi bi-download me-1"></i>Download logs</button>
+        <a class="btn btn-outline-info" id="openDiagnosticsBtn" href="/akuvox-ac/diagnostics"><i class="bi bi-activity me-1"></i>Open diagnostics</a>
+      </div>
     </div>
   </div>
 
