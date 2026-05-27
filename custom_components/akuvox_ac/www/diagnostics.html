@@ -585,6 +585,7 @@ function openInApp(view, params = {}, options = {}) {
   <div class="d-flex align-items-center gap-2 flex-wrap">
     <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
     <h2 class="m-0 flex-grow-1">Device Diagnostics</h2>
+    <button class="btn btn-outline-info" id="btnDownloadSupportBundle" type="button"><i class="bi bi-download"></i> Download logs</button>
     <button class="btn btn-outline-info" id="btnRefresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
@@ -750,6 +751,7 @@ function openInApp(view, params = {}, options = {}) {
 
 <script>
 const API_DIAGNOSTICS = signedPath('diagnostics', '/api/akuvox_ac/ui/diagnostics');
+const API_SUPPORT_BUNDLE = signedPath('support_bundle', '/api/akuvox_ac/ui/support_bundle');
 const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
 const busyEl = document.getElementById('busy');
 const statusEl = document.getElementById('statusMessage');
@@ -771,6 +773,7 @@ const eventsLimitHelperEl = document.getElementById('eventsLimitHelper');
 const eventsStatusEl = document.getElementById('eventsStatus');
 const btnRefreshEvents = document.getElementById('btnRefreshEvents');
 const btnOpenEventHistory = document.getElementById('btnOpenEventHistory');
+const btnDownloadSupportBundle = document.getElementById('btnDownloadSupportBundle');
 const notificationsListEl = document.getElementById('notificationsList');
 const notificationsCountEl = document.getElementById('notificationsCount');
 const notificationsMetaEl = document.getElementById('notificationsMeta');
@@ -2203,6 +2206,52 @@ async function loadDiagnostics(){
   }
 }
 
+function supportBundleFilename(response){
+  const fallback = 'akuvox-support-bundle.zip';
+  try {
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utfMatch && utfMatch[1]) return decodeURIComponent(utfMatch[1].trim());
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match && match[1]) return match[1].trim();
+  } catch (err) {}
+  return fallback;
+}
+
+async function downloadSupportBundle(){
+  if (!btnDownloadSupportBundle) return;
+  const original = btnDownloadSupportBundle.innerHTML;
+  btnDownloadSupportBundle.disabled = true;
+  btnDownloadSupportBundle.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Preparing';
+  showStatus('');
+  try {
+    const response = await fetchWithAuth(API_SUPPORT_BUNDLE);
+    if (!response.ok){
+      const text = await response.text();
+      const err = buildError(response, text);
+      if (!handleAuthError(err)) throw err;
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = supportBundleFilename(response);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showStatus('Support bundle downloaded.');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    console.error('Failed to download support bundle', err);
+    showStatus('Failed to download logs: ' + (err && err.message ? err.message : err));
+  } finally {
+    btnDownloadSupportBundle.disabled = false;
+    btnDownloadSupportBundle.innerHTML = original;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnBack')?.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -2211,6 +2260,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnRefresh')?.addEventListener('click', (ev) => {
     ev.preventDefault();
     loadDiagnostics();
+  });
+  btnDownloadSupportBundle?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    downloadSupportBundle();
   });
   document.querySelectorAll('[data-tab-target]')?.forEach((btn) => {
     btn.addEventListener('click', (ev) => {

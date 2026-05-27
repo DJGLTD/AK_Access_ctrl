@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import logging
 import json
+import platform
 import re
 import secrets
 import time
+import zipfile
 from functools import partial
 from datetime import timedelta
 from pathlib import Path
@@ -59,6 +62,9 @@ COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
+SUPPORT_BUNDLE_LOG_TAIL_BYTES = 512 * 1024
+SUPPORT_BUNDLE_MAX_LOG_LINES = 1200
+SUPPORT_BUNDLE_REQUEST_LIMIT = MAX_DIAGNOSTICS_HISTORY_LIMIT
 
 EXIT_PERMISSION_MATCH = "match"
 EXIT_PERMISSION_WORKING_DAYS = "working_days"
@@ -608,6 +614,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "session": "/api/akuvox_ac/ui/session",
     "phones": "/api/akuvox_ac/ui/phones",
     "diagnostics": "/api/akuvox_ac/ui/diagnostics",
+    "support_bundle": "/api/akuvox_ac/ui/support_bundle",
     "reserve_id": "/api/akuvox_ac/ui/reserve_id",
     "release_id": "/api/akuvox_ac/ui/release_id",
     "reservation_ping": "/api/akuvox_ac/ui/reservation_ping",
@@ -5052,6 +5059,452 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
         return web.json_response(payload)
 
 
+class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
+    url = "/api/akuvox_ac/ui/support_bundle"
+    name = "api:akuvox_ac:ui_support_bundle"
+    requires_auth = True
+
+    _SENSITIVE_KEY_FRAGMENTS = (
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "authsig",
+        "authorization",
+        "cookie",
+        "session",
+        "api_key",
+        "apikey",
+        "bearer",
+        "pin",
+        "phone",
+        "phonenumber",
+        "mobile",
+        "license_plate",
+        "plate",
+    )
+    _LOG_NEEDLES = (
+        "akuvox",
+        "ak_access",
+        "ak_ac",
+        "facedata",
+        "faceregister",
+        "face sync",
+        "face profile",
+        "http.ban",
+        "login attempt",
+    )
+
+    @classmethod
+    def _should_redact_key(cls, key: Any) -> bool:
+        text = str(key or "").strip().lower().replace("-", "_")
+        if not text:
+            return False
+        # These face fields are central to the issue and do not expose credentials.
+        if text in {
+            "face_url",
+            "faceurl",
+            "face_url_filename",
+            "face_status",
+            "has_pin",
+            "has_phone",
+        }:
+            return False
+        return any(fragment in text for fragment in cls._SENSITIVE_KEY_FRAGMENTS)
+
+    @classmethod
+    def _redact_text(cls, value: str) -> str:
+        text = str(value or "")
+        text = re.sub(
+            r"(?i)([?&](?:authSig|access_token|refresh_token|token|api_key)=)[^&\s]+",
+            r"\1<redacted>",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+",
+            r"\1<redacted>",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b((?:password|passwd|pin|token|authorization|authSig)\s*[:=]\s*)[^\s,;]+",
+            r"\1<redacted>",
+            text,
+        )
+        text = re.sub(
+            r'(?i)("?(?:password|passwd|pin|token|authorization|authSig|phone|license_plate|plate)"?\s*:\s*")[^"]*(")',
+            r"\1<redacted>\2",
+            text,
+        )
+        return text
+
+    @classmethod
+    def _redact_support_data(cls, value: Any, key: Any = "") -> Any:
+        if cls._should_redact_key(key):
+            if value in (None, "", [], {}):
+                return value
+            return "<redacted>"
+        if isinstance(value, dict):
+            return {str(k): cls._redact_support_data(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [cls._redact_support_data(item, key) for item in value]
+        if isinstance(value, tuple):
+            return [cls._redact_support_data(item, key) for item in value]
+        if isinstance(value, set):
+            return sorted(
+                (cls._redact_support_data(item, key) for item in value),
+                key=lambda item: str(item),
+            )
+        if isinstance(value, str):
+            return cls._redact_text(value)
+        return value
+
+    @staticmethod
+    def _face_filename_from_url(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            parsed = urlsplit(text)
+            path = unquote(parsed.path or text)
+        except Exception:
+            path = text
+        try:
+            return Path(path).name
+        except Exception:
+            return ""
+
+    @classmethod
+    def _users_snapshot(cls, root: Dict[str, Any]) -> Dict[str, Any]:
+        users_store = root.get("users_store")
+        raw_users: Dict[str, Any] = {}
+        if users_store and hasattr(users_store, "all"):
+            try:
+                raw_users = users_store.all() or {}
+            except Exception:
+                raw_users = {}
+
+        profiles: List[Dict[str, Any]] = []
+        counts = {
+            "total": 0,
+            "with_face_url": 0,
+            "face_pending": 0,
+            "face_error": 0,
+            "face_active": 0,
+            "face_sync_errors": 0,
+        }
+        for raw_id, raw_profile in sorted(raw_users.items(), key=lambda pair: str(pair[0])):
+            if not isinstance(raw_profile, dict):
+                continue
+            user_id = normalize_user_id(raw_id) or str(raw_id)
+            face_url = str(raw_profile.get("face_url") or raw_profile.get("FaceUrl") or "").strip()
+            face_status = str(raw_profile.get("face_status") or "").strip().lower()
+            try:
+                error_count = int(raw_profile.get("face_error_count") or 0)
+            except Exception:
+                error_count = 0
+            has_face = bool(face_url) or face_status in {"active", "pending", "error"}
+            if face_url:
+                counts["with_face_url"] += 1
+            if face_status == "pending":
+                counts["face_pending"] += 1
+            if face_status == "error":
+                counts["face_error"] += 1
+            if face_status == "active":
+                counts["face_active"] += 1
+            if error_count > 0:
+                counts["face_sync_errors"] += 1
+
+            profile = {
+                "id": user_id,
+                "name": raw_profile.get("name") or "",
+                "status": raw_profile.get("status") or "",
+                "source": raw_profile.get("Source") or raw_profile.get("source") or "",
+                "groups": list(raw_profile.get("groups") or []),
+                "schedule_name": raw_profile.get("schedule_name") or "",
+                "schedule_id": raw_profile.get("schedule_id") or "",
+                "access_start": raw_profile.get("access_start") or "",
+                "access_end": raw_profile.get("access_end") or "",
+                "temporary": bool(raw_profile.get("temporary")),
+                "temporary_expires_at": raw_profile.get("temporary_expires_at") or "",
+                "temporary_used_at": raw_profile.get("temporary_used_at") or "",
+                "remote_enrol_pending": bool(raw_profile.get("remote_enrol_pending")),
+                "has_pin": bool(raw_profile.get("pin")),
+                "has_phone": bool(raw_profile.get("phone")),
+                "face": {
+                    "present": has_face,
+                    "status": face_status,
+                    "url_present": bool(face_url),
+                    "url_filename": cls._face_filename_from_url(face_url),
+                    "synced_at": raw_profile.get("face_synced_at") or "",
+                    "error_count": error_count,
+                },
+            }
+            profiles.append(profile)
+
+        counts["total"] = len(profiles)
+        return {"counts": counts, "profiles": profiles}
+
+    @staticmethod
+    def _path_label(path: Path) -> str:
+        try:
+            return str(path)
+        except Exception:
+            return ""
+
+    @classmethod
+    def _face_files_snapshot(cls, hass: HomeAssistant) -> List[Dict[str, Any]]:
+        candidates = [
+            ("persistent", face_storage_dir(hass)),
+            ("legacy_www", _legacy_face_dir(hass)),
+            ("component_www", _component_face_dir()),
+        ]
+        snapshots: List[Dict[str, Any]] = []
+        for label, folder in candidates:
+            item: Dict[str, Any] = {
+                "label": label,
+                "path": cls._path_label(folder),
+                "exists": False,
+                "files": [],
+            }
+            try:
+                item["exists"] = folder.exists()
+                if folder.exists() and folder.is_dir():
+                    files: List[Dict[str, Any]] = []
+                    for child in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
+                        if not child.is_file():
+                            continue
+                        if child.suffix.lower().lstrip(".") not in FACE_FILE_EXTENSIONS:
+                            continue
+                        try:
+                            stat = child.stat()
+                            modified = dt.datetime.fromtimestamp(
+                                stat.st_mtime, dt.timezone.utc
+                            ).isoformat()
+                        except Exception:
+                            stat = None
+                            modified = ""
+                        files.append(
+                            {
+                                "name": child.name,
+                                "user_id": normalize_user_id(child.stem) or child.stem,
+                                "size_bytes": getattr(stat, "st_size", None),
+                                "modified_at": modified,
+                            }
+                        )
+                    item["files"] = files
+            except Exception as err:
+                item["error"] = str(err)
+            snapshots.append(item)
+        return snapshots
+
+    @classmethod
+    def _sync_queue_snapshot(cls, root: Dict[str, Any]) -> Dict[str, Any]:
+        queue = root.get("sync_queue")
+        if not queue:
+            return {"available": False}
+
+        def _iso(value: Any) -> Optional[str]:
+            if isinstance(value, dt.datetime):
+                return value.isoformat()
+            return None
+
+        return {
+            "available": True,
+            "active": bool(getattr(queue, "_active", False)),
+            "next_sync_eta": _iso(getattr(queue, "next_sync_eta", None)),
+            "last_mark": _iso(getattr(queue, "_last_mark", None)),
+            "pending_all": bool(getattr(queue, "_pending_all", False)),
+            "pending_devices": sorted(str(v) for v in getattr(queue, "_pending_devices", set())),
+            "pending_full": bool(getattr(queue, "_pending_full", False)),
+            "pending_full_devices": sorted(
+                str(v) for v in getattr(queue, "_pending_full_devices", set())
+            ),
+            "pending_reason_all": getattr(queue, "_pending_reason_all", None),
+            "pending_reason_devices": cls._copy_json(
+                getattr(queue, "_pending_reason_devices", {})
+            ),
+        }
+
+    @classmethod
+    def _device_support_snapshot(cls, root: Dict[str, Any]) -> List[Dict[str, Any]]:
+        devices: List[Dict[str, Any]] = []
+        manager = root.get("sync_manager")
+        if not manager:
+            return devices
+        try:
+            device_iter = manager._devices()  # type: ignore[attr-defined]
+        except Exception:
+            return devices
+
+        for entry_id, coord, api, opts in device_iter:
+            try:
+                requests = api.recent_requests(SUPPORT_BUNDLE_REQUEST_LIMIT)
+            except Exception:
+                requests = []
+            health = getattr(coord, "health", {}) or {}
+            events = getattr(coord, "events", []) or []
+            storage = getattr(coord, "storage", None)
+            storage_data = getattr(storage, "data", {}) if storage else {}
+            devices.append(
+                {
+                    "entry_id": entry_id,
+                    "name": getattr(coord, "display_name", None)
+                    or getattr(coord, "device_name", None)
+                    or entry_id,
+                    "health": cls._copy_json(health),
+                    "api": {
+                        "host": getattr(api, "host", None),
+                        "port": getattr(api, "port", None),
+                        "scheme": getattr(api, "scheme", None),
+                        "verify_ssl": getattr(api, "verify_ssl", None),
+                    },
+                    "options": cls._copy_json(opts),
+                    "recent_events": cls._copy_json(events[:100]),
+                    "event_state": cls._copy_json(getattr(coord, "event_state", {})),
+                    "caller_state": cls._copy_json(getattr(coord, "caller_state", {})),
+                    "door_event_state": cls._copy_json(
+                        storage_data.get("door_events", {}) if isinstance(storage_data, dict) else {}
+                    ),
+                    "recent_requests": requests,
+                }
+            )
+        return devices
+
+    @classmethod
+    def _settings_snapshot(cls, root: Dict[str, Any]) -> Dict[str, Any]:
+        settings = root.get("settings_store")
+        data = getattr(settings, "data", {}) if settings else {}
+        snapshot = cls._copy_json(data if isinstance(data, dict) else {})
+        updater = root.get("hacs_auto_updater")
+        if updater and hasattr(updater, "status"):
+            try:
+                snapshot["hacs_auto_update_status"] = updater.status()
+            except Exception:
+                pass
+        return snapshot
+
+    @classmethod
+    def _read_filtered_log_tail(cls, path: Path) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "path": str(path),
+            "exists": False,
+            "bytes_read": 0,
+            "lines": [],
+        }
+        try:
+            if not path.exists() or not path.is_file():
+                return result
+            result["exists"] = True
+            size = path.stat().st_size
+            start = max(0, size - SUPPORT_BUNDLE_LOG_TAIL_BYTES)
+            with path.open("rb") as handle:
+                handle.seek(start)
+                raw = handle.read(SUPPORT_BUNDLE_LOG_TAIL_BYTES)
+            result["bytes_read"] = len(raw)
+            text = raw.decode("utf-8", errors="replace")
+            lines = []
+            for line in text.splitlines():
+                lowered = line.lower()
+                if any(needle in lowered for needle in cls._LOG_NEEDLES):
+                    lines.append(cls._redact_text(line))
+            result["lines"] = lines[-SUPPORT_BUNDLE_MAX_LOG_LINES:]
+        except Exception as err:
+            result["error"] = str(err)
+        return result
+
+    async def _homeassistant_log_tail(self, hass: HomeAssistant) -> Dict[str, Any]:
+        try:
+            log_path = Path(hass.config.path("home-assistant.log"))
+        except Exception:
+            log_path = Path("home-assistant.log")
+        try:
+            return await hass.async_add_executor_job(self._read_filtered_log_tail, log_path)
+        except Exception:
+            return self._read_filtered_log_tail(log_path)
+
+    @staticmethod
+    def _summary_text(bundle: Dict[str, Any]) -> str:
+        metadata = bundle.get("metadata", {}) if isinstance(bundle, dict) else {}
+        users = bundle.get("users", {}) if isinstance(bundle, dict) else {}
+        counts = users.get("counts", {}) if isinstance(users, dict) else {}
+        devices = bundle.get("devices", []) if isinstance(bundle, dict) else []
+        log_tail = bundle.get("homeassistant_log_tail", {}) if isinstance(bundle, dict) else {}
+        lines = [
+            "Akuvox Access Control Support Bundle",
+            f"Generated: {metadata.get('generated_at', '')}",
+            f"Integration version: {metadata.get('integration_version_label', '')}",
+            f"Devices: {len(devices) if isinstance(devices, list) else 0}",
+            f"Users: {counts.get('total', 0)}",
+            f"Face active: {counts.get('face_active', 0)}",
+            f"Face pending: {counts.get('face_pending', 0)}",
+            f"Face error: {counts.get('face_error', 0)}",
+            f"Profiles with face sync errors: {counts.get('face_sync_errors', 0)}",
+            f"Filtered HA log lines: {len(log_tail.get('lines', [])) if isinstance(log_tail, dict) else 0}",
+            "",
+            "Files",
+            "- support_bundle.json: redacted structured diagnostics",
+            "- summary.txt: this overview",
+            "- home-assistant.log.filtered.txt: Akuvox/face-related Home Assistant log tail",
+        ]
+        return "\n".join(lines) + "\n"
+
+    async def _build_support_bundle(self, hass: HomeAssistant) -> Dict[str, Any]:
+        root = hass.data.get(DOMAIN, {}) or {}
+        diagnostics = await self._build_payload(
+            root,
+            limit_override=SUPPORT_BUNDLE_REQUEST_LIMIT,
+        )
+        bundle = {
+            "metadata": {
+                "generated_at": _now_iso(),
+                "integration_domain": DOMAIN,
+                "integration_version": INTEGRATION_VERSION,
+                "integration_version_label": INTEGRATION_VERSION_LABEL,
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+            },
+            "settings": self._settings_snapshot(root),
+            "sync_queue": self._sync_queue_snapshot(root),
+            "users": self._users_snapshot(root),
+            "face_files": self._face_files_snapshot(hass),
+            "devices": self._device_support_snapshot(root),
+            "diagnostics": diagnostics,
+            "homeassistant_log_tail": await self._homeassistant_log_tail(hass),
+        }
+        return self._redact_support_data(bundle)
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
+
+        bundle = await self._build_support_bundle(hass)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+        filename = f"akuvox-support-{stamp}.zip"
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("summary.txt", self._summary_text(bundle))
+            archive.writestr(
+                "support_bundle.json",
+                json.dumps(bundle, indent=2, sort_keys=True, default=str),
+            )
+            log_tail = bundle.get("homeassistant_log_tail", {})
+            lines = log_tail.get("lines", []) if isinstance(log_tail, dict) else []
+            archive.writestr(
+                "home-assistant.log.filtered.txt",
+                "\n".join(str(line) for line in lines) + ("\n" if lines else ""),
+            )
+
+        return web.Response(
+            body=buffer.getvalue(),
+            content_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+
 # ========================= Reserve a fresh HA ID =========================
 class AkuvoxUIReserveId(HomeAssistantView):
     """
@@ -5511,6 +5964,7 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxUISettings())
     hass.http.register_view(AkuvoxUIPhones())
     hass.http.register_view(AkuvoxUIDiagnostics())
+    hass.http.register_view(AkuvoxUISupportBundle())
     hass.http.register_view(AkuvoxUIReserveId())
     hass.http.register_view(AkuvoxUIReleaseId())   # <-- new
     hass.http.register_view(AkuvoxUIReservationPing())

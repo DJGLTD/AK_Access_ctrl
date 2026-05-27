@@ -21,6 +21,7 @@ def test_dashboard_injects_signing_helper_without_initial_signed_paths():
     assert "X-Akuvox-Dashboard-Token" in rendered
     assert "akuvox_ll_token" in rendered
     assert "/api/akuvox_ac/ui/state" in rendered
+    assert "/api/akuvox_ac/ui/support_bundle" in rendered
     assert "sessionStorage.setItem('akuvox_signed_paths'" not in rendered
     assert "localStorage.setItem('akuvox_signed_paths'" not in rendered
 
@@ -32,6 +33,30 @@ def test_dashboard_post_views_use_dashboard_session_token_instead_of_signed_post
     assert http_module.AkuvoxUISettings.requires_auth is False
     assert "refresh_events" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
     assert "delete_user" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
+
+
+def test_support_bundle_is_signed_and_redacts_sensitive_values():
+    assert http_module.SIGNED_API_PATHS["support_bundle"] == "/api/akuvox_ac/ui/support_bundle"
+
+    redacted = http_module.AkuvoxUISupportBundle._redact_support_data(
+        {
+            "pin": "1234",
+            "phone": "07123456789",
+            "authSig": "secret",
+            "has_pin": True,
+            "has_phone": True,
+            "face_url": "/api/AK_AC/FaceData/HA001.jpg",
+            "nested": {"refresh_token": "secret-token"},
+        }
+    )
+
+    assert redacted["pin"] == "<redacted>"
+    assert redacted["phone"] == "<redacted>"
+    assert redacted["authSig"] == "<redacted>"
+    assert redacted["nested"]["refresh_token"] == "<redacted>"
+    assert redacted["has_pin"] is True
+    assert redacted["has_phone"] is True
+    assert redacted["face_url"] == "/api/AK_AC/FaceData/HA001.jpg"
 
 
 def test_dashboard_frontend_does_not_send_bearer_authorization_headers():
