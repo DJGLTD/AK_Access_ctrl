@@ -5,6 +5,7 @@ import json
 import logging
 import json
 import re
+import secrets
 import time
 from functools import partial
 from datetime import timedelta
@@ -604,6 +605,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "state": "/api/akuvox_ac/ui/state",
     "action": "/api/akuvox_ac/ui/action",
     "settings": "/api/akuvox_ac/ui/settings",
+    "session": "/api/akuvox_ac/ui/session",
     "phones": "/api/akuvox_ac/ui/phones",
     "diagnostics": "/api/akuvox_ac/ui/diagnostics",
     "reserve_id": "/api/akuvox_ac/ui/reserve_id",
@@ -621,6 +623,26 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "service_delete_user": "/api/services/akuvox_ac/delete_user",
     "service_reactivate_temporary_user": "/api/services/akuvox_ac/reactivate_temporary_user",
 }
+ALLOWED_DASHBOARD_SERVICE_PROXY: Set[str] = {
+    "add_missing_users",
+    "add_temporary_user",
+    "add_user",
+    "create_group",
+    "delete_groups",
+    "delete_user",
+    "edit_user",
+    "force_full_sync",
+    "hacs_update_check",
+    "hacs_update_install",
+    "reactivate_temporary_user",
+    "reboot_device",
+    "refresh_events",
+    "set_user_groups",
+    "sync_now",
+    "upload_face",
+}
+DASHBOARD_SESSION_HEADER = "X-Akuvox-Dashboard-Token"
+DASHBOARD_SESSION_TTL_SECONDS = 60 * 60
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -665,6 +687,73 @@ def _dashboard_access_denied_response() -> web.Response:
     )
 
 
+def _dashboard_sessions(hass: HomeAssistant) -> Dict[str, Dict[str, Any]]:
+    root = hass.data.setdefault(DOMAIN, {})
+    if not isinstance(root, dict):
+        return {}
+    sessions = root.setdefault("dashboard_sessions", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+        root["dashboard_sessions"] = sessions
+    now = time.time()
+    for token, session in list(sessions.items()):
+        try:
+            expires_at = float((session or {}).get("expires_at") or 0)
+        except Exception:
+            expires_at = 0
+        if expires_at <= now:
+            sessions.pop(token, None)
+    return sessions
+
+
+def _dashboard_session_token_from_request(request: web.Request) -> str:
+    try:
+        token = request.headers.get(DASHBOARD_SESSION_HEADER)
+    except Exception:
+        token = None
+    if not token:
+        try:
+            token = request.query.get("dashboardToken")
+        except Exception:
+            token = None
+    return str(token or "").strip()
+
+
+def _request_dashboard_session(
+    hass: HomeAssistant, request: web.Request
+) -> Optional[Dict[str, Any]]:
+    token = _dashboard_session_token_from_request(request)
+    if not token:
+        return None
+    sessions = _dashboard_sessions(hass)
+    session = sessions.get(token)
+    if not isinstance(session, dict):
+        return None
+    try:
+        expires_at = float(session.get("expires_at") or 0)
+    except Exception:
+        expires_at = 0
+    if expires_at <= time.time():
+        sessions.pop(token, None)
+        return None
+    session["expires_at"] = time.time() + DASHBOARD_SESSION_TTL_SECONDS
+    return session
+
+
+def _create_dashboard_session(hass: HomeAssistant, user: Any) -> Dict[str, Any]:
+    token = secrets.token_urlsafe(32)
+    expires_at = time.time() + DASHBOARD_SESSION_TTL_SECONDS
+    session = {
+        "token": token,
+        "expires_at": expires_at,
+        "user_id": _ha_user_id(user),
+        "user_name": _ha_user_name(user),
+        "is_admin": _ha_user_is_admin(user),
+    }
+    _dashboard_sessions(hass)[token] = session
+    return dict(session)
+
+
 def _dashboard_allowed_user_ids(settings: Any) -> Set[str]:
     if not settings or not hasattr(settings, "get_dashboard_access"):
         return set()
@@ -681,7 +770,7 @@ def _dashboard_allowed_user_ids(settings: Any) -> Set[str]:
 def _request_can_access_dashboard(hass: HomeAssistant, request: web.Request) -> bool:
     user = _request_hass_user(request)
     if not user:
-        return False
+        return _request_dashboard_session(hass, request) is not None
     if _ha_user_is_admin(user):
         return True
     user_id = _ha_user_id(user)
@@ -691,8 +780,15 @@ def _request_can_access_dashboard(hass: HomeAssistant, request: web.Request) -> 
     return user_id in _dashboard_allowed_user_ids(root.get("settings_store"))
 
 
-def _request_can_manage_dashboard_access(request: web.Request) -> bool:
-    return _ha_user_is_admin(_request_hass_user(request))
+def _request_can_manage_dashboard_access(
+    request: web.Request, hass: Optional[HomeAssistant] = None
+) -> bool:
+    if _ha_user_is_admin(_request_hass_user(request)):
+        return True
+    if hass is None:
+        return False
+    session = _request_dashboard_session(hass, request)
+    return bool(session and session.get("is_admin"))
 
 
 async def _dashboard_access_payload(
@@ -701,8 +797,9 @@ async def _dashboard_access_payload(
     request: web.Request,
 ) -> Dict[str, Any]:
     user = _request_hass_user(request)
-    current_user_id = _ha_user_id(user)
-    can_manage = _ha_user_is_admin(user)
+    session = _request_dashboard_session(hass, request) if user is None else None
+    current_user_id = _ha_user_id(user) or str((session or {}).get("user_id") or "")
+    can_manage = _ha_user_is_admin(user) or bool((session or {}).get("is_admin"))
     allowed = _dashboard_allowed_user_ids(settings)
 
     users: List[Dict[str, Any]] = []
@@ -1770,8 +1867,8 @@ def _inject_signed_paths(
         "    const incoming = Object.freeze(%s);"
         "    const target = Object.assign({}, window.AK_AC_SIGNED_PATHS || {}, incoming);"
         "    window.AK_AC_SIGNED_PATHS = target;"
-        "    try { sessionStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
-        "    try { localStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
+        "    try { sessionStorage.removeItem('akuvox_signed_paths'); } catch (err) {}"
+        "    try { localStorage.removeItem('akuvox_signed_paths'); } catch (err) {}"
         "    try { sessionStorage.removeItem('akuvox_ll_token'); } catch (err) {}"
         "    try { localStorage.removeItem('akuvox_ll_token'); } catch (err) {}"
         "    try { sessionStorage.removeItem('akuvox_hassTokens'); } catch (err) {}"
@@ -1827,8 +1924,6 @@ def _inject_signed_paths(
         "      const target = Object.assign({}, window.AK_AC_SIGNED_PATHS || {});"
         "      target[key] = value;"
         "      window.AK_AC_SIGNED_PATHS = target;"
-        "      try { sessionStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
-        "      try { localStorage.setItem('akuvox_signed_paths', JSON.stringify(target)); } catch (err) {}"
         "    } catch (err) {}"
         "  }"
         "  window.AK_AC_SIGN_PATH = window.AK_AC_SIGN_PATH || async function(path, expires){"
@@ -1849,13 +1944,97 @@ def _inject_signed_paths(
         "  };"
         "  window.AK_AC_SIGN_URL = window.AK_AC_SIGN_URL || async function(url, expires){"
         "    try {"
-        "      if (typeof url !== 'string' || /[?&]authSig=/.test(url)) return url;"
+        "      if (typeof url !== 'string') return url;"
         "      const parsed = new URL(url, window.location.origin);"
+        "      const original = parsed.pathname + parsed.search + parsed.hash;"
+        "      parsed.searchParams.delete('authSig');"
         "      const path = parsed.pathname + parsed.search;"
         "      const signed = await window.AK_AC_SIGN_PATH(path, expires);"
-        "      return signed || url;"
+        "      return signed || original || url;"
         "    } catch (err) { return url; }"
         "  };"
+        "  const nativeFetch = window.AK_AC_NATIVE_FETCH || window.fetch.bind(window);"
+        "  window.AK_AC_NATIVE_FETCH = nativeFetch;"
+        "  function akAcParseUrl(value){ try { return new URL(typeof value === 'string' ? value : value.url, window.location.origin); } catch (err) { return null; } }"
+        "  function akAcJsonBody(options){"
+        "    try {"
+        "      const body = options && options.body;"
+        "      if (!body) return {};"
+        "      if (typeof body === 'string') return JSON.parse(body || '{}') || {};"
+        "      return body && typeof body === 'object' ? body : {};"
+        "    } catch (err) { return {}; }"
+        "  }"
+        "  function akAcUnsignedPath(parsed){"
+        "    const clone = new URL(parsed.href);"
+        "    clone.searchParams.delete('authSig');"
+        "    clone.searchParams.delete('dashboardToken');"
+        "    return clone.pathname + clone.search + clone.hash;"
+        "  }"
+        "  function akAcIsUiPath(pathname){ return pathname.indexOf('/api/akuvox_ac/ui/') === 0 && pathname !== '/api/akuvox_ac/ui/session'; }"
+        "  function akAcServiceName(pathname){"
+        "    const prefix = '/api/services/akuvox_ac/';"
+        "    if (pathname.indexOf(prefix) !== 0) return '';"
+        "    return decodeURIComponent(pathname.slice(prefix.length) || '');"
+        "  }"
+        "  async function akAcDashboardToken(){"
+        "    const cached = window.AK_AC_DASHBOARD_SESSION || null;"
+        "    if (cached && cached.token && Number(cached.expires_at || 0) * 1000 > Date.now() + 30000) return cached.token;"
+        "    const paths = window.AK_AC_API_PATHS || {};"
+        "    const sessionPath = paths.session || '/api/akuvox_ac/ui/session';"
+        "    const signed = await window.AK_AC_SIGN_URL(sessionPath, 300);"
+        "    if (!signed || !/[?&]authSig=/.test(signed)) throw new Error('authentication required');"
+        "    const response = await nativeFetch(signed, { credentials: 'same-origin' });"
+        "    if (!response.ok) throw new Error(String(response.status) + ': ' + (await response.text()));"
+        "    const payload = await response.json();"
+        "    if (!payload || !payload.token) throw new Error('dashboard session unavailable');"
+        "    window.AK_AC_DASHBOARD_SESSION = payload;"
+        "    return payload.token;"
+        "  }"
+        "  async function akAcFetchWithDashboardSession(target, init){"
+        "    let response = await nativeFetch(target, init);"
+        "    if (response && (response.status === 401 || response.status === 403)) {"
+        "      try { window.AK_AC_DASHBOARD_SESSION = null; } catch (err) {}"
+        "      try {"
+        "        const retryHeaders = new Headers((init && init.headers) || {});"
+        "        retryHeaders.set('X-Akuvox-Dashboard-Token', await akAcDashboardToken());"
+        "        const retryInit = Object.assign({}, init || {}, { headers: retryHeaders, credentials: 'same-origin' });"
+        "        response = await nativeFetch(target, retryInit);"
+        "      } catch (err) {}"
+        "    }"
+        "    return response;"
+        "  }"
+        "  window.AK_AC_GET_DASHBOARD_TOKEN = window.AK_AC_GET_DASHBOARD_TOKEN || akAcDashboardToken;"
+        "  window.AK_AC_DASHBOARD_FETCH = window.AK_AC_DASHBOARD_FETCH || async function(input, options){"
+        "    const parsed = akAcParseUrl(input);"
+        "    if (!parsed) return nativeFetch(input, options);"
+        "    const method = String((options && options.method) || (input && input.method) || 'GET').toUpperCase();"
+        "    const service = akAcServiceName(parsed.pathname);"
+        "    const isUi = akAcIsUiPath(parsed.pathname);"
+        "    if (!isUi && !service) return nativeFetch(input, options);"
+        "    const token = await akAcDashboardToken();"
+        "    const headers = new Headers((options && options.headers) || (input && input.headers) || {});"
+        "    headers.set('X-Akuvox-Dashboard-Token', token);"
+        "    headers.delete('Authorization');"
+        "    const init = Object.assign({}, options || {}, { headers, credentials: 'same-origin' });"
+        "    if (service) {"
+        "      const payload = akAcJsonBody(options || {});"
+        "      headers.set('Content-Type', 'application/json');"
+        "      init.method = 'POST';"
+        "      init.body = JSON.stringify({ action: 'call_service', payload: { service: service, data: payload } });"
+        "      return akAcFetchWithDashboardSession('/api/akuvox_ac/ui/action', init);"
+        "    }"
+        "    return akAcFetchWithDashboardSession(akAcUnsignedPath(parsed), init);"
+        "  };"
+        "  if (!window.AK_AC_FETCH_PATCHED) {"
+        "    window.AK_AC_FETCH_PATCHED = true;"
+        "    window.fetch = function(input, options){"
+        "      const parsed = akAcParseUrl(input);"
+        "      if (parsed && (akAcIsUiPath(parsed.pathname) || akAcServiceName(parsed.pathname))) {"
+        "        return window.AK_AC_DASHBOARD_FETCH(input, options || {});"
+        "      }"
+        "      return nativeFetch(input, options);"
+        "    };"
+        "  }"
         "%s"
         "})();"
         "</script>"
@@ -2888,7 +3067,7 @@ class AkuvoxDashboardView(HomeAssistantView):
 class AkuvoxUIView(HomeAssistantView):
     url = "/api/akuvox_ac/ui/state"
     name = "api:akuvox_ac:ui_state"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -3162,6 +3341,31 @@ class AkuvoxUIView(HomeAssistantView):
         return web.json_response(response)
 
 
+class AkuvoxUISession(HomeAssistantView):
+    url = "/api/akuvox_ac/ui/session"
+    name = "api:akuvox_ac:ui_session"
+    requires_auth = True
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
+        user = _request_hass_user(request)
+        if not user:
+            return _dashboard_access_denied_response()
+        session = _create_dashboard_session(hass, user)
+        return web.json_response(
+            {
+                "ok": True,
+                "token": session.get("token"),
+                "expires_at": session.get("expires_at"),
+                "user_id": session.get("user_id"),
+                "user_name": session.get("user_name"),
+                "is_admin": session.get("is_admin"),
+            }
+        )
+
+
 # ========================= ACTIONS =========================
 class AkuvoxUIAction(AkuvoxUIView):
     url = "/api/akuvox_ac/ui/action"
@@ -3191,6 +3395,26 @@ class AkuvoxUIAction(AkuvoxUIView):
         def err(msg: Exception | str, code: int = 400):
             text = str(msg) if isinstance(msg, str) else (str(msg) or "unknown error")
             return web.json_response({"ok": False, "error": text}, status=code)
+
+        if action == "call_service":
+            service = str(payload.get("service") or "").strip()
+            if service not in ALLOWED_DASHBOARD_SERVICE_PROXY:
+                return err("service is not available from the dashboard", code=403)
+            service_data = payload.get("data") or {}
+            if not isinstance(service_data, dict):
+                service_data = {}
+            try:
+                await hass.services.async_call(
+                    DOMAIN,
+                    service,
+                    service_data,
+                    blocking=True,
+                    context=ctx,
+                )
+                return web.json_response({"ok": True})
+            except Exception as service_err:
+                _LOGGER.debug("Dashboard service proxy failed for %s: %s", service, service_err)
+                return err(service_err)
 
         # Settings
         if action == "set_daily_sync":
@@ -3328,7 +3552,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return err(service_err)
 
         if action == "restart_homeassistant":
-            if not _request_can_manage_dashboard_access(request):
+            if not _request_can_manage_dashboard_access(request, hass):
                 return err("administrator access required", code=403)
             updater = root.get("hacs_auto_updater")
             try:
@@ -3362,7 +3586,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return err(service_err)
 
         if action == "schedule_homeassistant_restart":
-            if not _request_can_manage_dashboard_access(request):
+            if not _request_can_manage_dashboard_access(request, hass):
                 return err("administrator access required", code=403)
             updater = root.get("hacs_auto_updater")
             if not updater or not hasattr(updater, "async_schedule_restart"):
@@ -3377,7 +3601,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return err(service_err)
 
         if action == "cancel_homeassistant_restart":
-            if not _request_can_manage_dashboard_access(request):
+            if not _request_can_manage_dashboard_access(request, hass):
                 return err("administrator access required", code=403)
             updater = root.get("hacs_auto_updater")
             if not updater or not hasattr(updater, "async_cancel_restart"):
@@ -3809,7 +4033,7 @@ class AkuvoxUIAction(AkuvoxUIView):
 class AkuvoxUIDevices(HomeAssistantView):
     url = "/api/akuvox_ac/ui/devices"
     name = "api:akuvox_ac:ui_devices"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -3835,7 +4059,7 @@ class AkuvoxUIDevices(HomeAssistantView):
 class AkuvoxUISettings(HomeAssistantView):
     url = "/api/akuvox_ac/ui/settings"
     name = "api:akuvox_ac:ui_settings"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -4019,7 +4243,7 @@ class AkuvoxUISettings(HomeAssistantView):
         response: Dict[str, Any] = {"ok": True}
 
         if "dashboard_access" in payload:
-            if not _request_can_manage_dashboard_access(request):
+            if not _request_can_manage_dashboard_access(request, hass):
                 return web.json_response(
                     {"ok": False, "error": "administrator access required"},
                     status=403,
@@ -4176,7 +4400,7 @@ class AkuvoxUIPhones(HomeAssistantView):
     """
     url = "/api/akuvox_ac/ui/phones"
     name = "api:akuvox_ac:ui_phones"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -4209,7 +4433,7 @@ class AkuvoxUIPhones(HomeAssistantView):
 class AkuvoxUIDiagnostics(HomeAssistantView):
     url = "/api/akuvox_ac/ui/diagnostics"
     name = "api:akuvox_ac:ui_diagnostics"
-    requires_auth = True
+    requires_auth = False
 
     def _resolve_history_limits(self, root: Dict[str, Any]) -> Tuple[int, int, int]:
         settings = root.get("settings_store")
@@ -4836,7 +5060,7 @@ class AkuvoxUIReserveId(HomeAssistantView):
     """
     url = "/api/akuvox_ac/ui/reserve_id"
     name = "api:akuvox_ac:ui_reserve_id"
-    requires_auth = True
+    requires_auth = False
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -4933,7 +5157,7 @@ class AkuvoxUIReleaseId(HomeAssistantView):
     """
     url = "/api/akuvox_ac/ui/release_id"
     name = "api:akuvox_ac:ui_release_id"
-    requires_auth = True
+    requires_auth = False
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -4981,7 +5205,7 @@ class AkuvoxUIReservationPing(HomeAssistantView):
 
     url = "/api/akuvox_ac/ui/reservation_ping"
     name = "api:akuvox_ac:ui_reservation_ping"
-    requires_auth = True
+    requires_auth = False
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -5038,7 +5262,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
     """
     url = "/api/akuvox_ac/ui/upload_face"
     name = "api:akuvox_ac:ui_upload_face"
-    requires_auth = True
+    requires_auth = False
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -5171,7 +5395,7 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
     """
     url = "/api/akuvox_ac/ui/remote_enrol"
     name = "api:akuvox_ac:ui_remote_enrol"
-    requires_auth = True
+    requires_auth = False
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
@@ -5281,6 +5505,7 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxStaticAssets())
     hass.http.register_view(AkuvoxDashboardView())
     hass.http.register_view(AkuvoxUIView())
+    hass.http.register_view(AkuvoxUISession())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
     hass.http.register_view(AkuvoxUISettings())
