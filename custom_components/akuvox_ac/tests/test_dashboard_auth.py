@@ -31,6 +31,7 @@ def test_dashboard_post_views_use_dashboard_session_token_instead_of_signed_post
     assert http_module.AkuvoxUIView.requires_auth is False
     assert http_module.AkuvoxUIAction.requires_auth is False
     assert http_module.AkuvoxUISettings.requires_auth is False
+    assert http_module.AkuvoxUISupportBundle.requires_auth is False
     assert "refresh_events" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
     assert "delete_user" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
 
@@ -57,6 +58,25 @@ def test_support_bundle_is_signed_and_redacts_sensitive_values():
     assert redacted["has_pin"] is True
     assert redacted["has_phone"] is True
     assert redacted["face_url"] == "/api/AK_AC/FaceData/HA001.jpg"
+
+
+def test_support_bundle_text_contains_copyable_sections():
+    text = http_module.AkuvoxUISupportBundle._support_bundle_text(
+        {
+            "metadata": {
+                "generated_at": "2026-05-27T10:00:00+00:00",
+                "integration_version_label": "3.5.7",
+            },
+            "users": {"counts": {"total": 1, "face_active": 0, "face_pending": 0, "face_error": 1}},
+            "devices": [{"name": "Gate"}],
+            "homeassistant_log_tail": {"lines": ["face profile upload failed"]},
+        }
+    )
+
+    assert "Akuvox Access Control Support Bundle" in text
+    assert "=== Redacted support bundle JSON ===" in text
+    assert "=== Filtered Home Assistant log tail ===" in text
+    assert "face profile upload failed" in text
 
 
 def test_dashboard_frontend_does_not_send_bearer_authorization_headers():
