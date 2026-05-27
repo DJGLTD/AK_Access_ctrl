@@ -1032,6 +1032,7 @@ _FACE_FLAG_KEYS = (
     "hasFace",
     "HasFace",
     "FaceRegister",
+    "FaceRegisterStatus",
     "faceRegister",
     "face_register",
 )
@@ -1885,8 +1886,8 @@ def _integrity_field_differences(
         diffs.append("pin")
 
     if include_face:
-        expected_face = _normalize_boolish(expected.get("FaceRegister"))
-        actual_face = _normalize_boolish(local.get("FaceRegister"))
+        expected_face = _face_flag_from_record(expected)
+        actual_face = _face_flag_from_record(local)
         if expected_face is True and actual_face is not True:
             diffs.append("face status")
 

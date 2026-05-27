@@ -98,6 +98,16 @@ def test_record_matches_desired_fields_treats_face_register_status_as_registered
     assert integration._record_matches_desired_fields(local, desired) is True
 
 
+def test_face_register_status_satisfies_integrity_face_check():
+    diffs = integration._integrity_field_differences(
+        {"UserID": "HA001", "Name": "User One", "FaceRegisterStatus": "1"},
+        {"UserID": "HA001", "Name": "User One", "FaceRegister": 1},
+        include_face=True,
+    )
+
+    assert "face status" not in diffs
+
+
 def test_record_matches_desired_fields_detects_missing_face_registration():
     local = {
         "UserID": "HA001",

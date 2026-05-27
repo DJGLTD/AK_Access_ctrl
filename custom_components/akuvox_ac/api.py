@@ -1619,9 +1619,32 @@ class AkuvoxAPI:
 
         await self._ensure_detected()
 
-        async def _attempt(use_https: bool, port: int, verify: bool, rel: str) -> Dict[str, Any]:
+        def _default_face_upload_path() -> str:
+            dest = str(safe_dest or "Face").strip().strip("/") or "Face"
+            return f"/mnt/{dest}/{safe_filename}"
+
+        def _finalize_face_upload_result(result: Dict[str, Any]) -> Dict[str, Any]:
+            path = str(result.get("path") or "").strip()
+            if path:
+                if "/" not in path and "://" not in path:
+                    path = f"/mnt/{str(safe_dest or 'Face').strip().strip('/') or 'Face'}/{path}"
+                result["path"] = path
+                return result
+            result["path"] = _default_face_upload_path()
+            result["path_inferred"] = True
+            return result
+
+        async def _attempt(
+            use_https: bool,
+            port: int,
+            verify: bool,
+            rel: str,
+            field_name: str,
+        ) -> Dict[str, Any]:
             scheme = "https" if use_https else "http"
             url = f"{scheme}://{self.host}:{port}{rel}"
+            attempt_payload = dict(payload_info)
+            attempt_payload["formField"] = field_name
             entry: Dict[str, Any] = {
                 "timestamp": _utc_now_iso(),
                 "method": "POST",
@@ -1630,14 +1653,14 @@ class AkuvoxAPI:
                 "scheme": scheme,
                 "port": port,
                 "verify_ssl": bool(verify if use_https else True),
-                "payload": payload_info,
+                "payload": attempt_payload,
                 "diag_type": "upload:face",
             }
             start = time.perf_counter()
 
             form = FormData()
             form.add_field(
-                "file",
+                field_name,
                 file_bytes,
                 filename=safe_filename,
                 content_type=content_type or "application/octet-stream",
@@ -1713,32 +1736,41 @@ class AkuvoxAPI:
         _add_base(False, configured_port)
         _add_base(False, 80)
 
+        form_field_names = ("file", "importFile")
         for use_https, port, verify in bases:
             for rel in rel_paths:
-                try:
-                    data = await _attempt(use_https, port, verify, rel)
-                    result = self._coerce_face_upload_result(data)
-                    self._validate_face_upload_result(result)
-                    return result
-                except Exception as exc:
-                    _LOGGER.debug(
-                        "Face upload attempt failed for %s://%s:%s%s -> %s",
-                        self.host,
-                        "https" if use_https else "http",
-                        port,
-                        rel,
-                        exc,
-                    )
-                    continue
+                for field_name in form_field_names:
+                    try:
+                        data = await _attempt(use_https, port, verify, rel, field_name)
+                        result = self._coerce_face_upload_result(data)
+                        self._validate_face_upload_result(result)
+                        return _finalize_face_upload_result(result)
+                    except Exception as exc:
+                        _LOGGER.debug(
+                            "Face upload attempt failed for %s://%s:%s%s field=%s -> %s",
+                            "https" if use_https else "http",
+                            self.host,
+                            port,
+                            rel,
+                            field_name,
+                            exc,
+                        )
+                        continue
 
         fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
         fallback_use_https = True
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
-        data = await _attempt(fallback_use_https, fallback_port, fallback_verify, fallback_rel)
+        data = await _attempt(
+            fallback_use_https,
+            fallback_port,
+            fallback_verify,
+            fallback_rel,
+            form_field_names[0],
+        )
         result = self._coerce_face_upload_result(data)
         self._validate_face_upload_result(result)
-        return result
+        return _finalize_face_upload_result(result)
 
     @staticmethod
     def _coerce_face_upload_result(data: Any) -> Dict[str, Any]:

@@ -60,9 +60,10 @@ COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
 FACE_DATA_PATH = "/api/AK_AC/FaceData"
 FACE_FILE_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
-SUPPORT_BUNDLE_LOG_TAIL_BYTES = 512 * 1024
-SUPPORT_BUNDLE_MAX_LOG_LINES = 1200
-SUPPORT_BUNDLE_REQUEST_LIMIT = MAX_DIAGNOSTICS_HISTORY_LIMIT
+SUPPORT_BUNDLE_LOG_TAIL_BYTES = 192 * 1024
+SUPPORT_BUNDLE_MAX_LOG_LINES = 240
+SUPPORT_BUNDLE_REQUEST_LIMIT = min(80, MAX_DIAGNOSTICS_HISTORY_LIMIT)
+SUPPORT_BUNDLE_VALUE_TEXT_LIMIT = 2500
 
 EXIT_PERMISSION_MATCH = "match"
 EXIT_PERMISSION_WORKING_DAYS = "working_days"
@@ -2143,6 +2144,7 @@ _FACE_FLAG_KEYS = (
     "hasFace",
     "HasFace",
     "FaceRegister",
+    "FaceRegisterStatus",
     "faceRegister",
     "face_register",
 )
@@ -5087,10 +5089,22 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         "ak_ac",
         "facedata",
         "faceregister",
+        "face upload",
         "face sync",
         "face profile",
-        "http.ban",
-        "login attempt",
+        "filetool",
+        "user.add",
+        "user.set",
+        "retcode",
+    )
+    _LOG_EXCLUDE_NEEDLES = (
+        "access history",
+        "access log",
+        "door event",
+        "caller id",
+        "notification",
+        "notify",
+        "suppressed",
     )
 
     @classmethod
@@ -5324,6 +5338,81 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         }
 
     @classmethod
+    def _compact_support_value(cls, value: Any, limit: int = SUPPORT_BUNDLE_VALUE_TEXT_LIMIT) -> Any:
+        if value in (None, "", [], {}):
+            return value
+        try:
+            text = json.dumps(value, default=str, sort_keys=True)
+        except Exception:
+            text = str(value)
+        if len(text) <= limit:
+            return value
+        return {
+            "_truncated": True,
+            "chars": len(text),
+            "excerpt": text[: max(0, limit - 3)] + "...",
+        }
+
+    @classmethod
+    def _support_request_is_relevant(cls, request: Any) -> bool:
+        if not isinstance(request, dict):
+            return False
+        diag_type = str(request.get("diag_type") or "").strip().lower()
+        path = str(request.get("path") or request.get("url") or "").strip().lower()
+        method = str(request.get("method") or "").strip().upper()
+
+        if diag_type.startswith("upload:face"):
+            return True
+        if diag_type.startswith(("user:", "contact:", "group:", "schedule:", "relay:")):
+            return True
+        if any(token in path for token in ("/user/", "user/", "filetool", "face")):
+            return True
+        if method == "POST" and not any(
+            token in path for token in ("event", "history", "record", "log")
+        ):
+            return True
+
+        return False
+
+    @classmethod
+    def _slim_support_request(cls, request: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for key in (
+            "timestamp",
+            "diag_type",
+            "method",
+            "path",
+            "scheme",
+            "port",
+            "status",
+            "ok",
+            "duration_ms",
+            "verify_ssl",
+        ):
+            if key in request:
+                out[key] = request.get(key)
+        if "payload" in request:
+            out["payload"] = cls._compact_support_value(request.get("payload"))
+        if "response_excerpt" in request:
+            out["response_excerpt"] = cls._compact_support_value(
+                request.get("response_excerpt")
+            )
+        if "error" in request:
+            out["error"] = cls._compact_support_value(request.get("error"), 800)
+        return out
+
+    @classmethod
+    def _filter_support_requests(cls, requests: Any) -> List[Dict[str, Any]]:
+        if not isinstance(requests, list):
+            return []
+        filtered = [
+            cls._slim_support_request(request)
+            for request in requests
+            if cls._support_request_is_relevant(request)
+        ]
+        return filtered[:SUPPORT_BUNDLE_REQUEST_LIMIT]
+
+    @classmethod
     def _device_support_snapshot(cls, root: Dict[str, Any]) -> List[Dict[str, Any]]:
         devices: List[Dict[str, Any]] = []
         manager = root.get("sync_manager")
@@ -5340,9 +5429,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             except Exception:
                 requests = []
             health = getattr(coord, "health", {}) or {}
-            events = getattr(coord, "events", []) or []
-            storage = getattr(coord, "storage", None)
-            storage_data = getattr(storage, "data", {}) if storage else {}
+            filtered_requests = cls._filter_support_requests(requests)
             devices.append(
                 {
                     "entry_id": entry_id,
@@ -5357,13 +5444,9 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                         "verify_ssl": getattr(api, "verify_ssl", None),
                     },
                     "options": cls._copy_json(opts),
-                    "recent_events": cls._copy_json(events[:100]),
-                    "event_state": cls._copy_json(getattr(coord, "event_state", {})),
-                    "caller_state": cls._copy_json(getattr(coord, "caller_state", {})),
-                    "door_event_state": cls._copy_json(
-                        storage_data.get("door_events", {}) if isinstance(storage_data, dict) else {}
-                    ),
-                    "recent_requests": requests,
+                    "request_count": len(requests) if isinstance(requests, list) else 0,
+                    "included_request_count": len(filtered_requests),
+                    "recent_requests": filtered_requests,
                 }
             )
         return devices
@@ -5372,7 +5455,13 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
     def _settings_snapshot(cls, root: Dict[str, Any]) -> Dict[str, Any]:
         settings = root.get("settings_store")
         data = getattr(settings, "data", {}) if settings else {}
-        snapshot = cls._copy_json(data if isinstance(data, dict) else {})
+        raw = data if isinstance(data, dict) else {}
+        snapshot: Dict[str, Any] = {
+            "auto_sync_delay_minutes": raw.get("auto_sync_delay_minutes"),
+            "face_integrity_enabled": raw.get("face_integrity_enabled"),
+            "integrity_interval_minutes": raw.get("integrity_interval_minutes"),
+            "diagnostics_history_limit": raw.get("diagnostics_history_limit"),
+        }
         updater = root.get("hacs_auto_updater")
         if updater and hasattr(updater, "status"):
             try:
@@ -5403,6 +5492,8 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             lines = []
             for line in text.splitlines():
                 lowered = line.lower()
+                if any(needle in lowered for needle in cls._LOG_EXCLUDE_NEEDLES):
+                    continue
                 if any(needle in lowered for needle in cls._LOG_NEEDLES):
                     lines.append(cls._redact_text(line))
             result["lines"] = lines[-SUPPORT_BUNDLE_MAX_LOG_LINES:]
@@ -5440,8 +5531,9 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             f"Filtered HA log lines: {len(log_tail.get('lines', [])) if isinstance(log_tail, dict) else 0}",
             "",
             "Contents",
-            "- Redacted structured diagnostics",
-            "- Akuvox/face-related Home Assistant log tail",
+            "- Redacted device request diagnostics",
+            "- Face file and sync status summary",
+            "- Filtered Akuvox/face-related Home Assistant log tail",
         ]
         return "\n".join(lines) + "\n"
 
@@ -5452,7 +5544,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         parts = [
             cls._summary_text(bundle),
             "",
-            "=== Redacted support bundle JSON ===",
+            "=== Redacted device request diagnostics JSON ===",
             json.dumps(bundle, indent=2, sort_keys=True, default=str),
             "",
             "=== Filtered Home Assistant log tail ===",
@@ -5463,10 +5555,6 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
 
     async def _build_support_bundle(self, hass: HomeAssistant) -> Dict[str, Any]:
         root = hass.data.get(DOMAIN, {}) or {}
-        diagnostics = await self._build_payload(
-            root,
-            limit_override=SUPPORT_BUNDLE_REQUEST_LIMIT,
-        )
         bundle = {
             "metadata": {
                 "generated_at": _now_iso(),
@@ -5481,7 +5569,6 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             "users": self._users_snapshot(root),
             "face_files": self._face_files_snapshot(hass),
             "devices": self._device_support_snapshot(root),
-            "diagnostics": diagnostics,
             "homeassistant_log_tail": await self._homeassistant_log_tail(hass),
         }
         return self._redact_support_data(bundle)
