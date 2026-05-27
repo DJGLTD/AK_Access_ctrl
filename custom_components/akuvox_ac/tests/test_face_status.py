@@ -66,3 +66,8 @@ def test_face_status_falls_back_to_pending_when_not_stored_active(monkeypatch):
     result = http._evaluate_face_status(hass, user, devices, stored_status="")
 
     assert result == "pending"
+
+
+def test_face_register_status_is_treated_as_face_flag():
+    assert http._face_flag_from_record({"FaceRegisterStatus": "1"}) is True
+    assert http._face_flag_from_record({"FaceRegisterStatus": "0"}) is False

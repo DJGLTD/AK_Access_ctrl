@@ -68,6 +68,14 @@ class _FaceUploadSessionStub:
         raise RuntimeError("unused in unit test")
 
 
+class _FaceUploadNoPathSessionStub(_FaceUploadSessionStub):
+    def post(self, url, **_kwargs):
+        self.post_urls.append(url)
+        if url.startswith("http://"):
+            return _RequestContextStub(_ResponseStub(200, {"retcode": 0}))
+        return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
+
+
 class _FormDataStub:
     def __init__(self):
         self.fields = []
@@ -133,3 +141,20 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert any(url.startswith("https://") for url in session.get_urls)
     assert any(url.startswith("http://") for url in session.get_urls)
     assert session.post_urls[0].startswith("http://")
+
+
+def test_face_upload_infers_device_face_path_when_upload_response_has_no_path():
+    import asyncio
+
+    session = _FaceUploadNoPathSessionStub()
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
+    original_form_data = api_module.FormData
+    api_module.FormData = _FormDataStub
+
+    try:
+        result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    finally:
+        api_module.FormData = original_form_data
+
+    assert result["path"] == "/mnt/Face/HA001.jpg"
+    assert result["path_inferred"] is True

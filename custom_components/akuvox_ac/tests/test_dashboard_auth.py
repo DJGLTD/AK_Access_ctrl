@@ -74,9 +74,38 @@ def test_support_bundle_text_contains_copyable_sections():
     )
 
     assert "Akuvox Access Control Support Bundle" in text
-    assert "=== Redacted support bundle JSON ===" in text
+    assert "=== Redacted device request diagnostics JSON ===" in text
     assert "=== Filtered Home Assistant log tail ===" in text
     assert "face profile upload failed" in text
+
+
+def test_support_bundle_filters_access_history_from_device_requests():
+    filtered = http_module.AkuvoxUISupportBundle._filter_support_requests(
+        [
+            {
+                "diag_type": "upload:face",
+                "path": "/api/filetool/import?destFile=Face&index=",
+                "method": "POST",
+                "payload": {"filename": "HA001.jpg"},
+            },
+            {
+                "diag_type": "event:history",
+                "path": "/api/access/history",
+                "method": "GET",
+                "response_excerpt": {"events": [1, 2, 3]},
+            },
+            {
+                "diag_type": "user/get",
+                "path": "/api/user/get?NameOrPerID=HA001",
+                "method": "GET",
+            },
+        ]
+    )
+
+    assert [item["path"] for item in filtered] == [
+        "/api/filetool/import?destFile=Face&index=",
+        "/api/user/get?NameOrPerID=HA001",
+    ]
 
 
 def test_dashboard_frontend_does_not_send_bearer_authorization_headers():
