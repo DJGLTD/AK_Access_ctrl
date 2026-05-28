@@ -5185,8 +5185,61 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         except Exception:
             return ""
 
+    @staticmethod
+    def _support_face_device_state(
+        user_id: str,
+        raw_profile: Dict[str, Any],
+        devices: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        state = {
+            "device_active": False,
+            "register_mismatch": False,
+            "matched_devices": [],
+        }
+        if not user_id or not isinstance(devices, list):
+            return state
+
+        groups = raw_profile.get("groups") if isinstance(raw_profile, dict) else []
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            if not dev.get("participate_in_sync", True):
+                continue
+            if not _device_supports_face(dev):
+                continue
+            if not _groups_overlap(groups, dev.get("sync_groups")):
+                continue
+
+            record = None
+            for candidate in dev.get("_users") or dev.get("users") or []:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_key = (
+                    normalize_user_id(_user_key(candidate)) or _user_key(candidate)
+                )
+                if candidate_key == user_id:
+                    record = candidate
+                    break
+            if record is None:
+                continue
+
+            device_name = str(dev.get("name") or dev.get("entry_id") or "").strip()
+            if device_name:
+                state["matched_devices"].append(device_name)
+            if _device_face_is_active(record):
+                state["device_active"] = True
+            if _device_face_registration_mismatch(record):
+                state["register_mismatch"] = True
+
+        return state
+
     @classmethod
-    def _users_snapshot(cls, root: Dict[str, Any]) -> Dict[str, Any]:
+    def _users_snapshot(
+        cls,
+        root: Dict[str, Any],
+        *,
+        devices: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         users_store = root.get("users_store")
         raw_users: Dict[str, Any] = {}
         if users_store and hasattr(users_store, "all"):
@@ -5209,12 +5262,24 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                 continue
             user_id = normalize_user_id(raw_id) or str(raw_id)
             face_url = str(raw_profile.get("face_url") or raw_profile.get("FaceUrl") or "").strip()
-            face_status = str(raw_profile.get("face_status") or "").strip().lower()
+            stored_face_status = str(raw_profile.get("face_status") or "").strip().lower()
             try:
                 error_count = int(raw_profile.get("face_error_count") or 0)
             except Exception:
                 error_count = 0
-            has_face = bool(face_url) or face_status in {"active", "pending", "error"}
+            device_state = cls._support_face_device_state(user_id, raw_profile, devices)
+            face_status = stored_face_status
+            if device_state.get("register_mismatch"):
+                face_status = "error"
+            elif not face_status and device_state.get("device_active"):
+                face_status = "active"
+
+            has_face = (
+                bool(face_url)
+                or face_status in {"active", "pending", "error"}
+                or bool(device_state.get("device_active"))
+                or bool(device_state.get("register_mismatch"))
+            )
             if face_url:
                 counts["with_face_url"] += 1
             if face_status == "pending":
@@ -5223,7 +5288,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                 counts["face_error"] += 1
             if face_status == "active":
                 counts["face_active"] += 1
-            if error_count > 0:
+            if error_count > 0 or face_status == "error" or device_state.get("register_mismatch"):
                 counts["face_sync_errors"] += 1
 
             profile = {
@@ -5245,10 +5310,14 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                 "face": {
                     "present": has_face,
                     "status": face_status,
+                    "stored_status": stored_face_status,
                     "url_present": bool(face_url),
                     "url_filename": cls._face_filename_from_url(face_url),
                     "synced_at": raw_profile.get("face_synced_at") or "",
                     "error_count": error_count,
+                    "device_active": bool(device_state.get("device_active")),
+                    "register_mismatch": bool(device_state.get("register_mismatch")),
+                    "matched_devices": list(device_state.get("matched_devices") or []),
                 },
             }
             profiles.append(profile)
@@ -5573,6 +5642,10 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
 
     async def _build_support_bundle(self, hass: HomeAssistant) -> Dict[str, Any]:
         root = hass.data.get(DOMAIN, {}) or {}
+        try:
+            state_devices, _ = _serialize_devices(root)
+        except Exception:
+            state_devices = []
         bundle = {
             "metadata": {
                 "generated_at": _now_iso(),
@@ -5584,7 +5657,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             },
             "settings": self._settings_snapshot(root),
             "sync_queue": self._sync_queue_snapshot(root),
-            "users": self._users_snapshot(root),
+            "users": self._users_snapshot(root, devices=state_devices),
             "face_files": self._face_files_snapshot(hass),
             "devices": self._device_support_snapshot(root),
             "homeassistant_log_tail": await self._homeassistant_log_tail(hass),

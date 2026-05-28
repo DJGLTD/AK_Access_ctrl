@@ -108,6 +108,47 @@ def test_support_bundle_filters_access_history_from_device_requests():
     ]
 
 
+def test_support_bundle_counts_device_face_registration_mismatches():
+    class _UsersStore:
+        def all(self):
+            return {
+                "HA001": {
+                    "name": "Lee Fletcher",
+                    "groups": ["Default"],
+                    "face_status": "active",
+                    "face_url": "/api/AK_AC/FaceData/HA001.jpg",
+                }
+            }
+
+    snapshot = http_module.AkuvoxUISupportBundle._users_snapshot(
+        {"users_store": _UsersStore()},
+        devices=[
+            {
+                "name": "Gate",
+                "type": "Intercom",
+                "participate_in_sync": True,
+                "sync_groups": ["Default"],
+                "users": [
+                    {
+                        "UserID": "HA001",
+                        "Name": "Lee Fletcher",
+                        "FaceUrl": "/mnt/Face/HA001.jpg",
+                        "FaceRegister": "0",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert snapshot["counts"]["face_active"] == 0
+    assert snapshot["counts"]["face_error"] == 1
+    assert snapshot["counts"]["face_sync_errors"] == 1
+    assert snapshot["profiles"][0]["face"]["status"] == "error"
+    assert snapshot["profiles"][0]["face"]["stored_status"] == "active"
+    assert snapshot["profiles"][0]["face"]["register_mismatch"] is True
+    assert snapshot["profiles"][0]["face"]["matched_devices"] == ["Gate"]
+
+
 def test_dashboard_frontend_does_not_send_bearer_authorization_headers():
     www = Path(http_module.STATIC_ROOT)
 
