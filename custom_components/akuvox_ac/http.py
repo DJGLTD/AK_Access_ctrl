@@ -12,7 +12,7 @@ from functools import partial
 from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Optional, Mapping, Set
+from typing import Any, Dict, Iterable, List, Optional, Mapping, Set, Tuple
 from urllib.parse import urlencode, urlsplit, unquote
 
 from aiohttp import web
@@ -2280,9 +2280,6 @@ def _evaluate_face_status(
     if not wants_face:
         return "none"
 
-    if stored_status == "active":
-        return "active"
-
     user_groups = user.get("groups") or []
     relevant_devices = [
         dev
@@ -2295,19 +2292,27 @@ def _evaluate_face_status(
     if not relevant_devices:
         return "active"
 
+    observed: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
     for dev in relevant_devices:
+        record = None
+        for candidate in dev.get("_users") or dev.get("users") or []:
+            candidate_key = normalize_user_id(_user_key(candidate)) or _user_key(candidate)
+            if candidate_key == user_id:
+                record = candidate
+                break
+        if record is not None and _device_face_registration_mismatch(record):
+            return "error"
+        observed.append((dev, record))
+
+    if stored_status == "active":
+        return "active"
+
+    for dev, record in observed:
         if not dev.get("online", True):
             return "pending"
         sync_state = str(dev.get("sync_status") or "").strip().lower()
-        record = None
-        for candidate in dev.get("_users") or dev.get("users") or []:
-            if _user_key(candidate) == user_id:
-                record = candidate
-                break
         if record is None:
             return "pending"
-        if _device_face_registration_mismatch(record):
-            return "error"
         face_active = _device_face_is_active(record)
         if not face_active:
             return "pending"

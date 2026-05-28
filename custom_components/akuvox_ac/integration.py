@@ -4408,7 +4408,7 @@ class SyncQueue:
                         continue
                     status = str((profile or {}).get("status") or "").strip().lower()
                     face_status = str((profile or {}).get("face_status") or "").strip().lower()
-                    if status == "pending" or face_status == "pending":
+                    if status == "pending" or face_status in {"pending", "error"}:
                         pending_detected = True
                         break
 
@@ -5252,7 +5252,12 @@ class SyncManager:
         try:
             users_store = self._users_store()
             if users_store:
-                await users_store.upsert_profile(ha_key, face_error_count=0)
+                await users_store.upsert_profile(
+                    ha_key,
+                    face_status="pending",
+                    face_synced_at="",
+                    face_error_count=0,
+                )
         except Exception:
             pass
 
@@ -6209,31 +6214,35 @@ class SyncManager:
                             if expected_url or expected_face:
                                 if force_recreate_on_error:
                                     try:
-                                        await self._recreate_user_for_face_mismatch(
+                                        repaired = await self._upload_face_asset_to_device(
                                             api,
+                                            coord,
                                             ha_key,
                                             desired,
-                                            local,
+                                            registry.get(ha_key) or {},
+                                            existing=local,
+                                            force=True,
                                         )
+                                        if not repaired:
+                                            raise RuntimeError("face upload repair did not complete")
                                         try:
-                                            if users_store:
-                                                await users_store.upsert_profile(
-                                                    ha_key,
-                                                    face_status="pending",
-                                                    face_error_count=0,
-                                                )
+                                            coord.users = await api.user_list()
+                                            await _store_device_user_ids(
+                                                getattr(coord, "storage", None),
+                                                coord.users,
+                                            )
                                         except Exception:
                                             pass
                                         try:
                                             coord._append_event(
-                                                f"Recreated {ha_key} due to face sync error state"
+                                                f"Uploaded face for {ha_key} due to face sync error state"
                                             )  # type: ignore[attr-defined]
                                         except Exception:
                                             pass
                                         continue
                                     except Exception as err:
                                         _LOGGER.warning(
-                                            "Failed to recreate user %s after face error state: %s",
+                                            "Failed to repair face upload for %s after face error state: %s",
                                             ha_key,
                                             err,
                                         )
@@ -6241,22 +6250,34 @@ class SyncManager:
                                     error_count = await self._bump_face_error_count(ha_key)
                                     if error_count >= FACE_SYNC_ERROR_THRESHOLD:
                                         try:
-                                            await self._recreate_user_for_face_mismatch(
+                                            repaired = await self._upload_face_asset_to_device(
                                                 api,
+                                                coord,
                                                 ha_key,
                                                 desired,
-                                                local,
+                                                registry.get(ha_key) or {},
+                                                existing=local,
+                                                force=True,
                                             )
-                                            await self._reset_face_error_count(ha_key)
+                                            if not repaired:
+                                                raise RuntimeError("face upload repair did not complete")
+                                            try:
+                                                coord.users = await api.user_list()
+                                                await _store_device_user_ids(
+                                                    getattr(coord, "storage", None),
+                                                    coord.users,
+                                                )
+                                            except Exception:
+                                                pass
                                             try:
                                                 coord._append_event(
-                                                    f"Recreated {ha_key} after {error_count} face sync errors"
+                                                    f"Uploaded face for {ha_key} after {error_count} face sync errors"
                                                 )  # type: ignore[attr-defined]
                                             except Exception:
                                                 pass
                                         except Exception as err:
                                             _LOGGER.warning(
-                                                "Failed to recreate user %s after face sync errors: %s",
+                                                "Failed to repair face upload for %s after face sync errors: %s",
                                                 ha_key,
                                                 err,
                                             )

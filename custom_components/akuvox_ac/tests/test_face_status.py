@@ -47,6 +47,29 @@ def test_face_status_stays_active_when_stored_active(monkeypatch):
     assert result == "active"
 
 
+def test_face_status_errors_when_stored_active_but_device_register_mismatch():
+    hass = _make_hass()
+    user = {"id": "user1", "face_url": "http://example.invalid/face.jpg"}
+    devices = [
+        {
+            "participate_in_sync": True,
+            "sync_status": "in_sync",
+            "online": True,
+            "users": [
+                {
+                    "UserID": "user1",
+                    "FaceUrl": "/mnt/Face/user1.jpg",
+                    "FaceRegister": "0",
+                }
+            ],
+        }
+    ]
+
+    result = http._evaluate_face_status(hass, user, devices, stored_status="active")
+
+    assert result == "error"
+
+
 def test_face_status_falls_back_to_pending_when_not_stored_active(monkeypatch):
     """When the store is not active we still surface pending state."""
 
