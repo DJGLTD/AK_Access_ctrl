@@ -25,8 +25,8 @@ def _make_hass():
     return SimpleNamespace(config=SimpleNamespace(path=lambda *parts: "/tmp"))
 
 
-def test_face_status_stays_active_when_stored_active(monkeypatch):
-    """Stored active status should remain active even if device reports pending."""
+def test_face_status_returns_pending_when_stored_active_but_device_pending(monkeypatch):
+    """Stored active status should not hide pending device face state."""
 
     # Simulate a device claiming the face profile is pending.
     monkeypatch.setattr(http, "_device_face_is_active", lambda record: False)
@@ -44,7 +44,7 @@ def test_face_status_stays_active_when_stored_active(monkeypatch):
 
     result = http._evaluate_face_status(hass, user, devices, stored_status="active")
 
-    assert result == "active"
+    assert result == "pending"
 
 
 def test_face_status_errors_when_stored_active_but_device_register_mismatch():

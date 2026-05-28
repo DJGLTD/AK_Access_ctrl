@@ -2314,13 +2314,6 @@ def _evaluate_face_status(
             return "error"
         observed.append((dev, record))
 
-    if stored_status == "active":
-        _LOGGER.debug(
-            "Face status user=%s remains active (stored active status takes precedence)",
-            user_id,
-        )
-        return "active"
-
     for dev, record in observed:
         if not dev.get("online", True):
             _LOGGER.debug(
