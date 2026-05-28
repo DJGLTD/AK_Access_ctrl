@@ -2290,6 +2290,11 @@ def _evaluate_face_status(
     ]
 
     if not relevant_devices:
+        _LOGGER.debug(
+            "Face status user=%s -> active (no face-capable sync devices in user groups=%s)",
+            user_id,
+            user_groups,
+        )
         return "active"
 
     observed: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
@@ -2301,24 +2306,55 @@ def _evaluate_face_status(
                 record = candidate
                 break
         if record is not None and _device_face_registration_mismatch(record):
+            _LOGGER.debug(
+                "Face status user=%s -> error (device=%s register mismatch)",
+                user_id,
+                dev.get("name") or dev.get("host") or "unknown",
+            )
             return "error"
         observed.append((dev, record))
 
     if stored_status == "active":
+        _LOGGER.debug(
+            "Face status user=%s remains active (stored active status takes precedence)",
+            user_id,
+        )
         return "active"
 
     for dev, record in observed:
         if not dev.get("online", True):
+            _LOGGER.debug(
+                "Face status user=%s -> pending (device=%s offline)",
+                user_id,
+                dev.get("name") or dev.get("host") or "unknown",
+            )
             return "pending"
         sync_state = str(dev.get("sync_status") or "").strip().lower()
         if record is None:
+            _LOGGER.debug(
+                "Face status user=%s -> pending (missing record on device=%s)",
+                user_id,
+                dev.get("name") or dev.get("host") or "unknown",
+            )
             return "pending"
         face_active = _device_face_is_active(record)
         if not face_active:
+            _LOGGER.debug(
+                "Face status user=%s -> pending (device=%s reports face inactive/pending)",
+                user_id,
+                dev.get("name") or dev.get("host") or "unknown",
+            )
             return "pending"
         if sync_state != "in_sync" and stored_status == "pending":
+            _LOGGER.debug(
+                "Face status user=%s -> pending (device=%s sync_status=%s while stored pending)",
+                user_id,
+                dev.get("name") or dev.get("host") or "unknown",
+                sync_state,
+            )
             return "pending"
 
+    _LOGGER.debug("Face status user=%s -> active (all relevant devices report active)", user_id)
     return "active"
 
 
