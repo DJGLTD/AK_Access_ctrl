@@ -82,6 +82,14 @@ class _FaceHassStub:
         return func(*args)
 
 
+class _UsersStoreStub:
+    def __init__(self):
+        self.upserts = []
+
+    async def upsert_profile(self, key, **kwargs):
+        self.upserts.append((key, kwargs))
+
+
 def _make_manager():
     hass = SimpleNamespace(data={integration.DOMAIN: {}}, config=SimpleNamespace(path=lambda *parts: "/tmp"))
     return integration.SyncManager(hass)
@@ -238,6 +246,8 @@ def test_replace_user_on_device_deletes_existing_before_add():
 
 def test_upload_face_asset_links_device_import_path(tmp_path):
     hass = _FaceHassStub(tmp_path)
+    users_store = _UsersStoreStub()
+    hass.data[integration.DOMAIN]["users_store"] = users_store
     manager = integration.SyncManager(hass)
     api = _FaceApiStub()
     coord = SimpleNamespace(health={"device_type": "intercom"}, events=[], _append_event=lambda item: None)
@@ -273,3 +283,7 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
     assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert api.add_calls[0][0]["FaceRegister"] == 1
+    assert users_store.upserts[-1] == (
+        "HA001",
+        {"face_status": "pending", "face_synced_at": "", "face_error_count": 0},
+    )
