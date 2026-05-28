@@ -49,14 +49,18 @@ class _ReplaceApiStub:
 class _FaceApiStub:
     def __init__(self):
         self.upload_calls = []
-        self.set_calls = []
+        self.add_calls = []
+        self.delete_calls = []
 
     async def face_upload(self, face_bytes, *, filename):
         self.upload_calls.append({"bytes": face_bytes, "filename": filename})
         return {"path": "/mnt/Face/HA001.jpg"}
 
-    async def user_set(self, items):
-        self.set_calls.append(items)
+    async def user_delete(self, value):
+        self.delete_calls.append(value)
+
+    async def user_add(self, items):
+        self.add_calls.append(items)
 
 
 class _FaceHassStub:
@@ -264,8 +268,8 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
 
     assert uploaded is True
     assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
-    assert api.set_calls[0][0]["ID"] == "42"
-    assert "FaceUrl" not in api.set_calls[0][0]
-    assert api.set_calls[0][0]["FaceFileName"] == "HA001.jpg"
-    assert api.set_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
-    assert api.set_calls[0][0]["FaceRegisterStatus"] == "1"
+    assert api.delete_calls == ["42", "HA001", "Lee Fletcher"]
+    assert "FaceUrl" not in api.add_calls[0][0]
+    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert api.add_calls[0][0]["FaceRegister"] == 1

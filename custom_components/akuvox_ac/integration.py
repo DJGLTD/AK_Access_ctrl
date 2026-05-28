@@ -5165,6 +5165,41 @@ class SyncManager:
         if not filename:
             filename = face_path.name or f"{ha_key}.jpg"
 
+        device_record = existing if isinstance(existing, dict) else None
+        if not device_record or not str(device_record.get("ID") or "").strip():
+            try:
+                matches = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+            except Exception:
+                matches = []
+            if matches:
+                device_record = matches[0]
+
+        delete_records: List[Dict[str, Any]] = []
+        if isinstance(device_record, dict):
+            delete_records.append(device_record)
+        else:
+            try:
+                delete_records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+            except Exception:
+                delete_records = []
+
+        seen_delete: Set[Tuple[str, str, str]] = set()
+        for rec in delete_records:
+            if not isinstance(rec, dict):
+                continue
+            marker = (
+                str(rec.get("ID") or ""),
+                str(rec.get("UserID") or rec.get("UserId") or ""),
+                str(rec.get("Name") or ""),
+            )
+            if marker in seen_delete:
+                continue
+            seen_delete.add(marker)
+            try:
+                await _delete_user_every_way(api, rec)  # type: ignore[arg-type]
+            except Exception:
+                pass
+
         try:
             upload_result = await api.face_upload(face_bytes, filename=filename)
         except Exception as err:
@@ -5190,23 +5225,17 @@ class SyncManager:
         if not face_device_reference:
             face_device_reference = face_reference
 
-        device_record = existing if isinstance(existing, dict) else None
-        if not device_record or not str(device_record.get("ID") or "").strip():
-            try:
-                matches = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-            except Exception:
-                matches = []
-            if matches:
-                device_record = matches[0]
-
         payload = dict(desired or {})
         payload["FaceUrl"] = face_device_reference
         payload["FaceRegister"] = 1
-        set_payload = _prepare_user_set_payload(ha_key, payload, device_record)
-        set_payload["FaceRegisterStatus"] = "1"
+        add_payload = _prepare_user_add_payload(
+            ha_key,
+            payload,
+            sources=(payload, device_record),
+        )
 
         try:
-            await api.user_set([set_payload])
+            await api.user_add([add_payload])
         except Exception as err:
             _LOGGER.debug("Failed to link uploaded face for %s: %s", ha_key, err)
             try:
