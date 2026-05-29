@@ -48,16 +48,20 @@ class _RequestContextStub:
 class _FaceUploadSessionStub:
     def __init__(self):
         self.get_urls = []
+        self.get_kwargs = []
         self.post_urls = []
+        self.post_kwargs = []
 
-    def get(self, url, **_kwargs):
+    def get(self, url, **kwargs):
         self.get_urls.append(url)
+        self.get_kwargs.append(kwargs)
         if url.startswith("http://"):
             return _RequestContextStub(_ResponseStub(200, {"retcode": 0}))
         return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
 
-    def post(self, url, **_kwargs):
+    def post(self, url, **kwargs):
         self.post_urls.append(url)
+        self.post_kwargs.append(kwargs)
         if url.startswith("http://"):
             return _RequestContextStub(
                 _ResponseStub(200, {"retcode": 0, "path": "/mnt/Face/HA001.jpg"})
@@ -69,11 +73,24 @@ class _FaceUploadSessionStub:
 
 
 class _FaceUploadNoPathSessionStub(_FaceUploadSessionStub):
-    def post(self, url, **_kwargs):
+    def post(self, url, **kwargs):
         self.post_urls.append(url)
+        self.post_kwargs.append(kwargs)
         if url.startswith("http://"):
             return _RequestContextStub(_ResponseStub(200, {"retcode": 0}))
         return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
+
+
+class _FaceUploadAllFailSessionStub(_FaceUploadSessionStub):
+    def get(self, url, **kwargs):
+        self.get_urls.append(url)
+        self.get_kwargs.append(kwargs)
+        return _RequestContextStub(_ResponseStub(200, {"retcode": 0}))
+
+    def post(self, url, **kwargs):
+        self.post_urls.append(url)
+        self.post_kwargs.append(kwargs)
+        return _RequestContextStub(_ResponseStub(503, body="upload unavailable"))
 
 
 class _FormDataStub:
@@ -107,6 +124,7 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
     )
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
+    assert normalized[0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
     assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert normalized[0]["FaceRegister"] == 1
 
@@ -130,8 +148,31 @@ def test_normalize_user_set_uses_web_face_import_fields_for_device_file():
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
-    assert "FaceUrl" not in normalized[0]
+    assert normalized[0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
     assert normalized[0]["FaceRegisterStatus"] == "1"
+
+
+def test_normalize_user_add_links_uploaded_face_with_device_path():
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=_SessionStub())
+
+    normalized = api._normalize_user_items_for_add_or_set(
+        [
+            {
+                "UserID": "CODEXFACE2",
+                "Name": "Test",
+                "FaceUrl": "/mnt/Face/CODEXFACE2.jpg",
+                "FaceFileName": "CODEXFACE2.jpg",
+                "importFile": {"fileName": "CODEXFACE2.jpg", "fileData": {}},
+            }
+        ],
+        allow_face_url=True,
+        for_set=False,
+    )
+
+    assert normalized[0]["FaceUrl"] == "/mnt/Face/CODEXFACE2.jpg"
+    assert normalized[0]["FaceFileName"] == "CODEXFACE2.jpg"
+    assert normalized[0]["importFile"] == {"fileName": "CODEXFACE2.jpg", "fileData": {}}
+    assert normalized[0]["FaceRegister"] == 1
 
 
 def test_normalize_user_set_preserves_face_url_field():
@@ -165,7 +206,80 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert any(url.startswith("https://") for url in session.get_urls)
     assert any(url.startswith("http://") for url in session.get_urls)
     assert session.post_urls[0].startswith("http://")
+    assert session.post_kwargs[0]["ssl"] is False
     assert "/api/web/filetool/import" in session.post_urls[0]
+
+
+def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
+    import asyncio
+
+    session = _FaceUploadSessionStub()
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
+    original_form_data = api_module.FormData
+    api_module.FormData = _FormDataStub
+
+    try:
+        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    finally:
+        api_module.FormData = original_form_data
+
+    assert api.verify_ssl is False
+    assert session.post_kwargs
+    assert all(kwargs["ssl"] is False for kwargs in session.post_kwargs)
+    face_requests = [
+        req for req in api.recent_requests(10) if req["diag_type"] == "upload:face"
+    ]
+    assert all(req["verify_ssl"] is False for req in face_requests)
+
+
+def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
+    import asyncio
+
+    session = _FaceUploadSessionStub()
+    api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
+    original_form_data = api_module.FormData
+    api_module.FormData = _FormDataStub
+
+    async def _fake_web_login_cookie(**_kwargs):
+        return "token=fake"
+
+    api._web_login_cookie = _fake_web_login_cookie
+
+    try:
+        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    finally:
+        api_module.FormData = original_form_data
+
+    assert session.post_kwargs
+    assert session.post_kwargs[0]["headers"]["Cookie"] == "token=fake"
+    assert session.post_kwargs[0]["auth"] is None
+
+
+def test_face_upload_does_not_retry_verified_ssl_when_disabled():
+    import asyncio
+
+    session = _FaceUploadAllFailSessionStub()
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
+    original_form_data = api_module.FormData
+    api_module.FormData = _FormDataStub
+
+    try:
+        try:
+            asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("face_upload unexpectedly succeeded")
+    finally:
+        api_module.FormData = original_form_data
+
+    assert api._detected == (True, 443, False)
+    assert session.post_kwargs
+    assert all(kwargs["ssl"] is False for kwargs in session.post_kwargs)
+    face_requests = [
+        req for req in api.recent_requests(50) if req["diag_type"] == "upload:face"
+    ]
+    assert all(req["verify_ssl"] is False for req in face_requests)
 
 
 def test_face_upload_infers_device_face_path_when_upload_response_has_no_path():
