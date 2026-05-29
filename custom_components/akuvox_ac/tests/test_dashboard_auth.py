@@ -18,6 +18,9 @@ def test_dashboard_injects_signing_helper_without_initial_signed_paths():
     assert "akAcFetchWithDashboardSession" in rendered
     assert "auth/sign_path" in rendered
     assert "/api/akuvox_ac/ui/session" in rendered
+    assert "_akts" in rendered
+    assert "akAcSignedPathFresh" in rendered
+    assert "authentication signature expired" in rendered
     assert "X-Akuvox-Dashboard-Token" in rendered
     assert "akuvox_ll_token" in rendered
     assert "/api/akuvox_ac/ui/state" in rendered
