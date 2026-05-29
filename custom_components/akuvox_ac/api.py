@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import os
 import time
 import re
 from collections import deque
@@ -101,6 +104,7 @@ class AkuvoxAPI:
         self._auth: Optional[BasicAuth] = None
         if self.username:
             self._auth = BasicAuth(self.username, self.password or "")
+        self._web_token_cookie: Optional[str] = None
 
     # -------------------- base helpers --------------------
     def _headers(self) -> Dict[str, str]:
@@ -108,6 +112,138 @@ class AkuvoxAPI:
             "Content-Type": "application/json; charset=UTF-8",
             "Accept": "application/json",
         }
+
+    @staticmethod
+    def _openssl_evp_bytes_to_key(
+        passphrase: bytes,
+        salt: bytes,
+        key_len: int,
+        iv_len: int,
+    ) -> Tuple[bytes, bytes]:
+        """Derive key/IV for CryptoJS passphrase AES compatibility."""
+
+        derived = b""
+        previous = b""
+        while len(derived) < key_len + iv_len:
+            previous = hashlib.md5(previous + passphrase + salt).digest()
+            derived += previous
+        return derived[:key_len], derived[key_len : key_len + iv_len]
+
+    @classmethod
+    def _cryptojs_aes_encrypt(cls, message: str, passphrase: str) -> str:
+        """Return CryptoJS.AES.encrypt(message, passphrase).toString()."""
+
+        try:
+            from cryptography.hazmat.primitives import padding
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        except Exception as err:
+            raise RuntimeError("cryptography is required for Akuvox web login") from err
+
+        salt = os.urandom(8)
+        key, iv = cls._openssl_evp_bytes_to_key(
+            str(passphrase or "").encode("utf-8"),
+            salt,
+            32,
+            16,
+        )
+        padder = padding.PKCS7(128).padder()
+        padded = padder.update(str(message or "").encode("utf-8")) + padder.finalize()
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+        ciphertext = encryptor.update(padded) + encryptor.finalize()
+        return base64.b64encode(b"Salted__" + salt + ciphertext).decode("ascii")
+
+    async def _web_login_cookie(
+        self,
+        *,
+        use_https: bool,
+        port: int,
+        verify: bool,
+    ) -> Optional[str]:
+        """Login like the Akuvox web UI and return a token cookie for web-only APIs."""
+
+        if self._web_token_cookie:
+            return self._web_token_cookie
+        if not self.username or self.password is None:
+            return None
+
+        scheme = "https" if use_https else "http"
+        origin = f"{scheme}://{self.host}:{port}"
+        ssl_arg: Optional[bool] = verify if use_https else None
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": origin,
+            "Referer": f"{origin}/",
+        }
+
+        try:
+            async with self._session.post(
+                f"{origin}/api/login/set",
+                json={"target": "login", "action": "set"},
+                headers=headers,
+                ssl=ssl_arg,
+                timeout=10,
+            ) as response:
+                challenge_payload = await response.json(content_type=None)
+                response.raise_for_status()
+        except Exception as err:
+            _LOGGER.debug("Akuvox web login challenge failed: %s", err)
+            return None
+
+        challenge = ""
+        try:
+            challenge = str((challenge_payload.get("data") or {}).get("encrypt") or "")
+        except Exception:
+            challenge = ""
+        if not challenge:
+            return None
+
+        try:
+            encrypted_password = self._cryptojs_aes_encrypt(
+                json.dumps(self.password),
+                challenge,
+            )
+        except Exception as err:
+            _LOGGER.debug("Akuvox web login password encryption failed: %s", err)
+            return None
+
+        try:
+            async with self._session.post(
+                f"{origin}/api/web/login/login",
+                json={
+                    "target": "login",
+                    "action": "login",
+                    "data": {
+                        "userName": self.username,
+                        "password": encrypted_password,
+                    },
+                },
+                headers=headers,
+                ssl=ssl_arg,
+                timeout=10,
+            ) as response:
+                login_payload = await response.json(content_type=None)
+                response.raise_for_status()
+                set_cookie = response.headers.get("Set-Cookie") or ""
+        except Exception as err:
+            _LOGGER.debug("Akuvox web login failed: %s", err)
+            return None
+
+        token = ""
+        try:
+            token = str((login_payload.get("data") or {}).get("token") or "")
+        except Exception:
+            token = ""
+        if not token and set_cookie:
+            first_cookie = set_cookie.split(";", 1)[0].strip()
+            if first_cookie.lower().startswith("token="):
+                self._web_token_cookie = first_cookie
+                return self._web_token_cookie
+        if not token:
+            return None
+
+        self._web_token_cookie = f"token={token}"
+        return self._web_token_cookie
 
     async def _ensure_detected(self):
         """Find a working (scheme, port, verify_ssl) combo; cache it."""
@@ -659,16 +795,14 @@ class AkuvoxAPI:
 
     @staticmethod
     def _should_force_face_register(face_filename: Any) -> bool:
-        """Return True when a managed HA face filename should enable FaceRegister."""
+        """Return True when an image filename should enable FaceRegister."""
 
         if not isinstance(face_filename, str):
             return False
         name = face_filename.strip()
         if not name:
             return False
-        # Home Assistant generated face assets follow HA000123.jpg naming; when
-        # such a filename is present we should ensure the register flag stays set.
-        return bool(re.fullmatch(r"HA\d+\.jpg", name, flags=re.IGNORECASE))
+        return bool(re.search(r"\.(?:jpe?g|png|webp)$", name, flags=re.IGNORECASE))
 
     @staticmethod
     def _face_reference_to_filename(reference: Any) -> str:
@@ -759,8 +893,21 @@ class AkuvoxAPI:
 
         face_url = item.get("FaceUrl") or item.get("FaceURL")
         if cls._is_device_face_import_reference(face_url):
-            item.pop("FaceUrl", None)
+            item["FaceUrl"] = cls._normalize_device_face_import_reference(face_url, filename)
             item.pop("FaceURL", None)
+        elif face_url in (None, ""):
+            item["FaceUrl"] = f"/mnt/Face/{filename}"
+
+    @classmethod
+    def _normalize_device_face_import_reference(cls, reference: Any, filename: str) -> str:
+        """Normalize a device face import reference to the path accepted by user.add."""
+
+        text = str(reference or "").strip().replace("\\", "/")
+        if text.startswith("mnt/"):
+            text = f"/{text}"
+        if cls._is_device_face_import_reference(text):
+            return text
+        return f"/mnt/Face/{filename}"
 
     def _normalize_user_items_for_add_or_set(
         self,
@@ -1706,6 +1853,7 @@ class AkuvoxAPI:
         ) -> Dict[str, Any]:
             scheme = "https" if use_https else "http"
             url = f"{scheme}://{self.host}:{port}{rel}"
+            ssl_arg: Optional[bool] = verify if use_https or not verify else None
             attempt_payload = dict(payload_info)
             attempt_payload["formField"] = field_name
             entry: Dict[str, Any] = {
@@ -1715,7 +1863,7 @@ class AkuvoxAPI:
                 "path": rel,
                 "scheme": scheme,
                 "port": port,
-                "verify_ssl": bool(verify if use_https else True),
+                "verify_ssl": bool(verify),
                 "payload": attempt_payload,
                 "diag_type": "upload:face",
             }
@@ -1734,17 +1882,27 @@ class AkuvoxAPI:
                     "POST %s (face upload) filename=%s size=%s", url, safe_filename, len(file_bytes)
                 )
                 origin = f"{scheme}://{self.host}:{port}"
+                request_headers = {
+                    "Accept": "application/json, text/plain, */*",
+                    "Origin": origin,
+                    "Referer": f"{origin}/",
+                }
+                cookie = None
+                if rel.startswith("/api/web/") or rel.startswith("/web/"):
+                    cookie = await self._web_login_cookie(
+                        use_https=use_https,
+                        port=port,
+                        verify=verify,
+                    )
+                    if cookie:
+                        request_headers["Cookie"] = cookie
                 async with self._session.post(
                     url,
                     data=form,
-                    headers={
-                        "Accept": "application/json, text/plain, */*",
-                        "Origin": origin,
-                        "Referer": f"{origin}/",
-                    },
-                    ssl=(verify if use_https else None),
+                    headers=request_headers,
+                    ssl=ssl_arg,
                     timeout=30,
-                    auth=self._auth,
+                    auth=None if cookie else self._auth,
                 ) as r:
                     txt = None
                     try:
@@ -1785,7 +1943,9 @@ class AkuvoxAPI:
 
         def _add_base(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
             normalized_port = _normalize_port(port, use_https)
-            verify_flag = bool(verify) if use_https else True
+            verify_flag = bool(self.verify_ssl) if verify is None else bool(verify)
+            if not use_https and not bool(self.verify_ssl):
+                verify_flag = False
             combo = (use_https, normalized_port, verify_flag)
             if combo not in bases:
                 bases.append(combo)
@@ -1795,12 +1955,15 @@ class AkuvoxAPI:
             _add_base(detected_https, detected_port, detected_verify)
 
         configured_port: Optional[int] = self.port
-        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
+        verify_order = [bool(self.verify_ssl)]
+        if bool(self.verify_ssl):
+            verify_order.append(False)
 
         for verify in verify_order:
             _add_base(True, configured_port, verify)
         _add_base(True, 443, False)
-        _add_base(True, 443, True)
+        if bool(self.verify_ssl):
+            _add_base(True, 443, True)
         _add_base(False, configured_port)
         _add_base(False, 80)
 
@@ -2050,6 +2213,7 @@ class AkuvoxAPI:
             "LiftFloorNum": ("lift_floor_num", "lift_floor"),
             "AuthMode": ("auth_mode",),
             "C4EventNo": ("c4_event_no",),
+            "FaceRegister": ("face_register",),
         }
 
         for target, aliases in optional_numeric.items():
@@ -2066,6 +2230,7 @@ class AkuvoxAPI:
             "PhoneNum": ("phone", "phone_num"),
             "FaceUrl": ("face_url", "FaceURL"),
             "FaceFileName": ("faceFileName", "face_filename", "face_file_name"),
+            "FaceRegisterStatus": ("face_register_status",),
         }
 
         for target, aliases in optional_string.items():
