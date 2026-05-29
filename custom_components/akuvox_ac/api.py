@@ -370,6 +370,9 @@ class AkuvoxAPI:
                         _LOGGER.debug("POST %s -> %s / body=%s", url, r.status, txt or data)
                         entry["status"] = r.status
                         entry["ok"] = 200 <= r.status < 400
+                        retcode, _message = self._parse_result_status(data)
+                        if retcode is not None and not _retcode_is_success(retcode):
+                            entry["ok"] = False
                         if txt:
                             entry["response_excerpt"] = _truncate_string(txt)
                         else:
@@ -395,6 +398,9 @@ class AkuvoxAPI:
                         _LOGGER.debug("GET %s -> %s / body=%s", url, r.status, txt or data)
                         entry["status"] = r.status
                         entry["ok"] = 200 <= r.status < 400
+                        retcode, _message = self._parse_result_status(data)
+                        if retcode is not None and not _retcode_is_success(retcode):
+                            entry["ok"] = False
                         if txt:
                             entry["response_excerpt"] = _truncate_string(txt)
                         else:
@@ -882,21 +888,20 @@ class AkuvoxAPI:
 
     @classmethod
     def _apply_face_import_fields(cls, item: Dict[str, Any]) -> None:
-        """Mirror the Akuvox web UI face-link fields when a file was imported."""
+        """Mirror the Akuvox web UI face-link field when a file was imported."""
 
         filename = cls._face_import_filename_from_item(item)
         if not filename:
             return
 
         item["FaceFileName"] = filename
-        item["importFile"] = {"fileName": filename, "fileData": {}}
+        item.pop("importFile", None)
+        item.pop("ImportFile", None)
 
         face_url = item.get("FaceUrl") or item.get("FaceURL")
         if cls._is_device_face_import_reference(face_url):
-            item["FaceUrl"] = cls._normalize_device_face_import_reference(face_url, filename)
+            item.pop("FaceUrl", None)
             item.pop("FaceURL", None)
-        elif face_url in (None, ""):
-            item["FaceUrl"] = f"/mnt/Face/{filename}"
 
     @classmethod
     def _normalize_device_face_import_reference(cls, reference: Any, filename: str) -> str:
@@ -1168,16 +1173,18 @@ class AkuvoxAPI:
                 except Exception:
                     face_source = d.get("FaceUrl")
 
+            self._apply_face_import_fields(d)
             if self._should_force_face_register(face_source):
                 if for_set:
                     current = d.get("FaceRegisterStatus")
                     if self._coerce_int(current) != 1:
                         d["FaceRegisterStatus"] = "1"
+                elif self._face_import_filename_from_item(d):
+                    d.pop("FaceRegister", None)
                 else:
                     current = d.get("FaceRegister")
                     if self._coerce_int(current) != 1:
                         d["FaceRegister"] = 1
-            self._apply_face_import_fields(d)
             if for_set:
                 d.setdefault("PrivatePIN", "")
                 d.setdefault("AnalogNumber", "")
@@ -1364,7 +1371,7 @@ class AkuvoxAPI:
         if action == "del":
             rel_paths = ("/api/user/",)
         elif action == "add":
-            rel_paths = (f"/api/user/{action}",)
+            rel_paths = ("/api/", f"/api/user/{action}")
         elif action == "set":
             rel_paths = (
                 "/api/user/",
@@ -2263,10 +2270,39 @@ class AkuvoxAPI:
         return base
 
     async def face_delete_bulk(self, user_ids: Iterable[str]) -> None:
-        """Delete face images associated with the provided UserID values."""
+        """Delete face images associated with the provided device ID/UserID values."""
 
-        ids = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+        requested = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+        if not requested:
+            return
+
+        resolved_ids: Set[str] = set()
+        unresolved: Set[str] = set(requested)
+
+        try:
+            users = await self.user_list()
+        except Exception:
+            users = []
+
+        for value in requested:
+            if value.isdigit():
+                resolved_ids.add(value)
+
+        for record in users or []:
+            if not isinstance(record, dict):
+                continue
+            dev_id = str(record.get("ID") or "").strip()
+            user_id = str(record.get("UserID") or record.get("UserId") or "").strip()
+            name = str(record.get("Name") or "").strip()
+            aliases = {alias for alias in (dev_id, user_id, name) if alias}
+            if aliases & unresolved:
+                if dev_id:
+                    resolved_ids.add(dev_id)
+                unresolved -= aliases
+
+        ids = [str(uid) for uid in dict.fromkeys(resolved_ids) if str(uid)]
         if not ids:
+            _LOGGER.debug("Face delete skipped; no device IDs resolved for %s", requested)
             return
 
         paths = (
@@ -2283,7 +2319,11 @@ class AkuvoxAPI:
                 "data": {"UserID": uid, "UserId": uid},
             }
             try:
-                await self._post_api(payload, rel_paths=paths)
+                result = await self._post_api(payload, rel_paths=paths)
+                retcode, message = self._parse_result_status(result)
+                if not _retcode_is_success(retcode):
+                    detail = f" ({message})" if message else ""
+                    _LOGGER.debug("Face delete returned retcode %s for ID %s%s", retcode, uid, detail)
             except Exception as err:
                 _LOGGER.debug("Face delete failed for %s: %s", uid, err)
 
@@ -2548,10 +2588,11 @@ class AkuvoxAPI:
             if text in (dev_id, user_id, name):
                 if dev_id:
                     target_ids.append(dev_id)
-                if user_id:
-                    face_ids.add(user_id)
+                    face_ids.add(dev_id)
 
         if target_ids:
+            if face_ids:
+                await self.face_delete_bulk(face_ids)
             try:
                 await self._api_user("delete", [{"ID": tid} for tid in target_ids])
             except Exception:
@@ -2571,7 +2612,7 @@ class AkuvoxAPI:
             if deletion_attempted and text:
                 face_ids.add(text)
 
-        if face_ids:
+        if face_ids and not target_ids:
             await self.face_delete_bulk(face_ids)
 
     async def user_delete_bulk(
@@ -2595,9 +2636,11 @@ class AkuvoxAPI:
             wanted_ids = set(ids)
             for u in users or []:
                 dev_id = str(u.get("ID") or "").strip()
-                user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
-                if dev_id and dev_id in wanted_ids and user_id:
-                    face_targets.add(user_id)
+                if dev_id and dev_id in wanted_ids:
+                    face_targets.add(dev_id)
+
+        if face_targets:
+            await self.face_delete_bulk(face_targets)
 
         try:
             await self._api_user("delete", [{"ID": did} for did in ids])
@@ -2607,9 +2650,6 @@ class AkuvoxAPI:
                     await self._api_user("delete", [{"ID": did}])
                 except Exception:
                     pass
-
-        if face_targets:
-            await self.face_delete_bulk(face_targets)
 
     async def user_delete_all(self) -> None:
         try:
@@ -2624,8 +2664,7 @@ class AkuvoxAPI:
             user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
             if dev_id:
                 device_ids.append(dev_id)
-            if user_id:
-                face_ids.add(user_id)
+                face_ids.add(dev_id)
 
         if device_ids:
             await self.user_delete_bulk(device_ids, face_user_ids=face_ids)
@@ -2652,8 +2691,7 @@ class AkuvoxAPI:
             if user_id in wanted or name in wanted or dev_id in wanted:
                 if dev_id:
                     dev_ids.append(dev_id)
-                if user_id:
-                    face_ids.add(str(user_id))
+                    face_ids.add(str(dev_id))
 
         if not dev_ids:
             if face_ids:

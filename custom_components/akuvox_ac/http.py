@@ -444,14 +444,22 @@ def _build_face_upload_payload(
 
     if face_reference not in (None, ""):
         reference_text = str(face_reference).strip()
-        payload["FaceUrl"] = reference_text
         filename = face_filename_from_reference(reference_text, user_id)
         if filename:
             payload["FaceFileName"] = filename
-            payload["importFile"] = {"fileName": filename, "fileData": {}}
+        normalized_reference = reference_text.replace("\\", "/").lower()
+        if normalized_reference.startswith("/mnt/face/") or normalized_reference.startswith(
+            "mnt/face/"
+        ):
+            payload.pop("FaceUrl", None)
+        elif reference_text and not filename:
+            payload["FaceUrl"] = reference_text
 
     payload.pop("faceInfo", None)
-    payload["FaceRegister"] = 1
+    if payload.get("FaceUrl"):
+        payload["FaceRegister"] = 1
+    else:
+        payload.pop("FaceRegister", None)
     payload.setdefault("Type", "0")
 
     return payload

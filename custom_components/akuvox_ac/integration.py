@@ -1255,7 +1255,8 @@ def _apply_face_import_fields(
         return False
 
     payload["FaceFileName"] = filename
-    payload["importFile"] = {"fileName": filename, "fileData": {}}
+    payload.pop("importFile", None)
+    payload.pop("ImportFile", None)
     return True
 
 
@@ -1291,7 +1292,11 @@ def _ensure_face_payload_fields(
         sources=sources,
     )
 
-    if face_url and not (import_linked and (not raw_face_url or _face_reference_is_device_import(raw_face_url))):
+    import_file_link = import_linked and (
+        not raw_face_url or _face_reference_is_device_import(raw_face_url)
+    )
+
+    if face_url and not import_file_link:
         payload["FaceUrl"] = str(face_url)
     elif import_linked:
         payload.pop("FaceUrl", None)
@@ -1316,7 +1321,9 @@ def _ensure_face_payload_fields(
             face_flag = flag
             break
 
-    if face_url and register_value != "1":
+    if import_file_link:
+        payload.pop("FaceRegister", None)
+    elif face_url and register_value != "1":
         payload["FaceRegister"] = 1
     elif face_flag:
         payload["FaceRegister"] = 1
@@ -1478,7 +1485,8 @@ def _prepare_user_set_payload(
 
     if face_filename_value:
         payload["FaceFileName"] = face_filename_value
-        payload["importFile"] = {"fileName": face_filename_value, "fileData": {}}
+        payload.pop("importFile", None)
+        payload.pop("ImportFile", None)
 
     if face_url_value is not None and not (
         face_filename_value and _face_reference_is_device_import(raw_face_url_value)
@@ -5226,8 +5234,11 @@ class SyncManager:
             face_device_reference = face_reference
 
         payload = dict(desired or {})
-        payload["FaceUrl"] = face_device_reference
-        payload["FaceRegister"] = 1
+        payload["FaceFileName"] = filename
+        payload.pop("FaceUrl", None)
+        payload.pop("FaceURL", None)
+        payload.pop("FaceRegister", None)
+        payload.pop("importFile", None)
         add_payload = _prepare_user_add_payload(
             ha_key,
             payload,

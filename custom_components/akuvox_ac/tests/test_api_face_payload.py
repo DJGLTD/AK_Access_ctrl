@@ -101,7 +101,7 @@ class _FormDataStub:
         self.fields.append((args, kwargs))
 
 
-def test_build_face_upload_payload_includes_legacy_import_fields():
+def test_build_face_upload_payload_links_imported_face_by_filename_only():
     payload = _build_face_upload_payload(
         {"name": "Test User"},
         {"ID": "12", "UserID": "HA001", "Name": "Old Name"},
@@ -109,9 +109,10 @@ def test_build_face_upload_payload_includes_legacy_import_fields():
         "/mnt/Face/HA001.jpg",
     )
 
-    assert payload["FaceUrl"] == "/mnt/Face/HA001.jpg"
     assert payload["FaceFileName"] == "HA001.jpg"
-    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert "FaceUrl" not in payload
+    assert "importFile" not in payload
+    assert "FaceRegister" not in payload
 
 
 def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
@@ -124,9 +125,9 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
     )
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
-    assert normalized[0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
-    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
-    assert normalized[0]["FaceRegister"] == 1
+    assert "FaceUrl" not in normalized[0]
+    assert "importFile" not in normalized[0]
+    assert "FaceRegister" not in normalized[0]
 
 
 def test_normalize_user_set_uses_web_face_import_fields_for_device_file():
@@ -147,8 +148,8 @@ def test_normalize_user_set_uses_web_face_import_fields_for_device_file():
     )
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
-    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
-    assert normalized[0]["FaceUrl"] == "/mnt/Face/HA001.jpg"
+    assert "importFile" not in normalized[0]
+    assert "FaceUrl" not in normalized[0]
     assert normalized[0]["FaceRegisterStatus"] == "1"
 
 
@@ -169,10 +170,10 @@ def test_normalize_user_add_links_uploaded_face_with_device_path():
         for_set=False,
     )
 
-    assert normalized[0]["FaceUrl"] == "/mnt/Face/CODEXFACE2.jpg"
     assert normalized[0]["FaceFileName"] == "CODEXFACE2.jpg"
-    assert normalized[0]["importFile"] == {"fileName": "CODEXFACE2.jpg", "fileData": {}}
-    assert normalized[0]["FaceRegister"] == 1
+    assert "FaceUrl" not in normalized[0]
+    assert "importFile" not in normalized[0]
+    assert "FaceRegister" not in normalized[0]
 
 
 def test_normalize_user_set_preserves_face_url_field():
