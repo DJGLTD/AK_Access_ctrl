@@ -250,7 +250,11 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     hass.data[integration.DOMAIN]["users_store"] = users_store
     manager = integration.SyncManager(hass)
     api = _FaceApiStub()
-    coord = SimpleNamespace(health={"device_type": "intercom"}, events=[], _append_event=lambda item: None)
+    coord = SimpleNamespace(
+        health={"device_type": "intercom"},
+        events=[],
+        _append_event=lambda item: None,
+    )
 
     face_dir = tmp_path / integration.DOMAIN / "FaceData"
     face_dir.mkdir(parents=True)
@@ -287,3 +291,73 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
         "HA001",
         {"face_status": "pending", "face_synced_at": "", "face_error_count": 0},
     )
+
+
+def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
+    hass = _FaceHassStub(tmp_path)
+    users_store = _UsersStoreStub()
+    hass.data[integration.DOMAIN]["users_store"] = users_store
+    manager = integration.SyncManager(hass)
+    api = _FaceApiStub()
+    coord = SimpleNamespace(
+        health={"device_type": "intercom"},
+        events=[],
+        _append_event=lambda item: None,
+    )
+
+    face_dir = tmp_path / integration.DOMAIN / "FaceData"
+    face_dir.mkdir(parents=True)
+    (face_dir / "HA001.jpg").write_bytes(b"face-bytes")
+
+    import asyncio
+
+    uploaded = asyncio.run(
+        manager._upload_face_asset_to_device(
+            api,
+            coord,
+            "HA001",
+            {
+                "UserID": "HA001",
+                "Name": "Lee Fletcher",
+                "Group": integration.HA_CONTACT_GROUP_NAME,
+            },
+            {"face_status": "error"},
+            force=True,
+        )
+    )
+
+    assert uploaded is True
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
+    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+
+
+def test_sync_queue_kicks_stale_face_error_without_existing_eta():
+    scheduled = []
+    users_store = SimpleNamespace(
+        all=lambda: {"HA001": {"status": "active", "face_status": "error"}}
+    )
+    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    queue = object.__new__(integration.SyncQueue)
+    queue.hass = hass
+    queue._handle = None
+    queue._lock = None
+    queue._pending_all = False
+    queue._pending_devices = set()
+    queue._pending_full = False
+    queue._pending_full_devices = set()
+    queue._pending_reason_all = None
+    queue._pending_reason_devices = {}
+    queue.next_sync_eta = None
+    queue._last_mark = None
+    queue._last_delay_from_default = False
+    queue._active = False
+    queue._tick_unsub = None
+    queue._startup_unsub = None
+    queue._schedule_task = lambda coro: (scheduled.append(coro), coro.close())
+
+    queue.ensure_future_run()
+
+    assert queue._pending_all is True
+    assert queue._pending_reason_all == "auto-detected pending state"
+    assert queue.next_sync_eta is not None
+    assert scheduled

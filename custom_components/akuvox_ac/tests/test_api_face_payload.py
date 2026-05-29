@@ -101,6 +101,24 @@ class _FormDataStub:
         self.fields.append((args, kwargs))
 
 
+class _DeleteApiStub(AkuvoxAPI):
+    def __init__(self, users):
+        super().__init__("127.0.0.1", port=80, username="", password="", session=_SessionStub())
+        self._users = users
+        self.api_user_calls = []
+        self.face_delete_calls = []
+
+    async def user_list(self):
+        return list(self._users)
+
+    async def _api_user(self, action, items=None):
+        self.api_user_calls.append((action, items))
+        return {"retcode": 0}
+
+    async def face_delete_bulk(self, user_ids):
+        self.face_delete_calls.append(list(user_ids))
+
+
 def test_build_face_upload_payload_links_imported_face_by_filename_only():
     payload = _build_face_upload_payload(
         {"name": "Test User"},
@@ -298,3 +316,29 @@ def test_face_upload_infers_device_face_path_when_upload_response_has_no_path():
 
     assert result["path"] == "/mnt/Face/HA001.jpg"
     assert result["path_inferred"] is True
+
+
+def test_user_delete_skips_face_delete_for_inactive_face_record():
+    import asyncio
+
+    api = _DeleteApiStub(
+        [{"ID": "42", "UserID": "HA001", "Name": "Test", "FaceRegister": "0"}]
+    )
+
+    asyncio.run(api.user_delete("HA001"))
+
+    assert api.face_delete_calls == []
+    assert api.api_user_calls == [("delete", [{"ID": "42"}])]
+
+
+def test_user_delete_uses_face_delete_for_active_face_record():
+    import asyncio
+
+    api = _DeleteApiStub(
+        [{"ID": "42", "UserID": "HA001", "Name": "Test", "FaceRegister": "1"}]
+    )
+
+    asyncio.run(api.user_delete("HA001"))
+
+    assert api.face_delete_calls == [["42"]]
+    assert api.api_user_calls == [("delete", [{"ID": "42"}])]

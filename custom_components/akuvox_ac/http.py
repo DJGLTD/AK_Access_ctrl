@@ -31,6 +31,7 @@ from homeassistant.components.persistent_notification import async_create as not
 from homeassistant.core import HomeAssistant
 
 from homeassistant.helpers.network import get_url
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -2589,6 +2590,13 @@ def _best_name(coord, entry_bucket: Dict[str, Any]) -> str:
 
 def _now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _now_local_iso() -> str:
+    try:
+        return dt_util.now().replace(microsecond=0).isoformat()
+    except Exception:
+        return dt.datetime.now().astimezone().replace(microsecond=0).isoformat()
 
 
 def _profile_is_empty_reserved(p: Dict[str, Any]) -> bool:
@@ -5678,6 +5686,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         lines = [
             "Akuvox Access Control Support Bundle",
             f"Generated: {metadata.get('generated_at', '')}",
+            f"Generated local: {metadata.get('generated_at_local', '')}",
             f"Integration version: {metadata.get('integration_version_label', '')}",
             f"Devices: {len(devices) if isinstance(devices, list) else 0}",
             f"Users: {counts.get('total', 0)}",
@@ -5719,6 +5728,7 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         bundle = {
             "metadata": {
                 "generated_at": _now_iso(),
+                "generated_at_local": _now_local_iso(),
                 "integration_domain": DOMAIN,
                 "integration_version": INTEGRATION_VERSION,
                 "integration_version_label": INTEGRATION_VERSION_LABEL,
