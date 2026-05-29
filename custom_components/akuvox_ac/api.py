@@ -810,6 +810,20 @@ class AkuvoxAPI:
             return False
         return bool(re.search(r"\.(?:jpe?g|png|webp)$", name, flags=re.IGNORECASE))
 
+    @classmethod
+    def _record_has_active_face(cls, record: Dict[str, Any]) -> bool:
+        """Return True only when a device record reports an active face."""
+
+        if not isinstance(record, dict):
+            return False
+        for key in ("FaceRegister", "FaceRegisterStatus", "face_register", "face_register_status"):
+            if key not in record:
+                continue
+            value = cls._coerce_int(record.get(key))
+            if value is not None:
+                return value == 1
+        return False
+
     @staticmethod
     def _face_reference_to_filename(reference: Any) -> str:
         """Best-effort conversion of a FaceUrl reference to a filename."""
@@ -2573,13 +2587,12 @@ class AkuvoxAPI:
         if not text:
             return
 
-        face_ids: Set[str] = set()
-
         try:
             users = await self.user_list()
         except Exception:
             users = []
 
+        face_ids: Set[str] = set()
         target_ids: List[str] = []
         for u in users or []:
             dev_id = str(u.get("ID") or "").strip()
@@ -2588,7 +2601,8 @@ class AkuvoxAPI:
             if text in (dev_id, user_id, name):
                 if dev_id:
                     target_ids.append(dev_id)
-                    face_ids.add(dev_id)
+                    if self._record_has_active_face(u):
+                        face_ids.add(dev_id)
 
         if target_ids:
             if face_ids:
@@ -2602,18 +2616,11 @@ class AkuvoxAPI:
                     except Exception:
                         pass
         else:
-            deletion_attempted = False
             if text.isdigit():
                 try:
                     await self._api_user("delete", [{"ID": text}])
-                    deletion_attempted = True
                 except Exception:
                     pass
-            if deletion_attempted and text:
-                face_ids.add(text)
-
-        if face_ids and not target_ids:
-            await self.face_delete_bulk(face_ids)
 
     async def user_delete_bulk(
         self,
@@ -2637,7 +2644,8 @@ class AkuvoxAPI:
             for u in users or []:
                 dev_id = str(u.get("ID") or "").strip()
                 if dev_id and dev_id in wanted_ids:
-                    face_targets.add(dev_id)
+                    if self._record_has_active_face(u):
+                        face_targets.add(dev_id)
 
         if face_targets:
             await self.face_delete_bulk(face_targets)
@@ -2658,16 +2666,13 @@ class AkuvoxAPI:
             users = []
 
         device_ids: List[str] = []
-        face_ids: Set[str] = set()
         for u in users or []:
             dev_id = str(u.get("ID") or "").strip()
-            user_id = str(u.get("UserID") or u.get("UserId") or "").strip()
             if dev_id:
                 device_ids.append(dev_id)
-                face_ids.add(dev_id)
 
         if device_ids:
-            await self.user_delete_bulk(device_ids, face_user_ids=face_ids)
+            await self.user_delete_bulk(device_ids)
 
     async def user_delete_by_key(self, key: str) -> None:
         await self.user_delete(key)
@@ -2683,7 +2688,6 @@ class AkuvoxAPI:
             users = []
 
         dev_ids: List[str] = []
-        face_ids: Set[str] = set()
         for u in users or []:
             dev_id = str(u.get("ID") or "")
             user_id = str(u.get("UserID") or u.get("UserId") or "")
@@ -2691,14 +2695,11 @@ class AkuvoxAPI:
             if user_id in wanted or name in wanted or dev_id in wanted:
                 if dev_id:
                     dev_ids.append(dev_id)
-                    face_ids.add(str(dev_id))
 
         if not dev_ids:
-            if face_ids:
-                await self.face_delete_bulk(face_ids)
             return
 
-        await self.user_delete_bulk(dev_ids, face_user_ids=face_ids)
+        await self.user_delete_bulk(dev_ids)
 
     async def contact_delete(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return await self._api_contact("del", items)

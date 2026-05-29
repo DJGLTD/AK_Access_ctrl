@@ -4346,6 +4346,20 @@ class SyncQueue:
 
         eta = self.next_sync_eta
         if not isinstance(eta, datetime):
+            if (
+                self._handle is None
+                and not self._pending_all
+                and not self._pending_devices
+                and self._has_auto_pending_work()
+            ):
+                try:
+                    self.mark_change(
+                        None,
+                        delay_minutes=0,
+                        trigger="auto-detected pending state",
+                    )
+                except Exception:
+                    pass
             return
 
         if eta > datetime.now():
@@ -4362,6 +4376,37 @@ class SyncQueue:
 
         self.next_sync_eta = datetime.now()
         self._schedule_task(self.run())
+
+    def _has_auto_pending_work(self) -> bool:
+        root = self._root()
+
+        for data in root.values():
+            if not isinstance(data, Mapping):
+                continue
+            coord = data.get("coordinator")
+            if not coord:
+                continue
+            health = getattr(coord, "health", {}) or {}
+            status = str(health.get("sync_status") or "").strip().lower()
+            online = bool(health.get("online", True))
+            if online and status and status != "in_sync":
+                return True
+
+        users_store = root.get("users_store")
+        if users_store and hasattr(users_store, "all"):
+            try:
+                profiles = users_store.all() or {}
+            except Exception:
+                profiles = {}
+            for profile in profiles.values():
+                if _profile_is_empty_reserved(profile or {}):
+                    continue
+                status = str((profile or {}).get("status") or "").strip().lower()
+                face_status = str((profile or {}).get("face_status") or "").strip().lower()
+                if status == "pending" or face_status in {"pending", "error"}:
+                    return True
+
+        return False
 
     def _handle_hass_started(self, _event):
         try:
@@ -4388,39 +4433,7 @@ class SyncQueue:
         if self._pending_all or self._pending_devices:
             return
 
-        root = self._root()
-        pending_detected = False
-
-        for data in root.values():
-            if not isinstance(data, Mapping):
-                continue
-            coord = data.get("coordinator")
-            if not coord:
-                continue
-            health = getattr(coord, "health", {}) or {}
-            status = str(health.get("sync_status") or "").strip().lower()
-            online = bool(health.get("online", True))
-            if online and status and status != "in_sync":
-                pending_detected = True
-                break
-
-        if not pending_detected:
-            users_store = root.get("users_store")
-            if users_store and hasattr(users_store, "all"):
-                try:
-                    profiles = users_store.all() or {}
-                except Exception:
-                    profiles = {}
-                for profile in profiles.values():
-                    if _profile_is_empty_reserved(profile or {}):
-                        continue
-                    status = str((profile or {}).get("status") or "").strip().lower()
-                    face_status = str((profile or {}).get("face_status") or "").strip().lower()
-                    if status == "pending" or face_status in {"pending", "error"}:
-                        pending_detected = True
-                        break
-
-        if pending_detected:
+        if self._has_auto_pending_work():
             try:
                 self.mark_change(None, delay_minutes=0, trigger="auto-detected pending state")
             except Exception:
@@ -5142,14 +5155,20 @@ class SyncManager:
             or (profile or {}).get("face_url")
             or ""
         ).strip()
+        face_path: Optional[Path] = None
         if not face_reference:
-            return False
+            face_path = _face_asset_path(self.hass, ha_key)
+            if face_path:
+                face_reference = face_path.name
+            else:
+                return False
 
         face_status = str((profile or {}).get("face_status") or "").strip().lower()
         if not force and face_status not in {"pending", "error"}:
             return False
 
-        face_path = _face_asset_path(self.hass, ha_key, face_reference)
+        if face_path is None:
+            face_path = _face_asset_path(self.hass, ha_key, face_reference)
         if not face_path:
             try:
                 coord._append_event(f"Face upload skipped for {ha_key}: local image not found")  # type: ignore[attr-defined]
@@ -5905,6 +5924,8 @@ class SyncManager:
         delete_only_keys: List[str] = []
         contact_profiles: List[Tuple[str, str]] = []
         face_root_base = face_base_url(self.hass)
+        desired_by_key: Dict[str, Dict[str, Any]] = {}
+        face_upload_attempted: Set[str] = set()
 
         for ha_key in registry_keys:
             if ha_key in auto_delete_keys:
@@ -5935,6 +5956,7 @@ class SyncManager:
                 face_root_base=face_root_base,
                 device_type_raw=device_type_raw,
             )
+            desired_by_key[ha_key] = desired_base
 
             if should_have_access:
                 phone_text = str(prof.get("phone") or "").strip()
@@ -6000,6 +6022,7 @@ class SyncManager:
                 if not ha_candidate:
                     continue
                 try:
+                    face_upload_attempted.add(ha_candidate)
                     await self._upload_face_asset_to_device(
                         api,
                         coord,
@@ -6029,6 +6052,7 @@ class SyncManager:
                     except Exception:
                         pass
                     try:
+                        face_upload_attempted.add(ha_key)
                         await self._upload_face_asset_to_device(
                             api,
                             coord,
@@ -6080,6 +6104,7 @@ class SyncManager:
                         except Exception:
                             pass
                         try:
+                            face_upload_attempted.add(ha_key)
                             await self._upload_face_asset_to_device(
                                 api,
                                 coord,
@@ -6092,6 +6117,52 @@ class SyncManager:
                             _LOGGER.debug("Post-retry face upload failed for %s: %s", ha_key, err)
                     except Exception:
                         pass
+
+        if is_intercom and not add_missing_only:
+            for ha_key in registry_keys:
+                if ha_key in face_upload_attempted:
+                    continue
+                prof = registry.get(ha_key) or {}
+                face_status = str(prof.get("face_status") or "").strip().lower()
+                if face_status not in {"pending", "error"}:
+                    continue
+                ha_groups = list(prof.get("groups") or ["Default"])
+                if not any(g in device_groups for g in ha_groups):
+                    continue
+                desired = desired_by_key.get(ha_key)
+                if not desired:
+                    continue
+
+                try:
+                    face_upload_attempted.add(ha_key)
+                    repaired = await self._upload_face_asset_to_device(
+                        api,
+                        coord,
+                        ha_key,
+                        desired,
+                        prof,
+                        existing=_find_local_by_key(ha_key),
+                        force=True,
+                    )
+                except Exception as err:
+                    _LOGGER.debug("Face repair upload failed for %s: %s", ha_key, err)
+                    continue
+
+                if not repaired:
+                    continue
+
+                try:
+                    coord._append_event(  # type: ignore[attr-defined]
+                        f"Uploaded face for {ha_key} due to stored face sync state"
+                    )
+                except Exception:
+                    pass
+                try:
+                    local_users = await api.user_list()
+                    coord.users = local_users
+                    await _store_device_user_ids(getattr(coord, "storage", None), local_users)
+                except Exception:
+                    pass
 
         try:
             await self._sync_contacts_for_profiles(
