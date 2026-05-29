@@ -281,8 +281,8 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     assert api.delete_calls == ["42", "HA001", "Lee Fletcher"]
     assert "FaceUrl" not in api.add_calls[0][0]
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
-    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
-    assert api.add_calls[0][0]["FaceRegister"] == 1
+    assert "importFile" not in api.add_calls[0][0]
+    assert "FaceRegister" not in api.add_calls[0][0]
     assert users_store.upserts[-1] == (
         "HA001",
         {"face_status": "pending", "face_synced_at": "", "face_error_count": 0},
