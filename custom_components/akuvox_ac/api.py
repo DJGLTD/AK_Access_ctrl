@@ -1191,7 +1191,9 @@ class AkuvoxAPI:
                     if self._coerce_int(current) != 1:
                         d["FaceRegisterStatus"] = "1"
                 elif self._face_import_filename_from_item(d):
-                    d.pop("FaceRegister", None)
+                    current = d.get("FaceRegister")
+                    if self._coerce_int(current) != 1:
+                        d["FaceRegister"] = 1
                 else:
                     current = d.get("FaceRegister")
                     if self._coerce_int(current) != 1:
