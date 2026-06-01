@@ -1321,7 +1321,7 @@ def _ensure_face_payload_fields(
             break
 
     if import_linked:
-        payload.pop("FaceRegister", None)
+        payload["FaceRegister"] = 1
     elif face_url and register_value != "1":
         payload["FaceRegister"] = 1
     elif face_flag:

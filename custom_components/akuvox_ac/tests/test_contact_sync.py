@@ -286,7 +286,7 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     assert "FaceUrl" not in api.add_calls[0][0]
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
     assert "importFile" not in api.add_calls[0][0]
-    assert "FaceRegister" not in api.add_calls[0][0]
+    assert api.add_calls[0][0]["FaceRegister"] == 1
     assert users_store.upserts[-1] == (
         "HA001",
         {"face_status": "pending", "face_synced_at": "", "face_error_count": 0},
@@ -329,6 +329,7 @@ def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
     assert uploaded is True
     assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert api.add_calls[0][0]["FaceRegister"] == 1
 
 
 def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
@@ -350,7 +351,7 @@ def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
 
     assert payload["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in payload
-    assert "FaceRegister" not in payload
+    assert payload["FaceRegister"] == 1
 
 
 def test_sync_queue_kicks_stale_face_error_without_existing_eta():

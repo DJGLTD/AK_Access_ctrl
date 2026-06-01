@@ -130,7 +130,7 @@ def test_build_face_upload_payload_links_imported_face_by_filename_only():
     assert payload["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in payload
     assert "importFile" not in payload
-    assert "FaceRegister" not in payload
+    assert payload["FaceRegister"] == 1
 
 
 def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
@@ -145,7 +145,7 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in normalized[0]
     assert "importFile" not in normalized[0]
-    assert "FaceRegister" not in normalized[0]
+    assert normalized[0]["FaceRegister"] == 1
 
 
 def test_normalize_user_set_uses_web_face_import_fields_for_device_file():
@@ -191,7 +191,7 @@ def test_normalize_user_add_links_uploaded_face_with_device_path():
     assert normalized[0]["FaceFileName"] == "CODEXFACE2.jpg"
     assert "FaceUrl" not in normalized[0]
     assert "importFile" not in normalized[0]
-    assert "FaceRegister" not in normalized[0]
+    assert normalized[0]["FaceRegister"] == 1
 
 
 def test_normalize_user_add_drops_ha_face_url_when_uploaded_filename_is_present():
@@ -212,7 +212,7 @@ def test_normalize_user_add_drops_ha_face_url_when_uploaded_filename_is_present(
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in normalized[0]
-    assert "FaceRegister" not in normalized[0]
+    assert normalized[0]["FaceRegister"] == 1
 
 
 def test_normalize_user_set_preserves_face_url_field():

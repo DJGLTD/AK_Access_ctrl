@@ -457,7 +457,7 @@ def _build_face_upload_payload(
             payload["FaceUrl"] = reference_text
 
     payload.pop("faceInfo", None)
-    if payload.get("FaceUrl"):
+    if payload.get("FaceUrl") or payload.get("FaceFileName"):
         payload["FaceRegister"] = 1
     else:
         payload.pop("FaceRegister", None)
