@@ -290,8 +290,8 @@ def test_upload_face_asset_links_remote_face_url_without_upload(tmp_path):
     assert api.add_calls == []
     assert api.set_calls[0][0]["FaceUrl"] == "http://ha.local/api/AK_AC/FaceData/HA001.jpg"
     assert users_store.upserts[-1][0] == "HA001"
-    assert users_store.upserts[-1][1]["face_status"] == "active"
-    assert users_store.upserts[-1][1]["face_synced_at"]
+    assert users_store.upserts[-1][1]["face_status"] == "pending"
+    assert users_store.upserts[-1][1]["face_synced_at"] == ""
     assert users_store.upserts[-1][1]["face_error_count"] == 0
 
 

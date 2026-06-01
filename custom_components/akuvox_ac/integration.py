@@ -2029,11 +2029,7 @@ def _integrity_field_differences(
     if include_face:
         expected_face = _face_flag_from_record(expected)
         actual_face = _face_flag_from_record(local)
-        if (
-            expected_face is True
-            and actual_face is not True
-            and not _remote_face_url_matches(local, expected)
-        ):
+        if expected_face is True and actual_face is not True:
             diffs.append("face status")
 
     return diffs
@@ -2058,8 +2054,6 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
         if key == "FaceRegister":
             expected_face = _normalize_boolish(desired_value)
             actual_face = _face_flag(local)
-            if expected_face is True and _remote_face_url_matches(local, desired):
-                continue
             if expected_face is True and actual_face is not True:
                 return False
             if expected_face is False and actual_face is True:
@@ -5253,8 +5247,8 @@ class SyncManager:
                 if users_store:
                     await users_store.upsert_profile(
                         ha_key,
-                        face_status="active",
-                        face_synced_at=datetime.now().isoformat(timespec="seconds"),
+                        face_status="pending",
+                        face_synced_at="",
                         face_error_count=0,
                     )
             except Exception:

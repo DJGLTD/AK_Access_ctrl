@@ -111,6 +111,37 @@ def test_support_bundle_filters_access_history_from_device_requests():
     ]
 
 
+def test_support_bundle_sorts_device_requests_by_timestamp():
+    filtered = http_module.AkuvoxUISupportBundle._filter_support_requests(
+        [
+            {
+                "diag_type": "upload:face",
+                "path": "/api/filetool/import?destFile=Face&index=",
+                "method": "POST",
+                "timestamp": "2026-06-01T21:14:19Z",
+            },
+            {
+                "diag_type": "user:get",
+                "path": "/new_api/user/get",
+                "method": "POST",
+                "timestamp": "2026-06-01T21:14:32Z",
+            },
+            {
+                "diag_type": "user:get",
+                "path": "/new_api/user/get",
+                "method": "POST",
+                "timestamp": "2026-06-01T21:14:21Z",
+            },
+        ]
+    )
+
+    assert [item["timestamp"] for item in filtered] == [
+        "2026-06-01T21:14:32Z",
+        "2026-06-01T21:14:21Z",
+        "2026-06-01T21:14:19Z",
+    ]
+
+
 def test_support_bundle_counts_device_face_registration_mismatches():
     class _UsersStore:
         def all(self):
