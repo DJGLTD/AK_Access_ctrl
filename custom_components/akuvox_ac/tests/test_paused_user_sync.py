@@ -147,14 +147,31 @@ def test_record_matches_desired_fields_detects_missing_face_registration():
     local = {
         "UserID": "HA001",
         "Name": "User One",
-        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceUrl": "/mnt/Face/HA001.jpg",
         "FaceRegisterStatus": "0",
     }
     desired = {
         "UserID": "HA001",
         "Name": "User One",
-        "FaceUrl": "https://example.invalid/device/Face/HA001.jpg",
+        "FaceUrl": "/mnt/Face/HA001.jpg",
         "FaceRegister": 1,
     }
 
     assert integration._record_matches_desired_fields(local, desired) is False
+
+
+def test_record_matches_desired_fields_accepts_remote_face_url_link():
+    local = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/api/AK_AC/FaceData/HA001.jpg",
+        "FaceRegisterStatus": "0",
+    }
+    desired = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "FaceUrl": "https://example.invalid/api/AK_AC/FaceData/HA001.jpg",
+        "FaceRegister": 1,
+    }
+
+    assert integration._record_matches_desired_fields(local, desired) is True
