@@ -331,6 +331,28 @@ def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
 
 
+def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
+    payload = integration._prepare_user_add_payload(
+        "HA001",
+        {
+            "UserID": "HA001",
+            "Name": "Lee Fletcher",
+            "Group": integration.HA_CONTACT_GROUP_NAME,
+            "FaceFileName": "HA001.jpg",
+        },
+        sources=(
+            {
+                "FaceUrl": "http://ha.local/api/AK_AC/FaceData/HA001.jpg",
+                "FaceFileName": "HA001.jpg",
+            },
+        ),
+    )
+
+    assert payload["FaceFileName"] == "HA001.jpg"
+    assert "FaceUrl" not in payload
+    assert "FaceRegister" not in payload
+
+
 def test_sync_queue_kicks_stale_face_error_without_existing_eta():
     scheduled = []
     users_store = SimpleNamespace(

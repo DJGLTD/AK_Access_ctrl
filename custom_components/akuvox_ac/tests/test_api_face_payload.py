@@ -194,6 +194,27 @@ def test_normalize_user_add_links_uploaded_face_with_device_path():
     assert "FaceRegister" not in normalized[0]
 
 
+def test_normalize_user_add_drops_ha_face_url_when_uploaded_filename_is_present():
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=_SessionStub())
+
+    normalized = api._normalize_user_items_for_add_or_set(
+        [
+            {
+                "UserID": "HA001",
+                "Name": "Test",
+                "FaceFileName": "HA001.jpg",
+                "FaceUrl": "http://ha.local/api/AK_AC/FaceData/HA001.jpg",
+            }
+        ],
+        allow_face_url=True,
+        for_set=False,
+    )
+
+    assert normalized[0]["FaceFileName"] == "HA001.jpg"
+    assert "FaceUrl" not in normalized[0]
+    assert "FaceRegister" not in normalized[0]
+
+
 def test_normalize_user_set_preserves_face_url_field():
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=_SessionStub())
 

@@ -1257,6 +1257,8 @@ def _apply_face_import_fields(
     payload["FaceFileName"] = filename
     payload.pop("importFile", None)
     payload.pop("ImportFile", None)
+    payload.pop("FaceUrl", None)
+    payload.pop("FaceURL", None)
     return True
 
 
@@ -1292,14 +1294,11 @@ def _ensure_face_payload_fields(
         sources=sources,
     )
 
-    import_file_link = import_linked and (
-        not raw_face_url or _face_reference_is_device_import(raw_face_url)
-    )
-
-    if face_url and not import_file_link:
+    if face_url and not import_linked:
         payload["FaceUrl"] = str(face_url)
     elif import_linked:
         payload.pop("FaceUrl", None)
+        payload.pop("FaceURL", None)
 
     for key in _FACE_FILENAME_KEYS:
         if key != "FaceFileName":
@@ -1321,7 +1320,7 @@ def _ensure_face_payload_fields(
             face_flag = flag
             break
 
-    if import_file_link:
+    if import_linked:
         payload.pop("FaceRegister", None)
     elif face_url and register_value != "1":
         payload["FaceRegister"] = 1
