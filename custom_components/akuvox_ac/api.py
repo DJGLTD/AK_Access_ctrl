@@ -911,11 +911,8 @@ class AkuvoxAPI:
         item["FaceFileName"] = filename
         item.pop("importFile", None)
         item.pop("ImportFile", None)
-
-        face_url = item.get("FaceUrl") or item.get("FaceURL")
-        if cls._is_device_face_import_reference(face_url):
-            item.pop("FaceUrl", None)
-            item.pop("FaceURL", None)
+        item.pop("FaceUrl", None)
+        item.pop("FaceURL", None)
 
     @classmethod
     def _normalize_device_face_import_reference(cls, reference: Any, filename: str) -> str:
