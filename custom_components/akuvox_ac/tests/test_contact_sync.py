@@ -50,6 +50,7 @@ class _FaceApiStub:
     def __init__(self):
         self.upload_calls = []
         self.add_calls = []
+        self.set_calls = []
         self.delete_calls = []
 
     async def face_upload(self, face_bytes, *, filename):
@@ -61,6 +62,9 @@ class _FaceApiStub:
 
     async def user_add(self, items):
         self.add_calls.append(items)
+
+    async def user_set(self, items):
+        self.set_calls.append(items)
 
 
 class _FaceHassStub:
@@ -244,7 +248,7 @@ def test_replace_user_on_device_deletes_existing_before_add():
     }]]
 
 
-def test_upload_face_asset_links_device_import_path(tmp_path):
+def test_upload_face_asset_links_remote_face_url_without_upload(tmp_path):
     hass = _FaceHassStub(tmp_path)
     users_store = _UsersStoreStub()
     hass.data[integration.DOMAIN]["users_store"] = users_store
@@ -281,16 +285,14 @@ def test_upload_face_asset_links_device_import_path(tmp_path):
     )
 
     assert uploaded is True
-    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
-    assert api.delete_calls == ["42", "HA001", "Lee Fletcher"]
-    assert "FaceUrl" not in api.add_calls[0][0]
-    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
-    assert "importFile" not in api.add_calls[0][0]
-    assert api.add_calls[0][0]["FaceRegister"] == 1
-    assert users_store.upserts[-1] == (
-        "HA001",
-        {"face_status": "pending", "face_synced_at": "", "face_error_count": 0},
-    )
+    assert api.upload_calls == []
+    assert api.delete_calls == []
+    assert api.add_calls == []
+    assert api.set_calls[0][0]["FaceUrl"] == "http://ha.local/api/AK_AC/FaceData/HA001.jpg"
+    assert users_store.upserts[-1][0] == "HA001"
+    assert users_store.upserts[-1][1]["face_status"] == "active"
+    assert users_store.upserts[-1][1]["face_synced_at"]
+    assert users_store.upserts[-1][1]["face_error_count"] == 0
 
 
 def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):

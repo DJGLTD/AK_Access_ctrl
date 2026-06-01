@@ -8,7 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set, Coroutine
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from homeassistant.const import Platform
 
@@ -1206,6 +1206,52 @@ def _face_reference_is_device_import(reference: Any) -> bool:
     return text.startswith("/mnt/face/") or text.startswith("mnt/face/")
 
 
+def _face_reference_is_remote_url(reference: Any) -> bool:
+    if reference in (None, ""):
+        return False
+    text = str(reference or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _normalized_face_reference(reference: Any) -> str:
+    text = str(reference or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return text
+    if parsed.scheme and parsed.netloc:
+        scheme = parsed.scheme.lower()
+        host = parsed.netloc.lower()
+        return parsed._replace(scheme=scheme, netloc=host).geturl()
+    return text
+
+
+def _remote_face_url_from_record(record: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(record, Mapping):
+        return ""
+    for key in _FACE_URL_KEYS:
+        value = record.get(key)
+        if _face_reference_is_remote_url(value):
+            return str(value).strip()
+    return ""
+
+
+def _remote_face_url_matches(local: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    local_url = _remote_face_url_from_record(local)
+    expected_url = _remote_face_url_from_record(expected)
+    if not local_url or not expected_url:
+        return False
+    return _normalized_face_reference(local_url) == _normalized_face_reference(expected_url)
+
+
 def _face_import_filename_from_sources(
     ha_key: str,
     *sources: Optional[Dict[str, Any]],
@@ -1983,7 +2029,11 @@ def _integrity_field_differences(
     if include_face:
         expected_face = _face_flag_from_record(expected)
         actual_face = _face_flag_from_record(local)
-        if expected_face is True and actual_face is not True:
+        if (
+            expected_face is True
+            and actual_face is not True
+            and not _remote_face_url_matches(local, expected)
+        ):
             diffs.append("face status")
 
     return diffs
@@ -2008,6 +2058,8 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
         if key == "FaceRegister":
             expected_face = _normalize_boolish(desired_value)
             actual_face = _face_flag(local)
+            if expected_face is True and _remote_face_url_matches(local, desired):
+                continue
             if expected_face is True and actual_face is not True:
                 return False
             if expected_face is False and actual_face is True:
@@ -5161,6 +5213,54 @@ class SyncManager:
                 face_reference = face_path.name
             else:
                 return False
+
+        if _face_reference_is_remote_url(face_reference):
+            device_record = existing if isinstance(existing, dict) else None
+            if not device_record or not str(device_record.get("ID") or "").strip():
+                try:
+                    matches = await _lookup_device_user_ids_by_ha_key(api, ha_key)
+                except Exception:
+                    matches = []
+                if matches:
+                    device_record = matches[0]
+
+            if not isinstance(device_record, dict):
+                return False
+
+            if not _remote_face_url_matches(device_record, {"FaceUrl": face_reference}):
+                payload = _prepare_user_set_payload(
+                    ha_key,
+                    {**(desired or {}), "FaceUrl": face_reference, "FaceRegister": 1},
+                    device_record,
+                )
+                try:
+                    await api.user_set([payload])
+                except Exception as err:
+                    _LOGGER.debug("Failed to link remote face URL for %s: %s", ha_key, err)
+                    try:
+                        coord._append_event(f"Face URL link failed for {ha_key}: {err}")  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    return False
+
+            try:
+                coord._append_event(f"Linked remote face URL for {ha_key}")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+            try:
+                users_store = self._users_store()
+                if users_store:
+                    await users_store.upsert_profile(
+                        ha_key,
+                        face_status="active",
+                        face_synced_at=datetime.now().isoformat(timespec="seconds"),
+                        face_error_count=0,
+                    )
+            except Exception:
+                pass
+
+            return True
 
         face_status = str((profile or {}).get("face_status") or "").strip().lower()
         if not force and face_status not in {"pending", "error"}:

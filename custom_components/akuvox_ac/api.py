@@ -816,6 +816,9 @@ class AkuvoxAPI:
 
         if not isinstance(record, dict):
             return False
+        face_url = record.get("FaceUrl") or record.get("FaceURL") or record.get("face_url")
+        if cls._is_remote_face_url(face_url):
+            return False
         for key in ("FaceRegister", "FaceRegisterStatus", "face_register", "face_register_status"):
             if key not in record:
                 continue
@@ -867,6 +870,16 @@ class AkuvoxAPI:
             return False
         text = str(reference or "").strip().replace("\\", "/").lower()
         return text.startswith("/mnt/face/") or text.startswith("mnt/face/")
+
+    @staticmethod
+    def _is_remote_face_url(reference: Any) -> bool:
+        if reference in (None, ""):
+            return False
+        try:
+            parsed = urlsplit(str(reference or "").strip())
+        except Exception:
+            return False
+        return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
     @classmethod
     def _face_import_filename_from_item(cls, item: Dict[str, Any]) -> str:
@@ -1703,6 +1716,7 @@ class AkuvoxAPI:
     async def user_list(self) -> List[Dict[str, Any]]:
         # Try POST get/list then GET fallback
         rel_paths = (
+            "/new_api/user/get",
             "/api/user/get",
             "/api/web/user/get",
         )
@@ -1710,13 +1724,14 @@ class AkuvoxAPI:
         for payload in (
             {"target": "user", "action": "get"},
         ):
-            try:
-                r = await self._post_api(payload, rel_paths=rel_paths)
-                items = r.get("data", {}).get("item")
-                if isinstance(items, list):
-                    return items
-            except Exception:
-                pass
+            for rel in rel_paths:
+                try:
+                    r = await self._post_api(payload, rel_paths=(rel,))
+                    items = r.get("data", {}).get("item")
+                    if isinstance(items, list):
+                        return items
+                except Exception:
+                    pass
         return []
 
     async def user_get(self, name_or_per_id: str) -> List[Dict[str, Any]]:
@@ -1725,6 +1740,7 @@ class AkuvoxAPI:
             return []
 
         rel_paths = (
+            "/new_api/user/get",
             "/api/user/get",
             "/api/web/user/get",
         )
@@ -1751,18 +1767,19 @@ class AkuvoxAPI:
             {"target": "user", "action": "get", "data": {"page": -1}},
             {"target": "user", "action": "get"},
         ):
-            try:
-                result = await self._post_api(payload, rel_paths=rel_paths)
-            except Exception:
-                result = None
-            if not isinstance(result, dict):
-                continue
-            items = result.get("data", {}).get("item")
-            if isinstance(items, list):
-                matches = [item for item in items if isinstance(item, dict) and _matches(item)]
-                if matches:
-                    return matches
-                continue
+            for rel in rel_paths:
+                try:
+                    result = await self._post_api(payload, rel_paths=(rel,))
+                except Exception:
+                    result = None
+                if not isinstance(result, dict):
+                    continue
+                items = result.get("data", {}).get("item")
+                if isinstance(items, list):
+                    matches = [item for item in items if isinstance(item, dict) and _matches(item)]
+                    if matches:
+                        return matches
+                    continue
 
         params = urlencode({"NameOrPerID": query})
         rel = f"/api/user/get?{params}" if params else "/api/user/get"

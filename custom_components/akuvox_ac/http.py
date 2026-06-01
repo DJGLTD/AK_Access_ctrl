@@ -2215,6 +2215,19 @@ def _face_flag_from_record(record: Mapping[str, Any]) -> Optional[bool]:
     return None
 
 
+def _face_reference_is_remote_url(reference: Any) -> bool:
+    if reference in (None, ""):
+        return False
+    text = str(reference or "").strip()
+    if not text:
+        return False
+    try:
+        parsed = urlsplit(text)
+    except Exception:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
 def _user_key(record: Mapping[str, Any]) -> str:
     return str(
         record.get("UserID")
@@ -2263,16 +2276,22 @@ def _device_supports_face(record: Mapping[str, Any]) -> bool:
 
 
 def _device_face_is_active(record: Mapping[str, Any]) -> bool:
-    flag = _face_flag_from_record(record)
-    if flag is not None:
-        return bool(flag)
-
     url = str(
         record.get("FaceUrl")
         or record.get("FaceURL")
         or record.get("face_url")
         or ""
     ).strip()
+
+    flag = _face_flag_from_record(record)
+    if flag is not None:
+        # X912 firmwares expose URL-backed face profiles through FaceUrl while
+        # continuing to report FaceStatus/FaceRegister as 0. A stored remote URL
+        # is the supported API-level success signal for those records.
+        if flag is False and _face_reference_is_remote_url(url):
+            return True
+        return bool(flag)
+
     if not url:
         return False
 
@@ -2297,6 +2316,8 @@ def _device_face_registration_mismatch(record: Mapping[str, Any]) -> bool:
         or ""
     ).strip()
     if not url:
+        return False
+    if _face_reference_is_remote_url(url):
         return False
     flag = _face_flag_from_record(record)
     return flag is False
