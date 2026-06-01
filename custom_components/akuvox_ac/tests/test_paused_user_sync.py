@@ -160,7 +160,7 @@ def test_record_matches_desired_fields_detects_missing_face_registration():
     assert integration._record_matches_desired_fields(local, desired) is False
 
 
-def test_record_matches_desired_fields_accepts_remote_face_url_link():
+def test_record_matches_desired_fields_rejects_remote_face_url_without_active_flag():
     local = {
         "UserID": "HA001",
         "Name": "User One",
@@ -174,4 +174,4 @@ def test_record_matches_desired_fields_accepts_remote_face_url_link():
         "FaceRegister": 1,
     }
 
-    assert integration._record_matches_desired_fields(local, desired) is True
+    assert integration._record_matches_desired_fields(local, desired) is False

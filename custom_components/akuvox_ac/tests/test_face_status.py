@@ -76,7 +76,7 @@ def test_face_status_errors_when_stored_active_but_device_register_mismatch():
     assert result == "error"
 
 
-def test_face_status_treats_remote_face_url_as_active_when_register_flag_stays_zero(monkeypatch):
+def test_face_status_keeps_remote_face_url_pending_when_register_flag_stays_zero(monkeypatch):
     monkeypatch.setattr(
         http,
         "_device_face_is_active",
@@ -103,7 +103,7 @@ def test_face_status_treats_remote_face_url_as_active_when_register_flag_stays_z
 
     result = http._evaluate_face_status(hass, user, devices, stored_status="pending")
 
-    assert result == "active"
+    assert result == "pending"
 
 
 def test_face_status_falls_back_to_pending_when_not_stored_active(monkeypatch):

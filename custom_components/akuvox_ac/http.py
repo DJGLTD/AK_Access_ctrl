@@ -2285,11 +2285,6 @@ def _device_face_is_active(record: Mapping[str, Any]) -> bool:
 
     flag = _face_flag_from_record(record)
     if flag is not None:
-        # X912 firmwares expose URL-backed face profiles through FaceUrl while
-        # continuing to report FaceStatus/FaceRegister as 0. A stored remote URL
-        # is the supported API-level success signal for those records.
-        if flag is False and _face_reference_is_remote_url(url):
-            return True
         return bool(flag)
 
     if not url:
@@ -5596,7 +5591,12 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                 primary.append(slim)
 
         remaining = max(0, SUPPORT_BUNDLE_REQUEST_LIMIT - len(primary))
-        return (primary + user_get[: min(6, remaining)])[:SUPPORT_BUNDLE_REQUEST_LIMIT]
+        selected = (primary + user_get[: min(6, remaining)])[:SUPPORT_BUNDLE_REQUEST_LIMIT]
+        return sorted(
+            selected,
+            key=lambda item: str(item.get("timestamp") or ""),
+            reverse=True,
+        )
 
     @classmethod
     def _device_support_snapshot(cls, root: Dict[str, Any]) -> List[Dict[str, Any]]:
