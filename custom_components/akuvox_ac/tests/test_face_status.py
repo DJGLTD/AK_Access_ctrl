@@ -17,6 +17,12 @@ def _patch_face_helpers(monkeypatch):
     """Prevent filesystem access and control device face responses."""
 
     monkeypatch.setattr(http, "_face_image_exists", lambda hass, user_id: True)
+    monkeypatch.setattr(
+        http,
+        "_original_device_face_is_active_for_tests",
+        http._device_face_is_active,
+        raising=False,
+    )
     # By default devices report an active face profile.
     monkeypatch.setattr(http, "_device_face_is_active", lambda record: True)
 
@@ -68,6 +74,36 @@ def test_face_status_errors_when_stored_active_but_device_register_mismatch():
     result = http._evaluate_face_status(hass, user, devices, stored_status="active")
 
     assert result == "error"
+
+
+def test_face_status_treats_remote_face_url_as_active_when_register_flag_stays_zero(monkeypatch):
+    monkeypatch.setattr(
+        http,
+        "_device_face_is_active",
+        http._original_device_face_is_active_for_tests,
+    )
+
+    hass = _make_hass()
+    user = {"id": "user1", "face_url": "http://example.invalid/face.jpg"}
+    devices = [
+        {
+            "participate_in_sync": True,
+            "sync_status": "in_sync",
+            "online": True,
+            "users": [
+                {
+                    "UserID": "user1",
+                    "FaceUrl": "http://example.invalid/face.jpg",
+                    "FaceStatus": "0",
+                    "FaceRegister": "0",
+                }
+            ],
+        }
+    ]
+
+    result = http._evaluate_face_status(hass, user, devices, stored_status="pending")
+
+    assert result == "active"
 
 
 def test_face_status_falls_back_to_pending_when_not_stored_active(monkeypatch):
