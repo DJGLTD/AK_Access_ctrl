@@ -4762,6 +4762,9 @@ class SyncManager:
         self._expiry_reminder_unsub = None
         self._temp_cleanup_lock = asyncio.Lock()
         self._integrity_minutes = 15
+        self._face_enroll_initial_delay_seconds = 5.0
+        self._face_enroll_poll_interval_seconds = 3.0
+        self._face_enroll_poll_timeout_seconds = 45.0
         self._apply_integrity_interval(self._integrity_minutes)
         self._reboot_unsub = None
         self._interval_unsub = async_track_time_interval(
@@ -5303,6 +5306,64 @@ class SyncManager:
         except Exception:
             return
 
+    async def _wait_for_device_face_active(
+        self,
+        api: AkuvoxAPI,
+        ha_key: str,
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Wait until the device reports an active face template for a user."""
+
+        target = str(ha_key or "").strip()
+        if not target:
+            return False, None
+        target_norm = normalize_user_id(target)
+
+        def _matches(record: Any) -> bool:
+            if not isinstance(record, dict):
+                return False
+            candidates = {
+                str(record.get("ID") or "").strip(),
+                str(record.get("UserID") or record.get("UserId") or "").strip(),
+                str(record.get("Name") or "").strip(),
+                _key_of_user(record),
+            }
+            candidates = {candidate for candidate in candidates if candidate}
+            if target in candidates:
+                return True
+            if not target_norm:
+                return False
+            return any(normalize_user_id(candidate) == target_norm for candidate in candidates)
+
+        async def _find_record() -> Optional[Dict[str, Any]]:
+            try:
+                users = await api.user_list()
+            except Exception:
+                return None
+            for record in users or []:
+                if _matches(record):
+                    return record
+            return None
+
+        latest = await _find_record()
+        if _device_record_has_active_face(latest):
+            return True, latest
+
+        initial_delay = max(0.0, float(self._face_enroll_initial_delay_seconds or 0.0))
+        if initial_delay:
+            await asyncio.sleep(initial_delay)
+
+        timeout = max(0.0, float(self._face_enroll_poll_timeout_seconds or 0.0))
+        interval = max(0.5, float(self._face_enroll_poll_interval_seconds or 0.0))
+        deadline = time.monotonic() + timeout
+
+        while True:
+            latest = await _find_record()
+            if _device_record_has_active_face(latest):
+                return True, latest
+            if time.monotonic() >= deadline:
+                return False, latest
+            await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
     async def _recreate_user_for_face_mismatch(
         self,
         api: AkuvoxAPI,
@@ -5550,26 +5611,53 @@ class SyncManager:
                 pass
             return False
 
+        face_active, latest_face_record = await self._wait_for_device_face_active(api, ha_key)
+
         try:
-            coord._append_event(f"Uploaded face image for {ha_key} directly to device")  # type: ignore[attr-defined]
+            if face_active:
+                coord._append_event(  # type: ignore[attr-defined]
+                    f"Uploaded face image for {ha_key} directly to device and confirmed active"
+                )
+            else:
+                status = ""
+                if isinstance(latest_face_record, dict):
+                    status = str(
+                        latest_face_record.get("FaceStatus")
+                        or latest_face_record.get("FaceRegister")
+                        or latest_face_record.get("FaceRegisterStatus")
+                        or ""
+                    ).strip()
+                detail = f" (device status {status})" if status else ""
+                coord._append_event(  # type: ignore[attr-defined]
+                    f"Uploaded face image for {ha_key}; waiting for device activation{detail}"
+                )
         except Exception:
             pass
 
         try:
             users_store = self._users_store()
             if users_store:
-                retry_fields: Dict[str, str] = {}
-                if attempt_at:
-                    retry_fields["face_last_attempt_at"] = attempt_at
-                if retry_after:
-                    retry_fields["face_retry_after"] = retry_after
-                await users_store.upsert_profile(
-                    ha_key,
-                    face_status="pending",
-                    face_synced_at="",
-                    face_error_count=0,
-                    **retry_fields,
-                )
+                if face_active:
+                    await users_store.upsert_profile(
+                        ha_key,
+                        face_status="active",
+                        face_synced_at=dt_util.now().replace(microsecond=0).isoformat(),
+                        face_error_count=0,
+                        face_retry_after="",
+                    )
+                else:
+                    retry_fields: Dict[str, str] = {}
+                    if attempt_at:
+                        retry_fields["face_last_attempt_at"] = attempt_at
+                    if retry_after:
+                        retry_fields["face_retry_after"] = retry_after
+                    await users_store.upsert_profile(
+                        ha_key,
+                        face_status="pending",
+                        face_synced_at="",
+                        face_error_count=0,
+                        **retry_fields,
+                    )
         except Exception:
             pass
 
