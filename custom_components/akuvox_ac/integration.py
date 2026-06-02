@@ -6495,6 +6495,28 @@ class SyncManager:
         if not add_missing_only:
             for ha_key, desired, existing in update_batch:
                 try:
+                    if is_intercom and _payload_requests_face(desired):
+                        face_upload_attempted.add(ha_key)
+                        prof = registry.get(ha_key) or {}
+                        if full or not _face_sync_on_cooldown(prof):
+                            uploaded = await self._upload_face_asset_to_device(
+                                api,
+                                coord,
+                                ha_key,
+                                desired,
+                                prof,
+                                existing=existing,
+                                force=True,
+                            )
+                            if uploaded:
+                                try:
+                                    coord._append_event(  # type: ignore[attr-defined]
+                                        f"User {ha_key} recreated through face upload payload"
+                                    )
+                                except Exception:
+                                    pass
+                                continue
+
                     await self._replace_user_on_device(
                         api,
                         ha_key,
@@ -6507,20 +6529,6 @@ class SyncManager:
                         )
                     except Exception:
                         pass
-                    try:
-                        face_upload_attempted.add(ha_key)
-                        prof = registry.get(ha_key) or {}
-                        if full or not _face_sync_on_cooldown(prof):
-                            await self._upload_face_asset_to_device(
-                                api,
-                                coord,
-                                ha_key,
-                                desired,
-                                prof,
-                                force=True,
-                            )
-                    except Exception as err:
-                        _LOGGER.debug("Post-update face upload failed for %s: %s", ha_key, err)
                 except Exception:
                     latest: Optional[Dict[str, Any]] = None
                     try:
@@ -6543,6 +6551,28 @@ class SyncManager:
                         diffs = ["unknown"]
 
                     try:
+                        if is_intercom and _payload_requests_face(desired):
+                            face_upload_attempted.add(ha_key)
+                            prof = registry.get(ha_key) or {}
+                            if full or not _face_sync_on_cooldown(prof):
+                                repaired = await self._upload_face_asset_to_device(
+                                    api,
+                                    coord,
+                                    ha_key,
+                                    desired,
+                                    prof,
+                                    existing=latest,
+                                    force=True,
+                                )
+                                if repaired:
+                                    try:
+                                        coord._append_event(  # type: ignore[attr-defined]
+                                            f"User {ha_key} recreated through face upload payload after update issue"
+                                        )
+                                    except Exception:
+                                        pass
+                                    continue
+
                         await self._replace_user_on_device(
                             api,
                             ha_key,
@@ -6561,20 +6591,6 @@ class SyncManager:
                                 )
                         except Exception:
                             pass
-                        try:
-                            face_upload_attempted.add(ha_key)
-                            prof = registry.get(ha_key) or {}
-                            if full or not _face_sync_on_cooldown(prof):
-                                await self._upload_face_asset_to_device(
-                                    api,
-                                    coord,
-                                    ha_key,
-                                    desired,
-                                    prof,
-                                    force=True,
-                                )
-                        except Exception as err:
-                            _LOGGER.debug("Post-retry face upload failed for %s: %s", ha_key, err)
                     except Exception:
                         pass
 
