@@ -101,6 +101,40 @@ class _FaceUploadExpiredSessionStub(_FaceUploadSessionStub):
         )
 
 
+class _FaceUploadWebFallbackSessionStub(_FaceUploadSessionStub):
+    def post(self, url, **kwargs):
+        self.post_urls.append(url)
+        self.post_kwargs.append(kwargs)
+        if not url.startswith("http://"):
+            return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
+        if "/api/web/filetool/import" in url or "/web/filetool/import" in url:
+            return self._web_response(url, **kwargs)
+        return _RequestContextStub(
+            _ResponseStub(200, {"retcode": -100, "message": "error param"})
+        )
+
+    def _web_response(self, _url, **_kwargs):
+        return _RequestContextStub(
+            _ResponseStub(200, {"retcode": 0, "path": "/mnt/Face/HA001.jpg"})
+        )
+
+
+class _FaceUploadExpiredWebFallbackSessionStub(_FaceUploadWebFallbackSessionStub):
+    def __init__(self):
+        super().__init__()
+        self._web_posts = 0
+
+    def _web_response(self, _url, **_kwargs):
+        self._web_posts += 1
+        if self._web_posts == 1:
+            return _RequestContextStub(
+                _ResponseStub(200, {"retcode": -100, "message": "unknow session"})
+            )
+        return _RequestContextStub(
+            _ResponseStub(200, {"retcode": 0, "path": "/mnt/Face/HA001.jpg"})
+        )
+
+
 class _FaceUploadAllFailSessionStub(_FaceUploadSessionStub):
     def get(self, url, **kwargs):
         self.get_urls.append(url)
@@ -271,7 +305,7 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert any(url.startswith("http://") for url in session.get_urls)
     assert session.post_urls[0].startswith("http://")
     assert session.post_kwargs[0]["ssl"] is False
-    assert "/api/web/filetool/import" in session.post_urls[0]
+    assert "/api/filetool/import" in session.post_urls[0]
 
 
 def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
@@ -299,7 +333,7 @@ def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
 def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
     import asyncio
 
-    session = _FaceUploadSessionStub()
+    session = _FaceUploadWebFallbackSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
     original_form_data = api_module.FormData
     api_module.FormData = _FormDataStub
@@ -314,15 +348,19 @@ def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
     finally:
         api_module.FormData = original_form_data
 
-    assert session.post_kwargs
-    assert session.post_kwargs[0]["headers"]["Cookie"] == "token=fake"
-    assert session.post_kwargs[0]["auth"] is None
+    web_idx = next(
+        idx
+        for idx, url in enumerate(session.post_urls)
+        if "/api/web/filetool/import" in url or "/web/filetool/import" in url
+    )
+    assert session.post_kwargs[web_idx]["headers"]["Cookie"] == "token=fake"
+    assert session.post_kwargs[web_idx]["auth"] is None
 
 
 def test_face_upload_retries_expired_web_session():
     import asyncio
 
-    session = _FaceUploadExpiredSessionStub()
+    session = _FaceUploadExpiredWebFallbackSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
     original_form_data = api_module.FormData
     api_module.FormData = _FormDataStub
@@ -342,8 +380,13 @@ def test_face_upload_retries_expired_web_session():
 
     assert result["path"] == "/mnt/Face/HA001.jpg"
     assert issued_tokens == ["token=fake1", "token=fake2"]
-    assert session.post_kwargs[0]["headers"]["Cookie"] == "token=fake1"
-    assert session.post_kwargs[1]["headers"]["Cookie"] == "token=fake2"
+    web_posts = [
+        (url, kwargs)
+        for url, kwargs in zip(session.post_urls, session.post_kwargs)
+        if "/api/web/filetool/import" in url or "/web/filetool/import" in url
+    ]
+    assert web_posts[0][1]["headers"]["Cookie"] == "token=fake1"
+    assert web_posts[1][1]["headers"]["Cookie"] == "token=fake2"
 
 
 def test_face_upload_does_not_retry_verified_ssl_when_disabled():

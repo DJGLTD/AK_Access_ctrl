@@ -1853,10 +1853,12 @@ class AkuvoxAPI:
         query = urlencode(params)
 
         base_paths = (
-            "/api/web/filetool/import",
-            "/web/filetool/import",
+            # Match the device web UI first. Some firmware accepts the web-prefixed
+            # endpoint with retcode 0 but does not enroll the uploaded face.
             "/api/filetool/import",
             "/filetool/import",
+            "/api/web/filetool/import",
+            "/web/filetool/import",
         )
         rel_paths = tuple(f"{path}?{query}" if query else path for path in base_paths)
 
@@ -2054,7 +2056,7 @@ class AkuvoxAPI:
                         )
                         continue
 
-        fallback_rel = rel_paths[0] if rel_paths else "/api/web/filetool/import"
+        fallback_rel = rel_paths[0] if rel_paths else "/api/filetool/import"
         fallback_use_https = True
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
