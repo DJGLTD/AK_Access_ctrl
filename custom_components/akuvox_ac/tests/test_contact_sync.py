@@ -144,6 +144,11 @@ def _make_manager():
     return integration.SyncManager(hass)
 
 
+def _assert_fresh_face_filename(filename, ha_key="HA001"):
+    assert filename.startswith(f"{ha_key}_")
+    assert filename.endswith(".jpg")
+
+
 def test_sync_contacts_adds_missing_contact():
     manager = _make_manager()
     api = _ApiStub([])
@@ -330,10 +335,12 @@ def test_upload_face_asset_prefers_local_file_over_remote_face_url(tmp_path):
     )
 
     assert uploaded is True
-    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
+    uploaded_filename = api.upload_calls[0]["filename"]
+    _assert_fresh_face_filename(uploaded_filename)
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": uploaded_filename}]
     assert api.delete_calls == ["42", "HA001", "Lee Fletcher"]
-    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
-    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert api.add_calls[0][0]["FaceFileName"] == uploaded_filename
+    assert api.add_calls[0][0]["importFile"] == {"fileName": uploaded_filename, "fileData": {}}
     assert api.add_calls[0][0]["FaceRegister"] == 1
     assert api.set_calls == []
     assert users_store.upserts[-1][0] == "HA001"
@@ -377,9 +384,11 @@ def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
     )
 
     assert uploaded is True
-    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
-    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
-    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    uploaded_filename = api.upload_calls[0]["filename"]
+    _assert_fresh_face_filename(uploaded_filename)
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": uploaded_filename}]
+    assert api.add_calls[0][0]["FaceFileName"] == uploaded_filename
+    assert api.add_calls[0][0]["importFile"] == {"fileName": uploaded_filename, "fileData": {}}
     assert api.add_calls[0][0]["FaceRegister"] == 1
 
 
@@ -544,8 +553,10 @@ def test_upload_face_asset_force_bypasses_retry_cooldown(tmp_path):
     )
 
     assert uploaded is True
-    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
-    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    uploaded_filename = api.upload_calls[0]["filename"]
+    _assert_fresh_face_filename(uploaded_filename)
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": uploaded_filename}]
+    assert api.add_calls[0][0]["FaceFileName"] == uploaded_filename
     assert users_store.upserts[-1][1]["face_status"] == "active"
     assert users_store.upserts[-1][1]["face_retry_after"] == ""
 
@@ -600,9 +611,11 @@ def test_upload_face_asset_deletes_current_record_before_upload(tmp_path):
 
     assert uploaded is True
     assert ("delete", "HA001") in api.events
-    assert api.events.index(("delete", "HA001")) < api.events.index(("upload", "HA001.jpg"))
-    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
-    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    uploaded_filename = api.upload_calls[0]["filename"]
+    _assert_fresh_face_filename(uploaded_filename)
+    assert api.events.index(("delete", "HA001")) < api.events.index(("upload", uploaded_filename))
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": uploaded_filename}]
+    assert api.add_calls[0][0]["FaceFileName"] == uploaded_filename
     assert users_store.upserts[-1][1]["face_status"] == "active"
 
 

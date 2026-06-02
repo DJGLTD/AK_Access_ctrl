@@ -1249,6 +1249,17 @@ def _face_asset_path(
     return None
 
 
+def _device_face_import_filename(ha_key: str, source_filename: str) -> str:
+    """Return a fresh filename for the device face import store."""
+
+    suffix = Path(str(source_filename or "")).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        suffix = ".jpg"
+    stem = normalize_user_id(ha_key) or str(ha_key or "").strip() or "face"
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "", stem).strip("_-") or "face"
+    return f"{stem[:24]}_{int(time.time() * 1000)}{suffix}"
+
+
 _FACE_FILENAME_KEYS = (
     "FaceFileName",
     "faceFileName",
@@ -5523,11 +5534,12 @@ class SyncManager:
                 return False
 
         try:
-            filename = face_filename_from_reference(face_reference or face_path.name, ha_key)
+            source_filename = face_filename_from_reference(face_reference or face_path.name, ha_key)
         except Exception:
-            filename = face_path.name
-        if not filename:
-            filename = face_path.name or f"{ha_key}.jpg"
+            source_filename = face_path.name
+        if not source_filename:
+            source_filename = face_path.name or f"{ha_key}.jpg"
+        filename = _device_face_import_filename(ha_key, source_filename)
 
         device_record = existing if isinstance(existing, dict) else None
         if not device_record or not str(device_record.get("ID") or "").strip():
