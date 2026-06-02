@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable, Set, Deque
 
-from aiohttp import ClientSession, BasicAuth, FormData
+from aiohttp import ClientSession, BasicAuth
 from urllib.parse import urlsplit, urlencode, unquote
 
 from .const import (
@@ -1916,21 +1916,24 @@ class AkuvoxAPI:
             }
             start = time.perf_counter()
 
-            form = FormData()
-            form.add_field(
-                field_name,
-                file_bytes,
-                filename=safe_filename,
-                content_type=content_type or "application/octet-stream",
-            )
-
             try:
                 _LOGGER.debug(
                     "POST %s (face upload) filename=%s size=%s", url, safe_filename, len(file_bytes)
                 )
                 origin = f"{scheme}://{self.host}:{port}"
+                boundary = f"----AkuvoxFace{int(time.time() * 1000000)}"
+                escaped_filename = safe_filename.replace("\\", "_").replace('"', "_")
+                multipart_body = (
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="{field_name}"; filename="{escaped_filename}"\r\n'
+                    f"Content-Type: {content_type or 'image/jpeg'}\r\n"
+                    "\r\n"
+                ).encode("utf-8")
+                multipart_body += file_bytes
+                multipart_body += f"\r\n--{boundary}--\r\n".encode("utf-8")
                 request_headers = {
                     "Accept": "application/json, text/plain, */*",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
                     "Origin": origin,
                     "Referer": f"{origin}/",
                 }
@@ -1945,7 +1948,7 @@ class AkuvoxAPI:
                         request_headers["Cookie"] = cookie
                 async with self._session.post(
                     url,
-                    data=form,
+                    data=multipart_body,
                     headers=request_headers,
                     ssl=ssl_arg,
                     timeout=30,

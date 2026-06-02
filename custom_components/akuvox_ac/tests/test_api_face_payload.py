@@ -1,5 +1,4 @@
 from custom_components.akuvox_ac.api import AkuvoxAPI
-from custom_components.akuvox_ac import api as api_module
 from custom_components.akuvox_ac.http import _build_face_upload_payload
 
 
@@ -147,14 +146,6 @@ class _FaceUploadAllFailSessionStub(_FaceUploadSessionStub):
         return _RequestContextStub(_ResponseStub(503, body="upload unavailable"))
 
 
-class _FormDataStub:
-    def __init__(self):
-        self.fields = []
-
-    def add_field(self, *args, **kwargs):
-        self.fields.append((args, kwargs))
-
-
 class _DeleteApiStub(AkuvoxAPI):
     def __init__(self, users):
         super().__init__("127.0.0.1", port=80, username="", password="", session=_SessionStub())
@@ -291,13 +282,8 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
 
     session = _FaceUploadSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
 
-    try:
-        result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-    finally:
-        api_module.FormData = original_form_data
+    result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
     assert result["path"] == "/mnt/Face/HA001.jpg"
     assert api._detected == (False, 80, True)
@@ -306,6 +292,8 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert session.post_urls[0].startswith("http://")
     assert session.post_kwargs[0]["ssl"] is False
     assert "/api/filetool/import" in session.post_urls[0]
+    assert b'name="file"; filename="HA001.jpg"' in session.post_kwargs[0]["data"]
+    assert session.post_kwargs[0]["headers"]["Content-Type"].startswith("multipart/form-data; boundary=")
 
 
 def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
@@ -313,13 +301,8 @@ def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
 
     session = _FaceUploadSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
 
-    try:
-        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-    finally:
-        api_module.FormData = original_form_data
+    asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
     assert api.verify_ssl is False
     assert session.post_kwargs
@@ -334,19 +317,14 @@ def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
     import asyncio
 
     session = _FaceUploadWebFallbackSessionStub()
-    api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
 
     async def _fake_web_login_cookie(**_kwargs):
         return "token=fake"
 
     api._web_login_cookie = _fake_web_login_cookie
 
-    try:
-        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-    finally:
-        api_module.FormData = original_form_data
+    asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
     web_idx = next(
         idx
@@ -361,9 +339,7 @@ def test_face_upload_retries_expired_web_session():
     import asyncio
 
     session = _FaceUploadExpiredWebFallbackSessionStub()
-    api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
+    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
     issued_tokens = []
 
     async def _fake_web_login_cookie(**_kwargs):
@@ -373,10 +349,7 @@ def test_face_upload_retries_expired_web_session():
 
     api._web_login_cookie = _fake_web_login_cookie
 
-    try:
-        result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-    finally:
-        api_module.FormData = original_form_data
+    result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
     assert result["path"] == "/mnt/Face/HA001.jpg"
     assert issued_tokens == ["token=fake1", "token=fake2"]
@@ -394,18 +367,13 @@ def test_face_upload_does_not_retry_verified_ssl_when_disabled():
 
     session = _FaceUploadAllFailSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
 
     try:
-        try:
-            asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("face_upload unexpectedly succeeded")
-    finally:
-        api_module.FormData = original_form_data
+        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("face_upload unexpectedly succeeded")
 
     assert api._detected == (True, 443, False)
     assert session.post_kwargs
@@ -421,13 +389,8 @@ def test_face_upload_infers_device_face_path_when_upload_response_has_no_path():
 
     session = _FaceUploadNoPathSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
-    original_form_data = api_module.FormData
-    api_module.FormData = _FormDataStub
 
-    try:
-        result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
-    finally:
-        api_module.FormData = original_form_data
+    result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
     assert result["path"] == "/mnt/Face/HA001.jpg"
     assert result["path_inferred"] is True
