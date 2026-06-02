@@ -112,8 +112,8 @@ def test_prepare_user_add_payload_links_uploaded_face_like_web_ui():
 
     assert "FaceUrl" not in payload
     assert payload["FaceFileName"] == "HA001.jpg"
-    assert "importFile" not in payload
-    assert "FaceRegister" not in payload
+    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert payload["FaceRegister"] == 1
 
 
 def test_record_matches_desired_fields_treats_face_register_status_as_registered():

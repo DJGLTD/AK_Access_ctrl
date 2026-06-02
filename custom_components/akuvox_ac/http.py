@@ -448,6 +448,7 @@ def _build_face_upload_payload(
         filename = face_filename_from_reference(reference_text, user_id)
         if filename:
             payload["FaceFileName"] = filename
+            payload["importFile"] = {"fileName": filename, "fileData": {}}
         normalized_reference = reference_text.replace("\\", "/").lower()
         if normalized_reference.startswith("/mnt/face/") or normalized_reference.startswith(
             "mnt/face/"
@@ -602,8 +603,8 @@ async def _push_face_to_devices(
         try:
             await manager._replace_user_on_device(
                 api,
-                payload,
                 user_id,
+                payload,
                 existing=existing_record,
             )
         except Exception as err:

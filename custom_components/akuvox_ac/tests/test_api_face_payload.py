@@ -81,6 +81,26 @@ class _FaceUploadNoPathSessionStub(_FaceUploadSessionStub):
         return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
 
 
+class _FaceUploadExpiredSessionStub(_FaceUploadSessionStub):
+    def __init__(self):
+        super().__init__()
+        self._http_posts = 0
+
+    def post(self, url, **kwargs):
+        self.post_urls.append(url)
+        self.post_kwargs.append(kwargs)
+        if not url.startswith("http://"):
+            return _RequestContextStub(_ResponseStub(503, body="tls unavailable"))
+        self._http_posts += 1
+        if self._http_posts == 1:
+            return _RequestContextStub(
+                _ResponseStub(200, {"retcode": -100, "message": "unknow session"})
+            )
+        return _RequestContextStub(
+            _ResponseStub(200, {"retcode": 0, "path": "/mnt/Face/HA001.jpg"})
+        )
+
+
 class _FaceUploadAllFailSessionStub(_FaceUploadSessionStub):
     def get(self, url, **kwargs):
         self.get_urls.append(url)
@@ -129,7 +149,7 @@ def test_build_face_upload_payload_links_imported_face_by_filename_only():
 
     assert payload["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in payload
-    assert "importFile" not in payload
+    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert payload["FaceRegister"] == 1
 
 
@@ -144,7 +164,7 @@ def test_normalize_user_add_keeps_face_filename_for_modern_firmware():
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in normalized[0]
-    assert "importFile" not in normalized[0]
+    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert normalized[0]["FaceRegister"] == 1
 
 
@@ -190,7 +210,10 @@ def test_normalize_user_add_links_uploaded_face_with_device_path():
 
     assert normalized[0]["FaceFileName"] == "CODEXFACE2.jpg"
     assert "FaceUrl" not in normalized[0]
-    assert "importFile" not in normalized[0]
+    assert normalized[0]["importFile"] == {
+        "fileName": "CODEXFACE2.jpg",
+        "fileData": {},
+    }
     assert normalized[0]["FaceRegister"] == 1
 
 
@@ -212,6 +235,7 @@ def test_normalize_user_add_drops_ha_face_url_when_uploaded_filename_is_present(
 
     assert normalized[0]["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in normalized[0]
+    assert normalized[0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert normalized[0]["FaceRegister"] == 1
 
 
@@ -293,6 +317,33 @@ def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
     assert session.post_kwargs
     assert session.post_kwargs[0]["headers"]["Cookie"] == "token=fake"
     assert session.post_kwargs[0]["auth"] is None
+
+
+def test_face_upload_retries_expired_web_session():
+    import asyncio
+
+    session = _FaceUploadExpiredSessionStub()
+    api = AkuvoxAPI("127.0.0.1", port=80, username="admin", password="secret", session=session)
+    original_form_data = api_module.FormData
+    api_module.FormData = _FormDataStub
+    issued_tokens = []
+
+    async def _fake_web_login_cookie(**_kwargs):
+        token = f"token=fake{len(issued_tokens) + 1}"
+        issued_tokens.append(token)
+        return token
+
+    api._web_login_cookie = _fake_web_login_cookie
+
+    try:
+        result = asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    finally:
+        api_module.FormData = original_form_data
+
+    assert result["path"] == "/mnt/Face/HA001.jpg"
+    assert issued_tokens == ["token=fake1", "token=fake2"]
+    assert session.post_kwargs[0]["headers"]["Cookie"] == "token=fake1"
+    assert session.post_kwargs[1]["headers"]["Cookie"] == "token=fake2"
 
 
 def test_face_upload_does_not_retry_verified_ssl_when_disabled():
