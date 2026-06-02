@@ -411,7 +411,7 @@ def test_upload_face_asset_skips_retry_cooldown(tmp_path):
                 "FaceRegister": 1,
             },
             {"face_status": "pending", "face_retry_after": retry_after},
-            force=True,
+            force=False,
         )
     )
 
@@ -420,6 +420,48 @@ def test_upload_face_asset_skips_retry_cooldown(tmp_path):
     assert api.delete_calls == []
     assert api.add_calls == []
     assert users_store.upserts == []
+
+
+def test_upload_face_asset_force_bypasses_retry_cooldown(tmp_path):
+    hass = _FaceHassStub(tmp_path)
+    users_store = _UsersStoreStub()
+    hass.data[integration.DOMAIN]["users_store"] = users_store
+    manager = integration.SyncManager(hass)
+    api = _FaceApiStub()
+    coord = SimpleNamespace(
+        health={"device_type": "intercom"},
+        events=[],
+        _append_event=lambda item: None,
+    )
+
+    face_dir = tmp_path / integration.DOMAIN / "FaceData"
+    face_dir.mkdir(parents=True)
+    (face_dir / "HA001.jpg").write_bytes(b"face-bytes")
+
+    import asyncio
+
+    retry_after = (integration.dt_util.now() + timedelta(minutes=10)).isoformat()
+    uploaded = asyncio.run(
+        manager._upload_face_asset_to_device(
+            api,
+            coord,
+            "HA001",
+            {
+                "UserID": "HA001",
+                "Name": "Lee Fletcher",
+                "FaceFileName": "HA001.jpg",
+                "FaceRegister": 1,
+            },
+            {"face_status": "pending", "face_retry_after": retry_after},
+            force=True,
+        )
+    )
+
+    assert uploaded is True
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
+    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert users_store.upserts[-1][1]["face_last_attempt_at"]
+    assert users_store.upserts[-1][1]["face_retry_after"]
 
 
 def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():

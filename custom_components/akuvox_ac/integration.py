@@ -5348,7 +5348,7 @@ class SyncManager:
                 pass
             return True
 
-        if _face_sync_on_cooldown(profile):
+        if _face_sync_on_cooldown(profile) and not force:
             retry_after = str((profile or {}).get("face_retry_after") or "").strip()
             try:
                 coord._append_event(  # type: ignore[attr-defined]
@@ -6258,6 +6258,7 @@ class SyncManager:
                 phone_text = str(prof.get("phone") or "").strip()
                 paused = _coerce_bool(prof.get("paused")) is True
                 face_retry_delayed = _face_sync_on_cooldown(prof)
+                face_retry_blocked = face_retry_delayed and not full
                 if phone_text and not paused:
                     name_text = str(prof.get("name") or desired_base.get("Name") or ha_key).strip()
                     if name_text:
@@ -6274,7 +6275,7 @@ class SyncManager:
                         and _device_record_has_active_face(local)
                     )
                     preserve_face_state = preserve_active_face or (
-                        is_intercom and face_retry_delayed and _payload_requests_face(desired_base)
+                        is_intercom and face_retry_blocked and _payload_requests_face(desired_base)
                     )
                     if preserve_face_state:
                         replace = False
@@ -6319,7 +6320,11 @@ class SyncManager:
 
             for candidate in add_batch:
                 ha_candidate = _key_of_user(candidate)
-                if ha_candidate and _face_sync_on_cooldown(registry.get(ha_candidate) or {}):
+                if (
+                    ha_candidate
+                    and _face_sync_on_cooldown(registry.get(ha_candidate) or {})
+                    and not full
+                ):
                     continue
                 face_reference = str(
                     (candidate or {}).get("FaceUrl")
@@ -6360,7 +6365,7 @@ class SyncManager:
                 ha_candidate = _key_of_user(candidate)
                 if not ha_candidate:
                     continue
-                if _face_sync_on_cooldown(registry.get(ha_candidate) or {}):
+                if _face_sync_on_cooldown(registry.get(ha_candidate) or {}) and not full:
                     continue
                 try:
                     face_upload_attempted.add(ha_candidate)
@@ -6418,7 +6423,7 @@ class SyncManager:
                     try:
                         face_upload_attempted.add(ha_key)
                         prof = registry.get(ha_key) or {}
-                        if not _face_sync_on_cooldown(prof):
+                        if full or not _face_sync_on_cooldown(prof):
                             await self._upload_face_asset_to_device(
                                 api,
                                 coord,
@@ -6472,7 +6477,7 @@ class SyncManager:
                         try:
                             face_upload_attempted.add(ha_key)
                             prof = registry.get(ha_key) or {}
-                            if not _face_sync_on_cooldown(prof):
+                            if full or not _face_sync_on_cooldown(prof):
                                 await self._upload_face_asset_to_device(
                                     api,
                                     coord,
@@ -6494,7 +6499,7 @@ class SyncManager:
                 face_status = str(prof.get("face_status") or "").strip().lower()
                 if face_status not in {"pending", "error"}:
                     continue
-                if _face_sync_on_cooldown(prof):
+                if _face_sync_on_cooldown(prof) and not full:
                     continue
                 ha_groups = list(prof.get("groups") or ["Default"])
                 if not any(g in device_groups for g in ha_groups):
@@ -6656,7 +6661,7 @@ class SyncManager:
                         )
                         if face_mismatch and device_type_raw.lower() == "intercom":
                             stored_profile = registry.get(ha_key) or {}
-                            if _face_sync_on_cooldown(stored_profile):
+                            if _face_sync_on_cooldown(stored_profile) and not full:
                                 continue
                             profile_face_status = str(
                                 stored_profile.get("face_status") or ""
