@@ -93,6 +93,7 @@ HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit overr
 
 _LOGGER = logging.getLogger(__name__)
 FACE_SYNC_ERROR_THRESHOLD = 5
+FACE_SYNC_RETRY_COOLDOWN_MINUTES = 15
 LEGACY_INTEGRATION_DEVICE_NAME = "Akuvox Access Control"
 LEGACY_INTEGRATION_DEVICE_MODEL = "Home Assistant Integration"
 OBSOLETE_ENTITY_UNIQUE_SUFFIXES: Dict[str, Set[str]] = {
@@ -931,6 +932,78 @@ def _parse_temp_datetime(value: Any) -> Optional[datetime]:
         parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
 
     return parsed
+
+
+def _parse_stored_datetime(value: Any) -> Optional[datetime]:
+    """Parse an integration-stored datetime into a timezone-aware value."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        parsed = dt_util.parse_datetime(text)
+        if parsed is None:
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    return parsed
+
+
+def _face_sync_retry_delay_seconds(
+    profile: Optional[Mapping[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> float:
+    """Return remaining seconds before a face sync retry may run."""
+
+    if not isinstance(profile, Mapping):
+        return 0.0
+
+    retry_after = _parse_stored_datetime(profile.get("face_retry_after"))
+    if retry_after is None:
+        return 0.0
+
+    current = now or dt_util.now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    try:
+        return max(0.0, (retry_after - current).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _face_sync_on_cooldown(
+    profile: Optional[Mapping[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Return true when a face sync attempt is waiting out its retry delay."""
+
+    return _face_sync_retry_delay_seconds(profile, now=now) > 0
+
+
+def _face_sync_cooldown_stamps(*, now: Optional[datetime] = None) -> Tuple[str, str]:
+    """Return attempt and retry-after timestamps for a face sync attempt."""
+
+    current = now or dt_util.now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    current = current.replace(microsecond=0)
+    retry_after = current + timedelta(minutes=FACE_SYNC_RETRY_COOLDOWN_MINUTES)
+    return current.isoformat(), retry_after.isoformat()
 
 
 _BOOLISH_TRUE = {
@@ -2720,6 +2793,8 @@ class AkuvoxUsersStore(Store):
         face_url: Optional[str] = None,
         face_status: Optional[str] = None,
         face_synced_at: Optional[str] = None,
+        face_last_attempt_at: Optional[str] = None,
+        face_retry_after: Optional[str] = None,
         phone: Optional[str] = None,
         status: Optional[str] = None,
         schedule_name: Optional[str] = None,
@@ -2763,6 +2838,16 @@ class AkuvoxUsersStore(Store):
                 u["face_synced_at"] = str(face_synced_at)
             else:
                 u.pop("face_synced_at", None)
+        if face_last_attempt_at is not None:
+            if face_last_attempt_at:
+                u["face_last_attempt_at"] = str(face_last_attempt_at)
+            else:
+                u.pop("face_last_attempt_at", None)
+        if face_retry_after is not None:
+            if face_retry_after:
+                u["face_retry_after"] = str(face_retry_after)
+            else:
+                u.pop("face_retry_after", None)
         if phone is not None:
             u["phone"] = str(phone)
         if status is not None:
@@ -4469,7 +4554,9 @@ class SyncQueue:
                     continue
                 status = str((profile or {}).get("status") or "").strip().lower()
                 face_status = str((profile or {}).get("face_status") or "").strip().lower()
-                if status == "pending" or face_status in {"pending", "error"}:
+                if status == "pending":
+                    return True
+                if face_status in {"pending", "error"} and not _face_sync_on_cooldown(profile):
                     return True
 
         return False
@@ -5189,6 +5276,33 @@ class SyncManager:
         except Exception:
             return
 
+    async def _mark_face_sync_attempt(self, ha_key: str) -> Tuple[str, str]:
+        """Record a face sync attempt and the next allowed retry time."""
+
+        attempt_at, retry_after = _face_sync_cooldown_stamps()
+        users_store = self._users_store()
+        if users_store:
+            try:
+                await users_store.upsert_profile(
+                    ha_key,
+                    face_last_attempt_at=attempt_at,
+                    face_retry_after=retry_after,
+                )
+            except Exception:
+                pass
+        return attempt_at, retry_after
+
+    async def _clear_face_sync_retry_after(self, ha_key: str) -> None:
+        """Clear the retry delay once the device has an active face template."""
+
+        users_store = self._users_store()
+        if not users_store:
+            return
+        try:
+            await users_store.upsert_profile(ha_key, face_retry_after="")
+        except Exception:
+            return
+
     async def _recreate_user_for_face_mismatch(
         self,
         api: AkuvoxAPI,
@@ -5224,6 +5338,7 @@ class SyncManager:
                         face_status="active",
                         face_synced_at=dt_util.now().replace(microsecond=0).isoformat(),
                         face_error_count=0,
+                        face_retry_after="",
                     )
             except Exception:
                 pass
@@ -5232,6 +5347,16 @@ class SyncManager:
             except Exception:
                 pass
             return True
+
+        if _face_sync_on_cooldown(profile):
+            retry_after = str((profile or {}).get("face_retry_after") or "").strip()
+            try:
+                coord._append_event(  # type: ignore[attr-defined]
+                    f"Face sync retry delayed for {ha_key} until {retry_after}"
+                )
+            except Exception:
+                pass
+            return False
 
         face_reference = str(
             (desired or {}).get("FaceUrl")
@@ -5254,7 +5379,11 @@ class SyncManager:
             if not face_path:
                 face_path = _face_asset_path(self.hass, ha_key)
 
+        attempt_at = ""
+        retry_after = ""
+
         if _face_reference_is_remote_url(face_reference) and not face_path:
+            attempt_at, retry_after = await self._mark_face_sync_attempt(ha_key)
             device_record = existing if isinstance(existing, dict) else None
             if not device_record or not str(device_record.get("ID") or "").strip():
                 try:
@@ -5291,11 +5420,17 @@ class SyncManager:
             try:
                 users_store = self._users_store()
                 if users_store:
+                    retry_fields: Dict[str, str] = {}
+                    if attempt_at:
+                        retry_fields["face_last_attempt_at"] = attempt_at
+                    if retry_after:
+                        retry_fields["face_retry_after"] = retry_after
                     await users_store.upsert_profile(
                         ha_key,
                         face_status="pending",
                         face_synced_at="",
                         face_error_count=0,
+                        **retry_fields,
                     )
             except Exception:
                 pass
@@ -5305,6 +5440,8 @@ class SyncManager:
         face_status = str((profile or {}).get("face_status") or "").strip().lower()
         if not force and face_status not in {"pending", "error"}:
             return False
+
+        attempt_at, retry_after = await self._mark_face_sync_attempt(ha_key)
 
         if face_path is None:
             face_path = _face_asset_path(self.hass, ha_key, face_reference)
@@ -5421,11 +5558,17 @@ class SyncManager:
         try:
             users_store = self._users_store()
             if users_store:
+                retry_fields: Dict[str, str] = {}
+                if attempt_at:
+                    retry_fields["face_last_attempt_at"] = attempt_at
+                if retry_after:
+                    retry_fields["face_retry_after"] = retry_after
                 await users_store.upsert_profile(
                     ha_key,
                     face_status="pending",
                     face_synced_at="",
                     face_error_count=0,
+                    **retry_fields,
                 )
         except Exception:
             pass
@@ -6114,6 +6257,7 @@ class SyncManager:
             if should_have_access:
                 phone_text = str(prof.get("phone") or "").strip()
                 paused = _coerce_bool(prof.get("paused")) is True
+                face_retry_delayed = _face_sync_on_cooldown(prof)
                 if phone_text and not paused:
                     name_text = str(prof.get("name") or desired_base.get("Name") or ha_key).strip()
                     if name_text:
@@ -6129,11 +6273,14 @@ class SyncManager:
                         and _payload_requests_face(desired_base)
                         and _device_record_has_active_face(local)
                     )
-                    if preserve_active_face:
+                    preserve_face_state = preserve_active_face or (
+                        is_intercom and face_retry_delayed and _payload_requests_face(desired_base)
+                    )
+                    if preserve_face_state:
                         replace = False
                         if needs_group_move:
                             _LOGGER.debug(
-                                "Skipping group move for %s to preserve active face template",
+                                "Skipping group move for %s while preserving face state",
                                 ha_key,
                             )
                     else:
@@ -6142,7 +6289,7 @@ class SyncManager:
                             or str(prof.get("status") or "").lower() == "pending"
                             or not _record_matches_desired_fields(local, desired_base)
                         )
-                    if replace or (needs_group_move and not preserve_active_face):
+                    if replace or (needs_group_move and not preserve_face_state):
                         update_batch.append((ha_key, desired_base, local))
             else:
                 if local and not add_missing_only:
@@ -6172,6 +6319,8 @@ class SyncManager:
 
             for candidate in add_batch:
                 ha_candidate = _key_of_user(candidate)
+                if ha_candidate and _face_sync_on_cooldown(registry.get(ha_candidate) or {}):
+                    continue
                 face_reference = str(
                     (candidate or {}).get("FaceUrl")
                     or (candidate or {}).get("FaceURL")
@@ -6210,6 +6359,8 @@ class SyncManager:
             for candidate in face_add_batch:
                 ha_candidate = _key_of_user(candidate)
                 if not ha_candidate:
+                    continue
+                if _face_sync_on_cooldown(registry.get(ha_candidate) or {}):
                     continue
                 try:
                     face_upload_attempted.add(ha_candidate)
@@ -6266,14 +6417,16 @@ class SyncManager:
                         pass
                     try:
                         face_upload_attempted.add(ha_key)
-                        await self._upload_face_asset_to_device(
-                            api,
-                            coord,
-                            ha_key,
-                            desired,
-                            registry.get(ha_key) or {},
-                            force=True,
-                        )
+                        prof = registry.get(ha_key) or {}
+                        if not _face_sync_on_cooldown(prof):
+                            await self._upload_face_asset_to_device(
+                                api,
+                                coord,
+                                ha_key,
+                                desired,
+                                prof,
+                                force=True,
+                            )
                     except Exception as err:
                         _LOGGER.debug("Post-update face upload failed for %s: %s", ha_key, err)
                 except Exception:
@@ -6318,14 +6471,16 @@ class SyncManager:
                             pass
                         try:
                             face_upload_attempted.add(ha_key)
-                            await self._upload_face_asset_to_device(
-                                api,
-                                coord,
-                                ha_key,
-                                desired,
-                                registry.get(ha_key) or {},
-                                force=True,
-                            )
+                            prof = registry.get(ha_key) or {}
+                            if not _face_sync_on_cooldown(prof):
+                                await self._upload_face_asset_to_device(
+                                    api,
+                                    coord,
+                                    ha_key,
+                                    desired,
+                                    prof,
+                                    force=True,
+                                )
                         except Exception as err:
                             _LOGGER.debug("Post-retry face upload failed for %s: %s", ha_key, err)
                     except Exception:
@@ -6338,6 +6493,8 @@ class SyncManager:
                 prof = registry.get(ha_key) or {}
                 face_status = str(prof.get("face_status") or "").strip().lower()
                 if face_status not in {"pending", "error"}:
+                    continue
+                if _face_sync_on_cooldown(prof):
                     continue
                 ha_groups = list(prof.get("groups") or ["Default"])
                 if not any(g in device_groups for g in ha_groups):
@@ -6498,8 +6655,11 @@ class SyncManager:
                             and any(diff in ("face status", "face url") for diff in diffs)
                         )
                         if face_mismatch and device_type_raw.lower() == "intercom":
+                            stored_profile = registry.get(ha_key) or {}
+                            if _face_sync_on_cooldown(stored_profile):
+                                continue
                             profile_face_status = str(
-                                (registry.get(ha_key) or {}).get("face_status") or ""
+                                stored_profile.get("face_status") or ""
                             ).strip().lower()
                             force_recreate_on_error = profile_face_status == "error"
                             expected_face = _face_flag_from_record(desired)
@@ -6514,7 +6674,7 @@ class SyncManager:
                                             coord,
                                             ha_key,
                                             desired,
-                                            registry.get(ha_key) or {},
+                                            stored_profile,
                                             existing=local,
                                             force=True,
                                         )
@@ -6550,7 +6710,7 @@ class SyncManager:
                                                 coord,
                                                 ha_key,
                                                 desired,
-                                                registry.get(ha_key) or {},
+                                                stored_profile,
                                                 existing=local,
                                                 force=True,
                                             )

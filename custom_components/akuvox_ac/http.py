@@ -2425,6 +2425,7 @@ async def _refresh_face_statuses(
         stored = profile_lookup.get(user_id) or {}
         stored_status = str(stored.get("face_status") or "").strip().lower()
         stored_synced_at = stored.get("face_synced_at")
+        stored_retry_after = stored.get("face_retry_after")
 
         desired_status = _evaluate_face_status(hass, entry, devices, stored_status)
 
@@ -2450,11 +2451,13 @@ async def _refresh_face_statuses(
         stored_status_norm = stored_status if stored_status else ""
         stored_errors = stored.get("face_error_count")
         clear_errors = bool(stored_errors) and desired_status == "active"
+        clear_retry_after = bool(stored_retry_after) and desired_status == "active"
 
         if (
             status_for_store != stored_status_norm
             or desired_synced_at != stored_synced_at
             or clear_errors
+            or clear_retry_after
         ):
             try:
                 await users_store.upsert_profile(
@@ -2462,6 +2465,7 @@ async def _refresh_face_statuses(
                     face_status=status_for_store,
                     face_synced_at=desired_synced_at or "",
                     face_error_count=0 if clear_errors else None,
+                    face_retry_after="" if clear_retry_after else None,
                 )
                 updated = dict(stored)
                 if status_for_store:
@@ -2474,6 +2478,8 @@ async def _refresh_face_statuses(
                     updated.pop("face_synced_at", None)
                 if clear_errors:
                     updated.pop("face_error_count", None)
+                if clear_retry_after:
+                    updated.pop("face_retry_after", None)
                 profile_lookup[user_id] = updated
             except Exception:
                 pass
@@ -5213,6 +5219,8 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
             "faceurl",
             "face_url_filename",
             "face_status",
+            "face_last_attempt_at",
+            "face_retry_after",
             "has_pin",
             "has_phone",
         }:
@@ -5409,6 +5417,8 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
                     "url_present": bool(face_url),
                     "url_filename": cls._face_filename_from_url(face_url),
                     "synced_at": raw_profile.get("face_synced_at") or "",
+                    "last_attempt_at": raw_profile.get("face_last_attempt_at") or "",
+                    "retry_after": raw_profile.get("face_retry_after") or "",
                     "error_count": error_count,
                     "device_active": bool(device_state.get("device_active")),
                     "register_mismatch": bool(device_state.get("register_mismatch")),

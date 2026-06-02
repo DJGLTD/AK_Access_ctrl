@@ -1,5 +1,6 @@
 """Tests for contact synchronization helpers."""
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 # Importing this module first sets up Home Assistant stubs.
@@ -295,6 +296,8 @@ def test_upload_face_asset_prefers_local_file_over_remote_face_url(tmp_path):
     assert users_store.upserts[-1][1]["face_status"] == "pending"
     assert users_store.upserts[-1][1]["face_synced_at"] == ""
     assert users_store.upserts[-1][1]["face_error_count"] == 0
+    assert users_store.upserts[-1][1]["face_last_attempt_at"]
+    assert users_store.upserts[-1][1]["face_retry_after"]
 
 
 def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
@@ -374,6 +377,49 @@ def test_upload_face_asset_preserves_already_active_device_face(tmp_path):
     assert api.add_calls == []
     assert users_store.upserts[-1][0] == "HA001"
     assert users_store.upserts[-1][1]["face_status"] == "active"
+    assert users_store.upserts[-1][1]["face_retry_after"] == ""
+
+
+def test_upload_face_asset_skips_retry_cooldown(tmp_path):
+    hass = _FaceHassStub(tmp_path)
+    users_store = _UsersStoreStub()
+    hass.data[integration.DOMAIN]["users_store"] = users_store
+    manager = integration.SyncManager(hass)
+    api = _FaceApiStub()
+    coord = SimpleNamespace(
+        health={"device_type": "intercom"},
+        events=[],
+        _append_event=lambda item: None,
+    )
+
+    face_dir = tmp_path / integration.DOMAIN / "FaceData"
+    face_dir.mkdir(parents=True)
+    (face_dir / "HA001.jpg").write_bytes(b"face-bytes")
+
+    import asyncio
+
+    retry_after = (integration.dt_util.now() + timedelta(minutes=10)).isoformat()
+    uploaded = asyncio.run(
+        manager._upload_face_asset_to_device(
+            api,
+            coord,
+            "HA001",
+            {
+                "UserID": "HA001",
+                "Name": "Lee Fletcher",
+                "FaceFileName": "HA001.jpg",
+                "FaceRegister": 1,
+            },
+            {"face_status": "pending", "face_retry_after": retry_after},
+            force=True,
+        )
+    )
+
+    assert uploaded is False
+    assert api.upload_calls == []
+    assert api.delete_calls == []
+    assert api.add_calls == []
+    assert users_store.upserts == []
 
 
 def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
@@ -450,6 +496,84 @@ def test_sync_queue_kicks_stale_face_error_without_existing_eta():
     scheduled = []
     users_store = SimpleNamespace(
         all=lambda: {"HA001": {"status": "active", "face_status": "error"}}
+    )
+    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    queue = object.__new__(integration.SyncQueue)
+    queue.hass = hass
+    queue._handle = None
+    queue._lock = None
+    queue._pending_all = False
+    queue._pending_devices = set()
+    queue._pending_full = False
+    queue._pending_full_devices = set()
+    queue._pending_reason_all = None
+    queue._pending_reason_devices = {}
+    queue.next_sync_eta = None
+    queue._last_mark = None
+    queue._last_delay_from_default = False
+    queue._active = False
+    queue._tick_unsub = None
+    queue._startup_unsub = None
+    queue._schedule_task = lambda coro: (scheduled.append(coro), coro.close())
+
+    queue.ensure_future_run()
+
+    assert queue._pending_all is True
+    assert queue._pending_reason_all == "auto-detected pending state"
+    assert queue.next_sync_eta is not None
+    assert scheduled
+
+
+def test_sync_queue_waits_for_face_retry_cooldown():
+    scheduled = []
+    retry_after = (integration.dt_util.now() + timedelta(minutes=10)).isoformat()
+    users_store = SimpleNamespace(
+        all=lambda: {
+            "HA001": {
+                "status": "active",
+                "face_status": "error",
+                "face_retry_after": retry_after,
+            }
+        }
+    )
+    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    queue = object.__new__(integration.SyncQueue)
+    queue.hass = hass
+    queue._handle = None
+    queue._lock = None
+    queue._pending_all = False
+    queue._pending_devices = set()
+    queue._pending_full = False
+    queue._pending_full_devices = set()
+    queue._pending_reason_all = None
+    queue._pending_reason_devices = {}
+    queue.next_sync_eta = None
+    queue._last_mark = None
+    queue._last_delay_from_default = False
+    queue._active = False
+    queue._tick_unsub = None
+    queue._startup_unsub = None
+    queue._schedule_task = lambda coro: (scheduled.append(coro), coro.close())
+
+    queue.ensure_future_run()
+
+    assert queue._pending_all is False
+    assert queue._pending_reason_all is None
+    assert queue.next_sync_eta is None
+    assert scheduled == []
+
+
+def test_sync_queue_retries_after_face_retry_cooldown_expires():
+    scheduled = []
+    retry_after = (integration.dt_util.now() - timedelta(minutes=1)).isoformat()
+    users_store = SimpleNamespace(
+        all=lambda: {
+            "HA001": {
+                "status": "active",
+                "face_status": "pending",
+                "face_retry_after": retry_after,
+            }
+        }
     )
     hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
     queue = object.__new__(integration.SyncQueue)
