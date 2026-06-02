@@ -248,7 +248,7 @@ def test_replace_user_on_device_deletes_existing_before_add():
     }]]
 
 
-def test_upload_face_asset_links_remote_face_url_without_upload(tmp_path):
+def test_upload_face_asset_prefers_local_file_over_remote_face_url(tmp_path):
     hass = _FaceHassStub(tmp_path)
     users_store = _UsersStoreStub()
     hass.data[integration.DOMAIN]["users_store"] = users_store
@@ -285,10 +285,12 @@ def test_upload_face_asset_links_remote_face_url_without_upload(tmp_path):
     )
 
     assert uploaded is True
-    assert api.upload_calls == []
-    assert api.delete_calls == []
-    assert api.add_calls == []
-    assert api.set_calls[0][0]["FaceUrl"] == "http://ha.local/api/AK_AC/FaceData/HA001.jpg"
+    assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
+    assert api.delete_calls == ["42", "HA001", "Lee Fletcher"]
+    assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
+    assert api.add_calls[0][0]["FaceRegister"] == 1
+    assert api.set_calls == []
     assert users_store.upserts[-1][0] == "HA001"
     assert users_store.upserts[-1][1]["face_status"] == "pending"
     assert users_store.upserts[-1][1]["face_synced_at"] == ""
@@ -331,7 +333,47 @@ def test_upload_face_asset_uses_local_file_without_face_url(tmp_path):
     assert uploaded is True
     assert api.upload_calls == [{"bytes": b"face-bytes", "filename": "HA001.jpg"}]
     assert api.add_calls[0][0]["FaceFileName"] == "HA001.jpg"
+    assert api.add_calls[0][0]["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert api.add_calls[0][0]["FaceRegister"] == 1
+
+
+def test_upload_face_asset_preserves_already_active_device_face(tmp_path):
+    hass = _FaceHassStub(tmp_path)
+    users_store = _UsersStoreStub()
+    hass.data[integration.DOMAIN]["users_store"] = users_store
+    manager = integration.SyncManager(hass)
+    api = _FaceApiStub()
+    coord = SimpleNamespace(
+        health={"device_type": "intercom"},
+        events=[],
+        _append_event=lambda item: None,
+    )
+
+    import asyncio
+
+    uploaded = asyncio.run(
+        manager._upload_face_asset_to_device(
+            api,
+            coord,
+            "HA001",
+            {
+                "UserID": "HA001",
+                "Name": "Lee Fletcher",
+                "FaceFileName": "HA001.jpg",
+                "FaceRegister": 1,
+            },
+            {"face_status": "pending"},
+            existing={"ID": "42", "UserID": "HA001", "Name": "Lee Fletcher", "FaceStatus": "1"},
+            force=True,
+        )
+    )
+
+    assert uploaded is True
+    assert api.upload_calls == []
+    assert api.delete_calls == []
+    assert api.add_calls == []
+    assert users_store.upserts[-1][0] == "HA001"
+    assert users_store.upserts[-1][1]["face_status"] == "active"
 
 
 def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
@@ -353,7 +395,55 @@ def test_prepare_user_add_payload_prefers_face_filename_over_ha_face_url():
 
     assert payload["FaceFileName"] == "HA001.jpg"
     assert "FaceUrl" not in payload
+    assert payload["importFile"] == {"fileName": "HA001.jpg", "fileData": {}}
     assert payload["FaceRegister"] == 1
+
+
+def test_replace_user_on_device_preserves_active_face_record():
+    manager = _make_manager()
+    api = _ReplaceApiStub()
+
+    import asyncio
+
+    asyncio.run(
+        manager._replace_user_on_device(
+            api,
+            "user1",
+            {
+                "UserID": "user1",
+                "Name": "User One Updated",
+                "FaceFileName": "user1.jpg",
+                "FaceRegister": 1,
+            },
+            existing={"ID": "42", "UserID": "user1", "Name": "User One", "FaceStatus": "1"},
+        )
+    )
+
+    assert api.delete_calls == []
+    assert api.add_calls == []
+
+
+def test_set_user_on_device_preserves_active_face_record():
+    manager = _make_manager()
+    api = _FaceApiStub()
+
+    import asyncio
+
+    asyncio.run(
+        manager._set_user_on_device(
+            api,
+            {
+                "UserID": "HA001",
+                "Name": "User One Updated",
+                "FaceFileName": "HA001.jpg",
+                "FaceRegister": 1,
+            },
+            "HA001",
+            existing={"ID": "42", "UserID": "HA001", "Name": "User One", "FaceStatus": "1"},
+        )
+    )
+
+    assert api.set_calls == []
 
 
 def test_sync_queue_kicks_stale_face_error_without_existing_eta():

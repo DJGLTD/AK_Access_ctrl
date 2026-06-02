@@ -914,7 +914,12 @@ class AkuvoxAPI:
         return ""
 
     @classmethod
-    def _apply_face_import_fields(cls, item: Dict[str, Any]) -> None:
+    def _apply_face_import_fields(
+        cls,
+        item: Dict[str, Any],
+        *,
+        include_import_file: bool = True,
+    ) -> None:
         """Mirror the Akuvox web UI face-link field when a file was imported."""
 
         filename = cls._face_import_filename_from_item(item)
@@ -922,7 +927,10 @@ class AkuvoxAPI:
             return
 
         item["FaceFileName"] = filename
-        item.pop("importFile", None)
+        if include_import_file:
+            item["importFile"] = {"fileName": filename, "fileData": {}}
+        else:
+            item.pop("importFile", None)
         item.pop("ImportFile", None)
         item.pop("FaceUrl", None)
         item.pop("FaceURL", None)
@@ -1197,7 +1205,7 @@ class AkuvoxAPI:
                 except Exception:
                     face_source = d.get("FaceUrl")
 
-            self._apply_face_import_fields(d)
+            self._apply_face_import_fields(d, include_import_file=not for_set)
             if self._should_force_face_register(face_source):
                 if for_set:
                     current = d.get("FaceRegisterStatus")
@@ -1963,6 +1971,25 @@ class AkuvoxAPI:
                 entry["duration_ms"] = round((time.perf_counter() - start) * 1000, 2)
                 self._remember_request(entry)
 
+        async def _attempt_with_session_retry(
+            use_https: bool,
+            port: int,
+            verify: bool,
+            rel: str,
+            field_name: str,
+        ) -> Dict[str, Any]:
+            data = await _attempt(use_https, port, verify, rel, field_name)
+            if not (rel.startswith("/api/web/") or rel.startswith("/web/")):
+                return data
+
+            retcode, message = self._parse_result_status(data)
+            message_text = str(message or "").strip().lower()
+            if retcode == -100 and "session" in message_text:
+                self._web_token_cookie = None
+                _LOGGER.debug("Akuvox web face upload session expired; retrying login")
+                return await _attempt(use_https, port, verify, rel, field_name)
+            return data
+
         bases: List[Tuple[bool, int, bool]] = []
 
         def _normalize_port(port: Optional[int], use_https: bool) -> int:
@@ -2009,7 +2036,9 @@ class AkuvoxAPI:
             for rel in rel_paths:
                 for field_name in form_field_names:
                     try:
-                        data = await _attempt(use_https, port, verify, rel, field_name)
+                        data = await _attempt_with_session_retry(
+                            use_https, port, verify, rel, field_name
+                        )
                         result = self._coerce_face_upload_result(data)
                         self._validate_face_upload_result(result)
                         return _finalize_face_upload_result(result)
@@ -2029,7 +2058,7 @@ class AkuvoxAPI:
         fallback_use_https = True
         fallback_port = _normalize_port(configured_port, fallback_use_https)
         fallback_verify = bool(self.verify_ssl) if fallback_use_https else True
-        data = await _attempt(
+        data = await _attempt_with_session_retry(
             fallback_use_https,
             fallback_port,
             fallback_verify,

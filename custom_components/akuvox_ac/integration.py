@@ -1295,13 +1295,17 @@ def _apply_face_import_fields(
     *,
     ha_key: str,
     sources: Tuple[Optional[Dict[str, Any]], ...],
+    include_import_file: bool = True,
 ) -> bool:
     filename = _face_import_filename_from_sources(ha_key, payload, *sources)
     if not filename:
         return False
 
     payload["FaceFileName"] = filename
-    payload.pop("importFile", None)
+    if include_import_file:
+        payload["importFile"] = {"fileName": filename, "fileData": {}}
+    else:
+        payload.pop("importFile", None)
     payload.pop("ImportFile", None)
     payload.pop("FaceUrl", None)
     payload.pop("FaceURL", None)
@@ -1338,6 +1342,7 @@ def _ensure_face_payload_fields(
         payload,
         ha_key=ha_key,
         sources=sources,
+        include_import_file=True,
     )
 
     if face_url and not import_linked:
@@ -2071,6 +2076,22 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
             return False
 
     return True
+
+
+def _payload_requests_face(record: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if _face_flag_from_record(record) is True:
+        return True
+    for key in (*_FACE_URL_KEYS, *_FACE_FILENAME_KEYS, "importFile", "ImportFile"):
+        value = record.get(key)
+        if value not in (None, "") and str(value).strip():
+            return True
+    return False
+
+
+def _device_record_has_active_face(record: Optional[Dict[str, Any]]) -> bool:
+    return _face_flag_from_record(record or {}) is True
 
 
 def _schedule_times_out_of_order(spec: Mapping[str, Any]) -> bool:
@@ -5194,6 +5215,24 @@ class SyncManager:
         if device_type == "keypad":
             return False
 
+        if _payload_requests_face(desired) and _device_record_has_active_face(existing):
+            try:
+                users_store = self._users_store()
+                if users_store:
+                    await users_store.upsert_profile(
+                        ha_key,
+                        face_status="active",
+                        face_synced_at=dt_util.now().replace(microsecond=0).isoformat(),
+                        face_error_count=0,
+                    )
+            except Exception:
+                pass
+            try:
+                coord._append_event(f"Face already active for {ha_key}; preserving device template")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            return True
+
         face_reference = str(
             (desired or {}).get("FaceUrl")
             or (desired or {}).get("FaceURL")
@@ -5207,8 +5246,15 @@ class SyncManager:
                 face_reference = face_path.name
             else:
                 return False
+        else:
+            # Home Assistant exposes a public FaceUrl, but this firmware only
+            # reliably activates recognition after the image is imported into
+            # the device face store and linked by filename.
+            face_path = _face_asset_path(self.hass, ha_key, face_reference)
+            if not face_path:
+                face_path = _face_asset_path(self.hass, ha_key)
 
-        if _face_reference_is_remote_url(face_reference):
+        if _face_reference_is_remote_url(face_reference) and not face_path:
             device_record = existing if isinstance(existing, dict) else None
             if not device_record or not str(device_record.get("ID") or "").strip():
                 try:
@@ -5347,10 +5393,10 @@ class SyncManager:
 
         payload = dict(desired or {})
         payload["FaceFileName"] = filename
+        payload["importFile"] = {"fileName": filename, "fileData": {}}
         payload.pop("FaceUrl", None)
         payload.pop("FaceURL", None)
-        payload.pop("FaceRegister", None)
-        payload.pop("importFile", None)
+        payload["FaceRegister"] = 1
         add_payload = _prepare_user_add_payload(
             ha_key,
             payload,
@@ -5395,6 +5441,13 @@ class SyncManager:
         existing: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Delete the current device user record(s) and recreate from desired payload."""
+        if _payload_requests_face(desired) and _device_record_has_active_face(existing):
+            _LOGGER.debug(
+                "Skipping user recreate for %s because the device already has an active face template",
+                ha_key,
+            )
+            return
+
         records = []
         if isinstance(existing, dict):
             records = [existing]
@@ -5743,6 +5796,13 @@ class SyncManager:
     ):
         """Update the device record for ha_key in-place via user.set."""
 
+        if _payload_requests_face(desired) and _device_record_has_active_face(existing):
+            _LOGGER.debug(
+                "Skipping user.set for %s because the device already has an active face template",
+                ha_key,
+            )
+            return
+
         if "ID" not in desired and (not existing or not existing.get("ID")):
             device_id = _device_user_id(storage, ha_key)
             if device_id:
@@ -6064,12 +6124,25 @@ class SyncManager:
                 elif not local:
                     add_batch.append(desired_base)
                 else:
-                    replace = (
-                        full
-                        or str(prof.get("status") or "").lower() == "pending"
-                        or not _record_matches_desired_fields(local, desired_base)
+                    preserve_active_face = (
+                        is_intercom
+                        and _payload_requests_face(desired_base)
+                        and _device_record_has_active_face(local)
                     )
-                    if replace or needs_group_move:
+                    if preserve_active_face:
+                        replace = False
+                        if needs_group_move:
+                            _LOGGER.debug(
+                                "Skipping group move for %s to preserve active face template",
+                                ha_key,
+                            )
+                    else:
+                        replace = (
+                            full
+                            or str(prof.get("status") or "").lower() == "pending"
+                            or not _record_matches_desired_fields(local, desired_base)
+                        )
+                    if replace or (needs_group_move and not preserve_active_face):
                         update_batch.append((ha_key, desired_base, local))
             else:
                 if local and not add_missing_only:
@@ -6094,29 +6167,53 @@ class SyncManager:
 
         # 2) Add new users
         if add_batch:
-            prepared_add_batch = []
+            face_add_batch: List[Dict[str, Any]] = []
+            plain_add_batch: List[Dict[str, Any]] = []
+
             for candidate in add_batch:
                 ha_candidate = _key_of_user(candidate)
-                prepared_add_batch.append(
-                    _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                face_reference = str(
+                    (candidate or {}).get("FaceUrl")
+                    or (candidate or {}).get("FaceURL")
+                    or (candidate or {}).get("FaceFileName")
+                    or ""
+                ).strip()
+                local_face_path = (
+                    _face_asset_path(self.hass, ha_candidate, face_reference)
+                    if ha_candidate and _payload_requests_face(candidate)
+                    else None
                 )
-            try:
-                await api.user_add_missing(prepared_add_batch)
-            except Exception:
-                pass
-            try:
-                local_users = await api.user_list()
-                coord.users = local_users
-                await _store_device_user_ids(getattr(coord, "storage", None), local_users)
-            except Exception:
-                pass
-            for candidate in add_batch:
+                if is_intercom and local_face_path:
+                    face_add_batch.append(candidate)
+                else:
+                    plain_add_batch.append(candidate)
+
+            if plain_add_batch:
+                prepared_add_batch = []
+                for candidate in plain_add_batch:
+                    ha_candidate = _key_of_user(candidate)
+                    prepared_add_batch.append(
+                        _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                    )
+                try:
+                    await api.user_add_missing(prepared_add_batch)
+                except Exception:
+                    pass
+                try:
+                    local_users = await api.user_list()
+                    coord.users = local_users
+                    await _store_device_user_ids(getattr(coord, "storage", None), local_users)
+                except Exception:
+                    pass
+
+            fallback_add_batch: List[Dict[str, Any]] = []
+            for candidate in face_add_batch:
                 ha_candidate = _key_of_user(candidate)
                 if not ha_candidate:
                     continue
                 try:
                     face_upload_attempted.add(ha_candidate)
-                    await self._upload_face_asset_to_device(
+                    uploaded = await self._upload_face_asset_to_device(
                         api,
                         coord,
                         ha_candidate,
@@ -6125,8 +6222,31 @@ class SyncManager:
                         existing=_find_local_by_key(ha_candidate),
                         force=True,
                     )
+                    if not uploaded:
+                        fallback_add_batch.append(candidate)
                 except Exception as err:
                     _LOGGER.debug("Post-add face upload failed for %s: %s", ha_candidate, err)
+                    fallback_add_batch.append(candidate)
+
+            if fallback_add_batch:
+                prepared_fallback_batch = []
+                for candidate in fallback_add_batch:
+                    ha_candidate = _key_of_user(candidate)
+                    prepared_fallback_batch.append(
+                        _prepare_user_add_payload(ha_candidate, candidate, sources=(candidate,))
+                    )
+                try:
+                    await api.user_add_missing(prepared_fallback_batch)
+                except Exception:
+                    pass
+
+            if face_add_batch or fallback_add_batch:
+                try:
+                    local_users = await api.user_list()
+                    coord.users = local_users
+                    await _store_device_user_ids(getattr(coord, "storage", None), local_users)
+                except Exception:
+                    pass
 
         # 3) Update changed users (delete + recreate to preserve face profile integrity)
         if not add_missing_only:
