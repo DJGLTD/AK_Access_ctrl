@@ -5539,13 +5539,12 @@ class SyncManager:
                 device_record = matches[0]
 
         delete_records: List[Dict[str, Any]] = []
+        try:
+            delete_records.extend(await _lookup_device_user_ids_by_ha_key(api, ha_key))
+        except Exception:
+            pass
         if isinstance(device_record, dict):
             delete_records.append(device_record)
-        else:
-            try:
-                delete_records = await _lookup_device_user_ids_by_ha_key(api, ha_key)
-            except Exception:
-                delete_records = []
 
         seen_delete: Set[Tuple[str, str, str]] = set()
         for rec in delete_records:
