@@ -54,6 +54,7 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_DEVICE_GROUPS,
     CONF_RELAY_ROLES,
+    CONF_AUTO_REBOOT,
     ENTRY_VERSION,
     ADMIN_DASHBOARD_ICON,
     ADMIN_DASHBOARD_TITLE,
@@ -69,6 +70,7 @@ from .relay import (
 )
 
 from .api import AkuvoxAPI
+from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
 from .access_history import AccessHistory
 from .http import (
@@ -4777,7 +4779,12 @@ class SyncManager:
         self._face_enroll_poll_interval_seconds = 3.0
         self._face_enroll_poll_timeout_seconds = 45.0
         self._apply_integrity_interval(self._integrity_minutes)
-        self._reboot_unsub = None
+        self._scheduled_reboot_last_run: Dict[str, str] = {}
+        self._reboot_unsub = async_track_time_change(
+            hass,
+            self._scheduled_reboot_cb,
+            second=0,
+        )
         self._interval_unsub = async_track_time_interval(
             hass,
             self._interval_sync_cb,
@@ -5962,6 +5969,38 @@ class SyncManager:
         settings: AkuvoxSettingsStore = self._settings_store()
         self.hass.async_create_task(settings.set_auto_reboot(time_hhmm, days))
 
+    async def _scheduled_reboot_cb(self, now: datetime):
+        active_entry_ids: Set[str] = set()
+        for entry_id, coord, api, opts in self._devices():
+            active_entry_ids.add(entry_id)
+            schedule = normalize_reboot_schedule(opts.get(CONF_AUTO_REBOOT))
+            if not reboot_schedule_is_due(schedule, now):
+                continue
+
+            slot = f"{now.date().isoformat()}T{schedule['time']}"
+            if self._scheduled_reboot_last_run.get(entry_id) == slot:
+                continue
+            self._scheduled_reboot_last_run[entry_id] = slot
+
+            try:
+                await api.system_reboot()
+            except Exception as err:
+                _LOGGER.warning("Scheduled reboot failed for %s: %s", entry_id, err)
+                try:
+                    coord._append_event(f"Scheduled reboot failed: {err}")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                continue
+
+            _mark_coordinator_rebooting(coord, triggered_by="automatic schedule")
+            try:
+                await coord.async_request_refresh()
+            except Exception:
+                pass
+
+        for entry_id in set(self._scheduled_reboot_last_run) - active_entry_ids:
+            self._scheduled_reboot_last_run.pop(entry_id, None)
+
     async def add_missing_users(self, entry_id: Optional[str] = None):
         targets: List[Tuple[str, AkuvoxCoordinator]] = []
         for entry, coord, *_ in self._devices():
@@ -7107,6 +7146,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     initial_groups = list(cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
     exit_device = bool(cfg.get("exit_device", False))
+    auto_reboot = normalize_reboot_schedule(cfg.get(CONF_AUTO_REBOOT))
 
     root[entry.entry_id] = {
         "api": api,
@@ -7117,6 +7157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "sync_groups": initial_groups,
             "exit_device": exit_device,
             "relay_roles": relay_roles,
+            CONF_AUTO_REBOOT: auto_reboot,
         },
     }
 
@@ -7924,12 +7965,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "relay_b": new_cfg.get("relay_b_role"),
             }
         new_relay_roles = normalize_relay_roles(raw_roles, new_cfg.get(CONF_DEVICE_TYPE, "Intercom"))
+        new_auto_reboot = normalize_reboot_schedule(new_cfg.get(CONF_AUTO_REBOOT))
         hass.data[DOMAIN][entry.entry_id]["options"].update(
             {
                 "participate_in_sync": bool(new_cfg.get(CONF_PARTICIPATE, True)),
                 "sync_groups": new_groups,
                 "exit_device": bool(new_cfg.get("exit_device", False)),
                 "relay_roles": new_relay_roles,
+                CONF_AUTO_REBOOT: new_auto_reboot,
             }
         )
 

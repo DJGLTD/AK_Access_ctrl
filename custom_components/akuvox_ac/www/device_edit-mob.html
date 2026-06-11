@@ -82,6 +82,42 @@
     </div>
   </div>
 
+  <!-- Automatic reboot -->
+  <div class="card mb-3" id="autoRebootCard">
+    <div class="card-header">Automatic Reboot</div>
+    <div class="card-body">
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="autoRebootToggle">
+        <label class="form-check-label" for="autoRebootToggle">Enable scheduled reboots for this device</label>
+      </div>
+      <div class="row g-3 align-items-end">
+        <div class="col-sm-5 col-lg-4">
+          <label class="form-label" for="autoRebootTime">Reboot time</label>
+          <input class="form-control" type="time" id="autoRebootTime" value="03:00" step="60">
+        </div>
+        <div class="col-12">
+          <div class="form-label mb-2">Reboot days</div>
+          <div class="d-flex flex-wrap gap-3" id="autoRebootDays">
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="mon" id="rebootMon"><label class="form-check-label" for="rebootMon">Mon</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="tue" id="rebootTue"><label class="form-check-label" for="rebootTue">Tue</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="wed" id="rebootWed"><label class="form-check-label" for="rebootWed">Wed</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="thu" id="rebootThu"><label class="form-check-label" for="rebootThu">Thu</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="fri" id="rebootFri"><label class="form-check-label" for="rebootFri">Fri</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="sat" id="rebootSat"><label class="form-check-label" for="rebootSat">Sat</label></div>
+            <div class="form-check"><input class="form-check-input auto-reboot-day" type="checkbox" value="sun" id="rebootSun"><label class="form-check-label" for="rebootSun">Sun</label></div>
+          </div>
+        </div>
+      </div>
+      <div class="form-text mt-3">The schedule uses Home Assistant's local time zone.</div>
+      <div class="d-flex align-items-center gap-3 mt-3">
+        <button class="btn btn-primary" id="btnSaveAutoReboot">
+          <i class="bi bi-calendar-check"></i> Save reboot schedule
+        </button>
+        <div class="form-text mt-0" id="autoRebootStatus"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Groups editor -->
   <div class="card" id="groupsCard">
     <div class="card-header d-flex align-items-center justify-content-between">
@@ -671,6 +707,7 @@ let CURRENT_DEVICE = null;
 let relayStatusTimer = null;
 let relaySaving = false;
 let exitSaving = false;
+let autoRebootSaving = false;
 
 function relayValueNormalized(value, fallback = 'door'){
   const raw = (value ?? '').toString().trim().toLowerCase();
@@ -852,6 +889,102 @@ async function handleExitToggleChange(){
   }
 }
 
+const AUTO_REBOOT_DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+function normalizeAutoReboot(schedule){
+  const raw = schedule && typeof schedule === 'object' ? schedule : {};
+  const days = Array.isArray(raw.days)
+    ? AUTO_REBOOT_DAY_ORDER.filter(day => raw.days.includes(day))
+    : [];
+  return {
+    enabled: !!raw.enabled,
+    time: /^\d{2}:\d{2}$/.test(String(raw.time || '')) ? String(raw.time) : '03:00',
+    days
+  };
+}
+
+function selectedAutoRebootDays(){
+  return Array.from(document.querySelectorAll('.auto-reboot-day:checked'))
+    .map(input => input.value)
+    .filter(day => AUTO_REBOOT_DAY_ORDER.includes(day));
+}
+
+function setAutoRebootStatus(text, tone = 'muted'){
+  const status = document.getElementById('autoRebootStatus');
+  if (!status) return;
+  status.textContent = text || '';
+  status.className = 'form-text mt-0';
+  if (tone === 'error') status.classList.add('text-danger');
+  else if (tone === 'success') status.classList.add('text-success');
+  else status.classList.add('text-muted');
+}
+
+function updateAutoRebootControls(){
+  const enabled = !!document.getElementById('autoRebootToggle')?.checked;
+  const timeInput = document.getElementById('autoRebootTime');
+  if (timeInput) timeInput.disabled = !enabled || autoRebootSaving;
+  document.querySelectorAll('.auto-reboot-day').forEach(input => {
+    input.disabled = !enabled || autoRebootSaving;
+  });
+}
+
+function applyAutoRebootUI(schedule){
+  const normalized = normalizeAutoReboot(schedule);
+  const toggle = document.getElementById('autoRebootToggle');
+  const timeInput = document.getElementById('autoRebootTime');
+  if (toggle) toggle.checked = normalized.enabled;
+  if (timeInput) timeInput.value = normalized.time;
+  document.querySelectorAll('.auto-reboot-day').forEach(input => {
+    input.checked = normalized.days.includes(input.value);
+  });
+  updateAutoRebootControls();
+}
+
+async function saveAutoReboot(){
+  if (autoRebootSaving || !CURRENT_DEVICE) return;
+  const toggle = document.getElementById('autoRebootToggle');
+  const timeInput = document.getElementById('autoRebootTime');
+  const saveButton = document.getElementById('btnSaveAutoReboot');
+  const payload = {
+    enabled: !!toggle?.checked,
+    time: timeInput?.value || '03:00',
+    days: selectedAutoRebootDays()
+  };
+  if (payload.enabled && !payload.days.length){
+    setAutoRebootStatus('Select at least one reboot day.', 'error');
+    return;
+  }
+
+  autoRebootSaving = true;
+  if (toggle) toggle.disabled = true;
+  if (saveButton) saveButton.disabled = true;
+  updateAutoRebootControls();
+  setAutoRebootStatus('Saving…');
+  try {
+    const res = await apiPost(actionUrl, {
+      action: 'set_device_auto_reboot',
+      entry_id: ENTRY_ID,
+      payload
+    });
+    CURRENT_DEVICE.auto_reboot = normalizeAutoReboot(res?.auto_reboot || payload);
+    applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
+    setAutoRebootStatus(
+      CURRENT_DEVICE.auto_reboot.enabled ? 'Schedule saved ✓' : 'Automatic reboot is off',
+      'success'
+    );
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
+    setAutoRebootStatus('Save failed', 'error');
+    alert('Failed to update automatic reboot schedule: ' + (err && err.message ? err.message : err));
+  } finally {
+    autoRebootSaving = false;
+    if (toggle) toggle.disabled = false;
+    if (saveButton) saveButton.disabled = false;
+    updateAutoRebootControls();
+  }
+}
+
 /* API-ish helpers built atop /state and /action */
 async function getState(){ return apiGet(stateUrl); }
 async function getDevice(){
@@ -864,6 +997,7 @@ async function getDevice(){
     relay_b: relayValueNormalized(roles.relay_b, 'none')
   };
   dev.exit_device = !!dev.exit_device;
+  dev.auto_reboot = normalizeAutoReboot(dev.auto_reboot);
   if (typeof dev.alarm_capable === 'boolean') dev.alarm_capable = !!dev.alarm_capable;
   else dev.alarm_capable = computeAlarmCapable(dev);
   // Current groups: prefer sync_groups → groups → Default
@@ -902,12 +1036,19 @@ async function init(){
         relay_b: dev.relay_roles?.relay_b || 'none'
       },
       exit_device: !!dev.exit_device,
+      auto_reboot: normalizeAutoReboot(dev.auto_reboot),
       alarm_capable: computeAlarmCapable(dev)
     };
     applyRelayUI(CURRENT_DEVICE);
+    applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
     document.getElementById('relayASelect')?.addEventListener('change', saveRelayRoles);
     document.getElementById('relayBSelect')?.addEventListener('change', saveRelayRoles);
     document.getElementById('exitDeviceToggle')?.addEventListener('change', handleExitToggleChange);
+    document.getElementById('autoRebootToggle')?.addEventListener('change', () => {
+      updateAutoRebootControls();
+      setAutoRebootStatus('');
+    });
+    document.getElementById('btnSaveAutoReboot')?.addEventListener('click', saveAutoReboot);
 
     const onlyDefault = Array.isArray(allGroups) && allGroups.length <= 1;
 

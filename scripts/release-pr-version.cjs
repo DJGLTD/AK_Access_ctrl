@@ -81,6 +81,38 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function nextVersion(previousTag, pr) {
+  const parts = String(previousTag || "")
+    .replace(/^v/, "")
+    .split(".")
+    .map(Number);
+  if (
+    parts.length < 3
+    || parts.slice(0, 3).some((part) => !Number.isInteger(part) || part < 0)
+  ) {
+    throw new Error(`Invalid previous version tag: ${previousTag}`);
+  }
+
+  const title = String(pr?.title || "").trim();
+  const body = String(pr?.body || "");
+  const breaking = /^[a-z]+(?:\([^)]*\))?!:/i.test(title)
+    || /(^|\n)BREAKING CHANGE:/i.test(body);
+  const feature = /^feat(?:\([^)]*\))?:/i.test(title);
+
+  let [major, minor, patch] = parts;
+  if (breaking) {
+    major += 1;
+    minor = 0;
+    patch = 0;
+  } else if (feature) {
+    minor += 1;
+    patch = 0;
+  } else {
+    patch += 1;
+  }
+  return `${major}.${minor}.${patch}`;
+}
+
 async function githubJson(url) {
   const headers = {
     Accept: "application/vnd.github+json",
@@ -294,6 +326,15 @@ async function main() {
     console.log(pr?.number || "");
     return;
   }
+  if (process.argv[2] === "--next-version") {
+    console.log(
+      nextVersion(process.argv[3], {
+        title: process.argv[4] || "",
+        body: process.argv[5] || "",
+      }),
+    );
+    return;
+  }
 
   const associatedPr = await associatedPullRequest();
   if (!associatedPr?.number) {
@@ -302,9 +343,11 @@ async function main() {
   }
 
   const pr = await pullRequestDetails(associatedPr.number);
-  const version = versionFromPrNumber(associatedPr.number);
-  const tag = `v${version}`;
   const previousTag = latestVersionTag();
+  const version = previousTag
+    ? nextVersion(previousTag, pr)
+    : versionFromPrNumber(associatedPr.number);
+  const tag = `v${version}`;
 
   if (tagExists(tag)) {
     console.log(`${tag} already exists; skipping release.`);
