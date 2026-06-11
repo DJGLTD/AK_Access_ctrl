@@ -32,6 +32,7 @@ CONF_PARTICIPATE   = "participate_in_sync"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_DEVICE_GROUPS = "device_groups"
 CONF_RELAY_ROLES  = "relay_roles"
+CONF_AUTO_REBOOT = "auto_reboot"
 
 # Relay roles
 RELAY_ROLE_NONE       = "none"

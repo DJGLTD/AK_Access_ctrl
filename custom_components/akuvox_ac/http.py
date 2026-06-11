@@ -37,6 +37,7 @@ from .const import (
     DOMAIN,
     CONF_DEVICE_GROUPS,
     CONF_RELAY_ROLES,
+    CONF_AUTO_REBOOT,
     INTEGRATION_VERSION,
     INTEGRATION_VERSION_LABEL,
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
@@ -56,6 +57,7 @@ from .const import (
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
 from .access_history import AccessHistory, categorize_event
+from .reboot_schedule import normalize_reboot_schedule
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -3019,6 +3021,7 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
             "participate_in_sync": bool(opts.get("participate_in_sync", True)),
             "sync_groups": list(opts.get("sync_groups") or ["Default"]),
             "relay_roles": relay_roles,
+            CONF_AUTO_REBOOT: normalize_reboot_schedule(opts.get(CONF_AUTO_REBOOT)),
         }
         dev["alarm_capable"] = relay_alarm_capable(relay_roles)
         devices.append(dev)
@@ -3893,6 +3896,35 @@ class AkuvoxUIAction(AkuvoxUIView):
                     except Exception:
                         pass
                 return web.json_response({"ok": True, "exit_device": enabled})
+            except Exception as e:
+                return err(e)
+
+        if action == "set_device_auto_reboot":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                schedule = normalize_reboot_schedule(payload, strict=True)
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                entry_obj = hass.config_entries.async_get_entry(entry_id)
+                if not entry_obj:
+                    return err("device entry not found", code=404)
+                opts = bucket.get("options")
+                if not isinstance(opts, dict):
+                    opts = {}
+                    bucket["options"] = opts
+                opts[CONF_AUTO_REBOOT] = schedule
+
+                new_options = dict(entry_obj.options)
+                new_options[CONF_AUTO_REBOOT] = schedule
+                hass.config_entries.async_update_entry(entry_obj, options=new_options)
+
+                manager = root.get("sync_manager")
+                if manager and hasattr(manager, "_scheduled_reboot_last_run"):
+                    manager._scheduled_reboot_last_run.pop(entry_id, None)
+
+                return web.json_response({"ok": True, "auto_reboot": schedule})
             except Exception as e:
                 return err(e)
 
