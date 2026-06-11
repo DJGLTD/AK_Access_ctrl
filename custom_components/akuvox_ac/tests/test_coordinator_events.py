@@ -230,7 +230,15 @@ def test_derive_targets_from_raw_ignores_specific_users_when_disabled():
     assert _derive_targets_from_raw(targets, "user_granted", user_id="HA012") == []
 
 
-def test_dispatch_notification_appends_system_event_on_success():
+@pytest.mark.parametrize(
+    ("event_type", "expected_message"),
+    [
+        ("Private PIN", "Neil smalley opened the gate via code."),
+        ("Face", "Neil smalley opened the gate via Face."),
+        ("DTMF", "Neil smalley opened the gate via Call."),
+    ],
+)
+def test_dispatch_notification_includes_access_method(event_type, expected_message):
     storage = _StorageStub()
     coord = _build_coordinator(_APIStub([]), storage)
     coord.events = []
@@ -238,6 +246,7 @@ def test_dispatch_notification_appends_system_event_on_success():
 
     event = {
         "Event": "Door unlocked",
+        "Type": event_type,
         "UserName": "Neil smalley",
         "Date": "2026-01-08",
         "Time": "08:30:00",
@@ -245,10 +254,11 @@ def test_dispatch_notification_appends_system_event_on_success():
 
     asyncio.run(coord._dispatch_notification(event, ["mobile_app_elles_iphone"]))
 
+    assert coord.hass.services.calls[0]["data"]["message"] == expected_message
     assert len(coord.events) == 1
     assert (
         coord.events[0]["Event"]
-        == "System notification sent to elles iphone — Neil smalley accessed the gate"
+        == f"System notification sent to elles iphone — {expected_message.rstrip('.')}"
     )
     diag = storage.data["notification_diagnostics"]
     assert diag[0]["status"] == "sent"
@@ -276,6 +286,34 @@ def test_dispatch_notification_appends_system_event_on_failure():
     diag = storage.data["notification_diagnostics"]
     assert diag[0]["status"] == "failed"
     assert diag[0]["error"] == "push unavailable"
+
+
+@pytest.mark.parametrize(
+    ("event", "expected_message"),
+    [
+        ({"UserName": "Alice", "Type": "Private PIN"}, "Alice opened the gate via code."),
+        ({"UserName": "Alice", "Type": "Face"}, "Alice opened the gate via Face."),
+        ({"UserName": "Alice", "Type": "DTMF"}, "Alice opened the gate via Call."),
+        ({"UserName": "Alice", "Type": "Unknown"}, "Alice opened the gate."),
+    ],
+)
+def test_send_alert_notification_includes_access_method(event, expected_message):
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.hass.services = _ServiceStub()
+    coord.hass.data = {DOMAIN: {"settings_store": _SettingsStub(["mobile_app_admin_phone"])}}
+
+    asyncio.run(
+        coord._send_alert_notification(
+            "user_granted",
+            user_id="HA007",
+            summary="access granted",
+            extra={"event": event},
+        )
+    )
+
+    assert coord.hass.services.calls[0]["data"]["message"] == expected_message
+    assert storage.data["notification_diagnostics"][0]["message"] == expected_message
 
 
 def test_send_alert_notification_records_system_notification():

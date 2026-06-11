@@ -1727,6 +1727,70 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 return text
         return ""
 
+    @staticmethod
+    def _access_method_label(event: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Return the user-facing access method reported by a door event."""
+
+        if not isinstance(event, dict):
+            return None
+
+        for key in (
+            "AccessMethod",
+            "OpenMethod",
+            "OpenDoorType",
+            "AccessMode",
+            "Method",
+            "CredentialType",
+            "Type",
+            "EventType",
+            "Event",
+            "Description",
+            "Mode",
+            "Way",
+        ):
+            value = event.get(key)
+            if value in (None, ""):
+                continue
+            text = re.sub(r"[_-]+", " ", _safe_str(value)).strip().casefold()
+            if not text:
+                continue
+            compact = re.sub(r"[^a-z0-9]+", "", text)
+
+            if re.search(r"\bface\b|\bfacial\b", text):
+                return "Face"
+            if (
+                "dtmf" in compact
+                or "calltoopen" in compact
+                or "openbycall" in compact
+                or "callunlock" in compact
+                or re.search(r"\bphone call\b|\bsip call\b", text)
+            ):
+                return "Call"
+            if (
+                compact in {"pin", "privatepin", "publicpin", "passcode", "keypad", "code"}
+                or re.search(
+                    r"\bprivate pin\b|\bpublic pin\b|\bpin code\b|\bpasscode\b"
+                    r"|\bkeypad\b|\baccess code\b|\bdoor code\b|\bpassword\b",
+                    text,
+                )
+            ):
+                return "code"
+
+        return None
+
+    def _access_granted_notification_message(
+        self,
+        event: Optional[Dict[str, Any]],
+        user_name: Optional[str] = None,
+    ) -> str:
+        who = user_name
+        if not who and isinstance(event, dict):
+            who = self._extract_event_user_name(event) or self._extract_event_user_id(event)
+        who = who or "Unknown user"
+        method = self._access_method_label(event)
+        suffix = f" via {method}" if method else ""
+        return f"{who} opened the gate{suffix}."
+
     def _notification_target_items(
         self,
         targets: List[Any],
@@ -1915,21 +1979,29 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             await self._async_save_notification_diagnostics()
             return
 
-        message = _safe_str(event.get("Event") or event.get("EventType") or "Akuvox access granted")
+        user_label = self._extract_event_user_name(event) or self._extract_event_user_id(event)
+        message = self._access_granted_notification_message(event, user_label)
+        access_method = self._access_method_label(event)
+        notification_data: Dict[str, Any] = {
+            "event": event,
+            "device_name": self.device_name,
+        }
+        if access_method:
+            notification_data["access_method"] = access_method
         data = {
             "message": message,
             "title": self.device_name,
-            "data": {"event": event, "device_name": self.device_name},
+            "data": notification_data,
         }
 
         notification_diag_dirty = False
         for target in notify_targets:
             target_label = self._format_notification_target(target)
-            user_label = self._extract_event_user_name(event) or self._extract_event_user_id(event) or "Unknown user"
+            user_label = user_label or "Unknown user"
             try:
                 await service.async_call("notify", target, data, blocking=False)
                 self._append_event(
-                    f"System notification sent to {target_label} — {user_label} accessed the gate"
+                    f"System notification sent to {target_label} — {message.rstrip('.')}"
                 )
                 notification_diag_dirty = self._record_notification_diagnostic(
                     source="access_event",
@@ -2016,7 +2088,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             who = self._extract_event_user_name(event) if event else None
             if not who:
                 who = user_id or "Unknown user"
-            message = f"{who} opened the gate."
+            message = self._access_granted_notification_message(event, who)
+            access_method = self._access_method_label(event)
+            if access_method:
+                data["access_method"] = access_method
         else:
             message = summary or f"{event_type} on {self.device_name}"
 
