@@ -25,6 +25,8 @@
     .badge-online{background:#0dcaf0;color:#111;--status-color:#0dcaf0}
     .badge-rebooting{background:#6f42c1;--status-color:#6f42c1}
     .badge-inactive{background:#6c757d;color:#fff;--status-color:#6c757d}
+    .badge-cloud{background:#0d6efd;color:#fff;--status-color:#0d6efd}
+    .badge-local{background:#6c757d;color:#fff;--status-color:#6c757d}
     .badge.bg-secondary{--status-color:#6c757d}
     .status-indicator{--status-color:currentColor;display:inline-flex;align-items:center;gap:.35rem}
     .status-indicator .status-dot{display:none;width:.75rem;height:.75rem;border-radius:50%;background:var(--status-color);box-shadow:0 0 0 2px rgba(15,26,44,.45)}
@@ -796,6 +798,13 @@ function badge(text, kind, attrs = ''){
   return `<span class="badge status-indicator ${k}" title="${label}" aria-label="${label}"${attr}><span class="status-dot" aria-hidden="true"></span><span class="status-text">${label}</span></span>`;
 }
 
+function userSourceBadge(user){
+  const cloud = !!user?.isCloud;
+  const label = cloud ? 'Cloud' : 'Local';
+  const kind = cloud ? 'badge-cloud' : 'badge-local';
+  return `<span class="badge user-source-badge ${kind}">${label}</span>`;
+}
+
 function renderKPIs(k){
   const nextEl = document.getElementById('kpiNext');
   const eventsLastEl = document.getElementById('kpiEventsLast');
@@ -952,6 +961,7 @@ function userMatchesSearch(user, term){
     user?.access_schedule,
     user?.schedule_name,
     user?.access_level,
+    user?.isCloud ? 'cloud' : 'local',
     ...(Array.isArray(user?.groups) ? user.groups : [])
   ]
     .map(normalizeSearchText)
@@ -1859,6 +1869,7 @@ function renderUsers(devs, registryUsers, kpis){
     if (u.isCloud) {
       return `<tr>
         <td>${u.name}</td>
+        <td>${userSourceBadge(u)}</td>
         <td colspan="6" class="text-danger text-center fw-semibold">This user is synced from the cloud and can not be altered</td>
       </tr>`;
     }
@@ -1940,6 +1951,7 @@ function renderUsers(devs, registryUsers, kpis){
 
     return `<tr>
       <td>${u.name}</td>
+      <td>${userSourceBadge(u)}</td>
       <td>${chips || '—'}</td>
       <td>${accessBadge}</td>
       <td>${faceBadge}</td>
@@ -1954,7 +1966,7 @@ function renderUsers(devs, registryUsers, kpis){
     kpiUsers.textContent = String(listSorted.length);
   }
 
-  $('#tblUsers').innerHTML = rows || '<tr><td colspan="7" class="text-muted">No users</td></tr>';
+  $('#tblUsers').innerHTML = rows || '<tr><td colspan="8" class="text-muted">No users</td></tr>';
 
   $('#tblUsers').querySelectorAll('button[data-act="delete"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2687,9 +2699,9 @@ setInterval(refresh, 5000);
           <div id="usersTableWrap">
             <table class="table table-sm table-dark mb-0 table-center">
               <thead>
-                <tr><th>Name</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Errors</th><th>Last Access</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Source</th><th>Groups</th><th>Access</th><th>Face Recognition</th><th>Errors</th><th>Last Access</th><th>Actions</th></tr>
               </thead>
-              <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
+              <tbody id="tblUsers"><tr><td colspan="8" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
