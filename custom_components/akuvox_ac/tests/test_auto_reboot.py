@@ -133,3 +133,4 @@ def test_device_edit_templates_include_auto_reboot_controls():
         assert 'id="autoRebootToggle"' in html
         assert 'id="autoRebootTime"' in html
         assert "set_device_auto_reboot" in html
+        assert ".form-label, .form-check-label{ color:#fff!important; }" in html
