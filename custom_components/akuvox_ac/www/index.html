@@ -857,8 +857,32 @@ function badge(text, kind, attrs = ''){
   return `<span class="badge status-indicator ${k}" title="${label}" aria-label="${label}"${attr}><span class="status-dot" aria-hidden="true"></span><span class="status-text">${label}</span></span>`;
 }
 
+function userSourceValue(record){
+  const candidates = [
+    record?.SourceType,
+    record?.sourceType,
+    record?.source_type,
+    record?.Source,
+    record?.source
+  ];
+  for (const value of candidates) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function isCloudManagedUser(record){
+  if (!record || typeof record !== 'object') return false;
+  const source = userSourceValue(record).toLowerCase().replace(/[\s_-]+/g, '');
+  if (source === 'cloud' || source.includes('cloud') || source === 'smartplus') return true;
+  return [record.cloud, record.Cloud, record.isCloud, record.is_cloud].some(value =>
+    value === true || value === 1 || ['true', '1', 'yes'].includes(String(value ?? '').trim().toLowerCase())
+  );
+}
+
 function userSourceBadge(user){
-  const cloud = !!user?.isCloud;
+  const cloud = isCloudManagedUser(user);
   const label = cloud ? 'Cloud' : 'Local';
   const kind = cloud ? 'badge-cloud' : 'badge-local';
   return `<span class="badge user-source-badge ${kind}">${label}</span>`;
@@ -1020,7 +1044,7 @@ function userMatchesSearch(user, term){
     user?.access_schedule,
     user?.schedule_name,
     user?.access_level,
-    user?.isCloud ? 'cloud' : 'local',
+    isCloudManagedUser(user) ? 'cloud' : 'local',
     ...(Array.isArray(user?.groups) ? user.groups : [])
   ]
     .map(normalizeSearchText)
@@ -1040,7 +1064,7 @@ function setUserSort(value){
 
 function deviceUserKey(record){
   if (!record || typeof record !== 'object') return '';
-  const source = canonicalString(record.Source || record.source).toLowerCase();
+  const cloud = isCloudManagedUser(record);
   const userIdRaw = canonicalString(record.UserID || record.UserId || record.user_id);
   const normalizedUserId = normalizeHaUserId(userIdRaw);
   if (normalizedUserId) return normalizedUserId;
@@ -1051,7 +1075,7 @@ function deviceUserKey(record){
   const card = canonicalString(record.CardCode || record.card_code);
   const name = canonicalString(record.Name || record.name);
 
-  if (source === 'cloud') {
+  if (cloud) {
     if (contactId) return `cloud:${contactId}`;
     if (phone) return `cloud:phone:${phone}`;
     if (card) return `cloud:card:${card}`;
@@ -1780,7 +1804,7 @@ function renderUsers(devs, registryUsers, kpis){
     (d._users || d.users || []).forEach(u => {
       const key = deviceUserKey(u);
       if (!key) return;
-      const isCloud = String(u.Source || '').toLowerCase() === 'cloud' || !!u.cloud;
+      const isCloud = isCloudManagedUser(u);
       const accessEnabled = u.AccessEnabled !== false;
       const userGroups = normalizeGroupsList(u.Groups || u.groups || deviceGroups);
       const hasGroupAccess = userGroups.some(g => String(g).trim().toLowerCase() !== 'no access');
