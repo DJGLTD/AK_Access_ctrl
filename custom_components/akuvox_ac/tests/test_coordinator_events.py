@@ -258,6 +258,18 @@ def test_derive_targets_from_raw_ignores_specific_users_when_disabled():
     assert _derive_targets_from_raw(targets, "user_granted", user_id="HA012") == []
 
 
+def test_derive_targets_from_raw_notifies_any_denied_without_known_user():
+    targets = {
+        "mobile_app_security_phone": {
+            "any_denied": True,
+        }
+    }
+
+    assert _derive_targets_from_raw(targets, "any_denied", user_id=None) == [
+        "mobile_app_security_phone"
+    ]
+
+
 @pytest.mark.parametrize(
     ("event_type", "expected_message"),
     [
@@ -366,6 +378,29 @@ def test_send_alert_notification_records_system_notification():
     assert diag[0]["channel"] == "alert_notification"
     assert diag[0]["event_type"] == "user_granted"
     assert diag[0]["message"] == "Alice opened the gate."
+
+
+@pytest.mark.parametrize(
+    ("user_id", "expected_message"),
+    [
+        (None, "Access denied for Unknown user on Akuvox."),
+        ("07920671814", "Access denied for 07920671814 on Akuvox."),
+    ],
+)
+def test_send_alert_notification_reports_unknown_denied_user(
+    user_id,
+    expected_message,
+):
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.hass.services = _ServiceStub()
+    coord.hass.data = {
+        DOMAIN: {"settings_store": _SettingsStub(["mobile_app_security_phone"])}
+    }
+
+    asyncio.run(coord._send_alert_notification("any_denied", user_id=user_id))
+
+    assert coord.hass.services.calls[0]["data"]["message"] == expected_message
 
 
 def test_access_permitted_button_records_would_notify_targets_when_skipped():

@@ -1454,6 +1454,24 @@ async def _process_inbound_call_webhook(
 
     hass.bus.async_fire(EVENT_INBOUND_CALL, event_payload)
 
+    if result == INBOUND_CALL_RESULT_DENIED:
+        device_data = root.get(best.get("entry_id")) or {}
+        coordinator = device_data.get("coordinator") if isinstance(device_data, dict) else None
+        notifier = getattr(coordinator, "_send_alert_notification", None)
+        if callable(notifier):
+            try:
+                await notifier(
+                    "any_denied",
+                    user_id=display_number or None,
+                    summary=status_label,
+                    extra={"event": history_event},
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed to dispatch denied inbound-call notification: %s",
+                    err,
+                )
+
     _LOGGER.debug(
         "Inbound call webhook result=%s device=%s number=%s user=%s key_holder=%s",
         result,
