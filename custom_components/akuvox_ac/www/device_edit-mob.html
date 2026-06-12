@@ -33,7 +33,6 @@
 <div class="wrap">
   <div class="d-flex align-items-center justify-content-between mb-3">
     <h2 class="mb-0" id="pageTitle">Edit Device</h2>
-    <a class="btn btn-outline-light btn-sm" id="btnBack"><i class="bi bi-arrow-left"></i> Back</a>
   </div>
 
   <!-- Device summary -->
@@ -1018,7 +1017,6 @@ async function createGroup(name){
 async function init(){
   if (!ENTRY_ID) { showError('Missing device id in URL (?entry_id=ENTRY_ID)'); return; }
 
-  document.getElementById('btnBack').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
   document.getElementById('btnCancel').addEventListener('click', (e)=>{ e.preventDefault(); goBack(); });
 
   try{

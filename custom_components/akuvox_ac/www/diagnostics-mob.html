@@ -607,7 +607,6 @@ function openInApp(view, params = {}, options = {}) {
 
 <div class="diag-container container py-3">
   <div class="d-flex align-items-center gap-2 flex-wrap">
-    <button class="btn btn-outline-light" id="btnBack"><i class="bi bi-arrow-left"></i> Back</button>
     <h2 class="m-0 flex-grow-1 text-white">Device Diagnostics</h2>
     <button class="btn btn-outline-info" id="btnDownloadSupportBundle" type="button"><i class="bi bi-file-earmark-text"></i> View logs</button>
     <button class="btn btn-outline-info" id="btnRefresh"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
@@ -2312,10 +2311,6 @@ async function viewSupportLogs(){
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('btnBack')?.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    openInApp('settings', {}, { replaceState: false });
-  });
   document.getElementById('btnRefresh')?.addEventListener('click', (ev) => {
     ev.preventDefault();
     loadDiagnostics();

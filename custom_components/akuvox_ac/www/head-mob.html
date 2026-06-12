@@ -249,6 +249,7 @@
       color: var(--muted);
       text-align: right;
     }
+    .mobile-menu-btn,
     .mobile-back-btn {
       display: none;
       align-items: center;
@@ -262,9 +263,12 @@
       cursor: pointer;
       transition: all .2s ease;
     }
+    .mobile-menu-btn .bi,
     .mobile-back-btn .bi {
       font-size: 1.1rem;
     }
+    .mobile-menu-btn:focus,
+    .mobile-menu-btn:hover,
     .mobile-back-btn:focus,
     .mobile-back-btn:hover {
       background: rgba(13,202,240,.12);
@@ -306,6 +310,7 @@
       body.mobile-stage-content .mobile-launcher { display: none; }
       body.mobile-stage-content .frame-wrap,
       body.mobile-stage-content footer.app-footer { display: block; }
+      body.mobile-stage-content .mobile-menu-btn,
       body.mobile-stage-content .mobile-back-btn { display: inline-flex; }
     }
   </style>
@@ -317,6 +322,10 @@
       <div class="brand">
         <h1 class="visually-hidden">Akuvox Access Control</h1>
         <span class="logo-mark" aria-hidden="true"><i class="bi bi-shield-lock-fill"></i></span>
+        <button class="mobile-menu-btn" type="button" id="mobileMenuBtn">
+          <i class="bi bi-grid-fill"></i>
+          <span>Menu</span>
+        </button>
       </div>
       <button class="mobile-back-btn" type="button" id="mobileBackBtn">
         <i class="bi bi-chevron-left"></i>
@@ -1483,6 +1492,15 @@ document.querySelectorAll('#navQuickActions [data-action], .mobile-launcher [dat
 const mobileBackBtn = document.getElementById('mobileBackBtn');
 if (mobileBackBtn) {
   mobileBackBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (!isMobileMode) return;
+    setMobileStage('nav');
+  });
+}
+
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+if (mobileMenuBtn) {
+  mobileMenuBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     if (!isMobileMode) return;
     setMobileStage('nav');
