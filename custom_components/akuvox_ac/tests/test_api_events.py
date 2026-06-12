@@ -53,7 +53,11 @@ class _RequestContextStub:
 
 
 class _SessionStub:
+    def __init__(self) -> None:
+        self.requests = []
+
     def _build(self, url: str):
+        self.requests.append(url)
         if url.startswith("https://"):
             return _RequestContextStub(_ResponseStub(503, "tls unavailable"))
         return _RequestContextStub(_ResponseStub(200, "ok"))
@@ -133,9 +137,24 @@ def test_extract_doorlog_items_returns_empty_for_unknown_payload():
 def test_ping_info_detects_http_device_when_https_fails():
     import asyncio
 
-    api = AkuvoxAPI(_SessionStub(), host="127.0.0.1", port=80, username="", password="")
+    session = _SessionStub()
+    api = AkuvoxAPI(
+        "127.0.0.1",
+        port=80,
+        username="",
+        password="",
+        session=session,
+    )
 
     info = asyncio.run(api.ping_info())
 
     assert info["ok"] is True
     assert api._detected == (False, 80, True)
+    assert len(info["attempts"]) < 36
+
+    session.requests.clear()
+    info = asyncio.run(api.ping_info())
+
+    assert info["ok"] is True
+    assert len(info["attempts"]) == 1
+    assert session.requests == ["http://127.0.0.1:80/api/system/status"]

@@ -1535,37 +1535,31 @@ class AkuvoxAPI:
             ("GET", "/api/", None),
             ("HEAD", "/", None),
         ]
+        successful_attempt: Optional[Dict[str, Any]] = None
         for use_https, port, verify in schemes_ports:
             for m, p, pl in paths:
-                attempts.append(await _try(use_https, port, p, m, pl, verify))
+                attempt = await _try(use_https, port, p, m, pl, verify)
+                attempts.append(attempt)
+                if attempt.get("ok"):
+                    successful_attempt = attempt
+                    break
+            if successful_attempt:
+                break
 
-        ok = any(a.get("ok") for a in attempts)
+        ok = successful_attempt is not None
 
-        if ok:
-            https_attempt = next(
-                (a for a in attempts if a.get("ok") and str(a.get("scheme", "https")).lower() == "https"),
-                None,
+        if successful_attempt:
+            chosen_port = int(
+                successful_attempt.get("port")
+                or (443 if successful_attempt.get("scheme") == "https" else 80)
             )
-            any_attempt = next((a for a in attempts if a.get("ok")), None)
-
-            should_update = False
-            chosen = None
-            if not self._detected:
-                chosen = https_attempt or any_attempt
-                should_update = chosen is not None
-            elif not self._detected[0] and https_attempt:
-                chosen = https_attempt
-                should_update = True
-
-            if should_update and chosen:
-                base = chosen.get("base", "")
-                try:
-                    port = int(base.rsplit(":", 1)[1].split("/", 1)[0])
-                except Exception:
-                    port = 443 if str(chosen.get("scheme", "https")).lower() == "https" else 80
-                verify = bool(chosen.get("verify_ssl", True))
-                use_https = str(chosen.get("scheme", "https")).lower() == "https"
-                self._detected = (use_https, port, verify if use_https else True)
+            chosen_verify = bool(successful_attempt.get("verify_ssl", True))
+            chosen_https = str(successful_attempt.get("scheme") or "").lower() == "https"
+            self._detected = (
+                chosen_https,
+                chosen_port,
+                chosen_verify if chosen_https else True,
+            )
 
         return {"ok": ok, "attempts": attempts}
 

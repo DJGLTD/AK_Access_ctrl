@@ -64,10 +64,16 @@ class _UsersStoreStub:
 
 
 class _HealthAPIStub:
+    def __init__(self) -> None:
+        self.ping_calls = 0
+        self.user_list_calls = 0
+
     async def ping_info(self) -> Dict[str, Any]:
+        self.ping_calls += 1
         return {"ok": True}
 
     async def user_list(self) -> List[Dict[str, Any]]:
+        self.user_list_calls += 1
         return []
 
 
@@ -134,6 +140,27 @@ def test_offline_to_online_refresh_does_not_reconcile_unchanged_users():
 
     assert coord.health["online"] is True
     assert queue.calls == []
+
+
+def test_health_refresh_caches_full_user_list_between_door_event_polls():
+    queue = _SyncQueueStub()
+    coord = _build_health_coordinator(queue)
+    coord._was_online = True
+    event_polls = 0
+
+    async def _count_event_poll(*_args, **_kwargs):
+        nonlocal event_polls
+        event_polls += 1
+        return []
+
+    coord._process_door_events = _count_event_poll  # type: ignore[method-assign]
+
+    asyncio.run(coord._async_update_data())
+    asyncio.run(coord._async_update_data())
+
+    assert coord.api.ping_calls == 2
+    assert coord.api.user_list_calls == 1
+    assert event_polls == 2
 
 
 def test_resolve_event_user_id_matches_profile_name_to_canonical_id():

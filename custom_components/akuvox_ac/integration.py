@@ -2257,6 +2257,56 @@ def _schedule_times_out_of_order(spec: Mapping[str, Any]) -> bool:
     return start > end
 
 
+def _device_schedule_id(record: Mapping[str, Any]) -> str:
+    return str(
+        record.get("DisplayID")
+        or record.get("display_id")
+        or record.get("ScheduleID")
+        or record.get("ScheduleId")
+        or record.get("ID")
+        or record.get("Id")
+        or ""
+    ).strip()
+
+
+def _device_schedule_maps(
+    device_schedules: Optional[Iterable[Mapping[str, Any]]],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    by_lower_name = {
+        "24/7 access": "1001",
+        "no access": "1002",
+    }
+    by_display_name = {
+        "24/7 Access": "1001",
+        "No Access": "1002",
+    }
+    for item in device_schedules or []:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("Name") or "").strip()
+        schedule_id = _device_schedule_id(item)
+        if not name or not schedule_id:
+            continue
+        by_lower_name[name.lower()] = schedule_id
+        by_display_name[name] = schedule_id
+    return by_lower_name, by_display_name
+
+
+def _set_coordinator_users(coord: AkuvoxCoordinator, users: List[Dict[str, Any]]) -> None:
+    if hasattr(coord, "set_users"):
+        coord.set_users(users)
+    else:
+        coord.users = list(users or [])
+
+
+def _set_coordinator_schedule_ids(
+    coord: AkuvoxCoordinator,
+    device_schedules: Optional[Iterable[Mapping[str, Any]]],
+) -> None:
+    _, by_display_name = _device_schedule_maps(device_schedules)
+    coord.schedule_ids = by_display_name
+
+
 def _normalize_schedule_for_integrity(
     schedules_store: AkuvoxSchedulesStore,
     name: str,
@@ -4781,7 +4831,7 @@ class SyncQueue:
                         except Exception:
                             pass
                     try:
-                        await coord.async_request_refresh()
+                        coord.async_update_listeners()
                     except Exception:
                         pass
             finally:
@@ -6098,12 +6148,16 @@ class SyncManager:
                 except Exception:
                     pass
             try:
-                await coord.async_request_refresh()
+                coord.async_update_listeners()
             except Exception:
                 pass
 
     # ---------- NEW: device schedule map ----------
-    async def _device_schedule_map(self, api: AkuvoxAPI) -> Dict[str, str]:
+    async def _device_schedule_map(
+        self,
+        api: AkuvoxAPI,
+        device_schedules: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
         """
         Return Name->ScheduleID map as strings for this device.
         Always includes the built-ins:
@@ -6111,28 +6165,12 @@ class SyncManager:
           'No Access'   -> '1002'
         Then overlays whatever the device reports via schedule_get().
         """
-        name_to_id: Dict[str, str] = {
-            "24/7 access": "1001",
-            "no access": "1002",
-        }
-        try:
-            dev_scheds = await api.schedule_get()  # [{"Name": "...", "DisplayID":"1"}, ...]
-            for it in dev_scheds or []:
-                n = str(it.get("Name") or "").strip()
-                sid = str(it.get("DisplayID") or it.get("display_id") or "").strip()
-                if not sid:
-                    sid = str(
-                        it.get("ScheduleID")
-                        or it.get("ScheduleId")
-                        or it.get("ID")
-                        or it.get("Id")
-                        or ""
-                    ).strip()
-                if n and sid:
-                    name_to_id[n.lower()] = sid
-        except Exception:
-            # best-effort; built-ins still usable
-            pass
+        if device_schedules is None:
+            try:
+                device_schedules = await api.schedule_get()
+            except Exception:
+                device_schedules = []
+        name_to_id, _ = _device_schedule_maps(device_schedules)
         return name_to_id
 
     async def _set_user_on_device(
@@ -6215,18 +6253,25 @@ class SyncManager:
         if removed_profile:
             await self._prune_stale_alert_users()
 
-    async def _push_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]):
+    async def _push_schedules(
+        self,
+        api: AkuvoxAPI,
+        schedules: Dict[str, Any],
+        device_schedules: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
         if not schedules:
-            return
-        device_schedule_names: Optional[set[str]] = None
-        try:
-            device_schedule_names = {
-                str(it.get("Name") or "").strip().lower()
-                for it in (await api.schedule_get()) or []
-                if isinstance(it, dict)
-            }
-        except Exception:
-            device_schedule_names = None
+            return False
+        if device_schedules is None:
+            try:
+                device_schedules = await api.schedule_get()
+            except Exception:
+                return False
+        device_schedule_records = {
+            str(item.get("Name") or "").strip().lower(): item
+            for item in device_schedules or []
+            if isinstance(item, dict) and str(item.get("Name") or "").strip()
+        }
+        added_schedule = False
         for name, spec in (schedules or {}).items():
             if name in ("24/7 Access", "No Access"):
                 continue
@@ -6239,35 +6284,48 @@ class SyncManager:
             else:
                 sanitized = {}
             try:
-                if device_schedule_names is not None and name.strip().lower() in device_schedule_names:
+                existing = device_schedule_records.get(name.strip().lower())
+                if existing is not None:
+                    for key in ("ID", "Id", "ScheduleID", "ScheduleId", "DisplayID", "display_id"):
+                        if existing.get(key) not in (None, ""):
+                            sanitized[key] = existing.get(key)
                     await api.schedule_set(name, sanitized)
                 else:
                     await api.schedule_add(name, sanitized)
+                    added_schedule = True
             except Exception:
                 try:
                     await api.schedule_set(name, sanitized)
                 except Exception:
                     pass
+        return added_schedule
 
-    async def _ensure_device_schedules(self, api: AkuvoxAPI, schedules: Dict[str, Any]) -> None:
+    async def _ensure_device_schedules(
+        self,
+        api: AkuvoxAPI,
+        schedules: Dict[str, Any],
+        device_schedules: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
         if not schedules:
-            return
-        device_schedule_names: Optional[set[str]] = None
-        try:
-            device_schedule_names = {
-                str(it.get("Name") or "").strip().lower()
-                for it in (await api.schedule_get()) or []
-                if isinstance(it, dict)
-            }
-        except Exception:
-            device_schedule_names = None
+            return False
+        if device_schedules is None:
+            try:
+                device_schedules = await api.schedule_get()
+            except Exception:
+                return False
+        device_schedule_names = {
+            str(it.get("Name") or "").strip().lower()
+            for it in device_schedules or []
+            if isinstance(it, dict)
+        }
+        added_schedule = False
 
         for name, spec in (schedules or {}).items():
             if name in ("24/7 Access", "No Access"):
                 continue
             if isinstance(spec, dict) and (spec.get("system_exit_clone") or spec.get("exit_clone_for")):
                 continue
-            if device_schedule_names is not None and name.strip().lower() in device_schedule_names:
+            if name.strip().lower() in device_schedule_names:
                 continue
             sanitized: Dict[str, Any]
             if isinstance(spec, dict):
@@ -6277,11 +6335,13 @@ class SyncManager:
                 sanitized = {}
             try:
                 await api.schedule_add(name, sanitized)
+                added_schedule = True
             except Exception:
                 try:
                     await api.schedule_set(name, sanitized)
                 except Exception:
                     pass
+        return added_schedule
 
     async def _remove_missing_users(self, api: AkuvoxAPI, local_users: List[Dict[str, Any]], registry_keys_set: set):
         rogue_keys: List[str] = []
@@ -6332,17 +6392,48 @@ class SyncManager:
                 schedules_all = schedules_store.all()
             except Exception:
                 schedules_all = {}
-        try:
-            await self._ensure_device_schedules(api, schedules_all)
-        except Exception:
-            pass
+
+        device_schedules: List[Dict[str, Any]] = []
+        schedule_snapshot_loaded = not bool(schedules_all)
+        if schedules_all:
+            try:
+                device_schedules = await api.schedule_get()
+                schedule_snapshot_loaded = True
+            except Exception:
+                schedule_snapshot_loaded = False
+
+        schedules_added = False
+        if schedule_snapshot_loaded:
+            try:
+                if full and schedules_store:
+                    schedules_added = await self._push_schedules(
+                        api,
+                        schedules_all,
+                        device_schedules=device_schedules,
+                    )
+                else:
+                    schedules_added = await self._ensure_device_schedules(
+                        api,
+                        schedules_all,
+                        device_schedules=device_schedules,
+                    )
+            except Exception:
+                pass
+
+        if schedules_added:
+            try:
+                device_schedules = await api.schedule_get()
+            except Exception:
+                pass
+        if schedule_snapshot_loaded:
+            _set_coordinator_schedule_ids(coord, device_schedules)
 
         try:
             local_users: List[Dict[str, Any]] = await api.user_list()
         except Exception:
             local_users = list(coord.users or [])
         try:
-            coord.users = local_users
+            _set_coordinator_users(coord, local_users)
         except Exception:
             pass
         await _store_device_user_ids(getattr(coord, "storage", None), local_users)
@@ -6405,14 +6496,11 @@ class SyncManager:
 
             await self._remove_missing_users(api, local_users, reg_key_set)
 
-        if full and schedules_store:
-            try:
-                await self._push_schedules(api, schedules_all)
-            except Exception:
-                pass
-
         # Resolve device schedule IDs after pushing (so we use what the device knows)
-        sched_map = await self._device_schedule_map(api)
+        sched_map = await self._device_schedule_map(
+            api,
+            device_schedules=device_schedules,
+        )
 
         exit_schedule_map = _build_exit_schedule_map(schedules_all)
 
@@ -6562,7 +6650,7 @@ class SyncManager:
                     pass
                 try:
                     local_users = await api.user_list()
-                    coord.users = local_users
+                    _set_coordinator_users(coord, local_users)
                     await _store_device_user_ids(getattr(coord, "storage", None), local_users)
                 except Exception:
                     pass
@@ -6606,7 +6694,7 @@ class SyncManager:
             if face_add_batch or fallback_add_batch:
                 try:
                     local_users = await api.user_list()
-                    coord.users = local_users
+                    _set_coordinator_users(coord, local_users)
                     await _store_device_user_ids(getattr(coord, "storage", None), local_users)
                 except Exception:
                     pass
@@ -6757,7 +6845,7 @@ class SyncManager:
                     pass
                 try:
                     local_users = await api.user_list()
-                    coord.users = local_users
+                    _set_coordinator_users(coord, local_users)
                     await _store_device_user_ids(getattr(coord, "storage", None), local_users)
                 except Exception:
                     pass
@@ -6780,7 +6868,7 @@ class SyncManager:
             pass
 
         try:
-            await coord.async_request_refresh()
+            coord.async_update_listeners()
         except Exception:
             pass
 
@@ -6833,7 +6921,7 @@ class SyncManager:
             try:
                 opts = opts or {}
                 dev_users = await api.user_list()
-                coord.users = dev_users or []
+                _set_coordinator_users(coord, dev_users or [])
                 await _store_device_user_ids(getattr(coord, "storage", None), coord.users)
                 device_records: Dict[str, List[Dict[str, Any]]] = {}
                 for record in coord.users or []:
@@ -6852,7 +6940,17 @@ class SyncManager:
                     if any(g in device_groups for g in ha_groups):
                         should_have.add(k)
 
-                sched_map = await self._device_schedule_map(api)
+                device_schedules: Optional[List[Dict[str, Any]]]
+                try:
+                    device_schedules = await api.schedule_get()
+                except Exception:
+                    device_schedules = None
+                if device_schedules is not None:
+                    _set_coordinator_schedule_ids(coord, device_schedules)
+                sched_map = await self._device_schedule_map(
+                    api,
+                    device_schedules=device_schedules or [],
+                )
                 device_type_raw = (coord.health.get("device_type") or "").strip()
                 mismatch_reason: Optional[str] = None
 
@@ -6909,7 +7007,10 @@ class SyncManager:
                                         if not repaired:
                                             raise RuntimeError("face upload repair did not complete")
                                         try:
-                                            coord.users = await api.user_list()
+                                            _set_coordinator_users(
+                                                coord,
+                                                await api.user_list(),
+                                            )
                                             await _store_device_user_ids(
                                                 getattr(coord, "storage", None),
                                                 coord.users,
@@ -6945,7 +7046,10 @@ class SyncManager:
                                             if not repaired:
                                                 raise RuntimeError("face upload repair did not complete")
                                             try:
-                                                coord.users = await api.user_list()
+                                                _set_coordinator_users(
+                                                    coord,
+                                                    await api.user_list(),
+                                                )
                                                 await _store_device_user_ids(
                                                     getattr(coord, "storage", None),
                                                     coord.users,
@@ -6979,11 +7083,6 @@ class SyncManager:
                             break
 
                 if mismatch_reason is None and schedules_store:
-                    try:
-                        device_schedules = await api.schedule_get()
-                    except Exception:
-                        device_schedules = None
-
                     if device_schedules is not None:
                         device_map: Dict[str, Dict[str, Any]] = {}
                         for sched in device_schedules or []:
