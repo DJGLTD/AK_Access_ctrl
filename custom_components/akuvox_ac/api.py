@@ -59,6 +59,21 @@ def _json_copy(value: Any) -> Any:
             return str(value)
 
 
+def _normalize_user_source(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose the firmware user source under the dashboard-compatible key."""
+
+    normalized = dict(record)
+    for key in ("SourceType", "sourceType", "source_type", "Source", "source"):
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        source = str(value).strip()
+        if source:
+            normalized["Source"] = source
+            break
+    return normalized
+
+
 def _truncate_string(value: str, limit: int = 800) -> str:
     """Trim very long strings so diagnostics stay manageable."""
 
@@ -1731,7 +1746,12 @@ class AkuvoxAPI:
                     r = await self._post_api(payload, rel_paths=(rel,))
                     items = r.get("data", {}).get("item")
                     if isinstance(items, list):
-                        return items
+                        return [
+                            _normalize_user_source(item)
+                            if isinstance(item, dict)
+                            else item
+                            for item in items
+                        ]
                 except Exception:
                     pass
         return []
