@@ -194,6 +194,19 @@
     .badge.notification-status.ready{ background:rgba(13,202,240,0.18); color:#9ee7ff; }
     @media (max-width: 768px){
       .diag-container{ max-width:100%; padding:0 1rem; }
+      .diag-tabs{
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        overflow-y:hidden;
+        width:100%;
+        -webkit-overflow-scrolling:touch;
+        overscroll-behavior-x:contain;
+        scrollbar-width:thin;
+      }
+      .diag-tabs .nav-link{
+        flex:0 0 auto;
+        white-space:nowrap;
+      }
       .diag-toggle{ padding:0.85rem 1rem; }
       .diag-body{ padding:1rem; }
       .diag-request{ padding:0.65rem 0.85rem; }
