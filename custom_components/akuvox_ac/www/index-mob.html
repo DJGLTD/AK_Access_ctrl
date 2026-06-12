@@ -53,6 +53,8 @@
     .event-title.bad{color:var(--bad)}
     .event-title.dim{color:var(--dim)}
     .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
+    .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
+    .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
     .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
     .user-toolbar{display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;width:100%;}
     .user-toolbar .form-control,
@@ -718,6 +720,7 @@ const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const $ = (sel) => document.querySelector(sel);
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let eventFilterMode = 'access';
 let cachedEvents = [];
 let eventHistoryInitialized = false;
 let lastEventRefreshAttempt = 0;
@@ -1366,6 +1369,37 @@ function parseEventTimestamp(value){
   }
   return 0;
 }
+
+const EVENT_EMPTY_MESSAGES = {
+  all: 'No recent events',
+  system: 'No system events',
+  access: 'No access events',
+};
+
+function applyEventFilter(){
+  const list = eventFilterMode === 'all'
+    ? cachedEvents
+    : cachedEvents.filter((evt) => {
+      if (eventFilterMode === 'access') {
+        return evt._category === 'access' || evt._category === 'call';
+      }
+      return evt._category === eventFilterMode;
+    });
+  const listEl = document.getElementById('eventList');
+  if (!listEl) return;
+  const html = list.map(e => {
+    const when = formatWhen(e.timestamp || e.Time || '');
+    const info = describeEventForDisplay(e);
+    const cls = classifyEvent(e, info.highlight);
+    return `<li class="event-item" data-category="${info.category}">
+      <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
+      <div class="event-time">${when}</div>
+    </li>`;
+  }).join('');
+  const emptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
+  listEl.innerHTML = html || `<li class="event-item"><span class="event-title dim">${emptyMessage}</span></li>`;
+}
+
 function renderEvents(devs, aggregated){
   const events = [];
   const seen = new Set();
@@ -1409,20 +1443,7 @@ function renderEvents(devs, aggregated){
 
   events.sort((a,b)=> (b._t||0) - (a._t||0));
   cachedEvents = events;
-
-  const listEl = document.getElementById('eventList');
-  if (!listEl) return;
-
-  const html = events.map(e => {
-    const when = formatWhen(e.timestamp || e.Time || '');
-    const info = describeEventForDisplay(e);
-    const cls  = classifyEvent(e, info.highlight);
-    return `<li class="event-item" data-category="${info.category}">
-      <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
-      <div class="event-time">${when}</div>
-    </li>`;
-  }).join('');
-  listEl.innerHTML = html || '<li class="event-item"><span class="event-title dim">No recent events</span></li>';
+  applyEventFilter();
 }
 
 function extractAccessEventsCollection(payload){
@@ -2504,6 +2525,15 @@ window.addEventListener('message', (event) => {
 
 // ✅ Wait until the DOM exists before wiring buttons/inputs
 document.addEventListener('DOMContentLoaded', () => {
+  const eventFilter = document.getElementById('eventFilter');
+  if (eventFilter) {
+    eventFilter.value = eventFilterMode;
+    eventFilter.addEventListener('change', (event) => {
+      eventFilterMode = event.target?.value || 'all';
+      applyEventFilter();
+    });
+  }
+
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnUpdateAccessEvents')?.addEventListener('click', updateAccessEvents);
@@ -2660,6 +2690,11 @@ setInterval(refresh, 5000);
       <div class="card flex-fill" id="sectionEvents">
         <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
           <span>Event History</span>
+          <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
+            <option value="all">All events</option>
+            <option value="system">System events</option>
+            <option value="access">Access events</option>
+          </select>
         </div>
         <div class="card-body">
           <ul id="eventList" class="event-list">
