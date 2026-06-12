@@ -852,27 +852,12 @@ async function load(){
     <div class="mt-3 d-flex gap-2">
       <button class="btn btn-success" onclick="save()">Save</button>
       <button class="btn btn-danger" onclick="del()">Delete</button>
-      <a class="btn btn-secondary" id="backBtn" href="#">Back</a>
     </div>
   </div>
 </div>
 <script>
 initTimeInputFormatting();
 load();
-(function initBackButton(){
-  try {
-    const back = document.getElementById('backBtn');
-    if (!back) return;
-    const href = buildHref('index');
-    back.setAttribute('href', href);
-    back.addEventListener('click', (ev) => {
-      const delivered = requestParentNav('index', {}, { replaceState: false });
-      if (delivered) {
-        ev.preventDefault();
-      }
-    });
-  } catch (err) {}
-})();
 </script>
 </body>
 </html>

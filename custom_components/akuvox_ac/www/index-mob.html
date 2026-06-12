@@ -475,9 +475,14 @@ let LAST_USERS_STATE = null;
 function loadUserSort(){
   try {
     const raw = localStorage.getItem('akuvox_user_sort');
-    if (raw) return String(raw);
+    if (raw) return normalizeUserSort(raw);
   } catch (err) {}
   return 'ha_id';
+}
+
+function normalizeUserSort(value){
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['last_access', 'ha_id', 'name'].includes(normalized) ? normalized : 'ha_id';
 }
 
 function saveUserSort(value){
@@ -978,7 +983,7 @@ function setUserSearch(value){
 }
 
 function setUserSort(value){
-  USER_SORT = value || 'ha_id';
+  USER_SORT = normalizeUserSort(value);
   saveUserSort(USER_SORT);
 }
 
@@ -2750,9 +2755,9 @@ setInterval(refresh, 5000);
           <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
         </div>
         <select id="userSort" class="form-select form-select-sm" aria-label="Organise users">
-          <option value="last_access">last access</option>
-          <option value="ha_id">user id</option>
-          <option value="name">name</option>
+          <option value="last_access">Organise by last access</option>
+          <option value="ha_id">Organise by user ID</option>
+          <option value="name">Organise by name</option>
         </select>
       </div>
       <div class="footer-note"></div>

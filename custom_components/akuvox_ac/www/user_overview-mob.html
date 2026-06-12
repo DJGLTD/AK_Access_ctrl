@@ -130,9 +130,9 @@
       <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
     </div>
     <select id="userSort" class="form-select form-select-sm" aria-label="Organise users">
-      <option value="last_access">last access</option>
-      <option value="ha_id">user id</option>
-      <option value="name">name</option>
+      <option value="last_access">Organise by last access</option>
+      <option value="ha_id">Organise by user ID</option>
+      <option value="name">Organise by name</option>
     </select>
   </div>
   <section class="user-list" id="userList" aria-live="polite"></section>
@@ -573,6 +573,7 @@ const PAUSED_USERS_KEY = 'akuvox_paused_users';
 const PAUSE_SCHEDULE_ID = '1002';
 const PAUSE_SCHEDULE_NAME = 'No Access';
 const USER_SORT_KEY = 'akuvox_user_sort';
+const USER_SORT_VALUES = new Set(['last_access', 'ha_id', 'name']);
 let USER_SEARCH = '';
 let USER_SORT = 'name';
 let LAST_USERS = [];
@@ -598,10 +599,15 @@ function savePausedUsers(map){
 function loadUserSort(){
   try {
     const stored = sessionStorage.getItem(USER_SORT_KEY) || localStorage.getItem(USER_SORT_KEY);
-    return stored || 'name';
+    return normalizeUserSort(stored);
   } catch (err) {
     return 'name';
   }
+}
+
+function normalizeUserSort(value){
+  const normalized = String(value || '').trim().toLowerCase();
+  return USER_SORT_VALUES.has(normalized) ? normalized : 'name';
 }
 
 function saveUserSort(value){
@@ -892,7 +898,7 @@ function setUserSearch(value){
 }
 
 function setUserSort(value){
-  USER_SORT = value || 'name';
+  USER_SORT = normalizeUserSort(value);
   saveUserSort(USER_SORT);
 }
 
