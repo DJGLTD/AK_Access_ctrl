@@ -492,6 +492,7 @@
 
 const UI_ROOT = '/akuvox-ac';
 const DEFAULT_VIEW = 'index';
+const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';
 let expandedGroup = null;
 const MOBILE_BREAKPOINT = '(max-width: 720px)';
 const mobileMedia = window.matchMedia(MOBILE_BREAKPOINT);
@@ -809,7 +810,7 @@ function syncHistoryStage(forceStage){
   } catch (err) {}
 }
 
-function setMobileStage(stage, { preserveGroups = false } = {}){
+function setMobileStage(stage, { preserveGroups = false, syncHistory = true } = {}){
   if (!isMobileMode) {
     mobileStage = 'content';
     return;
@@ -820,7 +821,7 @@ function setMobileStage(stage, { preserveGroups = false } = {}){
   }
   applyMobileFlags();
   updateGroupExpansion();
-  syncHistoryStage();
+  if (syncHistory) syncHistoryStage();
 }
 
 function handleMobileMediaChange(ev){
@@ -1167,8 +1168,21 @@ function setActiveNav(view){
   updateGroupExpansion();
 }
 
+function getAppHistoryIndex(state = history.state){
+  const raw = state && state[APP_HISTORY_INDEX_KEY];
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 function updateHistory(view, params, { replaceState = false } = {}){
-  const state = { view, params, mobileStage: isMobileMode ? mobileStage : 'content' };
+  const currentIndex = getAppHistoryIndex();
+  const nextIndex = replaceState ? currentIndex : currentIndex + 1;
+  const state = {
+    view,
+    params,
+    mobileStage: isMobileMode ? mobileStage : 'content',
+    [APP_HISTORY_INDEX_KEY]: nextIndex
+  };
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([k,v]) => {
     if (v !== undefined && v !== null && v !== '') search.set(k, v);
@@ -1315,7 +1329,9 @@ async function runDashboardAction(action){
   const frame = document.getElementById('viewFrame');
   const previousHref = frame?.dataset.currentHref || '';
 
-  if (isMobileMode) setMobileStage('content', { preserveGroups: true });
+  if (isMobileMode) {
+    setMobileStage('content', { preserveGroups: true, syncHistory: false });
+  }
   loadView('index', { section: 'global-actions' });
   const changed = frame && frame.dataset.currentHref !== previousHref;
 
@@ -1446,7 +1462,7 @@ document.querySelectorAll('.mobile-launcher [data-view], .mobile-launcher [data-
       updateGroupExpansion();
     }
     if (!hasView) return;
-    if (isMobileMode) setMobileStage('content');
+    if (isMobileMode) setMobileStage('content', { syncHistory: false });
     loadView(view, params, { replaceState: false });
   });
 });
@@ -1494,6 +1510,10 @@ if (mobileBackBtn) {
   mobileBackBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     if (!isMobileMode) return;
+    if (getAppHistoryIndex() > 0) {
+      history.back();
+      return;
+    }
     setMobileStage('nav');
   });
 }
