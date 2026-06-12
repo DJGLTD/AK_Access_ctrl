@@ -34,6 +34,7 @@ CALLER_CLEAR_DELAY_SECONDS = 10
 CALLER_EVENT_WINDOW_SECONDS = 30
 ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS = 10
 NOTIFICATION_DIAGNOSTICS_LIMIT = 200
+USER_LIST_REFRESH_INTERVAL_SECONDS = 300
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,6 +182,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "last_ping": None,
         }
         self.users: List[Dict[str, Any]] = []
+        self._last_user_refresh_monotonic = 0.0
+        self.schedule_ids: Dict[str, str] = {
+            "24/7 Access": "1001",
+            "No Access": "1002",
+        }
         self.events: List[Dict[str, Any]] = []  # newest first
         self._was_online: Optional[bool] = None
         self.event_state: Dict[str, Any] = {
@@ -209,6 +215,27 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self.device_name = name
         self.friendly_name = name
         self.health["name"] = name
+
+    def set_users(self, users: List[Dict[str, Any]]) -> None:
+        """Store a fresh device user snapshot and record its fetch time."""
+        self.users = list(users or [])
+        self._last_user_refresh_monotonic = time.monotonic()
+
+    async def async_refresh_users(self, *, force: bool = False) -> List[Dict[str, Any]]:
+        """Refresh the full user list only when its slower cache is due."""
+        now = time.monotonic()
+        last_refresh = float(getattr(self, "_last_user_refresh_monotonic", 0.0) or 0.0)
+        if (
+            not force
+            and last_refresh > 0
+            and now - last_refresh < USER_LIST_REFRESH_INTERVAL_SECONDS
+        ):
+            return list(self.users or [])
+
+        users = await self.api.user_list()
+        if isinstance(users, list):
+            self.set_users(users)
+        return list(self.users or [])
 
     def _append_event(self, text: str):
         evt = {"timestamp": _now_iso(self.hass), "Event": text}
@@ -333,9 +360,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
             # Load users so integrity checker & UI can see them
             try:
-                users = await self.api.user_list()
-                if isinstance(users, list):
-                    self.users = users
+                await self.async_refresh_users()
             except Exception:
                 # don't fail the whole refresh just because the user list failed
                 pass

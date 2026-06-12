@@ -2790,36 +2790,35 @@ def _iter_device_buckets(root: Dict[str, Any]):
 
 
 async def _fetch_device_schedule_ids(root: Dict[str, Any]) -> Dict[str, str]:
+    """Return cached schedule IDs without issuing device network requests."""
     schedule_ids: Dict[str, str] = {
         "24/7 Access": "1001",
         "No Access": "1002",
     }
-    for _, data, _, _ in _iter_device_buckets(root):
-        api = data.get("api")
-        if not api:
+
+    for _, _, coord, _ in _iter_device_buckets(root):
+        cached = getattr(coord, "schedule_ids", None)
+        if not isinstance(cached, Mapping):
             continue
-        try:
-            items = await api.schedule_get()
-        except Exception:
+        for name, schedule_id in cached.items():
+            clean_name = str(name or "").strip()
+            clean_id = str(schedule_id or "").strip()
+            if clean_name and clean_id:
+                schedule_ids[clean_name] = clean_id
+
+    users_store = root.get("users_store")
+    try:
+        profiles = users_store.all() if users_store else {}
+    except Exception:
+        profiles = {}
+    for profile in (profiles or {}).values():
+        if not isinstance(profile, Mapping):
             continue
-        if not isinstance(items, list):
-            continue
-        matched = False
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("Name") or "").strip()
-            schedule_id = str(
-                item.get("ScheduleID")
-                or item.get("ScheduleId")
-                or item.get("ID")
-                or ""
-            ).strip()
-            if name and schedule_id:
-                schedule_ids[name] = schedule_id
-                matched = True
-        if matched:
-            break
+        name = str(profile.get("schedule_name") or "").strip()
+        schedule_id = str(profile.get("schedule_id") or "").strip()
+        if name and schedule_id:
+            schedule_ids.setdefault(name, schedule_id)
+
     return schedule_ids
 
 

@@ -68,3 +68,10 @@ def test_mobile_global_actions_include_update_check():
     assert '<span class="tile-title">Check for updates</span>' in shell
     assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));" in shell
     assert "steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));" in shell
+
+
+def test_dashboards_start_only_one_state_polling_loop():
+    for name in ("index.html", "index-mob.html"):
+        page = read_page(name)
+        assert page.count("setInterval(refresh, 5000);") == 1
+        assert page.count("// initial + poll") == 1
