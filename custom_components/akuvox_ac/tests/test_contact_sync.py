@@ -721,6 +721,40 @@ def test_sync_queue_kicks_stale_face_error_without_existing_eta():
     assert scheduled
 
 
+def test_sync_queue_ignores_non_pending_device_health_states():
+    scheduled = []
+    coordinator = SimpleNamespace(
+        health={"online": True, "sync_status": "in_progress"}
+    )
+    hass = SimpleNamespace(
+        data={integration.DOMAIN: {"device-1": {"coordinator": coordinator}}}
+    )
+    queue = object.__new__(integration.SyncQueue)
+    queue.hass = hass
+    queue._handle = None
+    queue._lock = None
+    queue._pending_all = False
+    queue._pending_devices = set()
+    queue._pending_full = False
+    queue._pending_full_devices = set()
+    queue._pending_reason_all = None
+    queue._pending_reason_devices = {}
+    queue.next_sync_eta = None
+    queue._last_mark = None
+    queue._last_delay_from_default = False
+    queue._active = False
+    queue._tick_unsub = None
+    queue._startup_unsub = None
+    queue._schedule_task = lambda coro: (scheduled.append(coro), coro.close())
+
+    queue.ensure_future_run()
+
+    assert queue._pending_all is False
+    assert queue._pending_reason_all is None
+    assert queue.next_sync_eta is None
+    assert scheduled == []
+
+
 def test_sync_queue_waits_for_face_retry_cooldown():
     scheduled = []
     retry_after = (integration.dt_util.now() + timedelta(minutes=10)).isoformat()

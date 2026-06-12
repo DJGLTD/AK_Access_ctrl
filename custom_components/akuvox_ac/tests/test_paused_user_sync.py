@@ -133,6 +133,71 @@ def test_record_matches_desired_fields_treats_face_register_status_as_registered
     assert integration._record_matches_desired_fields(local, desired) is True
 
 
+def test_record_matches_desired_fields_accepts_device_aliases_and_empty_plate_slots():
+    local = {
+        "ID": "42",
+        "UserID": "HA001",
+        "Name": "User One",
+        "DoorNum": "1",
+        "LiftFloorNum": "0",
+        "Schedule": ["1001"],
+        "Schedule-Relay": "1001-1;",
+        "WebRelay": "0",
+        "Group": integration.HA_CONTACT_GROUP_NAME,
+        "PriorityCall": "0",
+        "DialAccount": "0",
+        "C4EventNo": "0",
+        "AuthMode": "0",
+        "LicensePlate": [{}, {}, {}, {}, {}],
+        "CardCode": "",
+        "BLEAuthCode": "",
+        "PrivatePIN": "1234",
+        "PhoneNum": "0123456789",
+        "FaceRegisterStatus": "0",
+    }
+    desired = {
+        "ID": "42",
+        "UserID": "HA001",
+        "Name": "User One",
+        "DoorNum": "1",
+        "LiftFloorNum": "0",
+        "ScheduleID": "1001",
+        "ScheduleRelay": "1001-1;",
+        "WebRelay": "0",
+        "Group": integration.HA_CONTACT_GROUP_NAME,
+        "PriorityCall": "0",
+        "DialAccount": "0",
+        "C4EventNo": "0",
+        "AuthMode": "0",
+        "LicensePlate": [],
+        "CardCode": "",
+        "BLEAuthCode": "",
+        "Type": "0",
+        "PrivatePIN": "1234",
+        "PhoneNum": "0123456789",
+        "FaceRegister": "0",
+    }
+
+    assert integration._record_matches_desired_fields(local, desired) is True
+
+
+def test_record_matches_desired_fields_still_detects_real_schedule_change():
+    local = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "Schedule": ["1001"],
+        "Schedule-Relay": "1001-1;",
+    }
+    desired = {
+        "UserID": "HA001",
+        "Name": "User One",
+        "ScheduleID": "1003",
+        "ScheduleRelay": "1003-1;",
+    }
+
+    assert integration._record_matches_desired_fields(local, desired) is False
+
+
 def test_face_register_status_satisfies_integrity_face_check():
     diffs = integration._integrity_field_differences(
         {"UserID": "HA001", "Name": "User One", "FaceRegisterStatus": "1"},

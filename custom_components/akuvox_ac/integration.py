@@ -2141,7 +2141,59 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
             raw = record.get("FaceRegisterStatus")
         return _normalize_boolish(raw)
 
+    aliases: Dict[str, Tuple[str, ...]] = {
+        "ScheduleRelay": ("ScheduleRelay", "Schedule-Relay"),
+        "PrivatePIN": ("PrivatePIN", "Pin", "PIN"),
+        "PhoneNum": ("PhoneNum", "Phone"),
+        "BLEAuthCode": ("BLEAuthCode", "BLE_AuthCode"),
+        "ID": ("ID", "Id", "id"),
+        "UserID": ("UserID", "UserId", "user_id"),
+    }
+
+    def _local_value(key: str) -> Any:
+        for candidate in aliases.get(key, (key,)):
+            if candidate in local:
+                return local.get(candidate)
+        return None
+
+    def _schedule_id(record: Dict[str, Any]) -> str:
+        direct = record.get("ScheduleID")
+        if direct not in (None, ""):
+            return _text(direct)
+        schedules = record.get("Schedule")
+        if isinstance(schedules, (list, tuple)) and schedules:
+            return _text(schedules[0])
+        return ""
+
+    def _plates(value: Any) -> Tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            return ()
+        result: List[str] = []
+        for entry in value:
+            if isinstance(entry, Mapping):
+                plate = (
+                    entry.get("Plate")
+                    or entry.get("plate")
+                    or entry.get("Value")
+                    or entry.get("value")
+                )
+            else:
+                plate = entry
+            text = _text(plate).upper()
+            if text:
+                result.append(text)
+        return tuple(result)
+
+    ignored_keys = {
+        # These are transport/default fields. The canonical schedule relay,
+        # face state, and user-visible fields below carry the actual intent.
+        "Type",
+        "ScheduleID",
+    }
+
     for key, desired_value in desired.items():
+        if key in ignored_keys:
+            continue
         if key == "FaceRegister":
             expected_face = _normalize_boolish(desired_value)
             actual_face = _face_flag(local)
@@ -2157,9 +2209,26 @@ def _record_matches_desired_fields(local: Dict[str, Any], desired: Dict[str, Any
             if expected_face is True and actual_face is True:
                 continue
 
-        local_value = local.get(key)
+        if key == "ScheduleRelay":
+            desired_schedule = _text(desired_value)
+            local_schedule = _text(_local_value(key))
+            if local_schedule != desired_schedule:
+                return False
+            continue
+
+        if key == "LicensePlate":
+            if _plates(_local_value(key)) != _plates(desired_value):
+                return False
+            continue
+
+        local_value = _local_value(key)
         if _text(local_value) != _text(desired_value):
             return False
+
+    desired_schedule_id = _schedule_id(desired)
+    local_schedule_id = _schedule_id(local)
+    if desired_schedule_id and local_schedule_id and desired_schedule_id != local_schedule_id:
+        return False
 
     return True
 
@@ -4553,7 +4622,7 @@ class SyncQueue:
             health = getattr(coord, "health", {}) or {}
             status = str(health.get("sync_status") or "").strip().lower()
             online = bool(health.get("online", True))
-            if online and status and status != "in_sync":
+            if online and status == "pending":
                 return True
 
         users_store = root.get("users_store")

@@ -172,7 +172,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "ip": "",
             "online": False,
             "status": "offline",
-            "sync_status": "pending",
+            # Restarting Home Assistant or the device does not imply that
+            # credentials are out of sync. Explicit changes and integrity
+            # checks move this state to pending when work is actually needed.
+            "sync_status": "in_sync",
             "last_sync": None,
             "last_error": None,
             "last_ping": None,
@@ -268,7 +271,6 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                     self.health.pop("rebooting_until", None)
                 if prev is False:
                     self._append_event("Device came online")
-                    await self._kick_sync_now()
                 elif prev is None and not self.health.get("last_sync"):
                     # Avoid repairing users during HA startup before FaceData routes
                     # are guaranteed to be registered. Pending profile work is picked
