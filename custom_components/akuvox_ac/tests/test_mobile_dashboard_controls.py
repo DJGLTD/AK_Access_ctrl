@@ -40,6 +40,13 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
 
     assert 'id="mobileBackBtn"' in shell
     assert 'id="mobileMenuBtn"' in shell
+    assert "const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';" in shell
+    assert "function getAppHistoryIndex(state = history.state)" in shell
+    assert "const nextIndex = replaceState ? currentIndex : currentIndex + 1;" in shell
+    assert "if (getAppHistoryIndex() > 0)" in shell
+    assert "history.back();" in shell
+    assert "function setMobileStage(stage, { preserveGroups = false, syncHistory = true } = {})" in shell
+    assert "setMobileStage('content', { syncHistory: false });" in shell
     assert "const mobileMenuBtn = document.getElementById('mobileMenuBtn');" in shell
     assert "setMobileStage('nav');" in shell
 
