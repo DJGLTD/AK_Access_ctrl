@@ -461,6 +461,13 @@
           </div>
           <i class="bi bi-lightning-charge-fill"></i>
         </button>
+        <button class="mobile-tile sub" type="button" data-action="hacs_update_check">
+          <div class="tile-text">
+            <span class="tile-title">Check for updates</span>
+            <small>Check HACS for a newer integration version</small>
+          </div>
+          <i class="bi bi-cloud-arrow-down-fill"></i>
+        </button>
       </div>
     </div>
     <button class="mobile-tile" type="button" data-view="settings">
@@ -493,6 +500,15 @@
 const UI_ROOT = '/akuvox-ac';
 const DEFAULT_VIEW = 'index';
 const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';
+const APP_HISTORY_SESSION_KEY = 'akuvoxHistorySession';
+const APP_HISTORY_SESSION_ID = (() => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch (err) {}
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+})();
 let expandedGroup = null;
 const MOBILE_BREAKPOINT = '(max-width: 720px)';
 const mobileMedia = window.matchMedia(MOBILE_BREAKPOINT);
@@ -1169,6 +1185,7 @@ function setActiveNav(view){
 }
 
 function getAppHistoryIndex(state = history.state){
+  if (!state || state[APP_HISTORY_SESSION_KEY] !== APP_HISTORY_SESSION_ID) return 0;
   const raw = state && state[APP_HISTORY_INDEX_KEY];
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
@@ -1181,7 +1198,8 @@ function updateHistory(view, params, { replaceState = false } = {}){
     view,
     params,
     mobileStage: isMobileMode ? mobileStage : 'content',
-    [APP_HISTORY_INDEX_KEY]: nextIndex
+    [APP_HISTORY_INDEX_KEY]: nextIndex,
+    [APP_HISTORY_SESSION_KEY]: APP_HISTORY_SESSION_ID
   };
   const search = new URLSearchParams();
   Object.entries(params || {}).forEach(([k,v]) => {
@@ -1311,6 +1329,7 @@ function describeAction(action){
   const normalized = String(action || '').toLowerCase();
   if (normalized.includes('reboot')) return 'reboot all devices';
   if (normalized.includes('sync')) return 'force a full sync';
+  if (normalized.includes('update')) return 'check for updates';
   return 'run the requested action';
 }
 
@@ -1356,6 +1375,13 @@ async function runDashboardAction(action){
     steps.push(() => postJson(API_ACTION, { action: 'force_full_sync' }));
     steps.push(() => callService('akuvox_ac', 'force_full_sync', {}));
     steps.push(() => callService('akuvox_ac', 'sync_now', {}));
+  } else if (
+    normalized === 'hacs_update_check'
+    || normalized === 'hacs_auto_update'
+    || normalized === 'check_for_updates'
+  ) {
+    steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));
+    steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));
   } else {
     if (!changed && frame) {
       reloadActiveView({ updateHistory: false });
@@ -1559,10 +1585,11 @@ window.addEventListener('popstate', (event) => {
 });
 
 (async function init(){
-  await ensureDashboardSignedPaths();
   const searchParams = new URLSearchParams(location.search);
   const initialView = normalizeView(searchParams.get('view') || DEFAULT_VIEW);
   const params = paramsFromSearch(location.search);
+  updateHistory(initialView, params, { replaceState: true });
+  await ensureDashboardSignedPaths();
   loadView(initialView, params, { replaceState: true });
   fetchVersion();
 })();
