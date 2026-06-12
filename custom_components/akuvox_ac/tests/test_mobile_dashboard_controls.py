@@ -41,8 +41,13 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert 'id="mobileBackBtn"' in shell
     assert 'id="mobileMenuBtn"' in shell
     assert "const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';" in shell
+    assert "const APP_HISTORY_SESSION_KEY = 'akuvoxHistorySession';" in shell
+    assert "const APP_HISTORY_SESSION_ID = (() => {" in shell
     assert "function getAppHistoryIndex(state = history.state)" in shell
+    assert "state[APP_HISTORY_SESSION_KEY] !== APP_HISTORY_SESSION_ID" in shell
     assert "const nextIndex = replaceState ? currentIndex : currentIndex + 1;" in shell
+    assert "[APP_HISTORY_SESSION_KEY]: APP_HISTORY_SESSION_ID" in shell
+    assert "updateHistory(initialView, params, { replaceState: true });\n  await ensureDashboardSignedPaths();" in shell
     assert "if (getAppHistoryIndex() > 0)" in shell
     assert "history.back();" in shell
     assert "function setMobileStage(stage, { preserveGroups = false, syncHistory = true } = {})" in shell
@@ -54,3 +59,12 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
         page = read_page(name)
         assert 'id="btnBack"' not in page
         assert 'id="backBtn"' not in page
+
+
+def test_mobile_global_actions_include_update_check():
+    shell = read_page("head-mob.html")
+
+    assert 'data-action="hacs_update_check"' in shell
+    assert '<span class="tile-title">Check for updates</span>' in shell
+    assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));" in shell
+    assert "steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));" in shell
