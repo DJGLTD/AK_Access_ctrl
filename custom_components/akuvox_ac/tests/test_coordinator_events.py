@@ -263,6 +263,7 @@ def test_derive_targets_from_raw_ignores_specific_users_when_disabled():
     [
         ("Private PIN", "Neil smalley opened the gate via code."),
         ("Face", "Neil smalley opened the gate via Face."),
+        ("Call", "Neil smalley opened the gate via Call."),
         ("DTMF", "Neil smalley opened the gate via Call."),
     ],
 )
@@ -321,6 +322,7 @@ def test_dispatch_notification_appends_system_event_on_failure():
     [
         ({"UserName": "Alice", "Type": "Private PIN"}, "Alice opened the gate via code."),
         ({"UserName": "Alice", "Type": "Face"}, "Alice opened the gate via Face."),
+        ({"UserName": "Alice", "Type": "Call"}, "Alice opened the gate via Call."),
         ({"UserName": "Alice", "Type": "DTMF"}, "Alice opened the gate via Call."),
         ({"UserName": "Alice", "Type": "Unknown"}, "Alice opened the gate."),
     ],

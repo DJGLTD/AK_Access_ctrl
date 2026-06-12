@@ -1786,7 +1786,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             if re.search(r"\bface\b|\bfacial\b", text):
                 return "Face"
             if (
-                "dtmf" in compact
+                compact == "call"
+                or "dtmf" in compact
                 or "calltoopen" in compact
                 or "openbycall" in compact
                 or "callunlock" in compact
