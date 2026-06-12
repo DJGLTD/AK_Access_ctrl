@@ -1,7 +1,7 @@
 {
   "domain": "akuvox_ac",
   "name": "Akuvox Access Control",
-  "version": "3.12.1",
+  "version": "3.12.2",
   "codeowners": [
     "@you"
   ],
