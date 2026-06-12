@@ -125,14 +125,15 @@ def test_initial_online_refresh_does_not_sync_during_startup():
     assert queue.calls == []
 
 
-def test_offline_to_online_refresh_still_syncs():
+def test_offline_to_online_refresh_does_not_reconcile_unchanged_users():
     queue = _SyncQueueStub()
     coord = _build_health_coordinator(queue)
     coord._was_online = False
 
     asyncio.run(coord._async_update_data())
 
-    assert queue.calls == ["device-1"]
+    assert coord.health["online"] is True
+    assert queue.calls == []
 
 
 def test_resolve_event_user_id_matches_profile_name_to_canonical_id():
