@@ -64,8 +64,17 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
 def test_mobile_global_actions_include_update_check():
     shell = read_page("head-mob.html")
 
-    assert 'data-action="hacs_update_check"' in shell
+    assert shell.count('data-action="hacs_update_check"') == 2
+    assert (
+        '<button type="button" class="quick-btn" data-action="hacs_update_check">'
+        in shell
+    )
+    assert (
+        '<button class="mobile-tile sub" type="button" data-action="hacs_update_check">'
+        in shell
+    )
     assert '<span class="tile-title">Check for updates</span>' in shell
+    assert '<span>Check for updates</span>' in shell
     assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));" in shell
     assert "steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));" in shell
 
