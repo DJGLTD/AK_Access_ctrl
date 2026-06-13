@@ -891,9 +891,7 @@ function renderKPIs(k){
     else forceBtn.removeAttribute('disabled');
   }
   const footer = document.querySelector('.footer-note');
-  if (footer) {
-    footer.textContent = '';
-  }
+  if (footer) footer.textContent = `© ${new Date().getFullYear()} DJG Technical Services LTD`;
 }
 
 const ESCAPE_HTML_LOOKUP = {
@@ -2699,7 +2697,7 @@ function startNextSyncCountdown(iso, fallbackTime){
         </div>
         <button id="btnForceFull" class="btn btn-sm btn-outline-light"><i class="bi bi-lightning-charge-fill"></i> Force Full Sync</button>
         <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-journal-arrow-down"></i> Update Access Events</button>
-        <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light"><i class="bi bi-cloud-arrow-down"></i> Check HACS Update</button>
+        <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light"><i class="bi bi-cloud-arrow-down"></i> System Update</button>
         <button id="btnRebootAll" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-repeat"></i> Reboot All</button>
         <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear-wide-connected"></i> Global Settings</button>
       </div>

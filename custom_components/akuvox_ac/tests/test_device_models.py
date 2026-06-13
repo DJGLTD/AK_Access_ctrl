@@ -67,6 +67,7 @@ def test_model_selectors_and_artwork_are_bundled():
     artwork = WWW / "device-models"
     for filename in (
         "generic.svg",
+        "x912.svg",
         "screen-tall.svg",
         "keypad-door.svg",
         "compact-door.svg",
@@ -75,6 +76,10 @@ def test_model_selectors_and_artwork_are_bundled():
         "controller.svg",
     ):
         assert (artwork / filename).is_file()
+
+    assert "X912:'x912'" in dashboard
+    assert 'src="/api/AK_AC/project-icon.svg"' in dashboard
+    assert (WWW / "project-icon.svg").is_file()
 
 
 def test_desktop_dashboard_fits_the_viewport():
@@ -86,3 +91,21 @@ def test_desktop_dashboard_fits_the_viewport():
         "minmax(0,1.05fr) auto"
     ) in dashboard
     assert ".table thead{position:sticky;top:0;z-index:2}" in dashboard
+    assert "height:auto;min-height:0;max-height:100%" in dashboard
+
+
+def test_dashboard_branding_events_and_update_controls():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+    mobile = (WWW / "index-mob.html").read_text(encoding="utf-8")
+
+    assert "DJG Technical Services LTD" in dashboard
+    assert "DJG Technical Services LTD" in mobile
+    assert 'id="btnSystemUpdate" data-hacs-update' in dashboard
+    assert dashboard.count("data-hacs-update") >= 2
+    assert "document.querySelectorAll('[data-hacs-update]')" in dashboard
+    assert "? 'bi-telephone-fill'" in dashboard
+    assert "? 'Access Granted'" in dashboard
+
+    for shell_name in ("head.html", "head-mob.html"):
+        shell = (WWW / shell_name).read_text(encoding="utf-8")
+        assert 'src="/api/AK_AC/project-icon.svg"' in shell
