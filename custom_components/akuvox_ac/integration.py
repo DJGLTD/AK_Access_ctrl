@@ -34,6 +34,7 @@ from .const import (
     USERS_STORAGE_KEY,
     CONF_DEVICE_NAME,
     CONF_DEVICE_TYPE,
+    CONF_DEVICE_MODEL,
     CONF_HOST,
     CONF_PORT,
     CONF_USERNAME,
@@ -47,6 +48,7 @@ from .const import (
     MIN_HEALTH_CHECK_INTERVAL,
     MAX_HEALTH_CHECK_INTERVAL,
     DEFAULT_ACCESS_HISTORY_LIMIT,
+    DEFAULT_DEVICE_MODEL,
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
     HA_CONTACT_GROUP_NAME,
@@ -7291,6 +7293,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     device_name = cfg.get(CONF_DEVICE_NAME, entry.title)
     device_type = cfg.get(CONF_DEVICE_TYPE, "Intercom")
+    device_model = cfg.get(CONF_DEVICE_MODEL, DEFAULT_DEVICE_MODEL)
 
     raw_relays = cfg.get(CONF_RELAY_ROLES)
     if not isinstance(raw_relays, dict):
@@ -7302,6 +7305,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     coord = AkuvoxCoordinator(hass, api, storage, entry.entry_id, device_name)
     coord.health["device_type"] = device_type
+    coord.health["device_model"] = device_model
     coord.health["ip"] = cfg.get(CONF_HOST)
 
     interval = int(cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
@@ -7325,6 +7329,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "sync_groups": initial_groups,
             "exit_device": exit_device,
             "relay_roles": relay_roles,
+            CONF_DEVICE_MODEL: device_model,
             CONF_AUTO_REBOOT: auto_reboot,
         },
     }
@@ -8123,6 +8128,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if updated_entry.entry_id != entry.entry_id:
             return
         new_cfg = {**updated_entry.data, **updated_entry.options}
+        new_device_type = new_cfg.get(CONF_DEVICE_TYPE, "Intercom")
+        new_device_model = new_cfg.get(CONF_DEVICE_MODEL, DEFAULT_DEVICE_MODEL)
+        coord.health["device_type"] = new_device_type
+        coord.health["device_model"] = new_device_model
         new_interval = int(new_cfg.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL))
         coord.update_interval = timedelta(seconds=max(10, new_interval))
         new_groups = list(new_cfg.get(CONF_DEVICE_GROUPS, ["Default"])) or ["Default"]
@@ -8132,7 +8141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "relay_a": new_cfg.get("relay_a_role"),
                 "relay_b": new_cfg.get("relay_b_role"),
             }
-        new_relay_roles = normalize_relay_roles(raw_roles, new_cfg.get(CONF_DEVICE_TYPE, "Intercom"))
+        new_relay_roles = normalize_relay_roles(raw_roles, new_device_type)
         new_auto_reboot = normalize_reboot_schedule(new_cfg.get(CONF_AUTO_REBOOT))
         hass.data[DOMAIN][entry.entry_id]["options"].update(
             {
@@ -8140,6 +8149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 "sync_groups": new_groups,
                 "exit_device": bool(new_cfg.get("exit_device", False)),
                 "relay_roles": new_relay_roles,
+                CONF_DEVICE_MODEL: new_device_model,
                 CONF_AUTO_REBOOT: new_auto_reboot,
             }
         )

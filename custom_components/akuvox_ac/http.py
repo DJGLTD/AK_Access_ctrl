@@ -36,6 +36,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     DOMAIN,
     CONF_DEVICE_GROUPS,
+    CONF_DEVICE_MODEL,
     CONF_RELAY_ROLES,
     CONF_AUTO_REBOOT,
     INTEGRATION_VERSION,
@@ -52,6 +53,8 @@ from .const import (
     DEFAULT_ACCESS_HISTORY_LIMIT,
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
+    DEFAULT_DEVICE_MODEL,
+    AKUVOX_DEVICE_MODELS,
 )
 
 from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
@@ -3026,6 +3029,9 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
             "entry_id": entry_id,
             "name": _best_name(coord, bucket),
             "type": health.get("device_type"),
+            "model": health.get("device_model")
+            or opts.get(CONF_DEVICE_MODEL)
+            or DEFAULT_DEVICE_MODEL,
             "ip": health.get("ip"),
             "online": health.get("online", True),
             "status": health.get("status"),
@@ -3886,6 +3892,38 @@ class AkuvoxUIAction(AkuvoxUIView):
             return web.json_response({"ok": True})
 
         # Device options
+        if action == "set_device_model":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                model = str(payload.get("model") or "").strip()
+                if model not in AKUVOX_DEVICE_MODELS:
+                    return err("unsupported Akuvox model")
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                entry_obj = hass.config_entries.async_get_entry(entry_id)
+                if not entry_obj:
+                    return err("device entry not found", code=404)
+
+                new_options = dict(entry_obj.options)
+                new_options[CONF_DEVICE_MODEL] = model
+                hass.config_entries.async_update_entry(entry_obj, options=new_options)
+
+                opts = bucket.get("options")
+                if not isinstance(opts, dict):
+                    opts = {}
+                    bucket["options"] = opts
+                opts[CONF_DEVICE_MODEL] = model
+                coord = bucket.get("coordinator")
+                health = getattr(coord, "health", None)
+                if isinstance(health, dict):
+                    health["device_model"] = model
+
+                return web.json_response({"ok": True, "device_model": model})
+            except Exception as e:
+                return err(e)
+
         if action == "set_exit_device":
             if not entry_id:
                 return err("entry_id required")

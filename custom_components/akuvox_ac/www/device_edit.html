@@ -26,6 +26,7 @@
 
     /* Force white for summary values */
     #devName, #devType, #devIP { color: var(--text) !important; }
+    #modelSelect{background:#0e1a2c;color:var(--text);border-color:#243a61}
   </style>
 </head>
 <body>
@@ -41,13 +42,18 @@
     <div class="card-header">Device</div>
     <div class="card-body">
       <div class="row g-3 align-items-center">
-        <div class="col-md-6">
+        <div class="col-md-4">
           <div class="form-text">Name</div>
           <div class="fs-5" id="devName">—</div>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
           <div class="form-text">Type</div>
           <div id="devType">—</div>
+        </div>
+        <div class="col-md-3">
+          <label class="form-text" for="modelSelect">Akuvox model</label>
+          <select class="form-select form-select-sm mt-1" id="modelSelect"></select>
+          <div class="form-text mt-1" id="modelStatus"></div>
         </div>
         <div class="col-md-3">
           <div class="form-text">IP</div>
@@ -706,12 +712,58 @@ const RELAY_ROLE_LABELS = {
   door_alarm: 'Door and Alarm Relay'
 };
 const RELAY_ROLE_ORDER = ['none', 'door', 'pedestrian', 'alarm', 'door_alarm'];
+const AKUVOX_MODELS = [
+  'Other Akuvox', 'S539', 'S538', 'S535', 'S532', 'X916', 'X915', 'X912',
+  'X910', 'R29', 'R28', 'R27', 'R25', 'R20', 'E21', 'E20', 'E18', 'E16',
+  'E13', 'E12', 'A095', 'A094', 'A092', 'A08', 'A05', 'A03', 'A02', 'A01'
+];
 
 let CURRENT_DEVICE = null;
 let relayStatusTimer = null;
 let relaySaving = false;
 let exitSaving = false;
 let autoRebootSaving = false;
+let modelSaving = false;
+
+function populateModelSelect(value){
+  const select = document.getElementById('modelSelect');
+  if (!select) return;
+  const selected = AKUVOX_MODELS.includes(value) ? value : 'Other Akuvox';
+  select.innerHTML = AKUVOX_MODELS.map(model =>
+    `<option value="${model}">${model}</option>`
+  ).join('');
+  select.value = selected;
+}
+
+async function saveDeviceModel(){
+  if (modelSaving || !CURRENT_DEVICE) return;
+  const select = document.getElementById('modelSelect');
+  const status = document.getElementById('modelStatus');
+  const model = select?.value || 'Other Akuvox';
+  modelSaving = true;
+  if (select) select.disabled = true;
+  if (status) status.textContent = 'Saving…';
+  try {
+    await apiPost(actionUrl, {
+      action: 'set_device_model',
+      entry_id: ENTRY_ID,
+      payload: { model }
+    });
+    CURRENT_DEVICE.model = model;
+    if (status) status.textContent = 'Saved';
+    setTimeout(() => {
+      if (status && status.textContent === 'Saved') status.textContent = '';
+    }, 1800);
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    populateModelSelect(CURRENT_DEVICE.model);
+    if (status) status.textContent = 'Save failed';
+    alert('Failed to update device model: ' + (err?.message || err));
+  } finally {
+    modelSaving = false;
+    if (select) select.disabled = false;
+  }
+}
 
 function relayValueNormalized(value, fallback = 'door'){
   const raw = (value ?? '').toString().trim().toLowerCase();
@@ -1032,6 +1084,7 @@ async function init(){
     document.getElementById('devName').textContent = dev.name || '—';
     document.getElementById('devType').textContent = dev.type || '—';
     document.getElementById('devIP').textContent   = dev.ip || '—';
+    populateModelSelect(dev.model);
 
     CURRENT_DEVICE = {
       ...dev,
@@ -1047,6 +1100,7 @@ async function init(){
     applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
     document.getElementById('relayASelect')?.addEventListener('change', saveRelayRoles);
     document.getElementById('relayBSelect')?.addEventListener('change', saveRelayRoles);
+    document.getElementById('modelSelect')?.addEventListener('change', saveDeviceModel);
     document.getElementById('exitDeviceToggle')?.addEventListener('change', handleExitToggleChange);
     document.getElementById('autoRebootToggle')?.addEventListener('change', () => {
       updateAutoRebootControls();

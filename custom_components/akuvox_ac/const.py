@@ -22,10 +22,43 @@ USERS_STORAGE_KEY  = f"{DOMAIN}_users.json"
 # Config keys
 CONF_DEVICE_NAME   = "device_name"
 CONF_DEVICE_TYPE   = "device_type"   # "Intercom" | "Keypad"
+CONF_DEVICE_MODEL  = "device_model"
 CONF_HOST          = "host"
 CONF_PORT          = "port"
 CONF_USERNAME      = "username"
 CONF_PASSWORD      = "password"
+
+DEFAULT_DEVICE_MODEL = "Other Akuvox"
+AKUVOX_DEVICE_MODELS = (
+    DEFAULT_DEVICE_MODEL,
+    "S539",
+    "S538",
+    "S535",
+    "S532",
+    "X916",
+    "X915",
+    "X912",
+    "X910",
+    "R29",
+    "R28",
+    "R27",
+    "R25",
+    "R20",
+    "E21",
+    "E20",
+    "E18",
+    "E16",
+    "E13",
+    "E12",
+    "A095",
+    "A094",
+    "A092",
+    "A08",
+    "A05",
+    "A03",
+    "A02",
+    "A01",
+)
 
 # Options
 CONF_PARTICIPATE   = "participate_in_sync"

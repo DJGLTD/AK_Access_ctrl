@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+  <title id="title">Akuvox slim face recognition terminal</title>
+  <defs>
+    <linearGradient id="glass" y1="0" y2="1">
+      <stop stop-color="#223240"/>
+      <stop offset=".42" stop-color="#050b11"/>
+      <stop offset="1" stop-color="#16232e"/>
+    </linearGradient>
+  </defs>
+  <rect x="30" y="8" width="60" height="224" rx="12" fill="url(#glass)" stroke="#40505e" stroke-width="2"/>
+  <circle cx="60" cy="39" r="6" fill="#101b24" stroke="#70818f"/>
+  <circle cx="60" cy="39" r="2.5" fill="#66bbef"/>
+  <rect x="36" y="58" width="48" height="90" rx="5" fill="#09121a" stroke="#263c4d"/>
+  <ellipse cx="60" cy="92" rx="14" ry="18" fill="none" stroke="#287bb0" stroke-width="2"/>
+  <path d="M44 128c7-14 25-14 32 0" fill="none" stroke="#287bb0" stroke-width="2"/>
+  <rect x="43" y="169" width="34" height="28" rx="4" fill="#1c2a34" stroke="#556674"/>
+  <path d="M50 183h20" stroke="#89a0b0" stroke-width="2"/>
+</svg>

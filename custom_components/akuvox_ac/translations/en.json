@@ -9,6 +9,7 @@
           "device_name": "Device Name",
           "host": "IP Address",
           "device_type": "Device Type",
+          "device_model": "Akuvox Model",
           "username": "Username",
           "password": "Password"
         }
@@ -23,6 +24,8 @@
       "init": {
         "title": "Options",
         "data": {
+          "device_type": "Device Type",
+          "device_model": "Akuvox Model",
           "participate_in_sync": "Participate in sync",
           "poll_interval": "Poll interval (seconds)",
           "device_groups": "Sync groups for this device"

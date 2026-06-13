@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+  <title id="title">Akuvox touchscreen intercom</title>
+  <defs>
+    <linearGradient id="frame" x1="0" x2="1">
+      <stop stop-color="#707b86"/>
+      <stop offset=".48" stop-color="#e3e7ea"/>
+      <stop offset="1" stop-color="#8c969f"/>
+    </linearGradient>
+    <linearGradient id="screen" y1="0" y2="1">
+      <stop stop-color="#101d29"/>
+      <stop offset="1" stop-color="#02070d"/>
+    </linearGradient>
+  </defs>
+  <rect x="22" y="5" width="76" height="230" rx="7" fill="url(#frame)" stroke="#555f68" stroke-width="2"/>
+  <rect x="29" y="15" width="62" height="150" rx="5" fill="url(#screen)"/>
+  <circle cx="60" cy="47" r="22" fill="#06090d" stroke="#293d50" stroke-width="5"/>
+  <circle cx="60" cy="47" r="10" fill="#143c5d"/>
+  <circle cx="56" cy="43" r="3" fill="#d8f3ff"/>
+  <rect x="39" y="81" width="42" height="58" rx="3" fill="#0c1721" stroke="#1e3243"/>
+  <path d="M44 91h32M44 100h24M44 109h29" stroke="#24455f" stroke-width="2"/>
+  <circle cx="60" cy="187" r="14" fill="#202a32" stroke="#6f7982" stroke-width="2"/>
+  <path d="M54 187h12M60 181v12" stroke="#bdc8d0" stroke-width="2"/>
+  <rect x="42" y="215" width="36" height="4" rx="2" fill="#68747d"/>
+</svg>
