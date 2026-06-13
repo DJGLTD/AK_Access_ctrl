@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+  <title id="title">Akuvox keypad door phone</title>
+  <defs>
+    <linearGradient id="metal" x1="0" x2="1">
+      <stop stop-color="#838e98"/>
+      <stop offset=".5" stop-color="#edf0f2"/>
+      <stop offset="1" stop-color="#68737e"/>
+    </linearGradient>
+  </defs>
+  <rect x="25" y="6" width="70" height="228" rx="6" fill="url(#metal)" stroke="#4f5a65" stroke-width="2"/>
+  <rect x="32" y="15" width="56" height="67" rx="4" fill="#111a22"/>
+  <circle cx="60" cy="46" r="18" fill="#05090d" stroke="#2e4356" stroke-width="4"/>
+  <circle cx="60" cy="46" r="7" fill="#1a679b"/>
+  <g fill="#25323d" stroke="#687782">
+    <circle cx="43" cy="105" r="7"/><circle cx="60" cy="105" r="7"/><circle cx="77" cy="105" r="7"/>
+    <circle cx="43" cy="124" r="7"/><circle cx="60" cy="124" r="7"/><circle cx="77" cy="124" r="7"/>
+    <circle cx="43" cy="143" r="7"/><circle cx="60" cy="143" r="7"/><circle cx="77" cy="143" r="7"/>
+    <circle cx="43" cy="162" r="7"/><circle cx="60" cy="162" r="7"/><circle cx="77" cy="162" r="7"/>
+  </g>
+  <circle cx="60" cy="201" r="14" fill="#1f2a33" stroke="#73808a" stroke-width="2"/>
+  <path d="M53 201h14" stroke="#c2ccd3" stroke-width="2"/>
+</svg>

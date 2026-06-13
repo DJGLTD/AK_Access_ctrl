@@ -9,112 +9,197 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
   <style>
     :root{
-      --bg:#0b1320; --card:#111a2b; --border:#1b2942; --text:#e6edf3; --muted:#a5b5cc;
-      --ok:#2ecc71; --warn:#ffc107; --bad:#ff4d4f; --dim:#9aa4b2;
+      --bg:#020b18; --bg-soft:#071426; --card:#0b192b; --card-2:#0e1f35;
+      --border:#203650; --border-soft:#172b43; --text:#f3f7fb; --muted:#91a4ba;
+      --blue:#1686ff; --blue-soft:#0e315f; --ok:#23d56d; --warn:#ffb31a;
+      --bad:#ff4d57; --dim:#8ba0b7; --shadow:0 16px 42px rgba(0,0,0,.2);
     }
-    html,body{height:100%}
-    body{ background:var(--bg); color:var(--text); margin:0; font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    .workspace{ width:90vw; margin:0 auto; display:flex; flex-direction:column; height:100vh; gap:1rem; }
-    .card{ background:var(--card); border:1px solid var(--border); }
-    .card-header{ border-bottom:1px solid var(--border); font-weight:600; color:var(--text); }
-    thead{ background:#0f1a2c; color:var(--muted) }
-    .badge-in-sync{background:#198754;--status-color:#2ecc71}
-    .badge-in-progress{background:#0dcaf0;color:#111;--status-color:#0dcaf0}
-    .badge-pending{background:#ffc107;color:#111;--status-color:#ffc107}
-    .badge-offline{background:#dc3545;--status-color:#ff4d4f}
-    .badge-online{background:#0dcaf0;color:#111;--status-color:#0dcaf0}
-    .badge-rebooting{background:#6f42c1;--status-color:#6f42c1}
-    .badge-inactive{background:#6c757d;color:#fff;--status-color:#6c757d}
-    .badge-cloud{background:#0d6efd;color:#fff;--status-color:#0d6efd}
-    .badge-local{background:#6c757d;color:#fff;--status-color:#6c757d}
-    .badge.bg-secondary{--status-color:#6c757d}
-    .status-indicator{--status-color:currentColor;display:inline-flex;align-items:center;gap:.35rem}
-    .status-indicator .status-dot{display:none;width:.75rem;height:.75rem;border-radius:50%;background:var(--status-color);box-shadow:0 0 0 2px rgba(15,26,44,.45)}
-    .status-indicator .status-text{display:inline}
-    .chip{display:inline-flex;align-items:center;gap:.3rem;background:#0f1f37;border:1px solid #243a61;border-radius:999px;padding:.1rem .5rem;font-size:.75rem}
-    .small-mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.85rem}
-    .section-33{height:32.5vh; display:flex; gap:1rem}
-    .section-50{height:32.5vh; display:flex; flex-direction:column; min-height:0}
-    .card-body{ overflow:auto; }
-    .kpi{display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap}
-    .kpi-actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
-    .kpi-actions .btn{white-space:nowrap}
-    .kpi-sync-now{display:flex;align-items:center}
-    .kpi-group{display:flex;gap:.75rem;flex-wrap:wrap;margin-left:auto;justify-content:flex-end}
-    .box{background:#0e1a2c;border:1px solid #1c2e4f;border-radius:.5rem;padding:.5rem 1rem;min-width:110px;display:flex;flex-direction:column;justify-content:center}
-    .btn{font-size:.85rem}
-    .footer-note{opacity:.65;font-size:.8rem;text-align:center}
-    .table-center th, .table-center td { text-align:center; vertical-align:middle; }
-    .table-center .chip { justify-content:center; }
-    .pin-toggle{
-      background:transparent;
-      border:0;
+    *{box-sizing:border-box}
+    html,body{min-height:100%}
+    body{
+      margin:0;
       color:var(--text);
-      cursor:pointer;
-      font:inherit;
-      font-weight:600;
-      font-variant-numeric:tabular-nums;
-      letter-spacing:0.1em;
-      padding:0;
-      text-decoration:none;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      background:
+        radial-gradient(circle at 55% -15%,rgba(24,112,213,.18),transparent 38%),
+        linear-gradient(180deg,#020b18 0%,#061222 72%,#020b16 100%);
     }
-    .pin-toggle:hover,
-    .pin-toggle:focus{
-      color:#0dcaf0;
-      text-decoration:underline;
+    body:before{
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      background-image:linear-gradient(rgba(255,255,255,.014) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.012) 1px,transparent 1px);
+      background-size:28px 28px;
+      mask-image:linear-gradient(to bottom,rgba(0,0,0,.55),transparent 82%);
     }
-    .pin-toggle:focus{
-      outline:2px solid rgba(13,202,240,.35);
-      outline-offset:2px;
+    .workspace{
+      position:relative;
+      width:min(1880px,calc(100vw - 40px));
+      min-height:100vh;
+      margin:0 auto;
+      padding:20px 0 10px;
+      display:flex;
+      flex-direction:column;
+      gap:14px;
     }
-    .pin-toggle.revealed{
-      color:#0dcaf0;
-      letter-spacing:0.08em;
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:24px}
+    .brand{display:flex;align-items:center;gap:14px;min-width:max-content}
+    .brand-mark{
+      width:42px;height:42px;border:1px solid #1989ff;border-radius:14px;
+      display:grid;place-items:center;color:#75baff;background:rgba(9,56,106,.3);
+      box-shadow:inset 0 0 18px rgba(22,134,255,.12);
+      font-size:1.25rem;
     }
-    .event-list{list-style:none; padding:0; margin:0;}
-    .event-item{padding:.5rem .75rem; border-bottom:1px dashed #20324f}
-    .event-title{font-weight:600}
-    .event-title.ok{color:var(--ok)}
-    .event-title.bad{color:var(--bad)}
-    .event-title.dim{color:var(--dim)}
-    .event-time{display:block; font-size:.78rem; color:var(--muted); margin-top:.15rem}
-    .event-filter{background:#0e1a2c;color:var(--text);border:1px solid #243a61;min-width:9.5rem}
-    .event-filter:focus{color:var(--text);background:#0e1a2c;border-color:#0dcaf0;box-shadow:0 0 0 0.2rem rgba(13,202,240,.25)}
-    .user-toolbar{display:flex;align-items:center;gap:0.5rem;flex-wrap:nowrap;}
-    .user-toolbar .form-control{min-width:200px;}
-    .user-toolbar .form-select{min-width:90px;max-width:140px;}
-    .user-toolbar .user-search{flex:2 1 320px;min-width:0;}
-    .card.pulse-highlight{border-color:rgba(13,202,240,.55);box-shadow:0 0 0 0.15rem rgba(13,202,240,.25);transition:border-color .3s ease, box-shadow .3s ease}
-    @media (max-width: 1200px){
-      .workspace{ width:95vw; }
+    .brand h1{font-size:1.65rem;line-height:1;margin:0;font-weight:750;letter-spacing:-.03em}
+    .top-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap}
+    .btn{
+      --bs-btn-border-radius:.46rem;
+      font-size:.82rem;
+      font-weight:650;
+      letter-spacing:.005em;
+      padding:.55rem 1rem;
     }
-    @media (max-width: 992px){
-      .workspace{ width:96vw; }
-      .kpi{flex-direction:column;align-items:stretch;gap:1rem;}
-      .kpi-actions{width:100%;}
-      .kpi-group{flex-wrap:wrap;justify-content:flex-start;width:100%;}
+    .btn-primary{background:linear-gradient(180deg,#1686ff,#086be2);border-color:#1686ff;box-shadow:0 8px 22px rgba(22,134,255,.2)}
+    .btn-outline-light{color:#eaf4ff;border-color:#38516d;background:rgba(9,22,38,.56)}
+    .btn-outline-light:hover{background:#112a46;border-color:#4b7199;color:#fff}
+    .btn-outline-info{color:#59aaff;border-color:#1d66a9}
+    .btn-outline-danger{color:#ff747b;border-color:#8e3038}
+    .summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;max-width:1380px}
+    .summary-card{
+      min-height:94px;padding:16px 18px;border:1px solid var(--border);border-radius:9px;
+      background:linear-gradient(135deg,rgba(15,34,57,.94),rgba(8,24,42,.94));
+      display:flex;align-items:center;gap:16px;box-shadow:var(--shadow);
     }
-    @media (max-width: 720px){
-      body{font-size:0.95rem;}
-      .workspace{ width:100%; padding:0 0.75rem 1.5rem; gap:0.75rem; }
-      .kpi{flex-direction:column;gap:0.75rem;}
-      .kpi-actions{flex-direction:column;align-items:stretch;gap:0.5rem;}
-      .kpi-actions .btn{width:100%;}
-      .kpi-sync-now{width:100%;}
-      .kpi-sync-now .btn{width:100%;}
-      .kpi-group{flex-wrap:wrap;gap:0.5rem;width:100%;justify-content:stretch;}
-      .box{min-width:0;width:100%;align-items:flex-start;text-align:left;}
-      .section-33,.section-50{height:auto;flex-direction:column;}
-      .card-body{overflow:auto;max-height:none;}
-      .card-header{flex-wrap:wrap;gap:0.5rem;}
-      .card-header .btn{width:100%;}
-      .user-toolbar{width:100%;flex-direction:column;align-items:stretch;}
-      .user-toolbar .form-control,
-      .user-toolbar .form-select{width:100%;min-width:0;}
-      table.table{font-size:0.85rem;}
-      .status-indicator{background:transparent!important;border:0;padding:0;gap:0;min-width:1.25rem;justify-content:center}
-      .status-indicator .status-dot{display:inline-block}
-      .status-indicator .status-text{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0}
+    .summary-icon{
+      width:54px;height:54px;flex:0 0 54px;border-radius:50%;display:grid;place-items:center;
+      color:#dcecff;background:linear-gradient(145deg,#153f75,#0d2850);font-size:1.45rem;
+    }
+    .summary-label{font-size:.84rem;color:#d5deea;margin-bottom:2px}
+    .summary-value{font-size:1.42rem;font-weight:760;line-height:1.1;font-variant-numeric:tabular-nums}
+    .summary-sub{font-size:.78rem;color:#bcc8d6;margin-top:5px}
+    .card{
+      color:var(--text);background:linear-gradient(145deg,rgba(13,31,52,.97),rgba(8,23,40,.97));
+      border:1px solid var(--border);border-radius:9px;box-shadow:var(--shadow);overflow:hidden;
+    }
+    .card-header{
+      min-height:48px;padding:12px 16px;border-bottom:1px solid var(--border-soft);
+      color:var(--text);font-weight:700;background:rgba(10,27,46,.58);
+    }
+    .card-body{padding:0;overflow:auto;min-height:0}
+    .section-33{display:grid;grid-template-columns:1.08fr 1.05fr .96fr;gap:12px;min-height:360px}
+    .section-50{display:flex;min-height:350px}
+    .section-50>.card{width:100%}
+    .panel-link{font-size:.78rem;color:#58a7ff;text-decoration:none;font-weight:500;white-space:nowrap}
+    .panel-link:hover{color:#8cc4ff}
+    .panel-footer{
+      min-height:46px;border-top:1px solid var(--border-soft);display:flex;align-items:center;
+      justify-content:center;padding:10px 16px;color:#58a7ff;font-size:.8rem;
+    }
+    .badge-in-sync{background:#145f3a;--status-color:var(--ok)}
+    .badge-in-progress{background:#0d6080;color:#dff7ff;--status-color:#24c7f1}
+    .badge-pending{background:#8b5c00;color:#ffe1a0;--status-color:var(--warn)}
+    .badge-offline{background:#792d35;--status-color:var(--bad)}
+    .badge-online{background:#104f36;color:#91f1b5;--status-color:var(--ok)}
+    .badge-rebooting{background:#5e3d9b;--status-color:#b18cff}
+    .badge-inactive{background:#445266;color:#e4eaf1;--status-color:#8391a2}
+    .badge-cloud{background:#155fa7;color:#dceeff;--status-color:#5aafff}
+    .badge-local{background:#49586a;color:#fff;--status-color:#8fa0b2}
+    .badge.bg-secondary{--status-color:#6c757d}
+    .status-indicator{--status-color:currentColor;display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.24rem .62rem}
+    .status-indicator .status-dot{display:none;width:.52rem;height:.52rem;border-radius:50%;background:var(--status-color)}
+    .status-indicator .status-text{display:inline}
+    .chip{display:inline-flex;align-items:center;justify-content:center;gap:.3rem;background:#0f2b4e;border:1px solid #24588b;border-radius:999px;padding:.13rem .55rem;font-size:.72rem;color:#cbe5ff}
+    .small-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem}
+    .event-list{list-style:none;padding:0;margin:0}
+    .event-item{
+      display:grid;grid-template-columns:34px 70px minmax(0,1fr) auto;align-items:center;gap:10px;
+      min-height:48px;padding:8px 14px;border-bottom:1px solid rgba(42,63,87,.66);
+    }
+    .event-icon{width:27px;height:27px;border-radius:7px;display:grid;place-items:center;background:#10472f;color:var(--ok)}
+    .event-icon.bad{background:#4c222b;color:#ff6972}
+    .event-icon.call{background:#123f78;color:#64aaff}
+    .event-time{font-size:.75rem;color:#d1dbe6;font-variant-numeric:tabular-nums}
+    .event-title{font-size:.76rem;color:#eaf1f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .event-result{font-size:.74rem;white-space:nowrap}
+    .event-result.ok{color:var(--ok)} .event-result.bad{color:var(--bad)} .event-result.dim{color:#68a9ff}
+    .event-filter{background:#0b1b2f;color:var(--text);border:1px solid #294866;min-width:8.7rem}
+    .event-filter:focus{color:var(--text);background:#0e2036;border-color:#1686ff;box-shadow:0 0 0 .18rem rgba(22,134,255,.16)}
+    .device-overview-list{display:flex;flex-direction:column;gap:12px;padding:14px;height:100%}
+    .device-overview-card{
+      border:1px solid #1c3856;border-radius:8px;background:rgba(6,20,35,.62);
+      padding:18px;display:grid;grid-template-columns:112px minmax(0,1fr);gap:18px;min-height:232px;
+    }
+    .device-visual{
+      border-radius:8px;background:linear-gradient(145deg,#12263d,#0a1a2c);display:flex;
+      align-items:center;justify-content:center;min-height:160px;padding:12px;position:relative;
+    }
+    .device-visual img{display:block;max-width:78px;max-height:150px;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 12px 14px rgba(0,0,0,.4))}
+    .device-copy{display:flex;flex-direction:column;min-width:0}
+    .device-title-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .device-title{font-size:1rem;font-weight:750;margin:0}
+    .device-model{font-size:.76rem;color:#8fb2d5;margin-top:4px}
+    .device-ip{font-size:.79rem;color:#d4dee9;margin-top:10px}
+    .device-sync-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+    .device-last-sync{font-size:.75rem;color:#b9c6d4}
+    .device-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:auto;padding-top:18px}
+    .device-actions .btn{min-width:90px;padding:.45rem .75rem}
+    .system-alerts{padding:0 16px}
+    .system-alert{
+      min-height:68px;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:10px;
+      align-items:center;border-bottom:1px solid rgba(42,63,87,.62);
+    }
+    .system-alert:last-child{border-bottom:0}
+    .alert-icon{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-size:1.05rem}
+    .system-alert.ok .alert-icon{background:#0c4a2f;color:var(--ok);box-shadow:0 0 16px rgba(35,213,109,.18)}
+    .system-alert.warn .alert-icon{background:#563a05;color:var(--warn)}
+    .system-alert.info .alert-icon{background:#174c8d;color:#7eb8ff}
+    .alert-title{font-size:.78rem;font-weight:650}
+    .system-alert.ok .alert-title{color:var(--ok)} .system-alert.warn .alert-title{color:var(--warn)} .system-alert.info .alert-title{color:#65a9ff}
+    .alert-detail{font-size:.72rem;color:#aab9c9;margin-top:3px}
+    .alert-time{font-size:.7rem;color:#9eacbc;font-variant-numeric:tabular-nums}
+    .user-panel-header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:8px 16px}
+    .user-heading{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    .user-heading-title{font-size:.92rem;font-weight:720}
+    .user-toolbar{display:flex;align-items:center;gap:10px;flex:0 1 440px;flex-wrap:nowrap}
+    .user-toolbar .form-control,.user-toolbar .form-select{background:#0a1a2c;color:var(--text);border-color:#29445f}
+    .user-toolbar .form-control::placeholder{color:#8798aa}
+    .user-toolbar .form-control{min-width:240px}
+    .user-toolbar .form-select{min-width:120px;max-width:165px}
+    .user-toolbar .user-search{position:relative;flex:1 1 270px;min-width:250px}
+    .user-toolbar .user-search i{position:absolute;right:11px;top:50%;transform:translateY(-50%);z-index:2}
+    .user-toolbar .user-search .form-control{padding-right:34px}
+    .table-responsive-shell{padding:0 16px 10px}
+    .table{--bs-table-bg:transparent;--bs-table-color:#dfe8f1;--bs-table-border-color:#22364d;margin:0;font-size:.76rem}
+    .table thead th{background:#0d1c2e;color:#f1f5f9;font-weight:700;border-bottom:1px solid #2b4057;padding:.42rem .5rem}
+    .table tbody td{padding:.28rem .5rem;border-color:#22364d}
+    .table tbody tr:hover td{background:rgba(25,67,110,.17)}
+    .table-center th,.table-center td{text-align:center;vertical-align:middle}
+    .table-center .chip{justify-content:center}
+    .table .btn{font-size:.68rem;padding:.2rem .55rem;min-height:26px}
+    .table .btn-primary{background:transparent;border-color:#1686ff;color:#58a7ff;box-shadow:none}
+    .table .btn-info{background:transparent;border-color:#1686ff;color:#58a7ff}
+    .table .btn-danger{background:transparent;border-color:#96313a;color:#ff6670}
+    .pin-toggle{background:transparent;border:0;color:var(--text);cursor:pointer;font:inherit;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.1em;padding:0}
+    .pin-toggle:hover,.pin-toggle:focus{color:#55a8ff;text-decoration:underline}
+    .pin-toggle.revealed{color:#55a8ff;letter-spacing:.08em}
+    .footer-note{opacity:.52;font-size:.74rem;text-align:center;padding:2px 0 0}
+    .card.pulse-highlight{border-color:rgba(22,134,255,.62);box-shadow:0 0 0 .15rem rgba(22,134,255,.2)}
+    .visually-held{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important}
+    @media (max-width:1280px){
+      .workspace{width:min(1220px,calc(100vw - 28px))}
+      .section-33{grid-template-columns:1fr 1fr}
+      #sectionAlerts{grid-column:1/-1}
+      .summary-grid{max-width:none}
+    }
+    @media (max-width:900px){
+      .topbar{align-items:flex-start;flex-direction:column}
+      .top-actions{justify-content:flex-start}
+      .summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .section-33{grid-template-columns:1fr}
+      #sectionAlerts{grid-column:auto}
+      .device-overview-card{grid-template-columns:90px minmax(0,1fr)}
+      .user-toolbar{width:100%}
     }
   </style>
 </head>
@@ -888,22 +973,39 @@ function userSourceBadge(user){
   return `<span class="badge user-source-badge ${kind}">${label}</span>`;
 }
 
+function setKpiTimestamp(value, valueId, subId, fallback = '—'){
+  const valueEl = document.getElementById(valueId);
+  const subEl = document.getElementById(subId);
+  if (!valueEl) return;
+  if (!value) {
+    valueEl.textContent = fallback;
+    if (subEl) subEl.textContent = fallback === '—' ? 'Not Scheduled' : '';
+    return;
+  }
+  const formatted = formatWhen(value);
+  const parts = formatted.split(' ');
+  valueEl.textContent = parts.shift() || fallback;
+  if (subEl) subEl.textContent = parts.join(' ') || '';
+}
+
 function renderKPIs(k){
   const nextEl = document.getElementById('kpiNext');
-  const eventsLastEl = document.getElementById('kpiEventsLast');
-  if (eventsLastEl) {
-    const lastSync = k?.events_last_sync;
-    eventsLastEl.textContent = lastSync ? formatWhen(lastSync) : '—';
-  }
+  setKpiTimestamp(k?.events_last_sync, 'kpiEventsLast', 'kpiEventsDate');
   const syncActive = !!k.sync_active;
   if (syncActive) {
     clearNextSyncCountdown();
     if (nextEl) nextEl.textContent = k.next_sync || 'Syncing…';
+    const nextSub = document.getElementById('kpiNextSub');
+    if (nextSub) nextSub.textContent = 'Sync in progress';
   } else if (k.next_sync_eta) {
     startNextSyncCountdown(k.next_sync_eta, k.next_sync);
+    const nextSub = document.getElementById('kpiNextSub');
+    if (nextSub) nextSub.textContent = 'Scheduled';
   } else if (nextEl) {
     clearNextSyncCountdown();
     nextEl.textContent = k.next_sync || '—';
+    const nextSub = document.getElementById('kpiNextSub');
+    if (nextSub) nextSub.textContent = k.next_sync && k.next_sync !== '—' ? 'Scheduled' : 'Not Scheduled';
   }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
@@ -920,10 +1022,6 @@ function renderKPIs(k){
       pendingEl.textContent = String(pendingCount);
     } else {
       pendingEl.textContent = String(pendingSource);
-    }
-    const pendingBox = pendingEl.closest('.box');
-    if (pendingBox) {
-      pendingBox.style.display = pendingHasValue && pendingIsNumeric && pendingCount === 0 ? 'none' : '';
     }
   }
   const syncNowBox = document.getElementById('kpiSyncNowBox');
@@ -942,9 +1040,7 @@ function renderKPIs(k){
     else forceBtn.removeAttribute('disabled');
   }
   const footer = document.querySelector('.footer-note');
-  if (footer) {
-    footer.textContent = '';
-  }
+  if (footer) footer.textContent = `© ${new Date().getFullYear()} Akuvox Access Control`;
 }
 
 const ESCAPE_HTML_LOOKUP = {
@@ -1096,8 +1192,32 @@ function safeDeviceName(d){
   return d.display_name || d.friendly_name || d.device_name || d.name || d.title || '-';
 }
 
+const DEVICE_MODEL_ASSETS = {
+  S539:'screen-tall', S538:'screen-tall', S535:'screen-tall', X916:'screen-tall',
+  X915:'screen-tall', R29:'screen-tall', E18:'screen-tall',
+  S532:'keypad-door', R28:'keypad-door', R27:'keypad-door',
+  R25:'compact-door', R20:'compact-door', X910:'compact-door',
+  E21:'compact-door', E20:'compact-door', E13:'compact-door', E12:'compact-door',
+  X912:'face-slim', E16:'face-slim', A05:'face-slim',
+  A08:'access-keypad', A03:'access-keypad', A02:'access-keypad', A01:'access-keypad',
+  A095:'controller', A094:'controller', A092:'controller'
+};
+
+function deviceArtwork(model){
+  const normalized = String(model || '').trim().toUpperCase();
+  const asset = DEVICE_MODEL_ASSETS[normalized] || 'generic';
+  return `/api/AK_AC/device-models/${asset}.svg`;
+}
+
 function renderDevices(devs){
-  const rows = (devs || []).map(d => {
+  const host = $('#deviceOverview');
+  if (!host) return;
+  const onlineCount = (devs || []).filter(d => !!d.online).length;
+  const deviceSub = document.getElementById('kpiDevicesSub');
+  if (deviceSub) {
+    deviceSub.textContent = `${onlineCount} Online Device${onlineCount === 1 ? '' : 's'}`;
+  }
+  const cards = (devs || []).map(d => {
     const online = !!d.online;
     const statusKeyRaw = d.status ?? (online ? 'online' : 'offline');
     const statusKey = String(statusKeyRaw).toLowerCase();
@@ -1122,30 +1242,40 @@ function renderDevices(devs){
       syncBadge = badge('Pending', 'pending', syncAttr);
     }
     const last   = d.last_sync || '—';
-    const name   = safeDeviceName(d);
+    const name   = escapeHtml(safeDeviceName(d));
+    const model  = escapeHtml(d.model || 'Other Akuvox');
+    const type   = escapeHtml(d.type || 'Akuvox Device');
+    const ip     = escapeHtml(d.ip || '—');
 
-    const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
-    const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
+    const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${escapeHtml(id)}"><i class="bi bi-arrow-repeat"></i> Sync</button>`   : '';
+    const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-outline-danger" data-act="reboot" data-id="${escapeHtml(id)}"><i class="bi bi-power"></i> Reboot</button>` : '';
     const editHref  = id ? buildHref('device-edit', { id }) : '';
-    const editBtn   = (isOnline && id) ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
+    const editBtn   = id ? `<a class="btn btn-sm btn-outline-light" data-edit-device="${escapeHtml(id)}" href="${escapeHtml(editHref)}"><i class="bi bi-pencil-square"></i> Edit</a>` : '';
 
-    return `<tr>
-      <td>${name}</td>
-      <td>${d.type || '-'}</td>
-      <td class="small-mono">${d.ip || '-'}</td>
-      <td>${statusBadge}</td>
-      <td>${syncBadge}</td>
-      <td>${last}</td>
-      <td>${syncBtn}</td>
-      <td>${editBtn}</td>
-      <td>${rebootBtn}</td>
-    </tr>`;
+    return `<article class="device-overview-card">
+      <div class="device-visual">
+        <img src="${deviceArtwork(d.model)}" alt="${model} device" />
+      </div>
+      <div class="device-copy">
+        <div class="device-title-line">
+          <h3 class="device-title">${name}</h3>
+          ${statusBadge}
+        </div>
+        <div class="device-model">Akuvox ${model} · ${type}</div>
+        <div class="device-ip small-mono">${ip}</div>
+        <div class="device-sync-row">
+          ${syncBadge}
+          <span class="device-last-sync">Last Sync: ${escapeHtml(last)}</span>
+        </div>
+        <div class="device-actions">${syncBtn}${editBtn}${rebootBtn}</div>
+      </div>
+    </article>`;
   }).join('');
 
-  $('#tblDevices').innerHTML = rows || '<tr><td colspan="9" class="text-muted">No devices</td></tr>';
+  host.innerHTML = cards || '<div class="p-4 text-muted">No devices configured</div>';
 
   // per-device actions with UI endpoint first, HA service fallback
-  $('#tblDevices').querySelectorAll('button[data-act]').forEach(b => {
+  host.querySelectorAll('button[data-act]').forEach(b => {
     b.addEventListener('click', async () => {
       const id = b.dataset.id;
       const act = b.dataset.act;
@@ -1168,7 +1298,7 @@ function renderDevices(devs){
     });
   });
 
-  $('#tblDevices').querySelectorAll('a[data-edit-device]').forEach(link => {
+  host.querySelectorAll('a[data-edit-device]').forEach(link => {
     link.addEventListener('click', (ev) => {
       ev.preventDefault();
       const entryId = link.dataset.editDevice || '';
@@ -1472,11 +1602,23 @@ function applyEventFilter(){
   if (!listEl) return;
   const html = list.map(e => {
     const when = formatWhen(e.timestamp || e.Time || '');
+    const time = when.split(' ')[0] || '—';
     const info = describeEventForDisplay(e);
     const cls  = classifyEvent(e, info.highlight);
+    const iconClass = cls === 'bad' ? 'bad' : (info.category === 'call' ? 'call' : '');
+    const icon = info.category === 'call'
+      ? 'bi-grid-3x3-gap-fill'
+      : (info.category === 'system' ? 'bi-info-circle' : 'bi-person-fill');
+    const result = info.category === 'call'
+      ? 'Call Answered'
+      : info.category === 'system'
+        ? (cls === 'bad' ? 'Attention' : 'System Event')
+        : (cls === 'bad' ? 'Access Denied' : cls === 'ok' ? 'Access Granted' : 'Access Event');
     return `<li class="event-item" data-category="${info.category}">
-      <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
-      <div class="event-time">${when}</div>
+      <span class="event-icon ${iconClass}"><i class="bi ${icon}"></i></span>
+      <span class="event-time">${escapeHtml(time)}</span>
+      <span class="event-title">${escapeHtml(info.title)}</span>
+      <span class="event-result ${cls}">● ${escapeHtml(result)}</span>
     </li>`;
   }).join('');
   const emptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
@@ -1531,6 +1673,52 @@ function renderEvents(devs, aggregated){
   events.sort((a,b)=> (b._t||0) - (a._t||0));
   cachedEvents = events;
   applyEventFilter();
+}
+
+function renderSystemAlerts(state){
+  const host = document.getElementById('systemAlerts');
+  if (!host) return;
+  const devices = Array.isArray(state?.devices) ? state.devices : [];
+  const kpis = state?.kpis || {};
+  const offlineCount = devices.filter(device => !device.online).length;
+  const pendingCount = Number.isFinite(Number(kpis.pending)) ? Number(kpis.pending) : 0;
+  const unidentified = devices.filter(device => !device.model || device.model === 'Other Akuvox').length;
+  const now = new Date();
+  const time = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+  const operational = offlineCount
+    ? {
+        tone:'warn', icon:'bi-exclamation-triangle', title:`${offlineCount} device${offlineCount === 1 ? '' : 's'} offline`,
+        detail:'Check network connectivity and device power.'
+      }
+    : {
+        tone:'ok', icon:'bi-check-circle', title:'All systems operational',
+        detail:'No critical device issues detected.'
+      };
+
+  const sync = kpis.sync_active
+    ? {tone:'info', icon:'bi-arrow-repeat', title:'Sync in progress', detail:'Device records are being updated.'}
+    : pendingCount > 0
+      ? {tone:'warn', icon:'bi-clock', title:`${pendingCount} sync${pendingCount === 1 ? '' : 's'} pending`, detail:kpis.next_sync && kpis.next_sync !== '—' ? `Next sync ${kpis.next_sync}.` : 'Run Force Sync to update now.'}
+      : {tone:'ok', icon:'bi-check2-circle', title:'Devices in sync', detail:kpis.next_sync && kpis.next_sync !== '—' ? `Next sync ${kpis.next_sync}.` : 'No sync currently scheduled.'};
+
+  const models = unidentified
+    ? {
+        tone:'info', icon:'bi-device-ssd', title:`Select ${unidentified} device model${unidentified === 1 ? '' : 's'}`,
+        detail:'Choose the model in Device Edit for matching artwork.'
+      }
+    : {
+        tone:'info', icon:'bi-info-circle', title:'Device models configured',
+        detail:'Dashboard artwork matches the installed hardware.'
+      };
+
+  host.innerHTML = [operational, sync, models].map(item => `
+    <div class="system-alert ${item.tone}">
+      <span class="alert-icon"><i class="bi ${item.icon}"></i></span>
+      <div><div class="alert-title">${escapeHtml(item.title)}</div><div class="alert-detail">${escapeHtml(item.detail)}</div></div>
+      <span class="alert-time">${time}</span>
+    </div>
+  `).join('');
 }
 
 function extractAccessEventsCollection(payload){
@@ -2293,6 +2481,7 @@ async function refresh(){
     const accessEvents = extractAccessEventsCollection(state?.access_events);
     renderDevices(devs);
     renderEvents(devs, accessEvents);
+    renderSystemAlerts({ ...state, devices: devs });
     if (cachedEvents.length > 0) {
       eventHistoryInitialized = true;
     }
@@ -2307,8 +2496,10 @@ async function refresh(){
   } catch(e){
     console.error('state load failed', e);
     if (handleAuthError(e)) return;
-    document.querySelector('#tblDevices').innerHTML =
-      `<tr><td colspan="9" class="text-danger">Failed to load: ${escapeHtml(String(e))}</td></tr>`;
+    const deviceHost = document.querySelector('#deviceOverview');
+    if (deviceHost) {
+      deviceHost.innerHTML = `<div class="p-4 text-danger">Failed to load: ${escapeHtml(String(e))}</div>`;
+    }
   }
 }
 
@@ -2771,6 +2962,10 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     openInApp('settings');
   });
+  document.getElementById('btnViewEvents')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openInApp('event-history');
+  });
 
   const addUserBtn = document.getElementById('btnAddUser');
   if (addUserBtn) {
@@ -2890,96 +3085,118 @@ function startNextSyncCountdown(iso, fallbackTime){
 
 </script>
 
-  <div class="workspace">
-    <div class="kpi">
-      <div class="kpi-actions">
-        <div class="kpi-sync-now" id="kpiSyncNowBox" style="display:none;">
-          <button id="btnSyncNowEta" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Sync Now</button>
+  <main class="workspace">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><i class="bi bi-shield-lock"></i></div>
+        <h1>Akuvox Access Control</h1>
+      </div>
+      <div class="top-actions">
+        <div id="kpiSyncNowBox" class="visually-held" aria-hidden="true">
+          <button id="btnSyncNowEta" class="btn btn-sm btn-primary">Sync Now</button>
         </div>
-        <button id="btnForceFull" class="btn btn-sm btn-outline-light"><i class="bi bi-lightning-charge-fill"></i> Force Full Sync</button>
-        <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-light"><i class="bi bi-journal-arrow-down"></i> Update Access Events</button>
-        <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light"><i class="bi bi-cloud-arrow-down"></i> Check HACS Update</button>
+        <button id="btnForceFull" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Force Sync</button>
+        <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-info"><i class="bi bi-arrow-counterclockwise"></i> Update Events</button>
         <button id="btnRebootAll" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-repeat"></i> Reboot All</button>
-        <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear-wide-connected"></i> Global Settings</button>
+        <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear"></i> Global Settings</button>
       </div>
-      <div class="kpi-group">
-        <div class="box text-end"><div>Users</div><div id="kpiUsers">—</div></div>
-        <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
-        <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
-        <div class="box text-end"><div>Events Last Sync</div><div id="kpiEventsLast">—</div></div>
-        <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
-      </div>
-    </div>
+    </header>
 
-    <div class="section-33">
-      <div class="card flex-fill" id="sectionEvents">
-        <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap">
-          <span>Event History</span>
-          <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
-            <option value="all">All events</option>
-            <option value="system">System events</option>
-            <option value="access">Access events</option>
-          </select>
+    <section class="summary-grid" aria-label="Dashboard summary">
+      <article class="summary-card">
+        <span class="summary-icon"><i class="bi bi-people"></i></span>
+        <div><div class="summary-label">Users</div><div class="summary-value" id="kpiUsers">—</div><div class="summary-sub">Total Users</div></div>
+      </article>
+      <article class="summary-card">
+        <span class="summary-icon"><i class="bi bi-door-open"></i></span>
+        <div><div class="summary-label">Devices</div><div class="summary-value" id="kpiDevices">—</div><div class="summary-sub" id="kpiDevicesSub">Online Devices</div></div>
+      </article>
+      <article class="summary-card">
+        <span class="summary-icon"><i class="bi bi-clock-history"></i></span>
+        <div><div class="summary-label">Events Last Sync</div><div class="summary-value" id="kpiEventsLast">—</div><div class="summary-sub" id="kpiEventsDate">—</div></div>
+      </article>
+      <article class="summary-card">
+        <span class="summary-icon"><i class="bi bi-calendar2-check"></i></span>
+        <div><div class="summary-label">Next Sync</div><div class="summary-value" id="kpiNext">—</div><div class="summary-sub" id="kpiNextSub">Not Scheduled</div></div>
+      </article>
+      <span id="kpiPending" class="visually-held">—</span>
+    </section>
+
+    <section class="section-33">
+      <article class="card" id="sectionEvents">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+          <span>Live Access Feed</span>
+          <div class="d-flex align-items-center gap-2">
+            <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
+              <option value="all">All events</option>
+              <option value="system">System events</option>
+              <option value="access">Access events</option>
+            </select>
+            <a id="btnViewEvents" class="panel-link" href="/akuvox-ac/event-history">View all events</a>
+          </div>
         </div>
         <div class="card-body">
           <ul id="eventList" class="event-list">
-            <li class="event-item"><span class="event-title dim">Loading…</span></li>
+            <li class="event-item"><span class="event-title">Loading…</span></li>
           </ul>
         </div>
-      </div>
-      <div class="card flex-fill" id="sectionDevices">
-        <div class="card-header">Device Health</div>
-        <div class="card-body">
-          <table class="table table-sm table-dark mb-0 table-center">
-            <thead>
-              <tr>
-                <th>Name</th><th>Type</th><th>IP</th><th>Status</th><th>Sync</th><th>Last Sync</th>
-                <th>Sync</th><th>Edit</th><th>Reboot</th>
-              </tr>
-            </thead>
-            <tbody id="tblDevices"><tr><td colspan="9" class="text-muted">Loading…</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+      </article>
 
-    <div class="section-50">
-      <div class="card flex-fill" id="sectionUsers">
-        <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-          <div class="d-flex gap-2">
-            <a class="btn btn-success" id="btnAddUser" href="/akuvox-ac/users" target="_top">
-              <i class="bi bi-person-plus"></i> Add User
-            </a>
-            <a class="btn btn-outline-info" id="btnAddTempUser" href="/akuvox-ac/temp-user" target="_top">
-              <i class="bi bi-clock-history"></i> Add Temporary User
-            </a>
+      <article class="card" id="sectionDevices">
+        <div class="card-header">Device Overview</div>
+        <div class="card-body">
+          <div id="deviceOverview" class="device-overview-list">
+            <div class="p-4 text-muted">Loading…</div>
+          </div>
+        </div>
+        <div class="panel-footer">All configured devices <i class="bi bi-arrow-right ms-2"></i></div>
+      </article>
+
+      <article class="card" id="sectionAlerts">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>System Alerts</span>
+          <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light" title="Check for updates"><i class="bi bi-cloud-arrow-down"></i></button>
+        </div>
+        <div class="card-body">
+          <div id="systemAlerts" class="system-alerts">
+            <div class="p-4 text-muted">Loading…</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="section-50">
+      <article class="card" id="sectionUsers">
+        <div class="card-header user-panel-header">
+          <div class="user-heading">
+            <span class="user-heading-title">Users &amp; Access Control</span>
+            <a class="btn btn-success btn-sm" id="btnAddUser" href="/akuvox-ac/users" target="_top"><i class="bi bi-plus-lg"></i> Add User</a>
+            <a class="btn btn-outline-info btn-sm" id="btnAddTempUser" href="/akuvox-ac/temp-user" target="_top"><i class="bi bi-plus-lg"></i> Add Temporary User</a>
           </div>
           <div class="user-toolbar">
-            <div class="d-flex align-items-center gap-2 user-search">
+            <div class="d-flex align-items-center user-search">
+              <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users…" aria-label="Search users" />
               <i class="bi bi-search text-muted" aria-hidden="true"></i>
-              <input id="userSearch" class="form-control form-control-sm" type="search" placeholder="Search users" aria-label="Search users" />
             </div>
             <select id="userSort" class="form-select form-select-sm" aria-label="Organise users">
-              <option value="last_access">last access</option>
-              <option value="ha_id">user id</option>
-              <option value="name">name</option>
+              <option value="last_access">Last access</option>
+              <option value="ha_id">All users</option>
+              <option value="name">Name</option>
             </select>
           </div>
         </div>
         <div class="card-body">
-          <div id="usersTableWrap">
-            <table class="table table-sm table-dark mb-0 table-center">
-              <thead>
-                <tr><th>Name</th><th>Source</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Access Schedule</th><th>Actions</th></tr>
-              </thead>
+          <div id="usersTableWrap" class="table-responsive-shell">
+            <table class="table table-sm table-center">
+              <thead><tr><th>Name</th><th>Source</th><th>Face Recognition</th><th>Access</th><th>Last Access</th><th>Schedule</th><th>Actions</th></tr></thead>
               <tbody id="tblUsers"><tr><td colspan="7" class="text-muted">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
-      </div>
-    </div>
+      </article>
+    </section>
 
-    <div class="footer-note my-2"></div>
-  </div>
+    <footer class="footer-note"></footer>
+  </main>
 </body>
 </html>

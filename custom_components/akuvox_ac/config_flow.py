@@ -9,11 +9,11 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     DOMAIN,
-    ENTRY_VERSION, 
-    CONF_DEVICE_NAME, CONF_DEVICE_TYPE,
+    ENTRY_VERSION,
+    CONF_DEVICE_NAME, CONF_DEVICE_TYPE, CONF_DEVICE_MODEL,
     CONF_HOST, CONF_PORT, CONF_USERNAME, CONF_PASSWORD,
     CONF_PARTICIPATE, CONF_POLL_INTERVAL, CONF_DEVICE_GROUPS,
-    DEFAULT_POLL_INTERVAL,
+    DEFAULT_POLL_INTERVAL, DEFAULT_DEVICE_MODEL, AKUVOX_DEVICE_MODELS,
 )
 
 DEVICE_TYPES = ["Intercom", "Keypad"]
@@ -39,6 +39,9 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_DEVICE_NAME): str,
             vol.Required(CONF_HOST): str,
             vol.Required(CONF_DEVICE_TYPE, default="Intercom"): vol.In(DEVICE_TYPES),
+            vol.Required(
+                CONF_DEVICE_MODEL, default=DEFAULT_DEVICE_MODEL
+            ): vol.In(AKUVOX_DEVICE_MODELS),
             vol.Optional(CONF_USERNAME, default=""): str,
             vol.Optional(CONF_PASSWORD, default=""): str,
         })
@@ -74,6 +77,13 @@ class AkuvoxOptionsFlow(config_entries.OptionsFlow):
         # defaults from entry.options or entry.data
         base = {**self.entry.data, **self.entry.options}
         schema = vol.Schema({
+            vol.Optional(
+                CONF_DEVICE_TYPE, default=base.get(CONF_DEVICE_TYPE, "Intercom")
+            ): vol.In(DEVICE_TYPES),
+            vol.Optional(
+                CONF_DEVICE_MODEL,
+                default=base.get(CONF_DEVICE_MODEL, DEFAULT_DEVICE_MODEL),
+            ): vol.In(AKUVOX_DEVICE_MODELS),
             vol.Optional(CONF_PARTICIPATE, default=base.get(CONF_PARTICIPATE, True)): bool,
             vol.Optional(CONF_POLL_INTERVAL, default=base.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)): int,
             vol.Optional(CONF_DEVICE_GROUPS, default=base.get(CONF_DEVICE_GROUPS, ["Default"])): vol.All(

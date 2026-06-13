@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+  <title id="title">Akuvox access keypad</title>
+  <defs>
+    <linearGradient id="body" x1="0" x2="1">
+      <stop stop-color="#131d25"/>
+      <stop offset=".5" stop-color="#33414c"/>
+      <stop offset="1" stop-color="#111920"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="14" width="56" height="212" rx="12" fill="url(#body)" stroke="#52616d" stroke-width="2"/>
+  <circle cx="60" cy="42" r="8" fill="#091017" stroke="#657887"/>
+  <circle cx="60" cy="42" r="3" fill="#57aee5"/>
+  <g fill="#24333e" stroke="#778996">
+    <circle cx="46" cy="79" r="7"/><circle cx="60" cy="79" r="7"/><circle cx="74" cy="79" r="7"/>
+    <circle cx="46" cy="99" r="7"/><circle cx="60" cy="99" r="7"/><circle cx="74" cy="99" r="7"/>
+    <circle cx="46" cy="119" r="7"/><circle cx="60" cy="119" r="7"/><circle cx="74" cy="119" r="7"/>
+    <circle cx="46" cy="139" r="7"/><circle cx="60" cy="139" r="7"/><circle cx="74" cy="139" r="7"/>
+  </g>
+  <rect x="43" y="169" width="34" height="34" rx="6" fill="#15232c" stroke="#6a7d8b"/>
+  <path d="M51 186h18" stroke="#8ea2af" stroke-width="2"/>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+  <title id="title">Akuvox compact door phone</title>
+  <defs>
+    <linearGradient id="body" x1="0" x2="1">
+      <stop stop-color="#4e5964"/>
+      <stop offset=".5" stop-color="#bcc4ca"/>
+      <stop offset="1" stop-color="#68737c"/>
+    </linearGradient>
+  </defs>
+  <rect x="27" y="26" width="66" height="188" rx="10" fill="url(#body)" stroke="#3e4851" stroke-width="2"/>
+  <rect x="34" y="35" width="52" height="70" rx="6" fill="#121a21"/>
+  <circle cx="60" cy="66" r="18" fill="#05090d" stroke="#34495a" stroke-width="4"/>
+  <circle cx="60" cy="66" r="7" fill="#1c6598"/>
+  <circle cx="60" cy="137" r="19" fill="#29343d" stroke="#71808b" stroke-width="2"/>
+  <path d="M53 137h14M60 130v14" stroke="#c5cfd6" stroke-width="2"/>
+  <circle cx="60" cy="185" r="10" fill="#e1e5e8" stroke="#69747d" stroke-width="2"/>
+</svg>
