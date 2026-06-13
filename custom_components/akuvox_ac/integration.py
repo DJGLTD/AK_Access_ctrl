@@ -7160,6 +7160,9 @@ class SyncManager:
                                 )
                                 break
 
+                checked_at = dt_util.now().replace(microsecond=0).isoformat()
+                await coord.async_record_integrity_check(checked_at)
+
                 if mismatch_reason is None:
                     try:
                         coord._append_event("Integrity check passed")  # type: ignore[attr-defined]

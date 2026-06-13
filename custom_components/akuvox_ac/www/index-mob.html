@@ -1064,7 +1064,9 @@ function renderDevices(devs){
     } else {
       syncBadge = badge('Pending', 'pending', syncAttr);
     }
-    const last   = d.last_sync || '—';
+    const lastChecked = d.last_checked
+      ? formatWhen(d.last_checked)
+      : 'Awaiting first check';
     const name   = safeDeviceName(d);
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
@@ -1078,7 +1080,7 @@ function renderDevices(devs){
       <td class="small-mono">${d.ip || '-'}</td>
       <td>${statusBadge}</td>
       <td>${syncBadge}</td>
-      <td>${last}</td>
+      <td>${escapeHtml(lastChecked)}</td>
       <td>${syncBtn}</td>
       <td>${editBtn}</td>
       <td>${rebootBtn}</td>
@@ -2732,7 +2734,7 @@ function startNextSyncCountdown(iso, fallbackTime){
           <table class="table table-sm table-dark mb-0 table-center">
             <thead>
               <tr>
-                <th>Name</th><th>Type</th><th>IP</th><th>Status</th><th>Sync</th><th>Last Sync</th>
+                <th>Name</th><th>Type</th><th>IP</th><th>Status</th><th>Sync</th><th>Last Checked</th>
                 <th>Sync</th><th>Edit</th><th>Reboot</th>
               </tr>
             </thead>
