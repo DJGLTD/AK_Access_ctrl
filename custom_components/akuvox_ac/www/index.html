@@ -1301,7 +1301,9 @@ function renderDevices(devs){
     } else {
       syncBadge = badge('Pending', 'pending', syncAttr);
     }
-    const last   = d.last_sync || '—';
+    const lastChecked = d.last_checked
+      ? formatWhen(d.last_checked)
+      : 'Awaiting first check';
     const name   = escapeHtml(safeDeviceName(d));
     const model  = escapeHtml(d.model || 'Other Akuvox');
     const type   = escapeHtml(d.type || 'Akuvox Device');
@@ -1325,7 +1327,7 @@ function renderDevices(devs){
         <div class="device-ip small-mono">${ip}</div>
         <div class="device-sync-row">
           ${syncBadge}
-          <span class="device-last-sync">Last Sync: ${escapeHtml(last)}</span>
+          <span class="device-last-sync">Last Checked: ${escapeHtml(lastChecked)}</span>
         </div>
         <div class="device-actions">${syncBtn}${editBtn}${rebootBtn}</div>
       </div>

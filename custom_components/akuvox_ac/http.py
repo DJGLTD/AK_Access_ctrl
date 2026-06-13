@@ -3037,6 +3037,7 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
             "status": health.get("status"),
             "sync_status": health.get("sync_status", "pending"),
             "last_sync": health.get("last_sync", "—"),
+            "last_checked": health.get("last_checked"),
             "events": list(getattr(coord, "events", []) or []),
             "_users": list(getattr(coord, "users", []) or []),
             "users": list(getattr(coord, "users", []) or []),

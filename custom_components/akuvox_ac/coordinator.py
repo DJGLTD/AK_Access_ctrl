@@ -162,6 +162,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not isinstance(alerts_state, dict):
             self.storage.data["alerts_state"] = {}
         self._alerts_state = self.storage.data.get("alerts_state", {})
+        persisted_last_checked = str(
+            self.storage.data.get("last_checked") or ""
+        ).strip() or None
 
         # Friendly display name (persist and surface in multiple places for UI)
         self.device_name: str = device_name or "Akuvox Device"
@@ -178,6 +181,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             # checks move this state to pending when work is actually needed.
             "sync_status": "in_sync",
             "last_sync": None,
+            "last_checked": persisted_last_checked,
             "last_error": None,
             "last_ping": None,
         }
@@ -220,6 +224,29 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         """Store a fresh device user snapshot and record its fetch time."""
         self.users = list(users or [])
         self._last_user_refresh_monotonic = time.monotonic()
+
+    async def async_record_integrity_check(self, checked_at: Optional[str] = None) -> str:
+        """Persist when device data was last compared with Home Assistant."""
+        timestamp = str(checked_at or "").strip()
+        if not timestamp:
+            timestamp = (
+                dt.datetime.now(dt.timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+            )
+
+        self.health["last_checked"] = timestamp
+        self.storage.data["last_checked"] = timestamp
+        try:
+            await self.storage.async_save()
+        except Exception as err:
+            _LOGGER.debug("Failed to persist integrity check time: %s", _safe_str(err))
+
+        try:
+            self.async_update_listeners()
+        except Exception:
+            pass
+        return timestamp
 
     async def async_refresh_users(self, *, force: bool = False) -> List[Dict[str, Any]]:
         """Refresh the full user list only when its slower cache is due."""

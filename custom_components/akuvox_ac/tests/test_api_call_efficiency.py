@@ -6,6 +6,7 @@ from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac import http as http_module  # noqa: E402
+from custom_components.akuvox_ac.coordinator import AkuvoxCoordinator  # noqa: E402
 from custom_components.akuvox_ac.integration import SyncManager  # noqa: E402
 
 
@@ -146,3 +147,76 @@ def test_integrity_tick_refreshes_access_events_before_deferred_sync():
     asyncio.run(manager._integrity_check_cb(None))
 
     assert coordinator.refresh_calls == 1
+
+
+def test_integrity_tick_records_completed_device_comparison():
+    manager = object.__new__(SyncManager)
+
+    class _Api:
+        async def user_list(self):
+            return []
+
+        async def schedule_get(self):
+            return []
+
+    class _Coordinator:
+        def __init__(self):
+            self.health = {
+                "sync_status": "in_sync",
+                "device_type": "Intercom",
+            }
+            self.users = []
+            self.storage = None
+            self.checked_at = None
+
+        async def async_refresh_access_history(self):
+            return None
+
+        async def async_record_integrity_check(self, checked_at):
+            self.checked_at = checked_at
+
+        def _append_event(self, _message):
+            return None
+
+    coordinator = _Coordinator()
+    manager.hass = SimpleNamespace(
+        config=SimpleNamespace(internal_url=None, external_url=None)
+    )
+    manager._devices = lambda: [("entry-1", coordinator, _Api(), {})]
+    manager._root = lambda: {"sync_queue": None}
+    manager._settings_store = lambda: None
+    manager._users_store = lambda: None
+    manager._schedules_store = lambda: None
+
+    async def _device_schedule_map(_api, *, device_schedules=None):
+        return {"24/7 access": "1001", "no access": "1002"}
+
+    manager._device_schedule_map = _device_schedule_map
+
+    asyncio.run(manager._integrity_check_cb(None))
+
+    assert coordinator.checked_at
+    assert "T" in coordinator.checked_at
+
+
+def test_completed_integrity_check_is_persisted_for_dashboard_restart():
+    class _Storage:
+        def __init__(self):
+            self.data = {}
+            self.saved = False
+
+        async def async_save(self):
+            self.saved = True
+
+    coordinator = object.__new__(AkuvoxCoordinator)
+    coordinator.health = {}
+    coordinator.storage = _Storage()
+    coordinator.async_update_listeners = lambda: None
+
+    checked_at = "2026-06-14T09:30:00+01:00"
+    result = asyncio.run(coordinator.async_record_integrity_check(checked_at))
+
+    assert result == checked_at
+    assert coordinator.health["last_checked"] == checked_at
+    assert coordinator.storage.data["last_checked"] == checked_at
+    assert coordinator.storage.saved is True

@@ -20,6 +20,7 @@ def test_device_model_is_serialized_for_dashboard():
             "device_model": "R29",
             "ip": "10.30.0.73",
             "online": True,
+            "last_checked": "2026-06-14T09:30:00+01:00",
         },
         events=[],
         users=[],
@@ -34,6 +35,7 @@ def test_device_model_is_serialized_for_dashboard():
     )
 
     assert devices[0]["model"] == "R29"
+    assert devices[0]["last_checked"] == "2026-06-14T09:30:00+01:00"
 
 
 def test_device_model_falls_back_for_existing_entries():
@@ -109,3 +111,14 @@ def test_dashboard_branding_events_and_update_controls():
     for shell_name in ("head.html", "head-mob.html"):
         shell = (WWW / shell_name).read_text(encoding="utf-8")
         assert 'src="/api/AK_AC/project-icon.svg"' in shell
+
+
+def test_device_overview_uses_persisted_last_checked_time():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+    mobile = (WWW / "index-mob.html").read_text(encoding="utf-8")
+
+    assert "Last Checked: ${escapeHtml(lastChecked)}" in dashboard
+    assert "d.last_checked" in dashboard
+    assert "Awaiting first check" in dashboard
+    assert "<th>Last Checked</th>" in mobile
+    assert "d.last_checked" in mobile
