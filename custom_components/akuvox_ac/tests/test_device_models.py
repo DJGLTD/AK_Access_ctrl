@@ -75,3 +75,14 @@ def test_model_selectors_and_artwork_are_bundled():
         "controller.svg",
     ):
         assert (artwork / filename).is_file()
+
+
+def test_desktop_dashboard_fits_the_viewport():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+    assert "@media (min-width:901px)" in dashboard
+    assert "height:100dvh;min-height:0" in dashboard
+    assert (
+        "grid-template-rows:auto auto minmax(0,.95fr) "
+        "minmax(0,1.05fr) auto"
+    ) in dashboard
+    assert ".table thead{position:sticky;top:0;z-index:2}" in dashboard

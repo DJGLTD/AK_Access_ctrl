@@ -87,11 +87,12 @@
       color:var(--text);font-weight:700;background:rgba(10,27,46,.58);
     }
     .card-body{padding:0;overflow:auto;min-height:0}
-    .section-33{display:grid;grid-template-columns:1.08fr 1.05fr .96fr;gap:12px;min-height:360px}
-    .section-50{display:flex;min-height:350px}
-    .section-50>.card{width:100%}
+    .section-33{display:grid;grid-template-columns:1.08fr 1.05fr .96fr;gap:12px;min-height:0}
+    .section-50{display:flex;min-height:0}
+    .section-50>.card{width:100%;min-height:0}
     .panel-link{font-size:.78rem;color:#58a7ff;text-decoration:none;font-weight:500;white-space:nowrap}
     .panel-link:hover{color:#8cc4ff}
+    .panel-link .bi{display:none}
     .panel-footer{
       min-height:46px;border-top:1px solid var(--border-soft);display:flex;align-items:center;
       justify-content:center;padding:10px 16px;color:#58a7ff;font-size:.8rem;
@@ -186,18 +187,73 @@
     .footer-note{opacity:.52;font-size:.74rem;text-align:center;padding:2px 0 0}
     .card.pulse-highlight{border-color:rgba(22,134,255,.62);box-shadow:0 0 0 .15rem rgba(22,134,255,.2)}
     .visually-held{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important}
+    @media (min-width:901px){
+      html,body{height:100%;overflow:hidden}
+      .workspace{
+        height:100dvh;min-height:0;
+        padding:clamp(8px,1.8vh,20px) 0 clamp(5px,1vh,10px);
+        gap:clamp(6px,1.1vh,14px);
+        display:grid;
+        grid-template-rows:auto auto minmax(0,.95fr) minmax(0,1.05fr) auto;
+      }
+      .workspace>*{min-width:0}
+      .summary-card{
+        min-height:clamp(68px,10.5vh,94px);
+        padding:clamp(9px,1.5vh,16px) 18px;
+      }
+      .summary-icon{
+        width:clamp(42px,6vh,54px);height:clamp(42px,6vh,54px);
+        flex-basis:clamp(42px,6vh,54px);
+      }
+      .section-33>.card,.section-50>.card{min-height:0}
+      .card-header{min-height:clamp(40px,5.5vh,48px);padding:clamp(8px,1.2vh,12px) 16px}
+      .panel-footer{min-height:clamp(34px,5vh,46px);padding:clamp(6px,1vh,10px) 16px}
+      #sectionEvents .card-body,
+      #sectionDevices .card-body,
+      #sectionAlerts .card-body,
+      #sectionUsers .card-body{overflow:auto}
+      .event-item{min-height:clamp(38px,5.3vh,48px);padding:clamp(5px,.9vh,8px) 14px}
+      .device-overview-list{gap:8px;padding:clamp(8px,1.2vh,12px)}
+      .device-overview-card{
+        min-height:0;height:100%;
+        padding:clamp(10px,1.5vh,16px);
+        grid-template-columns:clamp(74px,7vw,104px) minmax(0,1fr);
+        gap:clamp(10px,1.2vw,16px);
+      }
+      .device-visual{min-height:0}
+      .device-visual img{max-height:clamp(90px,16vh,150px)}
+      .device-ip{margin-top:clamp(4px,1.2vh,10px)}
+      .device-sync-row{margin-top:clamp(6px,1.5vh,14px)}
+      .device-actions{padding-top:clamp(8px,1.8vh,18px)}
+      .system-alert{min-height:clamp(52px,8vh,68px)}
+      .user-panel-header{padding:clamp(6px,1vh,8px) 16px}
+      .table-responsive-shell{height:100%;overflow:auto}
+      .table thead{position:sticky;top:0;z-index:2}
+      .footer-note{line-height:1;padding:0}
+    }
+    @media (min-width:901px) and (max-width:1100px){
+      .section-33{gap:10px}
+      #sectionEvents .card-header{padding-left:10px;padding-right:10px}
+      #sectionEvents .card-header>span{font-size:.8rem;line-height:1.1;white-space:nowrap}
+      #sectionEvents .card-header .gap-2{gap:.35rem!important}
+      .event-filter{min-width:7.2rem;font-size:.72rem}
+      #btnViewEvents span{display:none}
+      #btnViewEvents .bi{display:inline-block;font-size:.9rem}
+      .device-overview-card{padding:8px;grid-template-columns:72px minmax(0,1fr);gap:10px}
+      .device-actions{gap:6px}
+      .device-actions .btn{min-width:76px;padding:.38rem .55rem}
+    }
     @media (max-width:1280px){
       .workspace{width:min(1220px,calc(100vw - 28px))}
-      .section-33{grid-template-columns:1fr 1fr}
-      #sectionAlerts{grid-column:1/-1}
       .summary-grid{max-width:none}
+      .device-overview-card{grid-template-columns:84px minmax(0,1fr)}
     }
     @media (max-width:900px){
       .topbar{align-items:flex-start;flex-direction:column}
       .top-actions{justify-content:flex-start}
       .summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-      .section-33{grid-template-columns:1fr}
-      #sectionAlerts{grid-column:auto}
+      .section-33{grid-template-columns:1fr;min-height:auto}
+      .section-50{min-height:auto}
       .device-overview-card{grid-template-columns:90px minmax(0,1fr)}
       .user-toolbar{width:100%}
     }
@@ -3132,7 +3188,7 @@ function startNextSyncCountdown(iso, fallbackTime){
               <option value="system">System events</option>
               <option value="access">Access events</option>
             </select>
-            <a id="btnViewEvents" class="panel-link" href="/akuvox-ac/event-history">View all events</a>
+            <a id="btnViewEvents" class="panel-link" href="/akuvox-ac/event-history" aria-label="View all events"><span>View all events</span><i class="bi bi-arrow-right"></i></a>
           </div>
         </div>
         <div class="card-body">
