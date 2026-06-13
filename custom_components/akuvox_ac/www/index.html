@@ -47,10 +47,10 @@
     .brand{display:flex;align-items:center;gap:14px;min-width:max-content}
     .brand-mark{
       width:42px;height:42px;border:1px solid #1989ff;border-radius:14px;
-      display:grid;place-items:center;color:#75baff;background:rgba(9,56,106,.3);
-      box-shadow:inset 0 0 18px rgba(22,134,255,.12);
-      font-size:1.25rem;
+      display:grid;place-items:center;background:#26070b;overflow:hidden;
+      box-shadow:0 8px 22px rgba(215,25,32,.18);
     }
+    .brand-mark img{display:block;width:100%;height:100%;object-fit:cover}
     .brand h1{font-size:1.65rem;line-height:1;margin:0;font-weight:750;letter-spacing:-.03em}
     .top-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap}
     .btn{
@@ -119,23 +119,24 @@
     }
     .event-icon{width:27px;height:27px;border-radius:7px;display:grid;place-items:center;background:#10472f;color:var(--ok)}
     .event-icon.bad{background:#4c222b;color:#ff6972}
-    .event-icon.call{background:#123f78;color:#64aaff}
+    .event-icon.call{background:#10472f;color:var(--ok)}
     .event-time{font-size:.75rem;color:#d1dbe6;font-variant-numeric:tabular-nums}
     .event-title{font-size:.76rem;color:#eaf1f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .event-result{font-size:.74rem;white-space:nowrap}
     .event-result.ok{color:var(--ok)} .event-result.bad{color:var(--bad)} .event-result.dim{color:#68a9ff}
     .event-filter{background:#0b1b2f;color:var(--text);border:1px solid #294866;min-width:8.7rem}
     .event-filter:focus{color:var(--text);background:#0e2036;border-color:#1686ff;box-shadow:0 0 0 .18rem rgba(22,134,255,.16)}
-    .device-overview-list{display:flex;flex-direction:column;gap:12px;padding:14px;height:100%}
+    .device-overview-list{display:flex;flex-direction:column;justify-content:flex-start;gap:12px;padding:14px;height:100%}
     .device-overview-card{
       border:1px solid #1c3856;border-radius:8px;background:rgba(6,20,35,.62);
-      padding:18px;display:grid;grid-template-columns:112px minmax(0,1fr);gap:18px;min-height:232px;
+      padding:16px;display:grid;grid-template-columns:104px minmax(0,1fr);gap:16px;
+      min-height:202px;flex:0 0 auto;
     }
     .device-visual{
       border-radius:8px;background:linear-gradient(145deg,#12263d,#0a1a2c);display:flex;
-      align-items:center;justify-content:center;min-height:160px;padding:12px;position:relative;
+      align-items:center;justify-content:center;min-height:168px;padding:10px;position:relative;
     }
-    .device-visual img{display:block;max-width:78px;max-height:150px;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 12px 14px rgba(0,0,0,.4))}
+    .device-visual img{display:block;max-width:88px;max-height:158px;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 12px 14px rgba(0,0,0,.4))}
     .device-copy{display:flex;flex-direction:column;min-width:0}
     .device-title-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
     .device-title{font-size:1rem;font-weight:750;margin:0}
@@ -143,7 +144,7 @@
     .device-ip{font-size:.79rem;color:#d4dee9;margin-top:10px}
     .device-sync-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
     .device-last-sync{font-size:.75rem;color:#b9c6d4}
-    .device-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:auto;padding-top:18px}
+    .device-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
     .device-actions .btn{min-width:90px;padding:.45rem .75rem}
     .system-alerts{padding:0 16px}
     .system-alert{
@@ -213,18 +214,19 @@
       #sectionAlerts .card-body,
       #sectionUsers .card-body{overflow:auto}
       .event-item{min-height:clamp(38px,5.3vh,48px);padding:clamp(5px,.9vh,8px) 14px}
-      .device-overview-list{gap:8px;padding:clamp(8px,1.2vh,12px)}
+      .device-overview-list{gap:8px;padding:clamp(6px,1vh,10px)}
       .device-overview-card{
-        min-height:0;height:100%;
+        height:auto;min-height:0;max-height:100%;
         padding:clamp(10px,1.5vh,16px);
         grid-template-columns:clamp(74px,7vw,104px) minmax(0,1fr);
         gap:clamp(10px,1.2vw,16px);
       }
       .device-visual{min-height:0}
-      .device-visual img{max-height:clamp(90px,16vh,150px)}
+      .device-visual img{max-height:clamp(82px,14vh,140px)}
       .device-ip{margin-top:clamp(4px,1.2vh,10px)}
       .device-sync-row{margin-top:clamp(6px,1.5vh,14px)}
-      .device-actions{padding-top:clamp(8px,1.8vh,18px)}
+      .device-actions{margin-top:clamp(6px,1.4vh,12px)}
+      .device-actions .btn{min-width:76px;padding:.38rem .55rem}
       .system-alert{min-height:clamp(52px,8vh,68px)}
       .user-panel-header{padding:clamp(6px,1vh,8px) 16px}
       .table-responsive-shell{height:100%;overflow:auto}
@@ -242,6 +244,8 @@
       .device-overview-card{padding:8px;grid-template-columns:72px minmax(0,1fr);gap:10px}
       .device-actions{gap:6px}
       .device-actions .btn{min-width:76px;padding:.38rem .55rem}
+      .top-actions{gap:7px}
+      .top-actions .btn{padding:.48rem .72rem}
     }
     @media (max-width:1280px){
       .workspace{width:min(1220px,calc(100vw - 28px))}
@@ -1096,7 +1100,7 @@ function renderKPIs(k){
     else forceBtn.removeAttribute('disabled');
   }
   const footer = document.querySelector('.footer-note');
-  if (footer) footer.textContent = `© ${new Date().getFullYear()} Akuvox Access Control`;
+  if (footer) footer.textContent = `© ${new Date().getFullYear()} DJG Technical Services LTD`;
 }
 
 const ESCAPE_HTML_LOOKUP = {
@@ -1254,7 +1258,7 @@ const DEVICE_MODEL_ASSETS = {
   S532:'keypad-door', R28:'keypad-door', R27:'keypad-door',
   R25:'compact-door', R20:'compact-door', X910:'compact-door',
   E21:'compact-door', E20:'compact-door', E13:'compact-door', E12:'compact-door',
-  X912:'face-slim', E16:'face-slim', A05:'face-slim',
+  X912:'x912', E16:'face-slim', A05:'face-slim',
   A08:'access-keypad', A03:'access-keypad', A02:'access-keypad', A01:'access-keypad',
   A095:'controller', A094:'controller', A092:'controller'
 };
@@ -1663,10 +1667,10 @@ function applyEventFilter(){
     const cls  = classifyEvent(e, info.highlight);
     const iconClass = cls === 'bad' ? 'bad' : (info.category === 'call' ? 'call' : '');
     const icon = info.category === 'call'
-      ? 'bi-grid-3x3-gap-fill'
+      ? 'bi-telephone-fill'
       : (info.category === 'system' ? 'bi-info-circle' : 'bi-person-fill');
     const result = info.category === 'call'
-      ? 'Call Answered'
+      ? 'Access Granted'
       : info.category === 'system'
         ? (cls === 'bad' ? 'Attention' : 'System Event')
         : (cls === 'bad' ? 'Access Denied' : cls === 'ok' ? 'Access Granted' : 'Access Event');
@@ -2858,13 +2862,14 @@ async function promptForHacsRestart(status){
 }
 
 async function runHacsAutoUpdate(){
-  const btn = document.getElementById('btnHacsAutoUpdate');
-  const originalHtml = btn ? btn.innerHTML : '';
-  if (btn) {
+  const buttons = Array.from(document.querySelectorAll('[data-hacs-update]'));
+  const originalButtons = buttons.map(btn => ({ btn, html: btn.innerHTML }));
+  const setButtons = (html) => buttons.forEach(btn => {
     btn.setAttribute('disabled', 'disabled');
     btn.classList.add('disabled');
-    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Checking...';
-  }
+    btn.innerHTML = html;
+  });
+  setButtons('<i class="bi bi-arrow-repeat"></i> Checking...');
 
   let ok = false;
   let lastError = '';
@@ -2897,18 +2902,16 @@ async function runHacsAutoUpdate(){
     alert(`HACS update check failed${lastError ? `: ${lastError}` : ''}`);
   } else {
     const result = String(status?.last_result || '').toLowerCase();
-    if (btn) {
-      btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
-    }
+    setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
     if (result === 'update_available') {
       const version = status?.pending_version || status?.latest_version || 'the available version';
       if (confirm(`Install Akuvox Access Control update ${version}?`)) {
         try {
           const installRes = await apiPost(actionUrl, { action: 'hacs_update_install' });
           status = installRes?.hacs_auto_update || status;
-          if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+          setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
           status = await promptForHacsRestart(status);
-          if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+          setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
           if (String(status?.last_result || '').toLowerCase() === 'install_unconfirmed') {
             alert(status?.last_error || 'Install command was sent, but HACS did not confirm the new version.');
           }
@@ -2920,7 +2923,7 @@ async function runHacsAutoUpdate(){
     } else if (result === 'installed') {
       try {
         status = await promptForHacsRestart(status);
-        if (btn) btn.innerHTML = `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+        setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
       } catch (err) {
         if (handleAuthError(err)) return;
         alert(`Home Assistant restart failed: ${err?.message || err}`);
@@ -2932,13 +2935,13 @@ async function runHacsAutoUpdate(){
     }
   }
 
-  if (btn) {
-    setTimeout(() => {
-      btn.innerHTML = originalHtml;
+  setTimeout(() => {
+    originalButtons.forEach(({ btn, html }) => {
+      btn.innerHTML = html;
       btn.removeAttribute('disabled');
       btn.classList.remove('disabled');
-    }, ok ? 2500 : 0);
-  }
+    });
+  }, ok ? 2500 : 0);
 }
 
 async function rebootAll(){
@@ -3012,7 +3015,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnSyncNowEta')?.addEventListener('click', syncAllNow);
   document.getElementById('btnForceFull')?.addEventListener('click', forceFullSync);
   document.getElementById('btnUpdateAccessEvents')?.addEventListener('click', updateAccessEvents);
-  document.getElementById('btnHacsAutoUpdate')?.addEventListener('click', runHacsAutoUpdate);
+  document.querySelectorAll('[data-hacs-update]').forEach(btn => {
+    btn.addEventListener('click', runHacsAutoUpdate);
+  });
   document.getElementById('btnRebootAll')?.addEventListener('click', rebootAll);
   document.getElementById('btnGlobalSettings')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -3144,7 +3149,7 @@ function startNextSyncCountdown(iso, fallbackTime){
   <main class="workspace">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark"><i class="bi bi-shield-lock"></i></div>
+        <div class="brand-mark"><img src="/api/AK_AC/project-icon.svg" alt="" /></div>
         <h1>Akuvox Access Control</h1>
       </div>
       <div class="top-actions">
@@ -3153,6 +3158,7 @@ function startNextSyncCountdown(iso, fallbackTime){
         </div>
         <button id="btnForceFull" class="btn btn-sm btn-primary"><i class="bi bi-lightning-fill"></i> Force Sync</button>
         <button id="btnUpdateAccessEvents" class="btn btn-sm btn-outline-info"><i class="bi bi-arrow-counterclockwise"></i> Update Events</button>
+        <button id="btnSystemUpdate" data-hacs-update class="btn btn-sm btn-outline-info"><i class="bi bi-cloud-arrow-down"></i> System Update</button>
         <button id="btnRebootAll" class="btn btn-sm btn-outline-light"><i class="bi bi-arrow-repeat"></i> Reboot All</button>
         <button id="btnGlobalSettings" class="btn btn-sm btn-outline-light"><i class="bi bi-gear"></i> Global Settings</button>
       </div>
@@ -3211,7 +3217,7 @@ function startNextSyncCountdown(iso, fallbackTime){
       <article class="card" id="sectionAlerts">
         <div class="card-header d-flex align-items-center justify-content-between">
           <span>System Alerts</span>
-          <button id="btnHacsAutoUpdate" class="btn btn-sm btn-outline-light" title="Check for updates"><i class="bi bi-cloud-arrow-down"></i></button>
+          <button id="btnHacsAutoUpdate" data-hacs-update class="btn btn-sm btn-outline-light" title="Check for updates"><i class="bi bi-cloud-arrow-down"></i></button>
         </div>
         <div class="card-body">
           <div id="systemAlerts" class="system-alerts">

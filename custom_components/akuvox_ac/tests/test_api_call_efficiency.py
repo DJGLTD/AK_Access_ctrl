@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
@@ -125,3 +126,23 @@ def test_schedule_push_does_not_add_when_initial_schedule_read_fails():
     assert api.schedule_get_calls == 1
     assert api.schedule_add_calls == []
     assert api.schedule_set_calls == []
+
+
+def test_integrity_tick_refreshes_access_events_before_deferred_sync():
+    manager = object.__new__(SyncManager)
+
+    class _Coordinator:
+        def __init__(self):
+            self.refresh_calls = 0
+
+        async def async_refresh_access_history(self):
+            self.refresh_calls += 1
+
+    coordinator = _Coordinator()
+    devices = [("entry-1", coordinator, object(), {})]
+    manager._devices = lambda: devices
+    manager._root = lambda: {"sync_queue": SimpleNamespace(_handle=object())}
+
+    asyncio.run(manager._integrity_check_cb(None))
+
+    assert coordinator.refresh_calls == 1

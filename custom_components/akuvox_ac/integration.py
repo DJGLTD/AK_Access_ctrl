@@ -6877,7 +6877,22 @@ class SyncManager:
     async def _interval_sync_cb(self, now):
         await self.reconcile(full=True)
 
+    async def _refresh_scheduled_access_events(self, devices=None) -> None:
+        targets = self._devices() if devices is None else devices
+        for entry_id, coord, *_ in targets:
+            try:
+                await coord.async_refresh_access_history()
+            except Exception as err:
+                _LOGGER.debug(
+                    "Scheduled access event refresh failed for %s: %s",
+                    entry_id,
+                    err,
+                )
+
     async def _integrity_check_cb(self, now):
+        devices = self._devices()
+        await self._refresh_scheduled_access_events(devices)
+
         root = self._root()
         sq = root.get("sync_queue")
         if sq and getattr(sq, "_handle", None) is not None:
@@ -6891,7 +6906,7 @@ class SyncManager:
             except Exception:
                 include_face = True
 
-        for _, coord, *_ in self._devices():
+        for _, coord, *_ in devices:
             if coord.health.get("sync_status") != "in_sync":
                 return
 
@@ -6919,7 +6934,7 @@ class SyncManager:
 
         face_root_base = face_base_url(self.hass)
 
-        for entry_id, coord, api, opts in self._devices():
+        for entry_id, coord, api, opts in devices:
             try:
                 opts = opts or {}
                 dev_users = await api.user_list()

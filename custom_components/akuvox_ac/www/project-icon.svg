@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">DJG Technical Services</title>
+  <desc id="desc">Black and red shield with the DJG monogram.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070707"/>
+      <stop offset="1" stop-color="#7a0b13"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="28" fill="url(#bg)"/>
+  <path d="M128 38 190 62v61c0 40-25 73-62 95-37-22-62-55-62-95V62z" fill="#d71920"/>
+  <path d="M128 60 176 78v43c0 28-19 50-48 68-29-18-48-40-48-68V78z" fill="#050505"/>
+  <text x="128" y="139" fill="#d71920" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="800" text-anchor="middle" dominant-baseline="middle">DJG</text>
+</svg>
