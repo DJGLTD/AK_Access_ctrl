@@ -117,9 +117,19 @@ def test_model_selectors_and_artwork_are_bundled():
         "access-keypad.svg",
         "controller.svg",
     ):
-        assert (artwork / filename).is_file()
+        asset = artwork / filename
+        assert asset.is_file()
+        assert 'preserveAspectRatio="xMidYMid meet"' in asset.read_text(
+            encoding="utf-8"
+        )
 
     assert "X912:'x912'" in dashboard
+    assert (
+        ".device-visual img{display:block;width:auto;height:auto;"
+        "max-width:100%;max-height:158px;aspect-ratio:auto;"
+        "object-fit:contain;"
+    ) in dashboard
+    assert "width:100%;height:100%;object-fit:contain" not in dashboard
     assert 'src="/api/AK_AC/project-icon.svg"' in dashboard
     assert (WWW / "project-icon.svg").is_file()
 

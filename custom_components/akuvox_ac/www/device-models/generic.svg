@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 240" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="title">
   <title id="title">Generic Akuvox device</title>
   <defs>
     <linearGradient id="body" x1="0" x2="1">
