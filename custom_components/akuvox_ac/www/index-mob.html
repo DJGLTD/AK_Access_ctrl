@@ -839,20 +839,30 @@ function userSourceBadge(user){
 
 function renderKPIs(k){
   const nextEl = document.getElementById('kpiNext');
+  const nextLabel = document.getElementById('kpiNextLabel');
   const eventsLastEl = document.getElementById('kpiEventsLast');
   if (eventsLastEl) {
     const lastSync = k?.events_last_sync;
     eventsLastEl.textContent = lastSync ? formatWhen(lastSync) : '—';
   }
   const syncActive = !!k.sync_active;
+  const nextSyncText = String(k.next_sync || '').trim();
+  const syncScheduled = syncActive
+    || !!k.next_sync_eta
+    || (nextSyncText && nextSyncText !== '—');
+  if (nextLabel) nextLabel.textContent = syncScheduled ? 'Next Sync' : 'Next Health Check';
   if (syncActive) {
     clearNextSyncCountdown();
     if (nextEl) nextEl.textContent = k.next_sync || 'Syncing…';
   } else if (k.next_sync_eta) {
     startNextSyncCountdown(k.next_sync_eta, k.next_sync);
-  } else if (nextEl) {
+  } else if (syncScheduled && nextEl) {
     clearNextSyncCountdown();
     nextEl.textContent = k.next_sync || '—';
+  } else if (nextEl) {
+    clearNextSyncCountdown();
+    const healthCheck = formatWhen(k.next_health_check_eta);
+    nextEl.textContent = healthCheck === '—' ? '—' : healthCheck.split(' ')[0];
   }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
@@ -2708,7 +2718,7 @@ function startNextSyncCountdown(iso, fallbackTime){
         <div class="box text-end"><div>Devices</div><div id="kpiDevices">—</div></div>
         <div class="box text-end"><div>Pending Sync</div><div id="kpiPending">—</div></div>
         <div class="box text-end"><div>Events Last Sync</div><div id="kpiEventsLast">—</div></div>
-        <div class="box text-end"><div>Next Sync</div><div id="kpiNext">—</div></div>
+        <div class="box text-end"><div id="kpiNextLabel">Next Health Check</div><div id="kpiNext">—</div></div>
       </div>
     </div>
 

@@ -1054,22 +1054,34 @@ function setKpiTimestamp(value, valueId, subId, fallback = '—'){
 
 function renderKPIs(k){
   const nextEl = document.getElementById('kpiNext');
+  const nextLabel = document.getElementById('kpiNextLabel');
+  const nextSub = document.getElementById('kpiNextSub');
   setKpiTimestamp(k?.events_last_sync, 'kpiEventsLast', 'kpiEventsDate');
   const syncActive = !!k.sync_active;
+  const nextSyncText = String(k.next_sync || '').trim();
+  const syncScheduled = syncActive
+    || !!k.next_sync_eta
+    || (nextSyncText && nextSyncText !== '—');
+  if (nextLabel) nextLabel.textContent = syncScheduled ? 'Next Sync' : 'Next Health Check';
   if (syncActive) {
     clearNextSyncCountdown();
     if (nextEl) nextEl.textContent = k.next_sync || 'Syncing…';
-    const nextSub = document.getElementById('kpiNextSub');
     if (nextSub) nextSub.textContent = 'Sync in progress';
   } else if (k.next_sync_eta) {
     startNextSyncCountdown(k.next_sync_eta, k.next_sync);
-    const nextSub = document.getElementById('kpiNextSub');
     if (nextSub) nextSub.textContent = 'Scheduled';
-  } else if (nextEl) {
+  } else if (syncScheduled && nextEl) {
     clearNextSyncCountdown();
     nextEl.textContent = k.next_sync || '—';
-    const nextSub = document.getElementById('kpiNextSub');
-    if (nextSub) nextSub.textContent = k.next_sync && k.next_sync !== '—' ? 'Scheduled' : 'Not Scheduled';
+    if (nextSub) nextSub.textContent = 'Scheduled';
+  } else {
+    clearNextSyncCountdown();
+    setKpiTimestamp(
+      k.next_health_check_eta,
+      'kpiNext',
+      'kpiNextSub',
+      '—'
+    );
   }
   $('#kpiDevices').textContent = k.devices ?? '0';
   $('#kpiUsers').textContent   = k.users ?? '0';
@@ -3185,7 +3197,7 @@ function startNextSyncCountdown(iso, fallbackTime){
       </article>
       <article class="summary-card">
         <span class="summary-icon"><i class="bi bi-calendar2-check"></i></span>
-        <div><div class="summary-label">Next Sync</div><div class="summary-value" id="kpiNext">—</div><div class="summary-sub" id="kpiNextSub">Not Scheduled</div></div>
+        <div><div class="summary-label" id="kpiNextLabel">Next Health Check</div><div class="summary-value" id="kpiNext">—</div><div class="summary-sub" id="kpiNextSub">—</div></div>
       </article>
       <span id="kpiPending" class="visually-held">—</span>
     </section>

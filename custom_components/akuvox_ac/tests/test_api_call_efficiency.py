@@ -220,3 +220,29 @@ def test_completed_integrity_check_is_persisted_for_dashboard_restart():
     assert coordinator.health["last_checked"] == checked_at
     assert coordinator.storage.data["last_checked"] == checked_at
     assert coordinator.storage.saved is True
+
+
+def test_device_poll_records_completed_health_check():
+    class _Api:
+        async def ping_info(self):
+            return {"ok": False}
+
+    class _Storage:
+        def __init__(self):
+            self.data = {"alerts_state": {}}
+
+        async def async_save(self):
+            return None
+
+    coordinator = object.__new__(AkuvoxCoordinator)
+    coordinator.api = _Api()
+    coordinator.device_name = "Gate"
+    coordinator.health = {"name": "Gate"}
+    coordinator.storage = _Storage()
+    coordinator._was_online = False
+    coordinator._append_event = lambda _message: None
+
+    asyncio.run(coordinator._async_update_data())
+
+    assert coordinator.health["last_health_check"]
+    assert coordinator.health["last_health_check"].endswith("+00:00")
