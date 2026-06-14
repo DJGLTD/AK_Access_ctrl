@@ -110,7 +110,22 @@ def test_dashboard_branding_events_and_update_controls():
 
     for shell_name in ("head.html", "head-mob.html"):
         shell = (WWW / shell_name).read_text(encoding="utf-8")
-        assert 'src="/api/AK_AC/project-icon.svg"' in shell
+        assert "header.app-header," in shell
+        assert ".mobile-launcher," in shell
+        assert "display: none !important;" in shell
+        assert "padding: 0 !important;" in shell
+
+
+def test_dashboard_user_actions_are_not_clipped():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+
+    assert "#sectionUsers{display:flex;flex-direction:column}" in dashboard
+    assert "#sectionUsers .user-panel-header{flex:0 0 auto;overflow:visible}" in dashboard
+    assert "#sectionUsers .card-body{flex:1 1 auto;min-height:0}" in dashboard
+    assert (
+        ".user-heading .btn{display:inline-flex;align-items:center;"
+        "min-height:31px;white-space:nowrap}"
+    ) in dashboard
 
 
 def test_device_overview_uses_persisted_last_checked_time():
