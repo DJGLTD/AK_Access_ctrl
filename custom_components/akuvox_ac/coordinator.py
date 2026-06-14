@@ -182,6 +182,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "sync_status": "in_sync",
             "last_sync": None,
             "last_checked": persisted_last_checked,
+            "last_health_check": None,
             "last_error": None,
             "last_ping": None,
         }
@@ -415,6 +416,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         finally:
             self.health["last_error"] = last_error
             self.health["last_ping"] = last_ping
+            self.health["last_health_check"] = (
+                dt.datetime.now(dt.timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+            )
 
         if alerts_dirty and not alerts_saved:
             try:

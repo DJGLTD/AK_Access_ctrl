@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,10 @@ from custom_components.akuvox_ac.const import (
     CONF_DEVICE_MODEL,
     DEFAULT_DEVICE_MODEL,
 )
-from custom_components.akuvox_ac.http import _serialize_devices
+from custom_components.akuvox_ac.http import (
+    _next_health_check_eta,
+    _serialize_devices,
+)
 
 
 WWW = Path(__file__).resolve().parents[1] / "www"
@@ -50,6 +54,42 @@ def test_device_model_falls_back_for_existing_entries():
     )
 
     assert devices[0]["model"] == DEFAULT_DEVICE_MODEL
+
+
+def test_next_health_check_uses_earliest_device_interval():
+    first = SimpleNamespace(
+        health={"last_health_check": "2026-06-14T09:30:00+00:00"},
+        update_interval=timedelta(seconds=30),
+    )
+    second = SimpleNamespace(
+        health={"last_health_check": "2026-06-14T09:29:40+00:00"},
+        update_interval=timedelta(seconds=60),
+    )
+    root = {
+        "entry-1": {"coordinator": first, "options": {}},
+        "entry-2": {"coordinator": second, "options": {}},
+    }
+
+    eta = _next_health_check_eta(
+        root,
+        now=datetime(2026, 6, 14, 9, 30, 10, tzinfo=timezone.utc),
+    )
+
+    assert eta == "2026-06-14T09:30:30+00:00"
+
+
+def test_next_health_check_rolls_over_missed_intervals():
+    coordinator = SimpleNamespace(
+        health={"last_health_check": "2026-06-14T09:30:00+00:00"},
+        update_interval=timedelta(seconds=30),
+    )
+
+    eta = _next_health_check_eta(
+        {"entry-1": {"coordinator": coordinator, "options": {}}},
+        now=datetime(2026, 6, 14, 9, 31, 5, tzinfo=timezone.utc),
+    )
+
+    assert eta == "2026-06-14T09:31:30+00:00"
 
 
 def test_model_selectors_and_artwork_are_bundled():
@@ -126,6 +166,17 @@ def test_dashboard_user_actions_are_not_clipped():
         ".user-heading .btn{display:inline-flex;align-items:center;"
         "min-height:31px;white-space:nowrap}"
     ) in dashboard
+
+
+def test_dashboard_switches_between_sync_and_health_check_kpi():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+    mobile = (WWW / "index-mob.html").read_text(encoding="utf-8")
+
+    for page in (dashboard, mobile):
+        assert 'id="kpiNextLabel">Next Health Check<' in page
+        assert "const syncScheduled = syncActive" in page
+        assert "syncScheduled ? 'Next Sync' : 'Next Health Check'" in page
+        assert "k.next_health_check_eta" in page
 
 
 def test_device_overview_uses_persisted_last_checked_time():

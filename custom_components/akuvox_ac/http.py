@@ -54,6 +54,7 @@ from .const import (
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
     DEFAULT_DEVICE_MODEL,
+    DEFAULT_POLL_INTERVAL,
     AKUVOX_DEVICE_MODELS,
 )
 
@@ -3055,6 +3056,49 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
     return devices, any_alarm
 
 
+def _next_health_check_eta(
+    root: Dict[str, Any],
+    *,
+    now: Optional[dt.datetime] = None,
+) -> Optional[str]:
+    """Return the earliest estimated coordinator health-check time."""
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    else:
+        current = current.astimezone(dt.timezone.utc)
+
+    next_checks: List[dt.datetime] = []
+    for _, _, coord, _ in _iter_device_buckets(root):
+        interval = getattr(coord, "update_interval", None)
+        try:
+            interval_seconds = max(10.0, float(interval.total_seconds()))
+        except Exception:
+            interval_seconds = float(DEFAULT_POLL_INTERVAL)
+
+        health = getattr(coord, "health", {}) or {}
+        checked_at = _parse_datetime_value(health.get("last_health_check"))
+        if checked_at is None:
+            candidate = current + dt.timedelta(seconds=interval_seconds)
+        else:
+            if checked_at.tzinfo is None:
+                checked_at = checked_at.replace(tzinfo=dt.timezone.utc)
+            else:
+                checked_at = checked_at.astimezone(dt.timezone.utc)
+            candidate = checked_at + dt.timedelta(seconds=interval_seconds)
+            if candidate <= current:
+                overdue_seconds = (current - candidate).total_seconds()
+                intervals_due = int(overdue_seconds // interval_seconds) + 1
+                candidate += dt.timedelta(
+                    seconds=interval_seconds * intervals_due
+                )
+        next_checks.append(candidate)
+
+    if not next_checks:
+        return None
+    return min(next_checks).replace(microsecond=0).isoformat()
+
+
 def _apply_face_error_sync_overrides(
     devices: List[Dict[str, Any]],
     registry_users: List[Dict[str, Any]],
@@ -3224,6 +3268,7 @@ class AkuvoxUIView(HomeAssistantView):
                 "events_last_sync": None,
                 "auto_sync_time": None,
                 "next_sync_eta": None,
+                "next_health_check_eta": None,
                 "version": INTEGRATION_VERSION_LABEL,
                 "version_raw": INTEGRATION_VERSION,
             },
@@ -3254,6 +3299,7 @@ class AkuvoxUIView(HomeAssistantView):
             devices = devices_serialized
 
             kpis["devices"] = len(devices)
+            kpis["next_health_check_eta"] = _next_health_check_eta(root)
             queue_active = bool(getattr(root.get("sync_queue"), "_active", False))
             kpis["pending"] = sum(
                 1
