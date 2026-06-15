@@ -41,7 +41,7 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert 'id="mobileBackBtn"' in shell
     assert 'id="mobileMenuBtn"' in shell
     assert 'class="mobile-launcher-title">Access Control<' in shell
-    assert '<button class="mobile-tile" type="button" data-view="index">' in shell
+    assert '<button class="mobile-tile" type="button" data-view="index">' not in shell
     for view in (
         "user-overview",
         "users",
@@ -54,6 +54,8 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert "body.mobile-stage-nav .mobile-launcher { display: grid; }" in shell
     assert "body.mobile-stage-content header.app-header { display: flex; }" in shell
     assert "header.app-header .logo-mark { display: none; }" in shell
+    assert ".mobile-group.expanded { display: contents; }" in shell
+    assert 'class="mobile-subgrid-heading"' in shell
     assert "const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';" in shell
     assert "const APP_HISTORY_SESSION_KEY = 'akuvoxHistorySession';" in shell
     assert "const APP_HISTORY_SESSION_ID = (() => {" in shell
@@ -61,13 +63,20 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert "state[APP_HISTORY_SESSION_KEY] !== APP_HISTORY_SESSION_ID" in shell
     assert "const nextIndex = replaceState ? currentIndex : currentIndex + 1;" in shell
     assert "[APP_HISTORY_SESSION_KEY]: APP_HISTORY_SESSION_ID" in shell
+    assert "mobileMenuEntry: isMobileMode && mobileMenuEntry" in shell
+    assert "mobileMenuGroup: isMobileMode ? mobileMenuGroup : null" in shell
     assert "updateHistory(initialView, params, { replaceState: true });\n  await ensureDashboardSignedPaths();" in shell
-    assert "if (getAppHistoryIndex() > 0)" in shell
-    assert "history.back();" in shell
+    assert "let mobileViewStack = [];" in shell
+    assert "function rememberMobileDestination(view, params = {}, options = {})" in shell
+    assert "if (mobileViewStack.length > 1)" in shell
+    assert "mobileViewStack.pop();" in shell
+    assert "loadView(previous.view, previous.params, {" in shell
+    assert "function returnToMobileMenu(group)" in shell
+    assert "mobileViewStack = [];" in shell
     assert "function setMobileStage(stage, { preserveGroups = false, syncHistory = true } = {})" in shell
-    assert "setMobileStage('content', { syncHistory: false });" in shell
+    assert "setMobileStage('content', { preserveGroups: true, syncHistory: false });" in shell
+    assert "replaceState: true,\n        mobileMenuEntry: true," in shell
     assert "const mobileMenuBtn = document.getElementById('mobileMenuBtn');" in shell
-    assert "setMobileStage('nav');" in shell
     assert "mobileStage = explicitDestination ? 'content' : 'nav';" in shell
 
     for name in ("device_edit-mob.html", "diagnostics-mob.html", "schedules-mob.html"):
@@ -101,6 +110,30 @@ def test_mobile_global_actions_include_access_event_refresh():
     assert '<span class="tile-title">Update access events</span>' in shell
     assert "steps.push(() => postJson(API_ACTION, { action: 'refresh_events' }));" in shell
     assert "steps.push(() => callService('akuvox_ac', 'refresh_events', {}));" in shell
+    assert 'id="mobileActionStatus"' in shell
+    assert "setMobileActionStatus(`Request sent: ${describeAction(normalized)}.`, 'success');" in shell
+    assert "loadView('index', { section: 'global-actions' });" not in shell
+    assert "runDashboardAction(action);\n    if (isMobileMode)" not in shell
+
+
+def test_mobile_user_overview_only_presents_the_user_list():
+    overview = read_page("user_overview-mob.html")
+
+    assert "<h1>Current users</h1>" in overview
+    assert 'id="userSearch"' in overview
+    assert 'id="userSort"' in overview
+    assert 'id="userList"' in overview
+    for removed_id in (
+        "summaryUsers",
+        "summaryPending",
+        "summaryFaces",
+        "lastUpdated",
+        "btnMobileAddUser",
+        "btnMobileAddTempUser",
+        "forceFullSyncBtn",
+        "syncNowBtn",
+    ):
+        assert f'id="{removed_id}"' not in overview
 
 
 def test_dashboards_start_only_one_state_polling_loop():

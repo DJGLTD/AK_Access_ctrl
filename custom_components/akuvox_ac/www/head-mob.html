@@ -136,6 +136,7 @@
       padding: 0.75rem;
       gap: 0.7rem;
       overflow-y: auto;
+      scrollbar-gutter: stable;
       align-content: start;
       background:
         radial-gradient(circle at 55% -15%,rgba(24,112,213,.2),transparent 42%),
@@ -163,11 +164,17 @@
       gap: 0.6rem;
       min-width: 0;
     }
-    .mobile-group.expanded { grid-column: 1 / -1; }
+    .mobile-group.expanded { display: contents; }
     .mobile-launcher .mobile-subgrid {
       display: none;
+      grid-column: 1 / -1;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.6rem;
+      padding: 0.75rem;
+      border: 1px solid #274665;
+      border-radius: 0.8rem;
+      background: linear-gradient(145deg,rgba(11,29,49,.98),rgba(5,18,32,.98));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.025),0 12px 28px rgba(0,0,0,.18);
     }
     .mobile-group.expanded .mobile-subgrid[data-subgrid="users-primary"] { display: grid; }
     .mobile-group.expanded .mobile-subgrid:not([data-subgrid]) { display: grid; }
@@ -180,8 +187,35 @@
       border-color: #1686ff;
       box-shadow: 0 0 0 .12rem rgba(22,134,255,.16);
     }
+    .mobile-subgrid-heading {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      color: #c8dcf4;
+      font-size: 0.76rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .mobile-subgrid-heading .bi { color: #4aa3ff; }
+    .mobile-action-status {
+      display: none;
+      grid-column: 1 / -1;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #38516d;
+      border-radius: 0.55rem;
+      color: var(--muted);
+      background: rgba(4,16,29,.72);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+    .mobile-action-status.visible { display: block; }
+    .mobile-action-status.busy { color: #8fc5ff; border-color: #245f9d; }
+    .mobile-action-status.success { color: #5ef3a8; border-color: rgba(46,204,113,.45); }
+    .mobile-action-status.error { color: #ff8995; border-color: rgba(255,77,79,.5); }
     .mobile-tile {
-      min-height: 132px;
+      min-height: 156px;
       border: 1px solid var(--border);
       border-radius: 0.72rem;
       background: linear-gradient(145deg,rgba(13,31,52,.98),rgba(8,23,40,.98));
@@ -430,13 +464,6 @@
       <span class="mobile-launcher-title">Access Control</span>
       <span class="mobile-launcher-subtitle">Choose an area to manage</span>
     </div>
-    <button class="mobile-tile" type="button" data-view="index">
-      <div class="tile-text">
-        <span class="tile-title">Overview</span>
-        <small>Live events, device status and system health</small>
-      </div>
-      <i class="bi bi-speedometer2"></i>
-    </button>
     <div class="mobile-group" data-group="users">
       <button class="mobile-tile" type="button" data-group-toggle="users" aria-expanded="false">
         <div class="tile-text">
@@ -446,10 +473,11 @@
         <i class="bi bi-people-fill"></i>
       </button>
       <div class="mobile-subgrid" data-subgrid="users-primary">
+        <div class="mobile-subgrid-heading"><i class="bi bi-people-fill"></i> User management</div>
         <button class="mobile-tile sub" type="button" data-view="user-overview">
           <div class="tile-text">
             <span class="tile-title">User overview</span>
-            <small>Review sync status and assigned groups</small>
+            <small>View and manage users in the system</small>
           </div>
           <i class="bi bi-layout-text-window-reverse"></i>
         </button>
@@ -462,6 +490,7 @@
         </button>
       </div>
       <div class="mobile-subgrid" data-subgrid="users-add">
+        <div class="mobile-subgrid-heading"><i class="bi bi-person-plus-fill"></i> Add a user</div>
         <button class="mobile-tile sub" type="button" data-view="users" data-mode="add">
           <div class="tile-text">
             <span class="tile-title">Add user</span>
@@ -506,6 +535,7 @@
         <i class="bi bi-lightning-fill"></i>
       </button>
       <div class="mobile-subgrid">
+        <div class="mobile-subgrid-heading"><i class="bi bi-lightning-fill"></i> Global actions</div>
         <button class="mobile-tile sub" type="button" data-action="reboot_all">
           <div class="tile-text">
             <span class="tile-title">Reboot all</span>
@@ -534,6 +564,7 @@
           </div>
           <i class="bi bi-cloud-arrow-down-fill"></i>
         </button>
+        <div class="mobile-action-status" id="mobileActionStatus" role="status" aria-live="polite"></div>
       </div>
     </div>
     <button class="mobile-tile" type="button" data-view="settings">
@@ -580,6 +611,7 @@ const MOBILE_BREAKPOINT = '(max-width: 720px)';
 const mobileMedia = window.matchMedia(MOBILE_BREAKPOINT);
 let isMobileMode = mobileMedia.matches;
 let mobileStage = isMobileMode ? 'nav' : 'content';
+let mobileViewStack = [];
 let knownToken = null;
 let tokenRefreshScheduled = false;
 const REJECTED_TOKENS = new Set();
@@ -904,6 +936,84 @@ function setMobileStage(stage, { preserveGroups = false, syncHistory = true } = 
   applyMobileFlags();
   updateGroupExpansion();
   if (syncHistory) syncHistoryStage();
+}
+
+function mobileGroupForView(view){
+  const normalized = normalizeView(view);
+  if (['user-overview', 'users', 'temp-user', 'face-rec'].includes(normalized)) return 'users';
+  return null;
+}
+
+function mobileShellUrl(){
+  const search = new URLSearchParams();
+  const authSig = currentAuthSig();
+  if (authSig) search.set('authSig', authSig);
+  const query = search.toString();
+  return query ? `${location.pathname}?${query}` : location.pathname;
+}
+
+function mobileStackEntry(view, params = {}, menuGroup = null){
+  return {
+    view: normalizeView(view),
+    params: { ...(params || {}) },
+    menuGroup: menuGroup || mobileGroupForView(view)
+  };
+}
+
+function sameMobileDestination(left, right){
+  if (!left || !right || left.view !== right.view) return false;
+  try {
+    return JSON.stringify(left.params || {}) === JSON.stringify(right.params || {});
+  } catch (err) {
+    return false;
+  }
+}
+
+function rememberMobileDestination(view, params = {}, options = {}){
+  if (!isMobileMode) return;
+  const entry = mobileStackEntry(view, params, options.menuGroup);
+  if (options.reset || !mobileViewStack.length) {
+    mobileViewStack = [entry];
+    return;
+  }
+  if (options.replace) {
+    const previous = mobileViewStack[mobileViewStack.length - 2];
+    if (previous && sameMobileDestination(previous, entry)) {
+      mobileViewStack.pop();
+    } else {
+      mobileViewStack[mobileViewStack.length - 1] = entry;
+    }
+    return;
+  }
+  const current = mobileViewStack[mobileViewStack.length - 1];
+  if (sameMobileDestination(current, entry)) {
+    mobileViewStack[mobileViewStack.length - 1] = entry;
+    return;
+  }
+  mobileViewStack.push(entry);
+}
+
+function returnToMobileMenu(group){
+  if (!isMobileMode) return;
+  document.querySelectorAll('.mobile-group.show-add-options').forEach(item => {
+    item.classList.remove('show-add-options');
+  });
+  expandedGroup = group || null;
+  mobileViewStack = [];
+  mobileStage = 'nav';
+  applyMobileFlags();
+  updateGroupExpansion();
+  const current = history.state || {};
+  const state = {
+    ...current,
+    view: DEFAULT_VIEW,
+    params: {},
+    mobileStage: 'nav',
+    mobileMenuEntry: false,
+    mobileMenuGroup: expandedGroup,
+    [APP_HISTORY_SESSION_KEY]: APP_HISTORY_SESSION_ID
+  };
+  history.replaceState(state, '', mobileShellUrl());
 }
 
 function handleMobileMediaChange(ev){
@@ -1233,7 +1343,8 @@ function setActiveNav(view){
     else btn.classList.remove('active');
   });
 
-  const userActive = view === 'users' || (view === 'index' && sectionLower === 'users');
+  const userActive = ['user-overview', 'users', 'temp-user', 'face-rec'].includes(view)
+    || (view === 'index' && sectionLower === 'users');
   const globalActive = view === 'index' && sectionLower === 'global-actions';
 
   const allowAutoExpand = !(isMobileMode && mobileStage === 'nav');
@@ -1257,13 +1368,25 @@ function getAppHistoryIndex(state = history.state){
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-function updateHistory(view, params, { replaceState = false } = {}){
+function updateHistory(view, params, options = {}){
+  const replaceState = !!options.replaceState;
+  const currentState = history.state || {};
+  const sameSession = currentState[APP_HISTORY_SESSION_KEY] === APP_HISTORY_SESSION_ID;
   const currentIndex = getAppHistoryIndex();
   const nextIndex = replaceState ? currentIndex : currentIndex + 1;
+  const hasExplicitMenuGroup = Object.prototype.hasOwnProperty.call(options, 'mobileMenuGroup');
+  const mobileMenuGroup = hasExplicitMenuGroup
+    ? (options.mobileMenuGroup || null)
+    : (sameSession ? (currentState.mobileMenuGroup || null) : mobileGroupForView(view));
+  const mobileMenuEntry = typeof options.mobileMenuEntry === 'boolean'
+    ? options.mobileMenuEntry
+    : (replaceState && sameSession && currentState.mobileMenuEntry === true);
   const state = {
     view,
     params,
     mobileStage: isMobileMode ? mobileStage : 'content',
+    mobileMenuEntry: isMobileMode && mobileMenuEntry,
+    mobileMenuGroup: isMobileMode ? mobileMenuGroup : null,
     [APP_HISTORY_INDEX_KEY]: nextIndex,
     [APP_HISTORY_SESSION_KEY]: APP_HISTORY_SESSION_ID
   };
@@ -1304,7 +1427,14 @@ function loadView(view, params = {}, options = {}){
   }
   setActiveNav(normalized);
   if (options.updateHistory !== false) {
-    updateHistory(normalized, params, { replaceState: !!options.replaceState });
+    const historyOptions = { replaceState: !!options.replaceState };
+    if (Object.prototype.hasOwnProperty.call(options, 'mobileMenuEntry')) {
+      historyOptions.mobileMenuEntry = options.mobileMenuEntry;
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'mobileMenuGroup')) {
+      historyOptions.mobileMenuGroup = options.mobileMenuGroup;
+    }
+    updateHistory(normalized, params, historyOptions);
   }
 }
 
@@ -1408,18 +1538,17 @@ function formatActionError(err){
   try { return String(err); } catch (convErr) { return ''; }
 }
 
+function setMobileActionStatus(message, tone = ''){
+  const status = document.getElementById('mobileActionStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.className = `mobile-action-status${message ? ' visible' : ''}${tone ? ` ${tone}` : ''}`;
+}
+
 async function runDashboardAction(action){
   const normalized = String(action || '').toLowerCase();
-  if (!normalized) return;
-
-  const frame = document.getElementById('viewFrame');
-  const previousHref = frame?.dataset.currentHref || '';
-
-  if (isMobileMode) {
-    setMobileStage('content', { preserveGroups: true, syncHistory: false });
-  }
-  loadView('index', { section: 'global-actions' });
-  const changed = frame && frame.dataset.currentHref !== previousHref;
+  if (!normalized) return false;
+  setMobileActionStatus(`Requesting ${describeAction(normalized)}...`, 'busy');
 
   let success = false;
   let lastError = '';
@@ -1456,10 +1585,8 @@ async function runDashboardAction(action){
     steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));
     steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));
   } else {
-    if (!changed && frame) {
-      reloadActiveView({ updateHistory: false });
-    }
-    return;
+    setMobileActionStatus('That action is not available.', 'error');
+    return false;
   }
 
   for (const step of steps) {
@@ -1474,15 +1601,12 @@ async function runDashboardAction(action){
 
   if (!success) {
     const message = describeAction(normalized);
+    setMobileActionStatus(`Unable to ${message}${lastError ? `: ${lastError}` : ''}`, 'error');
     alert(`Unable to ${message}${lastError ? `: ${lastError}` : ''}`);
-    return;
+    return false;
   }
-
-  if (!changed && frame) {
-    setTimeout(() => {
-      try { reloadActiveView({ updateHistory: false }); } catch (err) {}
-    }, 150);
-  }
+  setMobileActionStatus(`Request sent: ${describeAction(normalized)}.`, 'success');
+  return true;
 }
 
 async function fetchVersion(){
@@ -1561,7 +1685,17 @@ document.querySelectorAll('.mobile-launcher [data-view], .mobile-launcher [data-
       updateGroupExpansion();
     }
     if (!hasView) return;
-    if (isMobileMode) setMobileStage('content', { syncHistory: false });
+    if (isMobileMode) {
+      const menuGroup = parentGroup || mobileGroupForView(view);
+      setMobileStage('content', { preserveGroups: true, syncHistory: false });
+      rememberMobileDestination(view, params, { reset: true, menuGroup });
+      loadView(view, params, {
+        replaceState: true,
+        mobileMenuEntry: true,
+        mobileMenuGroup: menuGroup
+      });
+      return;
+    }
     loadView(view, params, { replaceState: false });
   });
 });
@@ -1592,15 +1726,19 @@ document.querySelectorAll('#navQuickActions [data-view]').forEach(btn => {
 });
 
 document.querySelectorAll('#navQuickActions [data-action], .mobile-launcher [data-action]').forEach(btn => {
-  btn.addEventListener('click', (ev) => {
+  btn.addEventListener('click', async (ev) => {
     ev.preventDefault();
     const action = (btn.dataset.action || '').toLowerCase();
     if (!action) return;
     const group = btn.closest('[data-group]')?.dataset.group || null;
     if (group) expandedGroup = group;
     updateGroupExpansion();
-    runDashboardAction(action);
-    if (isMobileMode) setMobileStage('content', { preserveGroups: true });
+    btn.setAttribute('disabled', 'disabled');
+    try {
+      await runDashboardAction(action);
+    } finally {
+      btn.removeAttribute('disabled');
+    }
   });
 });
 
@@ -1609,11 +1747,23 @@ if (mobileBackBtn) {
   mobileBackBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     if (!isMobileMode) return;
-    if (getAppHistoryIndex() > 0) {
-      history.back();
+    if (mobileViewStack.length > 1) {
+      mobileViewStack.pop();
+      const previous = mobileViewStack[mobileViewStack.length - 1];
+      expandedGroup = previous.menuGroup || mobileGroupForView(previous.view);
+      setMobileStage('content', { preserveGroups: true, syncHistory: false });
+      loadView(previous.view, previous.params, {
+        replaceState: true,
+        mobileMenuEntry: mobileViewStack.length === 1,
+        mobileMenuGroup: expandedGroup
+      });
       return;
     }
-    setMobileStage('nav');
+    const state = history.state || {};
+    const current = mobileViewStack[0];
+    returnToMobileMenu(
+      current?.menuGroup || state.mobileMenuGroup || mobileGroupForView(current?.view || state.view)
+    );
   });
 }
 
@@ -1622,7 +1772,11 @@ if (mobileMenuBtn) {
   mobileMenuBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     if (!isMobileMode) return;
-    setMobileStage('nav');
+    const state = history.state || {};
+    const current = mobileViewStack[0];
+    returnToMobileMenu(
+      current?.menuGroup || state.mobileMenuGroup || mobileGroupForView(current?.view || state.view)
+    );
   });
 }
 
@@ -1634,15 +1788,23 @@ window.addEventListener('message', (event) => {
   if (data.type !== 'akuvox-nav') return;
   const view = normalizeView(data.view || data.slug || data.target || DEFAULT_VIEW);
   const params = data.params || {};
-  if (isMobileMode && data.mobileStage) {
+  const requestedMobileStage = data.mobileStage
+    ? (String(data.mobileStage).toLowerCase() === 'nav' ? 'nav' : 'content')
+    : null;
+  if (isMobileMode && requestedMobileStage) {
     const preserve = data.preserveMobileGroups === true || data.preserveGroups === true;
-    const stage = String(data.mobileStage).toLowerCase() === 'nav' ? 'nav' : 'content';
-    setMobileStage(stage, { preserveGroups: preserve });
+    setMobileStage(requestedMobileStage, { preserveGroups: preserve });
   }
   const opts = {
     updateHistory: data.updateHistory !== false,
     replaceState: !!data.replaceState
   };
+  if (isMobileMode && opts.updateHistory && requestedMobileStage !== 'nav') {
+    rememberMobileDestination(view, params, {
+      replace: opts.replaceState,
+      menuGroup: mobileViewStack[0]?.menuGroup || mobileGroupForView(view)
+    });
+  }
   loadView(view, params, opts);
 });
 
@@ -1652,7 +1814,8 @@ window.addEventListener('popstate', (event) => {
   const params = state.params || paramsFromSearch(location.search);
   if (isMobileMode) {
     const targetStage = state.mobileStage || 'content';
-    setMobileStage(targetStage, { preserveGroups: true });
+    expandedGroup = state.mobileMenuGroup || mobileGroupForView(view);
+    setMobileStage(targetStage, { preserveGroups: true, syncHistory: false });
   }
   loadView(view, params, { updateHistory: false });
 });
@@ -1665,6 +1828,9 @@ window.addEventListener('popstate', (event) => {
     const explicitDestination = searchParams.has('view')
       || ['section', 'mode', 'id', 'user', 'extend'].some(key => searchParams.has(key));
     mobileStage = explicitDestination ? 'content' : 'nav';
+    mobileViewStack = explicitDestination
+      ? [mobileStackEntry(initialView, params, mobileGroupForView(initialView))]
+      : [];
     applyMobileFlags();
   }
   updateHistory(initialView, params, { replaceState: true });
