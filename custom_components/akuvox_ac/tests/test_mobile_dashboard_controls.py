@@ -40,6 +40,20 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
 
     assert 'id="mobileBackBtn"' in shell
     assert 'id="mobileMenuBtn"' in shell
+    assert 'class="mobile-launcher-title">Access Control<' in shell
+    assert '<button class="mobile-tile" type="button" data-view="index">' in shell
+    for view in (
+        "user-overview",
+        "users",
+        "temp-user",
+        "event-history",
+        "device-management",
+        "settings",
+    ):
+        assert f'data-view="{view}"' in shell
+    assert "body.mobile-stage-nav .mobile-launcher { display: grid; }" in shell
+    assert "body.mobile-stage-content header.app-header { display: flex; }" in shell
+    assert "header.app-header .logo-mark { display: none; }" in shell
     assert "const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';" in shell
     assert "const APP_HISTORY_SESSION_KEY = 'akuvoxHistorySession';" in shell
     assert "const APP_HISTORY_SESSION_ID = (() => {" in shell
@@ -54,6 +68,7 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert "setMobileStage('content', { syncHistory: false });" in shell
     assert "const mobileMenuBtn = document.getElementById('mobileMenuBtn');" in shell
     assert "setMobileStage('nav');" in shell
+    assert "mobileStage = explicitDestination ? 'content' : 'nav';" in shell
 
     for name in ("device_edit-mob.html", "diagnostics-mob.html", "schedules-mob.html"):
         page = read_page(name)
@@ -73,10 +88,19 @@ def test_mobile_global_actions_include_update_check():
         '<button class="mobile-tile sub" type="button" data-action="hacs_update_check">'
         in shell
     )
-    assert '<span class="tile-title">Check for updates</span>' in shell
+    assert '<span class="tile-title">System update</span>' in shell
     assert '<span>Check for updates</span>' in shell
     assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));" in shell
     assert "steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));" in shell
+
+
+def test_mobile_global_actions_include_access_event_refresh():
+    shell = read_page("head-mob.html")
+
+    assert 'data-action="refresh_events"' in shell
+    assert '<span class="tile-title">Update access events</span>' in shell
+    assert "steps.push(() => postJson(API_ACTION, { action: 'refresh_events' }));" in shell
+    assert "steps.push(() => callService('akuvox_ac', 'refresh_events', {}));" in shell
 
 
 def test_dashboards_start_only_one_state_polling_loop():

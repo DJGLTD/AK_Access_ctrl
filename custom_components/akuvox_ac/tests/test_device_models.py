@@ -158,12 +158,16 @@ def test_dashboard_branding_events_and_update_controls():
     assert "? 'bi-telephone-fill'" in dashboard
     assert "? 'Access Granted'" in dashboard
 
-    for shell_name in ("head.html", "head-mob.html"):
-        shell = (WWW / shell_name).read_text(encoding="utf-8")
-        assert "header.app-header," in shell
-        assert ".mobile-launcher," in shell
-        assert "display: none !important;" in shell
-        assert "padding: 0 !important;" in shell
+    desktop_shell = (WWW / "head.html").read_text(encoding="utf-8")
+    assert "header.app-header," in desktop_shell
+    assert ".mobile-launcher," in desktop_shell
+    assert "display: none !important;" in desktop_shell
+    assert "padding: 0 !important;" in desktop_shell
+
+    mobile_shell = (WWW / "head-mob.html").read_text(encoding="utf-8")
+    assert "body.mobile-stage-nav .mobile-launcher { display: grid; }" in mobile_shell
+    assert "body.mobile-stage-content .mobile-launcher { display: none; }" in mobile_shell
+    assert "body.mobile-stage-content header.app-header { display: flex; }" in mobile_shell
 
 
 def test_dashboard_user_actions_are_not_clipped():
