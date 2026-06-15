@@ -265,6 +265,57 @@
       .device-overview-card{grid-template-columns:90px minmax(0,1fr)}
       .user-toolbar{width:100%}
     }
+    @media (max-width:600px){
+      .workspace{width:calc(100vw - 16px);padding:8px 0 12px;gap:10px}
+      .brand{display:none}
+      .topbar,.top-actions{width:100%}
+      .top-actions{display:grid;grid-template-columns:1fr;gap:8px}
+      .top-actions .btn{width:100%;min-height:40px}
+      .summary-grid{gap:8px}
+      .summary-card{min-height:112px;padding:12px;gap:10px}
+      .summary-icon{width:46px;height:46px;flex-basis:46px;font-size:1.2rem}
+      .summary-value{font-size:1.25rem}
+      .card-header{padding:11px 12px}
+      .event-item{grid-template-columns:30px 58px minmax(0,1fr);gap:7px;padding:8px 10px}
+      .event-result{grid-column:3;justify-self:start}
+      .device-overview-list{padding:10px}
+      .device-overview-card{grid-template-columns:92px minmax(0,1fr);padding:12px;gap:12px}
+      .device-actions{display:grid;grid-template-columns:1fr;gap:7px}
+      .device-actions .btn{width:100%;min-width:0}
+      .system-alerts{padding:0 12px}
+      .user-panel-header{align-items:stretch;padding:10px}
+      .user-heading{display:grid;grid-template-columns:1fr;gap:8px;width:100%}
+      .user-heading .btn{width:100%;justify-content:center}
+      .user-toolbar{flex-direction:column;align-items:stretch;gap:8px}
+      .user-toolbar .user-search,
+      .user-toolbar .form-control,
+      .user-toolbar .form-select{width:100%;min-width:0;max-width:none}
+      .user-toolbar .user-search{flex:0 0 auto}
+      #sectionUsers .table-responsive-shell{padding:10px;overflow:visible}
+      #sectionUsers .table,
+      #sectionUsers .table tbody,
+      #sectionUsers .table tr,
+      #sectionUsers .table td{display:block;width:100%}
+      #sectionUsers .table thead{display:none}
+      #sectionUsers .table tbody{display:grid;gap:10px}
+      #sectionUsers .table tbody tr{
+        padding:8px 10px;border:1px solid #203b58;border-radius:8px;
+        background:rgba(5,19,34,.72);
+      }
+      #sectionUsers .table tbody td{
+        display:grid;grid-template-columns:minmax(96px,.45fr) minmax(0,1fr);
+        align-items:start;gap:10px;padding:7px 0;text-align:left;border:0;
+      }
+      #sectionUsers .table tbody td+td{border-top:1px solid rgba(42,63,87,.5)}
+      #sectionUsers .table tbody td::before{
+        content:attr(data-label);color:#91a4ba;font-size:.69rem;font-weight:700;
+        letter-spacing:.035em;text-transform:uppercase;
+      }
+      #sectionUsers .table tbody td[colspan]{display:block;text-align:center}
+      #sectionUsers .table tbody td[colspan]::before{content:none}
+      #sectionUsers .table .user-actions-cell>div{display:flex;flex-wrap:wrap;gap:6px}
+      #sectionUsers .table .user-actions-cell .btn{margin:0!important;flex:1 1 calc(50% - 6px)}
+    }
   </style>
 </head>
 <body>
@@ -2427,17 +2478,17 @@ function renderUsers(devs, registryUsers, kpis){
     }
 
     const pinCell = renderPinCell(u.pin, u.name);
-    const pinColumn = showPinColumn ? `<td>${pinCell}</td>` : '';
+    const pinColumn = showPinColumn ? `<td data-label="PIN">${pinCell}</td>` : '';
 
     return `<tr>
-      <td>${escapeHtml(u.name)}</td>
-      <td>${userSourceBadge(u)}</td>
+      <td data-label="Name">${escapeHtml(u.name)}</td>
+      <td data-label="Source">${userSourceBadge(u)}</td>
       ${pinColumn}
-      <td>${faceBadge}</td>
-      <td>${accessBadge}</td>
-      <td>${escapeHtml(formatLastAccess(u.last))}</td>
-      <td>${scheduleChip}</td>
-      <td>${actions}</td>
+      <td data-label="Face Recognition">${faceBadge}</td>
+      <td data-label="Access">${accessBadge}</td>
+      <td data-label="Last Access">${escapeHtml(formatLastAccess(u.last))}</td>
+      <td data-label="Access Schedule">${scheduleChip}</td>
+      <td class="user-actions-cell" data-label="Actions"><div>${actions}</div></td>
     </tr>`;
   }).join('');
 

@@ -18,7 +18,7 @@ def test_dashboard_templates_show_cloud_and_local_user_sources():
         assert ".badge-local{" in html
         assert "isCloudManagedUser(user) ? 'cloud' : 'local'" in html
         assert "const isCloud = isCloudManagedUser(u)" in html
-        assert "<td>${userSourceBadge(u)}</td>" in html
+        assert "userSourceBadge(u)}</td>" in html
 
     desktop = (www / "index.html").read_text(encoding="utf-8")
     mobile = (www / "index-mob.html").read_text(encoding="utf-8")

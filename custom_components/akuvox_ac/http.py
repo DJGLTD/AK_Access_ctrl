@@ -1740,6 +1740,11 @@ def _resolve_dashboard_asset(name: str, request: Optional[web.Request]) -> Path:
     if base.endswith(".html"):
         base = base[:-5]
 
+    # The main dashboard is responsive. Keep mobile requests on the same
+    # implementation so the phone view cannot drift back to the legacy tables.
+    if base in {"index", "index-mob"}:
+        return _static_asset("index.html")
+
     explicit_mobile = base.endswith("-mob")
     prefer_mobile = _request_prefers_mobile(request) if not explicit_mobile else True
     candidates: List[str] = []
@@ -3225,7 +3230,8 @@ class AkuvoxDashboardView(HomeAssistantView):
             target = "unauthorized-mob" if target.endswith("-mob") else "unauthorized"
 
         asset = _resolve_dashboard_asset(target, request)
-        variant = "mobile" if asset.name.endswith("-mob.html") else "desktop"
+        requested_mobile = target.endswith("-mob") or _request_prefers_mobile(request)
+        variant = "mobile" if requested_mobile else "desktop"
         if asset.suffix.lower() == ".html":
             signed = _signed_paths_for_request(hass, request)
             try:
