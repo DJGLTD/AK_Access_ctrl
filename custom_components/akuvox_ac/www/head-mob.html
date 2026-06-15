@@ -159,12 +159,16 @@
       font-size: 0.84rem;
     }
     .mobile-group {
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
-      min-width: 0;
+      display: contents;
     }
-    .mobile-group.expanded { display: contents; }
+    .mobile-launcher-intro { order: 0; }
+    .mobile-group[data-group="users"] [data-group-toggle="users"] { order: 10; }
+    .mobile-launcher [data-view="event-history"] { order: 20; }
+    .mobile-group[data-group="users"] .mobile-subgrid { order: 25; }
+    .mobile-launcher [data-view="device-management"] { order: 30; }
+    .mobile-group[data-group="global"] [data-group-toggle="global"] { order: 40; }
+    .mobile-group[data-group="global"] .mobile-subgrid { order: 45; }
+    .mobile-launcher [data-view="settings"] { order: 50; }
     .mobile-launcher .mobile-subgrid {
       display: none;
       grid-column: 1 / -1;

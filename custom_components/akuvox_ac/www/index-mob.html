@@ -1309,10 +1309,16 @@ function describeEventForDisplay(event){
   if (normalizedCategory === 'call') {
     const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
     const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';
-    const callLabel = isCloudEvent(event, typeLabel) ? 'Cloud' : 'Call';
+    if (isCloudEvent(event, typeLabel)) {
+      return {
+        category: normalizedCategory,
+        title: `${deviceLabel} - Opened with Akuvox App`,
+        highlight: fallbackMessage || typeLabel || label,
+      };
+    }
     return {
       category: normalizedCategory,
-      title: `${deviceLabel} - ${callLabel} - ${caller}`,
+      title: `${deviceLabel} - Call - ${caller}`,
       highlight: caller || fallbackMessage || typeLabel || label,
     };
   }
