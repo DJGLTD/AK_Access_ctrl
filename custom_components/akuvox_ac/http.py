@@ -3287,6 +3287,7 @@ class AkuvoxUIView(HomeAssistantView):
             "groups": [],
             "all_groups": [],
             "capabilities": {"alarm_relay": False},
+            "hacs_auto_update": {},
             "credential_prompts": {
                 "code": True,
                 "token": True,
@@ -3299,6 +3300,22 @@ class AkuvoxUIView(HomeAssistantView):
         kpis: Dict[str, Any] = response["kpis"]
 
         try:
+            updater = root.get("hacs_auto_updater")
+            if updater and hasattr(updater, "status"):
+                try:
+                    response["hacs_auto_update"] = updater.status()
+                except Exception:
+                    pass
+            else:
+                hacs_settings = root.get("settings_store")
+                if hacs_settings and hasattr(hacs_settings, "get_hacs_auto_update"):
+                    try:
+                        response["hacs_auto_update"] = (
+                            hacs_settings.get_hacs_auto_update()
+                        )
+                    except Exception:
+                        pass
+
             devices_serialized, any_alarm = _serialize_devices(root)
             response["devices"] = devices_serialized
             response["capabilities"] = {"alarm_relay": any_alarm}

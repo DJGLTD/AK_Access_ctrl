@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 WWW = Path(__file__).resolve().parents[1] / "www"
+HTTP = Path(__file__).resolve().parents[1] / "http.py"
 
 
 def read_page(name):
@@ -95,20 +96,35 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
 
 def test_mobile_global_actions_include_update_check():
     shell = read_page("head-mob.html")
+    http = HTTP.read_text(encoding="utf-8")
 
     assert shell.count('data-action="hacs_update_check"') == 2
     assert (
-        '<button type="button" class="quick-btn" data-action="hacs_update_check">'
+        '<button type="button" class="quick-btn" data-action="hacs_update_check" data-system-update>'
         in shell
     )
     assert (
-        '<button class="mobile-tile sub" type="button" data-action="hacs_update_check">'
+        '<button class="mobile-tile sub" type="button" data-action="hacs_update_check" data-system-update>'
         in shell
     )
-    assert '<span class="tile-title">System update</span>' in shell
-    assert '<span>Check for updates</span>' in shell
+    assert shell.count("data-system-update-label>") == 2
+    assert '<span data-system-update-label>Check for updates</span>' in shell
+    assert (
+        '<span class="tile-title" data-system-update-label>Check for updates</span>'
+        in shell
+    )
+    assert "function hacsUpdatePresentation(status)" in shell
+    assert "action: 'hacs_update_install'" in shell
+    assert "label: 'Install update'" in shell
+    assert "action: 'restart_homeassistant'" in shell
+    assert "label: 'Reboot to install update'" in shell
     assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));" in shell
     assert "steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));" in shell
+    assert "steps.push(() => postJson(API_ACTION, { action: 'hacs_update_install' }));" in shell
+    assert "steps.push(() => postJson(API_ACTION, { action: 'restart_homeassistant' }));" in shell
+    assert "hacsUpdateStatus = data.hacs_auto_update;" in shell
+    assert '"hacs_auto_update": {}' in http
+    assert 'response["hacs_auto_update"] = updater.status()' in http
 
 
 def test_mobile_global_actions_include_access_event_refresh():
