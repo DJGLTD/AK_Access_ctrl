@@ -1,10 +1,36 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
 ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac import http as http_module  # noqa: E402
+
+
+def _dashboard_request(query=None, user_agent=""):
+    return SimpleNamespace(
+        rel_url=SimpleNamespace(query=query or {}),
+        headers={"User-Agent": user_agent},
+    )
+
+
+def test_mobile_dashboard_uses_the_responsive_web_dashboard():
+    mobile_query = _dashboard_request({"variant": "mobile"})
+    mobile_agent = _dashboard_request(
+        user_agent=(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
+            "AppleWebKit/605.1.15 Mobile/15E148"
+        )
+    )
+
+    assert http_module._resolve_dashboard_asset("index", mobile_query).name == "index.html"
+    assert http_module._resolve_dashboard_asset("index", mobile_agent).name == "index.html"
+    assert http_module._resolve_dashboard_asset("index-mob", mobile_query).name == "index.html"
+    assert (
+        http_module._resolve_dashboard_asset("user_overview", mobile_query).name
+        == "user_overview-mob.html"
+    )
 
 
 def test_dashboard_injects_signing_helper_without_initial_signed_paths():

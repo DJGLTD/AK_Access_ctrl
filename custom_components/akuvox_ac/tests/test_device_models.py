@@ -178,6 +178,17 @@ def test_dashboard_user_actions_are_not_clipped():
     ) in dashboard
 
 
+def test_dashboard_uses_mobile_cards_instead_of_squeezed_user_columns():
+    dashboard = (WWW / "index.html").read_text(encoding="utf-8")
+
+    assert "@media (max-width:600px)" in dashboard
+    assert "#sectionUsers .table thead{display:none}" in dashboard
+    assert 'data-label="Face Recognition"' in dashboard
+    assert 'class="user-actions-cell" data-label="Actions"' in dashboard
+    assert ".brand{display:none}" in dashboard
+    assert ".top-actions{display:grid;grid-template-columns:1fr;gap:8px}" in dashboard
+
+
 def test_dashboard_switches_between_sync_and_health_check_kpi():
     dashboard = (WWW / "index.html").read_text(encoding="utf-8")
     mobile = (WWW / "index-mob.html").read_text(encoding="utf-8")
