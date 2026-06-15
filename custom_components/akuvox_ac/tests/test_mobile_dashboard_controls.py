@@ -54,7 +54,15 @@ def test_mobile_shell_owns_page_back_navigation_and_has_menu_button():
     assert "body.mobile-stage-nav .mobile-launcher { display: grid; }" in shell
     assert "body.mobile-stage-content header.app-header { display: flex; }" in shell
     assert "header.app-header .logo-mark { display: none; }" in shell
-    assert ".mobile-group.expanded { display: contents; }" in shell
+    assert ".mobile-group {" in shell
+    assert "display: contents;" in shell
+    assert '.mobile-group[data-group="users"] [data-group-toggle="users"] { order: 10; }' in shell
+    assert '.mobile-launcher [data-view="event-history"] { order: 20; }' in shell
+    assert '.mobile-group[data-group="users"] .mobile-subgrid { order: 25; }' in shell
+    assert '.mobile-launcher [data-view="device-management"] { order: 30; }' in shell
+    assert '.mobile-group[data-group="global"] [data-group-toggle="global"] { order: 40; }' in shell
+    assert '.mobile-group[data-group="global"] .mobile-subgrid { order: 45; }' in shell
+    assert '.mobile-launcher [data-view="settings"] { order: 50; }' in shell
     assert 'class="mobile-subgrid-heading"' in shell
     assert "const APP_HISTORY_INDEX_KEY = 'akuvoxHistoryIndex';" in shell
     assert "const APP_HISTORY_SESSION_KEY = 'akuvoxHistorySession';" in shell
@@ -141,3 +149,16 @@ def test_dashboards_start_only_one_state_polling_loop():
         page = read_page(name)
         assert page.count("setInterval(refresh, 5000);") == 1
         assert page.count("// initial + poll") == 1
+
+
+def test_cloud_open_events_use_akuvox_app_label():
+    for name in (
+        "index.html",
+        "index-mob.html",
+        "event_history.html",
+        "event_history-mob.html",
+    ):
+        page = read_page(name)
+        assert "Opened with Akuvox App" in page
+        assert "function isCloudEvent(" in page
+        assert " - Cloud - " not in page

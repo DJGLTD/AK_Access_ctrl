@@ -578,6 +578,13 @@ function getEventTypeLabel(evt){
   return text ? text : '';
 }
 
+function isCloudEvent(evt, typeLabel){
+  if (!evt || typeof evt !== 'object') return false;
+  const source = String(evt.Source || evt.source || evt._source || '').toLowerCase();
+  if (source.includes('cloud')) return true;
+  return String(typeLabel || '').toLowerCase().includes('cloud');
+}
+
 function getEventPinLabel(evt){
   if (!evt || typeof evt !== 'object') return '';
   const value = pickEventValue(evt, ['Pin','PIN','Passcode','Password','Credential','CardNo','CardNumber','digits']);
@@ -603,9 +610,10 @@ function getEventTitle(evt){
   const typeLabel = getEventTypeLabel(evt);
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
-    const typeLower = typeLabel.toLowerCase();
-    const callLabel = typeLower.includes('cloud') ? 'Cloud' : 'Call';
-    return `${deviceName} - ${callLabel} - ${caller}`;
+    if (isCloudEvent(evt, typeLabel)) {
+      return `${deviceName} - Opened with Akuvox App`;
+    }
+    return `${deviceName} - Call - ${caller}`;
   }
   if (category === 'access' && typeLabel) {
     const typeLower = typeLabel.toLowerCase();
