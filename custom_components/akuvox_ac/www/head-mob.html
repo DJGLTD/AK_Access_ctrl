@@ -456,9 +456,9 @@
           <i class="bi bi-lightning-charge-fill"></i>
           <span>Force full sync</span>
         </button>
-        <button type="button" class="quick-btn" data-action="hacs_update_check">
-          <i class="bi bi-cloud-arrow-down-fill"></i>
-          <span>Check for updates</span>
+        <button type="button" class="quick-btn" data-action="hacs_update_check" data-system-update>
+          <i class="bi bi-cloud-arrow-down-fill" data-system-update-icon></i>
+          <span data-system-update-label>Check for updates</span>
         </button>
       </div>
     </div>
@@ -561,12 +561,12 @@
           </div>
           <i class="bi bi-journal-arrow-down"></i>
         </button>
-        <button class="mobile-tile sub" type="button" data-action="hacs_update_check">
+        <button class="mobile-tile sub" type="button" data-action="hacs_update_check" data-system-update>
           <div class="tile-text">
-            <span class="tile-title">System update</span>
-            <small>Check HACS for a newer integration version</small>
+            <span class="tile-title" data-system-update-label>Check for updates</span>
+            <small data-system-update-detail>Check HACS for a newer integration version</small>
           </div>
-          <i class="bi bi-cloud-arrow-down-fill"></i>
+          <i class="bi bi-cloud-arrow-down-fill" data-system-update-icon></i>
         </button>
         <div class="mobile-action-status" id="mobileActionStatus" role="status" aria-live="polite"></div>
       </div>
@@ -1225,6 +1225,63 @@ async function ensureDashboardSignedPaths(){
   return true;
 }
 const API_ACTION = signedPath('action', '/api/akuvox_ac/ui/action');
+let hacsUpdateStatus = null;
+let hacsUpdateBusy = false;
+
+function hacsUpdatePresentation(status){
+  const result = String(status?.last_result || '').toLowerCase();
+  const version = String(status?.pending_version || status?.latest_version || '').trim();
+  if (result === 'update_available') {
+    return {
+      action: 'hacs_update_install',
+      label: 'Install update',
+      detail: version
+        ? `Install Akuvox Access Control ${version}`
+        : 'Install the available Akuvox Access Control update',
+      icon: 'bi-cloud-arrow-down-fill'
+    };
+  }
+  if (result === 'installed' || result === 'restart_scheduled') {
+    return {
+      action: 'restart_homeassistant',
+      label: 'Reboot to install update',
+      detail: 'Restart Home Assistant to finish applying the update',
+      icon: 'bi-power'
+    };
+  }
+  return {
+    action: 'hacs_update_check',
+    label: 'Check for updates',
+    detail: 'Check HACS for a newer integration version',
+    icon: 'bi-cloud-arrow-down-fill'
+  };
+}
+
+function hacsUpdateBusyLabel(action){
+  if (action === 'hacs_update_install') return 'Installing update...';
+  if (action === 'restart_homeassistant') return 'Rebooting...';
+  return 'Checking for updates...';
+}
+
+function renderHacsUpdateButtons(){
+  const presentation = hacsUpdatePresentation(hacsUpdateStatus);
+  document.querySelectorAll('[data-system-update]').forEach(btn => {
+    btn.dataset.action = presentation.action;
+    btn.disabled = hacsUpdateBusy;
+    const label = btn.querySelector('[data-system-update-label]');
+    const detail = btn.querySelector('[data-system-update-detail]');
+    const icon = btn.querySelector('[data-system-update-icon]');
+    if (label) {
+      label.textContent = hacsUpdateBusy
+        ? hacsUpdateBusyLabel(presentation.action)
+        : presentation.label;
+    }
+    if (detail) detail.textContent = presentation.detail;
+    if (icon) {
+      icon.className = `bi ${hacsUpdateBusy ? 'bi-arrow-repeat' : presentation.icon}`;
+    }
+  });
+}
 
 function buildUrl(view, params = {}){
   const search = new URLSearchParams();
@@ -1527,10 +1584,16 @@ async function callService(domain, service, data = {}){
 
 function describeAction(action){
   const normalized = String(action || '').toLowerCase();
+  if (normalized === 'hacs_update_install') return 'install the available update';
+  if (normalized === 'restart_homeassistant') return 'reboot Home Assistant to finish the update';
+  if (
+    normalized === 'hacs_update_check'
+    || normalized === 'hacs_auto_update'
+    || normalized === 'check_for_updates'
+  ) return 'check for updates';
   if (normalized.includes('reboot')) return 'reboot all devices';
   if (normalized.includes('sync')) return 'force a full sync';
   if (normalized.includes('event')) return 'update access events';
-  if (normalized.includes('update')) return 'check for updates';
   return 'run the requested action';
 }
 
@@ -1556,6 +1619,7 @@ async function runDashboardAction(action){
 
   let success = false;
   let lastError = '';
+  let actionResult = null;
   const logError = (err) => {
     const msg = formatActionError(err);
     if (!lastError && msg) lastError = msg;
@@ -1588,6 +1652,11 @@ async function runDashboardAction(action){
   ) {
     steps.push(() => postJson(API_ACTION, { action: 'hacs_update_check' }));
     steps.push(() => callService('akuvox_ac', 'hacs_update_check', {}));
+  } else if (normalized === 'hacs_update_install') {
+    steps.push(() => postJson(API_ACTION, { action: 'hacs_update_install' }));
+    steps.push(() => callService('akuvox_ac', 'hacs_update_install', {}));
+  } else if (normalized === 'restart_homeassistant') {
+    steps.push(() => postJson(API_ACTION, { action: 'restart_homeassistant' }));
   } else {
     setMobileActionStatus('That action is not available.', 'error');
     return false;
@@ -1597,7 +1666,10 @@ async function runDashboardAction(action){
     if (success) break;
     try {
       const result = await step();
-      if (result !== false) success = true;
+      if (result !== false) {
+        success = true;
+        actionResult = result;
+      }
     } catch (err) {
       logError(err);
     }
@@ -1610,7 +1682,7 @@ async function runDashboardAction(action){
     return false;
   }
   setMobileActionStatus(`Request sent: ${describeAction(normalized)}.`, 'success');
-  return true;
+  return actionResult || true;
 }
 
 async function fetchVersion(){
@@ -1631,6 +1703,10 @@ async function fetchVersion(){
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     const label = data?.kpis?.version || '—';
+    if (data?.hacs_auto_update && typeof data.hacs_auto_update === 'object') {
+      hacsUpdateStatus = data.hacs_auto_update;
+      renderHacsUpdateButtons();
+    }
     if (badge) badge.textContent = label;
     if (footer) footer.textContent = '';
   } catch (err) {
@@ -1737,11 +1813,29 @@ document.querySelectorAll('#navQuickActions [data-action], .mobile-launcher [dat
     const group = btn.closest('[data-group]')?.dataset.group || null;
     if (group) expandedGroup = group;
     updateGroupExpansion();
-    btn.setAttribute('disabled', 'disabled');
+    const isSystemUpdate = btn.hasAttribute('data-system-update');
+    if (isSystemUpdate) {
+      hacsUpdateBusy = true;
+      renderHacsUpdateButtons();
+    } else {
+      btn.setAttribute('disabled', 'disabled');
+    }
     try {
-      await runDashboardAction(action);
+      const result = await runDashboardAction(action);
+      if (isSystemUpdate && result !== false) {
+        if (result?.hacs_auto_update && typeof result.hacs_auto_update === 'object') {
+          hacsUpdateStatus = result.hacs_auto_update;
+        } else {
+          await fetchVersion();
+        }
+      }
     } finally {
-      btn.removeAttribute('disabled');
+      if (isSystemUpdate) {
+        hacsUpdateBusy = false;
+        renderHacsUpdateButtons();
+      } else {
+        btn.removeAttribute('disabled');
+      }
     }
   });
 });
@@ -1840,6 +1934,7 @@ window.addEventListener('popstate', (event) => {
   updateHistory(initialView, params, { replaceState: true });
   await ensureDashboardSignedPaths();
   loadView(initialView, params, { replaceState: true });
+  renderHacsUpdateButtons();
   fetchVersion();
 })();
 </script>
