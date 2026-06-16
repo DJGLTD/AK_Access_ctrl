@@ -688,8 +688,9 @@ function isHomeAssistantOpenEvent(evt, typeLabel){
 
 function getHomeAssistantOpenActor(evt){
   const value = pickEventValue(evt, [
+    'LinkedUserName','linked_user_name','linkedUserName',
+    '_user_name','TriggeredBy','triggered_by','User','user','UserName','user_name','Name','name',
     'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
-    'TriggeredBy','triggered_by','UserName','user_name','Name','name',
   ]);
   const text = value === null || value === undefined ? '' : String(value).trim();
   return text || 'HA User';
@@ -706,6 +707,7 @@ function getEventPinLabel(evt){
 function hasLinkedUser(evt){
   if (!evt || typeof evt !== 'object') return false;
   const userValue = pickEventValue(evt, [
+    'LinkedUserName','linked_user_name','linkedUserName','_user_name',
     'UserID','user_id','userId',
     'User','user',
     'UserName','user_name','userName',
@@ -745,7 +747,7 @@ function getEventTitle(evt){
 
 function getEventUserLabel(evt){
   if (!evt || typeof evt !== 'object') return 'Unknown';
-  const user = evt.User || evt.user || evt.UserName || evt.user_name || evt.userName || evt.Name || evt.NameID;
+  const user = evt.LinkedUserName || evt.linked_user_name || evt.linkedUserName || evt._user_name || evt.User || evt.user || evt.UserName || evt.user_name || evt.userName || evt.Name || evt.NameID;
   if (typeof user === 'string' && user.trim()) return user.trim();
   if (user) return String(user);
   const number = evt.CallNumber || evt.CallNum || evt.CallNo || evt.number || evt.digits;
@@ -922,18 +924,30 @@ function addUserLookupEntry(map, id, name){
 function buildUserLookup(devices, registryUsers){
   const lookup = new Map();
   (registryUsers || []).forEach(entry => {
+    const label = entry.name || entry.Name || entry.user_name || entry.UserName || '';
     addUserLookupEntry(
       lookup,
       entry.id || entry.UserID || entry.UserId || entry.ID || '',
-      entry.name || entry.Name || entry.user_name || entry.UserName || ''
+      label
+    );
+    addUserLookupEntry(
+      lookup,
+      entry.ha_user_id || entry.home_assistant_user_id || entry.HomeAssistantUserID || '',
+      label
     );
   });
   (devices || []).forEach(device => {
     (device?._users || device?.users || []).forEach(user => {
+      const label = user.Name || user.name || user.user_name || user.UserName || '';
       addUserLookupEntry(
         lookup,
         user.id || user.UserID || user.UserId || user.ID || user.user_id || user.userId || '',
-        user.Name || user.name || user.user_name || user.UserName || ''
+        label
+      );
+      addUserLookupEntry(
+        lookup,
+        user.ha_user_id || user.home_assistant_user_id || user.HomeAssistantUserID || '',
+        label
       );
     });
   });
@@ -992,13 +1006,20 @@ function eventIdentity(evt){
 
 function applyUserLookup(evt, userLookup){
   if (!evt || !userLookup || userLookup.size === 0) return;
-  const userId = pickEventValue(evt, ['UserID','user_id','userId','User','user','NameID']);
+  const userId = pickEventValue(evt, [
+    'LinkedUserID','linked_user_id','linkedUserId',
+    'UserID','user_id','userId','User','user','NameID',
+    'HomeAssistantUserID','home_assistant_user_id','ha_user_id'
+  ]);
   const key = normalizeUserMatch(userId);
   if (!key) return;
   const mapped = userLookup.get(key);
   if (!mapped) return;
   if (!evt.Name && !evt.UserName && !evt.user_name && !evt.name) {
     evt.Name = mapped;
+  }
+  if (!evt.LinkedUserName && !evt.linked_user_name) {
+    evt.LinkedUserName = mapped;
   }
   evt._user_name = mapped;
 }

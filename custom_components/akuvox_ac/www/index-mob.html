@@ -1218,8 +1218,9 @@ const EVENT_DEVICE_KEYS = [
   '_device','device_name','device','Device','DoorName','Door','AccessPoint','Reader',
 ];
 const EVENT_CALL_USER_KEYS = [
-  'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
+  'LinkedUserName','linked_user_name','linkedUserName','TriggeredBy','triggered_by',
   'User','UserName','user_name','user','userName','Name','NameID','UserID','user_id',
+  'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
   'CallNumber','CallNum','CallNo','number','digits',
 ];
 const EVENT_PIN_KEYS = [
@@ -1229,7 +1230,9 @@ const EVENT_USER_ID_KEYS = [
   'UserID','user_id','UserId','userid','ID','id',
 ];
 const EVENT_USER_NAME_KEYS = [
-  'HomeAssistantUserName','home_assistant_user_name','ha_user_name','UserName','user_name','userName','Name','name','User','user',
+  'LinkedUserName','linked_user_name','linkedUserName','TriggeredBy','triggered_by',
+  'UserName','user_name','userName','Name','name','User','user',
+  'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
 ];
 const EVENT_DETAIL_KEYS = {
   call: [
@@ -1307,8 +1310,9 @@ function isHomeAssistantOpenEvent(event, typeLabel){
 
 function homeAssistantOpenActor(event){
   return pickFirstEventText(event, [
+    'LinkedUserName','linked_user_name','linkedUserName',
+    'TriggeredBy','triggered_by','User','user','UserName','user_name','Name','name',
     'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
-    'TriggeredBy','triggered_by','UserName','user_name','Name','name',
   ]) || 'HA User';
 }
 

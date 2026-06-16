@@ -51,6 +51,11 @@ class _UsersStoreStub:
         return dict(self._users)
 
 
+class _AuthStub:
+    async def async_get_user(self, user_id):
+        return SimpleNamespace(id=user_id, name="DJGLTD")
+
+
 def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     api = _ApiStub()
     coordinator = _CoordinatorStub()
@@ -96,12 +101,63 @@ def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     event = coordinator.manual_events[0]
     assert event["UserID"] == "HA001"
     assert event["HomeAssistantUserName"] == "DJGLTD"
-    assert event["Event"] == "Opened with Home Assistant by DJGLTD"
+    assert event["TriggeredBy"] == "Daniel"
+    assert event["UserName"] == "Daniel"
+    assert event["Event"] == "Opened with Home Assistant by Daniel"
 
     history = root["access_history"].snapshot(5)
     assert len(history) == 1
     assert history[0]["_category"] == "access"
     assert history[0]["LinkedUserID"] == "HA001"
+    assert history[0]["LinkedUserName"] == "Daniel"
+
+
+def test_open_gate_resolves_raw_home_assistant_context_user_id():
+    api = _ApiStub()
+    coordinator = _CoordinatorStub()
+    raw_ha_user_id = "594d0cb232264d99a62056fae5a4b597"
+    root = {
+        "access_history": AccessHistory(),
+        "users_store": _UsersStoreStub(
+            {
+                "HA001": {
+                    "name": "Sam Smith",
+                    "ha_user_id": raw_ha_user_id,
+                }
+            }
+        ),
+        "entry-1": {
+            "api": api,
+            "coordinator": coordinator,
+            "options": {
+                "relay_roles": {
+                    "relay_a": "door",
+                    "relay_b": "alarm",
+                }
+            },
+        },
+    }
+    hass = SimpleNamespace(data={DOMAIN: root}, auth=_AuthStub())
+
+    result = asyncio.run(
+        async_open_gate(
+            hass,
+            root,
+            entry_id="entry-1",
+            triggered_by_id=raw_ha_user_id,
+            triggered_by_name=raw_ha_user_id,
+        )
+    )
+
+    event = result["event"]
+    assert result["triggered_by"] == "Sam Smith"
+    assert result["ha_user_name"] == "DJGLTD"
+    assert result["linked_user_id"] == "HA001"
+    assert event["HomeAssistantUserID"] == raw_ha_user_id
+    assert event["HomeAssistantUserName"] == "DJGLTD"
+    assert event["UserID"] == "HA001"
+    assert event["LinkedUserName"] == "Sam Smith"
+    assert event["Event"] == "Opened with Home Assistant by Sam Smith"
 
 
 def test_open_gate_requires_entry_id_when_multiple_devices_are_configured():
