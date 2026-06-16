@@ -236,6 +236,29 @@ def test_resolve_event_user_id_uses_registry_name_when_device_users_are_missing(
     assert resolved == "HA004"
 
 
+def test_resolve_event_user_id_uses_linked_home_assistant_user_id():
+    storage = _StorageStub()
+    coord = _build_coordinator(_APIStub([]), storage)
+    coord.users = []
+    coord.hass.data = {
+        DOMAIN: {
+            "users_store": _UsersStoreStub(
+                {"HA009": {"name": "Daniel", "ha_user_id": "ha-user-1"}}
+            )
+        }
+    }
+
+    resolved = coord._resolve_event_user_id(
+        {
+            "UserName": "DJGLTD",
+            "HomeAssistantUserID": "ha-user-1",
+            "Event": "Opened with Home Assistant by DJGLTD",
+        }
+    )
+
+    assert resolved == "HA009"
+
+
 def test_derive_targets_from_raw_matches_normalized_specific_user_ids():
     targets = {
         "mobile_app_lees_iphone": {

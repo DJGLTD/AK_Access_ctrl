@@ -1377,6 +1377,7 @@ function renderDevices(devs){
     const ip     = escapeHtml(d.ip || '—');
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${escapeHtml(id)}"><i class="bi bi-arrow-repeat"></i> Sync</button>`   : '';
+    const openBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-outline-info" data-act="open_gate" data-id="${escapeHtml(id)}"><i class="bi bi-door-open"></i> Open Gate</button>` : '';
     const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-outline-danger" data-act="reboot" data-id="${escapeHtml(id)}"><i class="bi bi-power"></i> Reboot</button>` : '';
     const editHref  = id ? buildHref('device-edit', { id }) : '';
     const editBtn   = id ? `<a class="btn btn-sm btn-outline-light" data-edit-device="${escapeHtml(id)}" href="${escapeHtml(editHref)}"><i class="bi bi-pencil-square"></i> Edit</a>` : '';
@@ -1396,7 +1397,7 @@ function renderDevices(devs){
           ${syncBadge}
           <span class="device-last-sync">Last Checked: ${escapeHtml(lastChecked)}</span>
         </div>
-        <div class="device-actions">${syncBtn}${editBtn}${rebootBtn}</div>
+        <div class="device-actions">${syncBtn}${openBtn}${editBtn}${rebootBtn}</div>
       </div>
     </article>`;
   }).join('');
@@ -1409,13 +1410,17 @@ function renderDevices(devs){
       const id = b.dataset.id;
       const act = b.dataset.act;
       try {
-        const action = act === 'sync_now' ? 'sync_now' : 'reboot_device';
+        const action = act === 'sync_now'
+          ? 'sync_now'
+          : (act === 'open_gate' ? 'open_gate' : 'reboot_device');
         await apiPost(actionUrl, { action, entry_id: id });
       } catch (e) {
         // fall back to services
         try {
           if (act === 'sync_now') {
             await callService('akuvox_ac','sync_now', { entry_id: id });
+          } else if (act === 'open_gate') {
+            await callService('akuvox_ac','open_gate', { entry_id: id });
           } else {
             await callService('akuvox_ac','reboot_device', { entry_id: id });
           }
@@ -1516,6 +1521,7 @@ const EVENT_DEVICE_KEYS = [
   '_device','device_name','device','Device','DoorName','Door','AccessPoint','Reader',
 ];
 const EVENT_CALL_USER_KEYS = [
+  'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
   'User','UserName','user_name','user','userName','Name','NameID','UserID','user_id',
   'CallNumber','CallNum','CallNo','number','digits',
 ];
@@ -1526,7 +1532,7 @@ const EVENT_USER_ID_KEYS = [
   'UserID','user_id','UserId','userid','ID','id',
 ];
 const EVENT_USER_NAME_KEYS = [
-  'UserName','user_name','userName','Name','name','User','user',
+  'HomeAssistantUserName','home_assistant_user_name','ha_user_name','UserName','user_name','userName','Name','name','User','user',
 ];
 const EVENT_DETAIL_KEYS = {
   call: [
@@ -1600,6 +1606,28 @@ function pickFirstEventText(event, keys){
   return '';
 }
 
+function isHomeAssistantOpenEvent(event, typeLabel){
+  if (!event || typeof event !== 'object') return false;
+  const text = [
+    event._source,
+    event.Source,
+    event.source,
+    typeLabel,
+    event.AccessMethod,
+    event.AccessType,
+    event.Event,
+    event.Description,
+  ].map(value => String(value || '').toLowerCase()).join(' ');
+  return text.includes('home assistant') && /\b(open|opened|unlock|unlocked)\b/.test(text);
+}
+
+function homeAssistantOpenActor(event){
+  return pickFirstEventText(event, [
+    'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
+    'TriggeredBy','triggered_by','UserName','user_name','Name','name',
+  ]) || 'HA User';
+}
+
 function userSummaryForEvent(event){
   const userId = pickFirstEventText(event, EVENT_USER_ID_KEYS);
   const userNameRaw = pickFirstEventText(event, EVENT_USER_NAME_KEYS);
@@ -1623,6 +1651,14 @@ function describeEventForDisplay(event){
   const device = pickFirstEventText(event, EVENT_DEVICE_KEYS);
   const deviceLabel = device || label;
   const typeLabel = getEventTypeLabel(event);
+  if (isHomeAssistantOpenEvent(event, typeLabel)) {
+    const actor = homeAssistantOpenActor(event);
+    return {
+      category: 'access',
+      title: `${deviceLabel} - Opened with Home Assistant by ${actor}`,
+      highlight: 'Access Granted',
+    };
+  }
   if (normalizedCategory === 'call') {
     const caller = pickFirstEventText(event, EVENT_CALL_USER_KEYS) || 'Unknown';
     const fallbackMessage = pickFirstEventText(event, EVENT_DETAIL_KEYS.default) || 'call';

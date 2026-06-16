@@ -58,7 +58,11 @@ from .const import (
     AKUVOX_DEVICE_MODELS,
 )
 
-from .relay import alarm_capable as relay_alarm_capable, normalize_roles as normalize_relay_roles
+from .relay import (
+    alarm_capable as relay_alarm_capable,
+    door_relays,
+    normalize_roles as normalize_relay_roles,
+)
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
 from .access_history import AccessHistory, categorize_event
 from .reboot_schedule import normalize_reboot_schedule
@@ -642,6 +646,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "service_force_full_sync": "/api/services/akuvox_ac/force_full_sync",
     "service_refresh_events": "/api/services/akuvox_ac/refresh_events",
     "service_reboot_device": "/api/services/akuvox_ac/reboot_device",
+    "service_open_gate": "/api/services/akuvox_ac/open_gate",
     "service_delete_user": "/api/services/akuvox_ac/delete_user",
     "service_reactivate_temporary_user": "/api/services/akuvox_ac/reactivate_temporary_user",
 }
@@ -656,6 +661,7 @@ ALLOWED_DASHBOARD_SERVICE_PROXY: Set[str] = {
     "force_full_sync",
     "hacs_update_check",
     "hacs_update_install",
+    "open_gate",
     "reactivate_temporary_user",
     "reboot_device",
     "refresh_events",
@@ -897,7 +903,7 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
 
     root = hass.data.get(DOMAIN, {}) or {}
     history = root.get("access_history")
-    if not history or not hasattr(history, "ingest"):
+    if history is None or not hasattr(history, "ingest"):
         return
 
     settings = root.get("settings_store")
@@ -2536,6 +2542,250 @@ def _context_user_name(hass: HomeAssistant, context) -> str:
     return default
 
 
+def _context_user_identity(hass: HomeAssistant, context) -> Tuple[str, str]:
+    """Return the Home Assistant user id/name behind a service/http context."""
+
+    default = "HA User"
+    if context is None:
+        return "", default
+
+    user_id = str(getattr(context, "user_id", "") or "").strip()
+    if not user_id:
+        return "", default
+
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if user:
+            name = str(
+                getattr(user, "name", "")
+                or getattr(user, "username", "")
+                or getattr(user, "email", "")
+                or ""
+            ).strip()
+            return user_id, name or str(getattr(user, "id", "") or user_id).strip() or default
+    except Exception:
+        pass
+
+    return user_id, user_id or default
+
+
+def _request_actor_identity(
+    hass: HomeAssistant,
+    request: web.Request,
+    context: Any = None,
+) -> Tuple[str, str]:
+    """Return the HA user id/name for a dashboard request or session token."""
+
+    user = _request_hass_user(request)
+    if user:
+        return _ha_user_id(user), _ha_user_name(user)
+
+    session = _request_dashboard_session(hass, request)
+    if session:
+        user_id = str(session.get("user_id") or "").strip()
+        user_name = str(session.get("user_name") or "").strip()
+        if user_id or user_name:
+            return user_id, user_name or user_id or "HA User"
+
+    return _context_user_identity(hass, context)
+
+
+async def _home_assistant_users_payload(hass: HomeAssistant) -> List[Dict[str, Any]]:
+    """Return Home Assistant users suitable for local-user linking."""
+
+    try:
+        ha_users = await hass.auth.async_get_users()
+    except Exception:
+        return []
+
+    users: List[Dict[str, Any]] = []
+    for item in ha_users or []:
+        item_id = _ha_user_id(item)
+        if not item_id:
+            continue
+        if bool(getattr(item, "system_generated", False)):
+            continue
+        users.append(
+            {
+                "id": item_id,
+                "name": _ha_user_name(item),
+                "is_admin": _ha_user_is_admin(item),
+                "is_active": bool(getattr(item, "is_active", True)),
+            }
+        )
+    users.sort(key=lambda item: str(item.get("name") or "").lower())
+    return users
+
+
+def _linked_registry_user_for_ha_actor(
+    root: Dict[str, Any],
+    *,
+    ha_user_id: str,
+    ha_user_name: str,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Find the local Akuvox profile linked to a Home Assistant user."""
+
+    users_store = root.get("users_store") if isinstance(root, dict) else None
+    try:
+        registry = users_store.all() if users_store and hasattr(users_store, "all") else {}
+    except Exception:
+        registry = {}
+    if not isinstance(registry, dict):
+        return None, None
+
+    wanted_id = str(ha_user_id or "").strip()
+    wanted_name = str(ha_user_name or "").strip().casefold()
+
+    def _values_match(profile: Dict[str, Any]) -> bool:
+        ids: List[Any] = [
+            profile.get("ha_user_id"),
+            profile.get("home_assistant_user_id"),
+            profile.get("HomeAssistantUserID"),
+        ]
+        for key in ("ha_user_ids", "home_assistant_user_ids"):
+            raw = profile.get(key)
+            if isinstance(raw, (list, tuple, set)):
+                ids.extend(raw)
+        if wanted_id and any(str(value or "").strip() == wanted_id for value in ids):
+            return True
+
+        if wanted_name:
+            for key in ("ha_user_name", "home_assistant_user_name", "HomeAssistantUserName"):
+                value = str(profile.get(key) or "").strip().casefold()
+                if value and value == wanted_name:
+                    return True
+        return False
+
+    for key, profile in registry.items():
+        if not isinstance(profile, dict):
+            continue
+        if not _values_match(profile):
+            continue
+        canonical = normalize_user_id(key) or str(key or "").strip()
+        if canonical:
+            return canonical, profile
+
+    return None, None
+
+
+async def async_open_gate(
+    hass: HomeAssistant,
+    root: Dict[str, Any],
+    *,
+    entry_id: Any = None,
+    relay_number: Any = None,
+    delay: Any = None,
+    triggered_by_id: str = "",
+    triggered_by_name: str = "",
+) -> Dict[str, Any]:
+    """Trigger a configured Akuvox door relay and publish a local access event."""
+
+    if not isinstance(root, dict):
+        raise RuntimeError("Akuvox integration is not ready")
+
+    target_entry = str(entry_id or "").strip()
+    if target_entry:
+        bucket = root.get(target_entry)
+        if not isinstance(bucket, dict):
+            raise RuntimeError("device entry not found")
+        coord = bucket.get("coordinator")
+        opts = bucket.get("options") if isinstance(bucket.get("options"), dict) else {}
+    else:
+        buckets = list(_iter_device_buckets(root))
+        if not buckets:
+            raise RuntimeError("no Akuvox devices are configured")
+        if len(buckets) > 1:
+            raise RuntimeError("entry_id is required when more than one device is configured")
+        target_entry, bucket, coord, opts = buckets[0]
+
+    if not isinstance(bucket, dict):
+        raise RuntimeError("device entry not found")
+    api = bucket.get("api")
+    coord = bucket.get("coordinator")
+    if not api or not hasattr(api, "trigger_relay"):
+        raise RuntimeError("device API is not ready")
+    if not coord:
+        raise RuntimeError("device coordinator is not ready")
+
+    health = getattr(coord, "health", {}) or {}
+    device_type = str(health.get("device_type") or "").strip()
+    roles = _device_relay_roles(opts if isinstance(opts, dict) else {}, device_type)
+    if relay_number in (None, ""):
+        relay_digits = door_relays(roles)
+        relay_number = relay_digits[0] if relay_digits else "1"
+
+    try:
+        relay_digit = int(str(relay_number).strip())
+    except Exception as err:
+        raise RuntimeError("relay must be 1 or 2") from err
+    if relay_digit not in (1, 2):
+        raise RuntimeError("relay must be 1 or 2")
+
+    result = await api.trigger_relay(relay_digit, delay=delay if delay not in (None, "") else 20)
+
+    actor_id = str(triggered_by_id or "").strip()
+    actor_name = str(triggered_by_name or "").strip() or actor_id or "HA User"
+    linked_user_id, linked_profile = _linked_registry_user_for_ha_actor(
+        root,
+        ha_user_id=actor_id,
+        ha_user_name=actor_name,
+    )
+
+    now = dt_util.now().replace(microsecond=0)
+    timestamp = now.isoformat()
+    device_name = _best_name(coord, bucket)
+    title = f"Opened with Home Assistant by {actor_name}"
+    event: Dict[str, Any] = {
+        "_source": "home_assistant",
+        "_category": "access",
+        "_device": device_name,
+        "_device_id": target_entry,
+        "_key": f"home-assistant-open:{target_entry}:{actor_id or actor_name}:{now.timestamp()}",
+        "entry_id": target_entry,
+        "timestamp": timestamp,
+        "DateTime": timestamp,
+        "Device": device_name,
+        "DeviceName": device_name,
+        "Event": title,
+        "Description": title,
+        "Type": "Home Assistant",
+        "AccessMethod": "Home Assistant",
+        "AccessType": "Home Assistant",
+        "Result": "Access Granted",
+        "AccessResult": "Access Granted",
+        "Status": "Access Granted",
+        "Relay": str(relay_digit),
+        "HomeAssistantUserID": actor_id,
+        "HomeAssistantUserName": actor_name,
+        "UserName": actor_name,
+        "Name": actor_name,
+    }
+    if linked_user_id:
+        event["UserID"] = linked_user_id
+        event["LinkedUserID"] = linked_user_id
+        if isinstance(linked_profile, dict):
+            linked_name = str(linked_profile.get("name") or "").strip()
+            if linked_name:
+                event["LinkedUserName"] = linked_name
+
+    _ingest_history_event(hass, event)
+    try:
+        await coord.async_handle_manual_event(dict(event))
+    except Exception as err:
+        _LOGGER.debug("Open-gate manual event handling failed: %s", err)
+
+    return {
+        "ok": True,
+        "entry_id": target_entry,
+        "relay": relay_digit,
+        "triggered_by": actor_name,
+        "ha_user_id": actor_id,
+        "linked_user_id": linked_user_id,
+        "event": event,
+        "device_response": result,
+    }
+
+
 def _flag_rebooting(coord, *, triggered_by: str, duration: float = 300.0) -> None:
     """Mirror the reboot status tracking used by the service helper."""
 
@@ -3282,6 +3532,7 @@ class AkuvoxUIView(HomeAssistantView):
             "access_events": [],
             "access_event_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
             "registry_users": [],
+            "home_assistant_users": [],
             "schedules": {},
             "schedule_ids": {},
             "groups": [],
@@ -3423,6 +3674,7 @@ class AkuvoxUIView(HomeAssistantView):
 
             registry_users: List[Dict[str, Any]] = []
             all_users: Dict[str, Any] = {}
+            response["home_assistant_users"] = await _home_assistant_users_payload(hass)
             if us:
                 try:
                     all_users = us.all() or {}
@@ -3475,6 +3727,12 @@ class AkuvoxUIView(HomeAssistantView):
                             "remote_enrol_pending": bool(
                                 prof.get("remote_enrol_pending")
                             ),
+                            "ha_user_id": prof.get("ha_user_id")
+                            or prof.get("home_assistant_user_id")
+                            or "",
+                            "ha_user_name": prof.get("ha_user_name")
+                            or prof.get("home_assistant_user_name")
+                            or "",
                             "license_plate": _extract_license_plates(prof),
                             "exit_permission": _normalize_exit_permission_http(
                                 prof.get("exit_permission")
@@ -3731,6 +3989,23 @@ class AkuvoxUIAction(AkuvoxUIView):
                 return web.json_response({"ok": True})
             except Exception as service_err:
                 _LOGGER.debug("Refresh-events service call failed via UI: %s", service_err)
+                return err(service_err)
+
+        if action == "open_gate":
+            try:
+                actor_id, actor_name = _request_actor_identity(hass, request, ctx)
+                result = await async_open_gate(
+                    hass,
+                    root,
+                    entry_id=entry_id,
+                    relay_number=payload.get("relay") or payload.get("relay_number") or payload.get("num"),
+                    delay=payload.get("delay"),
+                    triggered_by_id=actor_id,
+                    triggered_by_name=actor_name,
+                )
+                return web.json_response(result)
+            except Exception as service_err:
+                _LOGGER.debug("Open-gate action failed via UI: %s", service_err)
                 return err(service_err)
 
         if action == "hacs_update_check":

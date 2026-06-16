@@ -687,6 +687,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             "user_name",
             "Name",
             "name",
+            "HomeAssistantUserID",
+            "home_assistant_user_id",
+            "ha_user_id",
             "CardNo",
             "CardNumber",
             "ID",
@@ -765,11 +768,17 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                             profile.get("UserID"),
                             profile.get("UserId"),
                             profile.get("ID"),
+                            profile.get("ha_user_id"),
+                            profile.get("home_assistant_user_id"),
+                            profile.get("HomeAssistantUserID"),
                             profile.get("device_id"),
                             profile.get("card_code"),
                             profile.get("CardCode"),
                         ]
                     )
+                    ha_user_ids = profile.get("ha_user_ids") or profile.get("home_assistant_user_ids")
+                    if isinstance(ha_user_ids, (list, tuple, set)):
+                        values.extend(ha_user_ids)
                     device_ids = profile.get("device_ids") or profile.get("device_user_ids")
                     if isinstance(device_ids, dict):
                         values.extend(device_ids.values())
@@ -1816,6 +1825,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 continue
             compact = re.sub(r"[^a-z0-9]+", "", text)
 
+            if "home assistant" in text or compact in {"homeassistant", "ha"}:
+                return "Home Assistant"
             if re.search(r"\bface\b|\bfacial\b", text):
                 return "Face"
             if (

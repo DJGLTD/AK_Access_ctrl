@@ -847,6 +847,7 @@ let scheduleRefreshPromise = null;
 let scheduleRefreshTimer = null;
 let PHONES = [];        // [{service, name}, ...] from /api/akuvox_ac/ui/phones
 let REGISTRY = [];      // UI list of known users from /ui/state
+let HA_USERS = [];      // Home Assistant users available for access-event linking
 let DEVICES = [];       // [{entry_id, name, users}, ...] from /ui/state
 let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
@@ -1469,6 +1470,8 @@ function blankProfile(id = ''){
     access_end: '',
     access_expired: false,
     access_in_future: false,
+    ha_user_id: '',
+    ha_user_name: '',
     notify_targets: [],
   };
 }
@@ -1851,6 +1854,7 @@ async function load(){
     applySchedulesUpdate(state?.schedules || {}, state?.schedule_ids || {});
     syncPausedUsersFromState(state?.registry_users || []);
     REGISTRY = state.registry_users || [];
+    HA_USERS = Array.isArray(state.home_assistant_users) ? state.home_assistant_users : [];
     DEVICES = state.devices || [];
 
     // Load phones (notify services from HA mobile app)
@@ -1932,10 +1936,46 @@ function scheduleOptionsHtml(){
   return SCHED_MAP.map(it => `<option value="${it.id}">${optionLabel(it)}</option>`).join('');
 }
 
+function homeAssistantUserOptionsHtml(){
+  const options = ['<option value="">Not linked</option>'];
+  (HA_USERS || []).forEach(user => {
+    if (!user || !user.id) return;
+    const name = user.name || user.id;
+    const suffix = user.is_active === false ? ' (inactive)' : '';
+    options.push(`<option value="${escapeHtml(user.id)}" data-name="${escapeHtml(name)}">${escapeHtml(name + suffix)}</option>`);
+  });
+  return options.join('');
+}
+
+function applyHomeAssistantUserSelect(){
+  const select = document.getElementById('ha_user_id');
+  if (!select || !CURRENT) return;
+  select.innerHTML = homeAssistantUserOptionsHtml();
+  const selected = String(CURRENT.ha_user_id || CURRENT.home_assistant_user_id || '').trim();
+  if (selected && !Array.from(select.options).some(opt => opt.value === selected)){
+    const option = document.createElement('option');
+    option.value = selected;
+    option.dataset.name = CURRENT.ha_user_name || CURRENT.home_assistant_user_name || selected;
+    option.textContent = `${option.dataset.name} (saved link)`;
+    select.appendChild(option);
+  }
+  select.value = selected;
+  if (!select._bound){
+    select.addEventListener('change', () => {
+      if (!CURRENT) return;
+      const option = select.options[select.selectedIndex];
+      CURRENT.ha_user_id = select.value || '';
+      CURRENT.ha_user_name = option ? (option.dataset.name || '') : '';
+    });
+    select._bound = true;
+  }
+}
+
 function fillForm(){
   document.getElementById('name').value = CURRENT.name || '';
   document.getElementById('pin').value = CURRENT.pin || '';
   document.getElementById('phone').value = CURRENT.phone || '';
+  applyHomeAssistantUserSelect();
   CURRENT.license_plate = Array.isArray(CURRENT.license_plate) ? [...CURRENT.license_plate] : [];
   renderLicensePlateInputs();
 
@@ -2325,6 +2365,15 @@ async function save(){
     payload.notify_on_access = notifySelection.enabled;
     payload.notify_targets = notifySelection.targets;
 
+    const haUserSelect = document.getElementById('ha_user_id');
+    if (haUserSelect){
+      const option = haUserSelect.options[haUserSelect.selectedIndex];
+      payload.ha_user_id = haUserSelect.value || '';
+      payload.ha_user_name = option ? (option.dataset.name || '') : '';
+      CURRENT.ha_user_id = payload.ha_user_id;
+      CURRENT.ha_user_name = payload.ha_user_name;
+    }
+
     // Save/update the profile against the reserved ID
     const saveRes = await fetchWithAuth(API_EDIT_USER, {
       method:'POST',
@@ -2488,6 +2537,12 @@ function showPanel(which){
     <div id="faceErrorRow" class="form-text muted mt-2">Face sync errors: <span id="faceErrorCount">0</span></div>
 
     <div class="mb-3" id="phoneRow"><label class="form-label">Phone number</label><input id="phone" class="form-control"/></div>
+
+    <div class="mb-3" id="haUserLinkRow">
+      <label class="form-label">Home Assistant user link</label>
+      <select id="ha_user_id" class="form-select"></select>
+      <div class="form-text muted">Links Home Assistant gate opens to this access-control user for access notifications.</div>
+    </div>
 
     <div class="mb-3" id="anprSection">
       <label class="form-label">License Plates (ANPR)</label>

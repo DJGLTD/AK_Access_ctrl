@@ -36,6 +36,16 @@ add_user:
       example: ["notify.mobile_app_phone"]
       selector:
         object:
+    ha_user_id:
+      name: Home Assistant user id
+      required: false
+      selector:
+        text:
+    ha_user_name:
+      name: Home Assistant user name
+      required: false
+      selector:
+        text:
     relays:
       required: false
       example: "3"
@@ -151,6 +161,16 @@ edit_user:
       example: ["notify.mobile_app_phone"]
       selector:
         object:
+    ha_user_id:
+      name: Home Assistant user id
+      required: false
+      selector:
+        text:
+    ha_user_name:
+      name: Home Assistant user name
+      required: false
+      selector:
+        text:
     face_image_path:
       required: false
       selector:
@@ -212,6 +232,35 @@ reboot_device:
       required: false
       selector:
         text:
+
+open_gate:
+  name: Open gate
+  description: Trigger the configured door relay and record a Home Assistant access event.
+  fields:
+    entry_id:
+      name: Device entry ID
+      description: Optional when only one Akuvox device is configured.
+      required: false
+      selector:
+        text:
+    relay:
+      name: Relay
+      description: Optional; defaults to the first relay configured as door/pedestrian access.
+      required: false
+      selector:
+        select:
+          options:
+            - "1"
+            - "2"
+    delay:
+      name: Delay
+      description: Relay activation time in seconds. Defaults to 20.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 300
+          mode: box
 
 sync_now:
   name: Sync now

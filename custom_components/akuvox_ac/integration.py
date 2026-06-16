@@ -76,6 +76,7 @@ from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
 from .access_history import AccessHistory
 from .http import (
+    async_open_gate,
     face_base_url,
     face_filename_from_reference,
     face_storage_dir,
@@ -730,6 +731,28 @@ def _context_user_name(hass: HomeAssistant, context) -> str:
         return default
 
     return default
+
+
+def _context_user_identity(hass: HomeAssistant, context) -> Tuple[str, str]:
+    """Best-effort Home Assistant user id/name for a service call context."""
+
+    default = "HA User"
+    if context is None:
+        return "", default
+
+    user_id = str(getattr(context, "user_id", "") or "").strip()
+    if not user_id:
+        return "", default
+
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if user:
+            name = str(getattr(user, "name", "") or getattr(user, "username", "") or "").strip()
+            return user_id, name or str(getattr(user, "id", "") or user_id).strip() or default
+    except Exception:
+        pass
+
+    return user_id, user_id or default
 
 
 def _key_of_user(u: Dict[str, Any]) -> str:
@@ -2950,6 +2973,8 @@ class AkuvoxUsersStore(Store):
         paused: Optional[bool] = None,
         paused_schedule_id: Optional[str] = None,
         paused_schedule_name: Optional[str] = None,
+        ha_user_id: Optional[str] = None,
+        ha_user_name: Optional[str] = None,
     ):
         canonical = normalize_user_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
@@ -3106,6 +3131,19 @@ class AkuvoxUsersStore(Store):
                 u["paused_schedule_name"] = cleaned
             else:
                 u.pop("paused_schedule_name", None)
+        if ha_user_id is not None:
+            cleaned = str(ha_user_id or "").strip()
+            if cleaned:
+                u["ha_user_id"] = cleaned
+            else:
+                u.pop("ha_user_id", None)
+                u.pop("ha_user_name", None)
+        if ha_user_name is not None:
+            cleaned = str(ha_user_name or "").strip()
+            if cleaned:
+                u["ha_user_name"] = cleaned
+            else:
+                u.pop("ha_user_name", None)
         await self.async_save()
 
     async def delete(self, key: str):
@@ -7466,9 +7504,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         except Exception:
             return
 
+    def _home_assistant_link_from_service(data: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        id_keys = ("ha_user_id", "home_assistant_user_id", "HomeAssistantUserID")
+        name_keys = ("ha_user_name", "home_assistant_user_name", "HomeAssistantUserName")
+
+        ha_user_id: Optional[str] = None
+        for key in id_keys:
+            if key in data:
+                ha_user_id = str(data.get(key) or "").strip()
+                break
+
+        ha_user_name: Optional[str] = None
+        for key in name_keys:
+            if key in data:
+                ha_user_name = str(data.get(key) or "").strip()
+                break
+
+        return ha_user_id, ha_user_name
+
     async def svc_add_user(call):
         d = call.data
         name: str = d["name"].strip()
+        ha_user_id, ha_user_name = _home_assistant_link_from_service(d)
 
         users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
         temp_id = users_store.next_free_temp_id()
@@ -7562,6 +7619,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             access_end=d.get("access_end") if "access_end" in d else None,
             source="Local",
             exit_permission=d.get("exit_permission"),
+            ha_user_id=ha_user_id,
+            ha_user_name=ha_user_name,
         )
 
         if "notify_on_access" in d or "notify_targets" in d:
@@ -7635,6 +7694,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def svc_edit_user(call):
         d = call.data
+        ha_user_id, ha_user_name = _home_assistant_link_from_service(d)
         raw_key = d.get("id")
         canonical_key = normalize_user_id(raw_key)
         key = canonical_key or str(raw_key)
@@ -7726,6 +7786,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             paused=paused_flag,
             paused_schedule_id=paused_schedule_id,
             paused_schedule_name=paused_schedule_name,
+            ha_user_id=ha_user_id,
+            ha_user_name=ha_user_name,
         )
 
         if "notify_on_access" in d or "notify_targets" in d:
@@ -7958,6 +8020,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except Exception:
                 pass
 
+    async def svc_open_gate(call):
+        data = call.data if isinstance(call.data, Mapping) else {}
+        actor_id, actor_name = _context_user_identity(hass, getattr(call, "context", None))
+        await async_open_gate(
+            hass,
+            hass.data.get(DOMAIN, {}),
+            entry_id=data.get("entry_id"),
+            relay_number=data.get("relay") or data.get("relay_number") or data.get("num"),
+            delay=data.get("delay"),
+            triggered_by_id=actor_id,
+            triggered_by_name=actor_name,
+        )
+
     async def svc_refresh_events(call):
         entry_id = call.data.get("entry_id")
         root = hass.data[DOMAIN]
@@ -8120,6 +8195,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "delete_user", svc_delete_user)
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)
     hass.services.async_register(DOMAIN, "reboot_device", svc_reboot_device)
+    hass.services.async_register(DOMAIN, "open_gate", svc_open_gate)
     hass.services.async_register(DOMAIN, "refresh_events", svc_refresh_events)
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)

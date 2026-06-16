@@ -585,6 +585,30 @@ function isCloudEvent(evt, typeLabel){
   return String(typeLabel || '').toLowerCase().includes('cloud');
 }
 
+function isHomeAssistantOpenEvent(evt, typeLabel){
+  if (!evt || typeof evt !== 'object') return false;
+  const text = [
+    evt._source,
+    evt.Source,
+    evt.source,
+    typeLabel,
+    evt.AccessMethod,
+    evt.AccessType,
+    evt.Event,
+    evt.Description,
+  ].map(value => String(value || '').toLowerCase()).join(' ');
+  return text.includes('home assistant') && /\b(open|opened|unlock|unlocked)\b/.test(text);
+}
+
+function getHomeAssistantOpenActor(evt){
+  const value = pickEventValue(evt, [
+    'HomeAssistantUserName','home_assistant_user_name','ha_user_name',
+    'TriggeredBy','triggered_by','UserName','user_name','Name','name',
+  ]);
+  const text = value === null || value === undefined ? '' : String(value).trim();
+  return text || 'HA User';
+}
+
 function getEventPinLabel(evt){
   if (!evt || typeof evt !== 'object') return '';
   const value = pickEventValue(evt, ['Pin','PIN','Passcode','Password','Credential','CardNo','CardNumber','digits']);
@@ -608,6 +632,9 @@ function getEventTitle(evt){
   const category = String(evt?._category || '').toLowerCase();
   const deviceName = resolveDeviceName(evt, evt?._device);
   const typeLabel = getEventTypeLabel(evt);
+  if (isHomeAssistantOpenEvent(evt, typeLabel)) {
+    return `${deviceName} - Opened with Home Assistant by ${getHomeAssistantOpenActor(evt)}`;
+  }
   if (category === 'call') {
     const caller = getEventUserLabel(evt);
     if (isCloudEvent(evt, typeLabel)) {
