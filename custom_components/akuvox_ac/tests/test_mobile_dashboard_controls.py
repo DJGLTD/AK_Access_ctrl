@@ -178,3 +178,17 @@ def test_cloud_open_events_use_akuvox_app_label():
         assert "Opened with Akuvox App" in page
         assert "function isCloudEvent(" in page
         assert " - Cloud - " not in page
+
+
+def test_home_assistant_open_events_match_underscore_source():
+    for name in (
+        "index.html",
+        "index-mob.html",
+        "event_history.html",
+        "event_history-mob.html",
+    ):
+        page = read_page(name)
+        assert "function isHomeAssistantOpenEvent(" in page
+        assert "function normalizeEventSearchText(" in page
+        assert "replace(/[_-]+/g, ' ')" in page
+        assert "compact.includes('homeassistant')" in page
