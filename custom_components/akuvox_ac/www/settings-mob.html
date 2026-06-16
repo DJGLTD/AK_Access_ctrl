@@ -1746,7 +1746,7 @@ function renderAlerts(){
         <div class="mt-3" data-field="granted_users_wrap" style="${cfg.granted.specific ? '' : 'display: none;'}">
           <label class="form-label">Specific users to notify on grant</label>
           <div class="granted-users-list" data-target="${service}" data-field="granted_users"></div>
-          <div class="form-text">Select one or more users.</div>
+          <div class="form-text text-white">Select one or more users.</div>
         </div>
       </div>`;
     const list = card.querySelector('[data-field="granted_users"]');
@@ -1782,6 +1782,7 @@ function renderAlerts(){
       const service = input.getAttribute('data-target');
       const field = input.getAttribute('data-field');
       if (!service || !field) return;
+      if (field === 'granted_users') return;
       ensureTargetDefaults(service);
       const cfg = ALERT_TARGETS[service];
       const checked = input.checked;
@@ -1811,14 +1812,14 @@ function renderAlerts(){
       ensureTargetDefaults(service);
       const card = input.closest('.card');
       if (!card) return;
-      const values = Array.from(card.querySelectorAll(`input[data-field="granted_users"][data-target="${service}"]`))
+      const values = Array.from(card.querySelectorAll('input[data-field="granted_users"]'))
         .filter(item => item.checked)
         .map(item => item.getAttribute('data-user-id'))
         .filter(Boolean);
       ALERT_TARGETS[service].granted.users = values;
       if (values.length && !ALERT_TARGETS[service].granted.specific) {
         ALERT_TARGETS[service].granted.specific = true;
-        const specificToggle = card.querySelector(`input[data-field="granted_specific"][data-target="${service}"]`);
+        const specificToggle = card.querySelector('input[data-field="granted_specific"]');
         if (specificToggle) specificToggle.checked = true;
       }
       SETTINGS_DATA.alerts.targets = ALERT_TARGETS;
