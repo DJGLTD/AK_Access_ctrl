@@ -666,6 +666,37 @@ class AkuvoxAPI:
         rels = (primary, *fallbacks)
         return await self._request_attempts("GET", rels, None)
 
+    async def trigger_relay(
+        self,
+        relay_number: Any = 1,
+        *,
+        delay: Any = 20,
+        mode: Any = 0,
+        level: Any = 0,
+    ) -> Dict[str, Any]:
+        """Trigger an Akuvox relay using the device's authenticated web API."""
+
+        try:
+            relay = int(str(relay_number).strip())
+        except Exception as err:
+            raise ValueError("relay number must be 1 or 2") from err
+        if relay not in (1, 2):
+            raise ValueError("relay number must be 1 or 2")
+
+        try:
+            delay_seconds = max(1, min(300, int(float(str(delay).strip()))))
+        except Exception:
+            delay_seconds = 20
+
+        path = (
+            "/api/relay/trig"
+            f"?mode={int(mode or 0)}"
+            f"&num={relay}"
+            f"&level={int(level or 0)}"
+            f"&delay={delay_seconds}"
+        )
+        return await self._get_api(path)
+
     # -------------------- payload normalization helpers --------------------
     def _map_schedule_fields(self, d: Dict[str, Any]) -> Dict[str, Any]:
         """

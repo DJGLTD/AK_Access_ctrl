@@ -652,6 +652,7 @@ function renderDevices(devices){
       </div>
       <div class="device-actions">
         <button class="btn btn-outline-light btn-sm" data-action="sync" data-id="${escapeHtml(entryId)}" ${!isOnline ? 'disabled' : ''}><i class="bi bi-arrow-repeat"></i> Sync now</button>
+        <button class="btn btn-outline-info btn-sm" data-action="open_gate" data-id="${escapeHtml(entryId)}" ${!isOnline ? 'disabled' : ''}><i class="bi bi-door-open"></i> Open gate</button>
         <button class="btn btn-outline-light btn-sm" data-manage="${escapeHtml(entryId)}"><i class="bi bi-gear"></i> Manage</button>
         <button class="btn btn-outline-danger btn-sm" data-action="reboot" data-id="${escapeHtml(entryId)}" ${!isOnline ? 'disabled' : ''}><i class="bi bi-power"></i> Reboot</button>
         <button class="btn btn-outline-danger btn-sm" data-action="remove" data-id="${escapeHtml(entryId)}" data-name="${escapeHtml(safeDeviceName(device))}"><i class="bi bi-trash"></i> Remove</button>
@@ -681,6 +682,8 @@ function renderDevices(devices){
       try {
         if (action === 'sync') {
           await apiPost(actionUrl, { action: 'sync_now', entry_id: entryId });
+        } else if (action === 'open_gate') {
+          await apiPost(actionUrl, { action: 'open_gate', entry_id: entryId });
         } else if (action === 'reboot') {
           await apiPost(actionUrl, { action: 'reboot_device', entry_id: entryId });
         } else if (action === 'remove') {
@@ -693,6 +696,8 @@ function renderDevices(devices){
           try {
             if (action === 'sync') {
               await callService('akuvox_ac', 'sync_now', { entry_id: entryId });
+            } else if (action === 'open_gate') {
+              await callService('akuvox_ac', 'open_gate', { entry_id: entryId });
             } else {
               await callService('akuvox_ac', 'reboot_device', { entry_id: entryId });
             }
