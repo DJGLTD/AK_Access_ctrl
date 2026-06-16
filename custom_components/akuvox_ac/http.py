@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import json
 import logging
 import json
@@ -2634,6 +2635,7 @@ def _linked_registry_user_for_ha_actor(
         return None, None
 
     wanted_id = str(ha_user_id or "").strip()
+    wanted_id_folded = wanted_id.casefold()
     wanted_name = str(ha_user_name or "").strip().casefold()
 
     def _values_match(profile: Dict[str, Any]) -> bool:
@@ -2646,7 +2648,9 @@ def _linked_registry_user_for_ha_actor(
             raw = profile.get(key)
             if isinstance(raw, (list, tuple, set)):
                 ids.extend(raw)
-        if wanted_id and any(str(value or "").strip() == wanted_id for value in ids):
+        if wanted_id and any(
+            str(value or "").strip().casefold() == wanted_id_folded for value in ids
+        ):
             return True
 
         if wanted_name:
@@ -2666,6 +2670,32 @@ def _linked_registry_user_for_ha_actor(
             return canonical, profile
 
     return None, None
+
+
+async def _async_resolve_ha_user_name(hass: HomeAssistant, user_id: str) -> str:
+    """Resolve a Home Assistant user id to a friendly name when possible."""
+
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return ""
+
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if inspect.isawaitable(user):
+            user = await user
+    except Exception:
+        return ""
+
+    if not user:
+        return ""
+
+    for attr in ("name", "username", "email", "id"):
+        value = getattr(user, attr, None)
+        if value not in (None, ""):
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
 
 
 def _device_lookup_key(value: Any) -> str:
@@ -2783,16 +2813,25 @@ async def async_open_gate(
 
     actor_id = str(triggered_by_id or "").strip()
     actor_name = str(triggered_by_name or "").strip() or actor_id or "HA User"
+    if actor_id and actor_name == actor_id:
+        resolved_actor_name = await _async_resolve_ha_user_name(hass, actor_id)
+        if resolved_actor_name:
+            actor_name = resolved_actor_name
+
     linked_user_id, linked_profile = _linked_registry_user_for_ha_actor(
         root,
         ha_user_id=actor_id,
         ha_user_name=actor_name,
     )
+    linked_name = ""
+    if isinstance(linked_profile, dict):
+        linked_name = str(linked_profile.get("name") or "").strip()
+    display_actor = linked_name or actor_name or actor_id or "HA User"
 
     now = dt_util.now().replace(microsecond=0)
     timestamp = now.isoformat()
     device_name = _best_name(coord, bucket)
-    title = f"Opened with Home Assistant by {actor_name}"
+    title = f"Opened with Home Assistant by {display_actor}"
     event: Dict[str, Any] = {
         "_source": "home_assistant",
         "_category": "access",
@@ -2815,16 +2854,16 @@ async def async_open_gate(
         "Relay": str(relay_digit),
         "HomeAssistantUserID": actor_id,
         "HomeAssistantUserName": actor_name,
-        "UserName": actor_name,
-        "Name": actor_name,
+        "TriggeredBy": display_actor,
+        "User": display_actor,
+        "UserName": display_actor,
+        "Name": display_actor,
     }
     if linked_user_id:
         event["UserID"] = linked_user_id
         event["LinkedUserID"] = linked_user_id
-        if isinstance(linked_profile, dict):
-            linked_name = str(linked_profile.get("name") or "").strip()
-            if linked_name:
-                event["LinkedUserName"] = linked_name
+        if linked_name:
+            event["LinkedUserName"] = linked_name
 
     _ingest_history_event(hass, event)
     try:
@@ -2836,8 +2875,9 @@ async def async_open_gate(
         "ok": True,
         "entry_id": target_entry,
         "relay": relay_digit,
-        "triggered_by": actor_name,
+        "triggered_by": display_actor,
         "ha_user_id": actor_id,
+        "ha_user_name": actor_name,
         "linked_user_id": linked_user_id,
         "event": event,
         "device_response": result,
