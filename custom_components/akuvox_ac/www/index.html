@@ -1612,9 +1612,15 @@ function pickFirstEventText(event, keys){
   return '';
 }
 
+function normalizeEventSearchText(values){
+  return (values || [])
+    .map(value => String(value || '').toLowerCase().replace(/[_-]+/g, ' '))
+    .join(' ');
+}
+
 function isHomeAssistantOpenEvent(event, typeLabel){
   if (!event || typeof event !== 'object') return false;
-  const text = [
+  const text = normalizeEventSearchText([
     event._source,
     event.Source,
     event.source,
@@ -1623,8 +1629,10 @@ function isHomeAssistantOpenEvent(event, typeLabel){
     event.AccessType,
     event.Event,
     event.Description,
-  ].map(value => String(value || '').toLowerCase()).join(' ');
-  return text.includes('home assistant') && /\b(open|opened|unlock|unlocked)\b/.test(text);
+  ]);
+  const compact = text.replace(/[^a-z0-9]+/g, '');
+  return (text.includes('home assistant') || compact.includes('homeassistant'))
+    && /\b(open|opened|unlock|unlocked)\b/.test(text);
 }
 
 function homeAssistantOpenActor(event){

@@ -671,9 +671,15 @@ function isCloudEvent(evt, typeLabel){
   return String(typeLabel || '').toLowerCase().includes('cloud');
 }
 
+function normalizeEventSearchText(values){
+  return (values || [])
+    .map(value => String(value || '').toLowerCase().replace(/[_-]+/g, ' '))
+    .join(' ');
+}
+
 function isHomeAssistantOpenEvent(evt, typeLabel){
   if (!evt || typeof evt !== 'object') return false;
-  const text = [
+  const text = normalizeEventSearchText([
     evt._source,
     evt.Source,
     evt.source,
@@ -682,8 +688,10 @@ function isHomeAssistantOpenEvent(evt, typeLabel){
     evt.AccessType,
     evt.Event,
     evt.Description,
-  ].map(value => String(value || '').toLowerCase()).join(' ');
-  return text.includes('home assistant') && /\b(open|opened|unlock|unlocked)\b/.test(text);
+  ]);
+  const compact = text.replace(/[^a-z0-9]+/g, '');
+  return (text.includes('home assistant') || compact.includes('homeassistant'))
+    && /\b(open|opened|unlock|unlocked)\b/.test(text);
 }
 
 function getHomeAssistantOpenActor(evt){
