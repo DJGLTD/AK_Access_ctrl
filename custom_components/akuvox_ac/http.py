@@ -2668,11 +2668,79 @@ def _linked_registry_user_for_ha_actor(
     return None, None
 
 
+def _device_lookup_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _device_bucket_matches_lookup(
+    entry_id: str,
+    bucket: Dict[str, Any],
+    coord: Any,
+    lookup: str,
+) -> bool:
+    if not lookup:
+        return False
+
+    health = getattr(coord, "health", {}) or {}
+    opts = bucket.get("options") if isinstance(bucket.get("options"), dict) else {}
+    candidates = [
+        entry_id,
+        _best_name(coord, bucket),
+        getattr(coord, "device_name", ""),
+        health.get("name"),
+        health.get("device_name"),
+        health.get("ip"),
+        opts.get("device_name") if isinstance(opts, dict) else "",
+        opts.get("name") if isinstance(opts, dict) else "",
+    ]
+    return any(_device_lookup_key(candidate) == lookup for candidate in candidates)
+
+
+def _find_device_bucket(
+    root: Dict[str, Any],
+    *,
+    entry_id: Any = None,
+    device_name: Any = None,
+) -> Tuple[str, Dict[str, Any], Any, Dict[str, Any]]:
+    target_entry = str(entry_id or "").strip()
+    if target_entry:
+        bucket = root.get(target_entry)
+        if not isinstance(bucket, dict):
+            raise RuntimeError("device entry not found")
+        coord = bucket.get("coordinator")
+        opts = bucket.get("options") if isinstance(bucket.get("options"), dict) else {}
+        return target_entry, bucket, coord, opts
+
+    buckets = list(_iter_device_buckets(root))
+    if not buckets:
+        raise RuntimeError("no Akuvox devices are configured")
+
+    lookup = _device_lookup_key(device_name)
+    if lookup:
+        matches = [
+            item
+            for item in buckets
+            if _device_bucket_matches_lookup(item[0], item[1], item[2], lookup)
+        ]
+        if not matches:
+            raise RuntimeError("device_name did not match a configured Akuvox device")
+        if len(matches) > 1:
+            raise RuntimeError("device_name matched more than one Akuvox device")
+        return matches[0]
+
+    if len(buckets) > 1:
+        raise RuntimeError(
+            "entry_id or device_name is required when more than one device is configured"
+        )
+    return buckets[0]
+
+
 async def async_open_gate(
     hass: HomeAssistant,
     root: Dict[str, Any],
     *,
     entry_id: Any = None,
+    device_name: Any = None,
     relay_number: Any = None,
     delay: Any = None,
     triggered_by_id: str = "",
@@ -2683,21 +2751,11 @@ async def async_open_gate(
     if not isinstance(root, dict):
         raise RuntimeError("Akuvox integration is not ready")
 
-    target_entry = str(entry_id or "").strip()
-    if target_entry:
-        bucket = root.get(target_entry)
-        if not isinstance(bucket, dict):
-            raise RuntimeError("device entry not found")
-        coord = bucket.get("coordinator")
-        opts = bucket.get("options") if isinstance(bucket.get("options"), dict) else {}
-    else:
-        buckets = list(_iter_device_buckets(root))
-        if not buckets:
-            raise RuntimeError("no Akuvox devices are configured")
-        if len(buckets) > 1:
-            raise RuntimeError("entry_id is required when more than one device is configured")
-        target_entry, bucket, coord, opts = buckets[0]
-
+    target_entry, bucket, coord, opts = _find_device_bucket(
+        root,
+        entry_id=entry_id,
+        device_name=device_name,
+    )
     if not isinstance(bucket, dict):
         raise RuntimeError("device entry not found")
     api = bucket.get("api")

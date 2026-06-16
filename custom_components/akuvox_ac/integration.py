@@ -8027,6 +8027,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             hass,
             hass.data.get(DOMAIN, {}),
             entry_id=data.get("entry_id"),
+            device_name=data.get("device_name") or data.get("device") or data.get("name"),
             relay_number=data.get("relay") or data.get("relay_number") or data.get("num"),
             delay=data.get("delay"),
             triggered_by_id=actor_id,

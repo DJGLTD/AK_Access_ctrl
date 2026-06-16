@@ -239,7 +239,13 @@ open_gate:
   fields:
     entry_id:
       name: Device entry ID
-      description: Optional when only one Akuvox device is configured.
+      description: Optional when only one Akuvox device is configured. You can use device name instead.
+      required: false
+      selector:
+        text:
+    device_name:
+      name: Device name
+      description: Optional friendly device name, for example Gate.
       required: false
       selector:
         text:
