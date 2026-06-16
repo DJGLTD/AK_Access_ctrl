@@ -114,6 +114,36 @@ def test_open_gate_requires_entry_id_when_multiple_devices_are_configured():
     try:
         asyncio.run(async_open_gate(hass, root, triggered_by_name="DJGLTD"))
     except RuntimeError as err:
-        assert "entry_id is required" in str(err)
+        assert "entry_id or device_name is required" in str(err)
     else:
         raise AssertionError("Expected entry_id to be required")
+
+
+def test_open_gate_can_select_device_by_friendly_name():
+    first_api = _ApiStub()
+    second_api = _ApiStub()
+    first_coord = _CoordinatorStub()
+    first_coord.device_name = "Gate"
+    second_coord = _CoordinatorStub()
+    second_coord.device_name = "Garage"
+    root = {
+        "entry-gate": {
+            "api": first_api,
+            "coordinator": first_coord,
+            "options": {"relay_roles": {"relay_a": "door", "relay_b": "alarm"}},
+        },
+        "entry-garage": {
+            "api": second_api,
+            "coordinator": second_coord,
+            "options": {"relay_roles": {"relay_a": "door", "relay_b": "alarm"}},
+        },
+    }
+    hass = SimpleNamespace(data={DOMAIN: root})
+
+    result = asyncio.run(
+        async_open_gate(hass, root, device_name="Gate", triggered_by_name="DJGLTD")
+    )
+
+    assert result["entry_id"] == "entry-gate"
+    assert first_api.calls == [{"relay": 1, "delay": 20, "mode": 0, "level": 0}]
+    assert second_api.calls == []
