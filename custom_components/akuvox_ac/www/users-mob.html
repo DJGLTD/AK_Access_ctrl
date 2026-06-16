@@ -853,6 +853,8 @@ let CURRENT = null;     // working user object
 let RESERVED_ID = null; // HA### id reserved for new-user workflow
 let ANY_ALARM_CAPABLE = true;
 let ANY_PEDESTRIAN_CAPABLE = true;
+let SELF_SERVICE_MODE = false;
+let SELF_SERVICE_USER_ID = '';
 
 let reservationTimer = null;
 let reservationMisses = 0;
@@ -950,7 +952,7 @@ function setReservationMessage(html, tone = 'muted') {
     el.innerHTML = '';
     return;
   }
-  const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'muted';
+  const cls = tone === 'error' ? 'text-danger' : tone === 'warning' ? 'text-warning' : tone === 'success' ? 'text-success' : 'muted';
   el.innerHTML = `<span class="${cls}">${html}</span>`;
 }
 
@@ -1856,23 +1858,31 @@ async function load(){
     REGISTRY = state.registry_users || [];
     HA_USERS = Array.isArray(state.home_assistant_users) ? state.home_assistant_users : [];
     DEVICES = state.devices || [];
+    const dashboardAccess = state?.dashboard_access || {};
+    SELF_SERVICE_MODE = !!dashboardAccess.self_service;
+    SELF_SERVICE_USER_ID = String(dashboardAccess.self_user_id || '').trim();
 
     // Load phones (notify services from HA mobile app)
-    try {
-      const resp = await apiGet(API_PHONES);
-      PHONES = resp.phones || [];
-    } catch (err) {
-      if (handleAuthError(err)) return;
-      console.warn('Failed to load phone list', err);
+    if (SELF_SERVICE_MODE) {
       PHONES = [];
-    }
-    try {
-      const settingsResp = await apiGet(API_SETTINGS);
-      ALERT_TARGETS = settingsResp?.alerts?.targets || {};
-    } catch (err) {
-      if (handleAuthError(err)) return;
-      console.warn('Failed to load notification settings', err);
       ALERT_TARGETS = {};
+    } else {
+      try {
+        const resp = await apiGet(API_PHONES);
+        PHONES = resp.phones || [];
+      } catch (err) {
+        if (handleAuthError(err)) return;
+        console.warn('Failed to load phone list', err);
+        PHONES = [];
+      }
+      try {
+        const settingsResp = await apiGet(API_SETTINGS);
+        ALERT_TARGETS = settingsResp?.alerts?.targets || {};
+      } catch (err) {
+        if (handleAuthError(err)) return;
+        console.warn('Failed to load notification settings', err);
+        ALERT_TARGETS = {};
+      }
     }
 
     const params = new URLSearchParams(location.search);
@@ -1881,7 +1891,23 @@ async function load(){
     const startInEditMode = modeParam === 'edit';
     let handledBySelect = false;
 
-    if (id) {
+    if (SELF_SERVICE_MODE) {
+      const selfId = SELF_SERVICE_USER_ID;
+      const existing = (REGISTRY || []).find(u => String(u.id || u.UserID || u.UserId || u.ID || '').trim() === selfId);
+      if (existing) {
+        selectExistingUser(selfId, { updateUrl: false });
+        handledBySelect = true;
+      } else {
+        CURRENT = blankProfile(selfId);
+        RESERVED_ID = null;
+        stopReservationHeartbeat();
+        setReservationMessage('');
+        forgetReservationId();
+        document.getElementById('title').textContent = 'Edit Your Profile';
+        document.getElementById('idRow').style.display = 'block';
+        document.getElementById('user_id').value = CURRENT.id;
+      }
+    } else if (id) {
       const hasMatch = (REGISTRY || []).some(u => String(u.id || u.UserID || u.UserId || u.ID || '') === id);
       if (hasMatch) {
         selectExistingUser(id, { updateUrl: false });
@@ -1969,6 +1995,33 @@ function applyHomeAssistantUserSelect(){
     });
     select._bound = true;
   }
+}
+
+function applySelfServiceMode(){
+  if (!SELF_SERVICE_MODE) return;
+  const title = document.getElementById('title');
+  if (title) title.textContent = 'Edit Your Profile';
+  [
+    'haUserLinkRow',
+    'scheduleRow',
+    'pedestrianAccessRow',
+    'exitPermissionRow',
+    'accessWindow',
+    'notifyOnAccessRow',
+    'keyHolderRow',
+    'deviceIdsRow'
+  ].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const remote = document.getElementById('pRemote');
+  if (remote) remote.style.display = 'none';
+  const remoteBtn = document.getElementById('remoteEnrolButton');
+  if (remoteBtn) remoteBtn.style.display = 'none';
+  const cancelBtn = document.getElementById('cancelEditButton');
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  const select = document.getElementById('ha_user_id');
+  if (select) select.disabled = true;
 }
 
 function fillForm(){
@@ -2074,6 +2127,7 @@ function fillForm(){
   }
   updateDeviceIdsDisplay();
   applyCredentialPrompts();
+  applySelfServiceMode();
   refreshNotifyState();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
@@ -2100,6 +2154,7 @@ function fillForm(){
   }
   bindFaceFileInput();
   bindRemoveFaceButton();
+  applySelfServiceMode();
   updateFacePreviewState();
 }
 
@@ -2287,7 +2342,13 @@ async function save(){
   setBusy(true);
   try{
     // Ensure we have or reserve an ID
-    if (!CURRENT.id){
+    if (SELF_SERVICE_MODE) {
+      CURRENT.id = SELF_SERVICE_USER_ID || CURRENT.id;
+      if (!CURRENT.id){
+        alert('Your linked Akuvox profile could not be found.');
+        return;
+      }
+    } else if (!CURRENT.id){
       try{
         const res = await apiGet(API_RESERVE_ID);
         if (res && res.ok && res.id) {
@@ -2361,12 +2422,16 @@ async function save(){
     CURRENT.access_start = payload.access_start;
     CURRENT.access_end = payload.access_end;
 
-    const notifySelection = collectNotifySelection();
-    payload.notify_on_access = notifySelection.enabled;
-    payload.notify_targets = notifySelection.targets;
+    const notifySelection = SELF_SERVICE_MODE
+      ? { enabled: false, targets: [] }
+      : collectNotifySelection();
+    if (!SELF_SERVICE_MODE){
+      payload.notify_on_access = notifySelection.enabled;
+      payload.notify_targets = notifySelection.targets;
+    }
 
     const haUserSelect = document.getElementById('ha_user_id');
-    if (haUserSelect){
+    if (!SELF_SERVICE_MODE && haUserSelect){
       const option = haUserSelect.options[haUserSelect.selectedIndex];
       payload.ha_user_id = haUserSelect.value || '';
       payload.ha_user_name = option ? (option.dataset.name || '') : '';
@@ -2375,21 +2440,30 @@ async function save(){
     }
 
     // Save/update the profile against the reserved ID
-    const saveRes = await fetchWithAuth(API_EDIT_USER, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ id: CURRENT.id, ...payload })
-    });
-    if (!saveRes.ok){
-      const txt = await saveRes.text();
-      const err = buildError(saveRes, txt);
-      handleAuthError(err);
-      throw err;
+    if (SELF_SERVICE_MODE){
+      await apiPost(API_ACTION, {
+        action: 'self_edit_profile',
+        payload: { id: CURRENT.id, ...payload }
+      });
+    } else {
+      const saveRes = await fetchWithAuth(API_EDIT_USER, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id: CURRENT.id, ...payload })
+      });
+      if (!saveRes.ok){
+        const txt = await saveRes.text();
+        const err = buildError(saveRes, txt);
+        handleAuthError(err);
+        throw err;
+      }
+      try { await saveRes.json(); } catch {}
     }
-    try { await saveRes.json(); } catch {}
 
-    applyNotifyTargetsForUser(CURRENT.id, notifySelection.targets, notifySelection.enabled);
-    CURRENT.notify_targets = notifySelection.targets;
+    if (!SELF_SERVICE_MODE){
+      applyNotifyTargetsForUser(CURRENT.id, notifySelection.targets, notifySelection.enabled);
+      CURRENT.notify_targets = notifySelection.targets;
+    }
 
     // If a photo is selected, upload it now
     const fileInput = document.getElementById('facefile');
@@ -2424,7 +2498,7 @@ async function save(){
     }
 
     // If Remote panel is visible and a phone is selected, auto-send enrolment request now
-    const remoteVisible = document.getElementById('pRemote').style.display !== 'none';
+    const remoteVisible = !SELF_SERVICE_MODE && document.getElementById('pRemote').style.display !== 'none';
     const phoneSel = document.getElementById('device');
     const phoneService = phoneSel && phoneSel.value ? phoneSel.value : '';
     if (remoteVisible && phoneService){
@@ -2443,6 +2517,14 @@ async function save(){
       }
     }
 
+    if (SELF_SERVICE_MODE){
+      stopReservationHeartbeat();
+      forgetReservationId();
+      RESERVED_ID = null;
+      setReservationMessage('Profile saved.', 'success');
+      return;
+    }
+
     // Back to list
     stopReservationHeartbeat();
     forgetReservationId();
@@ -2459,6 +2541,10 @@ async function save(){
 /* -------------------- toggle panels -------------------- */
 async function cancelEdit(evt){
   if (evt) evt.preventDefault();
+  if (SELF_SERVICE_MODE){
+    setReservationMessage('');
+    return;
+  }
   stopReservationHeartbeat();
   await releaseReservation();
   openInApp('user-overview', {}, { replaceState: true });
@@ -2503,7 +2589,7 @@ function showPanel(which){
       <label class="form-label">Face Recognition</label>
       <div class="face-options mb-2">
         <button class="btn btn-outline-light btn-toggle" onclick="showPanel('local')"><i class="bi bi-upload me-1"></i>Local enrolment</button>
-        <button class="btn btn-outline-light btn-toggle" onclick="showPanel('remote')"><i class="bi bi-wifi me-1"></i>Remote enrolment</button>
+        <button class="btn btn-outline-light btn-toggle" id="remoteEnrolButton" onclick="showPanel('remote')"><i class="bi bi-wifi me-1"></i>Remote enrolment</button>
       </div>
     </div>
 
@@ -2606,7 +2692,7 @@ function showPanel(which){
 
     <div class="action-buttons mb-3">
       <button class="btn btn-success" onclick="save()" data-busy-lock><i class="bi bi-check2-circle me-1"></i>Save</button>
-      <a class="btn btn-secondary" href="#" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+      <a class="btn btn-secondary" href="#" id="cancelEditButton" onclick="cancelEdit(event)"><i class="bi bi-x-circle me-1"></i>Cancel</a>
     </div>
 
   </div>
