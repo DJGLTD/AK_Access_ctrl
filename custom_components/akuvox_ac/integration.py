@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 import logging
@@ -76,6 +77,7 @@ from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
 from .access_history import AccessHistory
 from .http import (
+    async_apply_self_service_profile_change,
     async_open_gate,
     face_base_url,
     face_filename_from_reference,
@@ -83,6 +85,7 @@ from .http import (
     register_ui,
     FACE_FILE_EXTENSIONS,
     _maybe_migrate_component_folder,
+    _linked_registry_user_for_ha_actor,
 )  # provides /api/akuvox_ac/ui/* + /api/AK_AC/* assets
 from .ha_id import (
     ha_id_from_int,
@@ -753,6 +756,23 @@ def _context_user_identity(hass: HomeAssistant, context) -> Tuple[str, str]:
         pass
 
     return user_id, user_id or default
+
+
+async def _context_user_is_admin(hass: HomeAssistant, context) -> bool:
+    """Return whether the service call was made by a Home Assistant admin user."""
+
+    if context is None:
+        return False
+    user_id = str(getattr(context, "user_id", "") or "").strip()
+    if not user_id:
+        return False
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if inspect.isawaitable(user):
+            user = await user
+    except Exception:
+        return False
+    return bool(user and getattr(user, "is_admin", False))
 
 
 def _key_of_user(u: Dict[str, Any]) -> str:
@@ -3599,6 +3619,7 @@ class AkuvoxSettingsStore(Store):
                     data["integrity_failed"] = bool(cfg.get("integrity_failed"))
                     data["access_expiring"] = bool(cfg.get("access_expiring"))
                     data["any_denied"] = bool(cfg.get("any_denied"))
+                    data["user_changed"] = bool(cfg.get("user_changed"))
                     granted_cfg = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
                     if not granted_cfg and isinstance(cfg.get("granted_users"), list):
                         granted_cfg = {
@@ -3610,6 +3631,7 @@ class AkuvoxSettingsStore(Store):
                     data["integrity_failed"] = False
                     data["access_expiring"] = False
                     data["any_denied"] = False
+                    data["user_changed"] = False
                     granted_cfg = {}
 
                 users_raw = []
@@ -3707,6 +3729,8 @@ class AkuvoxSettingsStore(Store):
             elif event_type == "access_expiring" and cfg.get("access_expiring"):
                 out.append(target)
             elif event_type == "any_denied" and cfg.get("any_denied"):
+                out.append(target)
+            elif event_type == "user_changed" and cfg.get("user_changed"):
                 out.append(target)
             elif event_type == "user_granted":
                 granted = cfg.get("granted") or {}
@@ -7693,13 +7717,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
 
     async def svc_edit_user(call):
-        d = call.data
-        ha_user_id, ha_user_name = _home_assistant_link_from_service(d)
+        d = dict(call.data or {})
         raw_key = d.get("id")
         canonical_key = normalize_user_id(raw_key)
-        key = canonical_key or str(raw_key)
+        key = canonical_key or str(raw_key or "").strip()
         effective_id = canonical_key or key
-        users_store: AkuvoxUsersStore = hass.data[DOMAIN]["users_store"]
+        root = hass.data[DOMAIN]
+        users_store: AkuvoxUsersStore = root["users_store"]
+
+        context = getattr(call, "context", None)
+        actor_id, actor_name = _context_user_identity(hass, context)
+        if actor_id and not await _context_user_is_admin(hass, context):
+            linked_id, _linked_profile = _linked_registry_user_for_ha_actor(
+                root,
+                ha_user_id=actor_id,
+                ha_user_name=actor_name,
+            )
+            linked_id = normalize_user_id(linked_id) or str(linked_id or "").strip()
+            requested_id = normalize_user_id(effective_id) or str(effective_id or "").strip()
+            if not linked_id or (requested_id and requested_id != linked_id):
+                raise ValueError("self-service users can only edit their own profile")
+            await async_apply_self_service_profile_change(
+                hass,
+                root,
+                user_id=linked_id,
+                payload=d,
+                actor_name=actor_name,
+            )
+            return
+
+        ha_user_id, ha_user_name = _home_assistant_link_from_service(d)
         try:
             existing_profile = users_store.get(effective_id) or {}
         except Exception:

@@ -88,6 +88,22 @@ def test_settings_store_targets_access_expiring_alerts():
     assert store.targets_for_event("access_expiring") == ["mobile_app_lees_iphone"]
 
 
+def test_settings_store_targets_user_profile_change_alerts():
+    store = _settings_store(
+        {
+            "mobile_app_lees_iphone": {"user_changed": True},
+            "mobile_app_verns_iphone": {"user_changed": False},
+        }
+    )
+
+    cleaned = store.get_alert_targets()
+
+    assert cleaned["mobile_app_lees_iphone"]["user_changed"] is True
+    assert store.targets_for_event("user_changed", user_id="HA012") == [
+        "mobile_app_lees_iphone"
+    ]
+
+
 def test_settings_store_tracks_expiry_reminder_sent_date():
     store = _settings_store({})
 

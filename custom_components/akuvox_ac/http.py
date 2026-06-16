@@ -778,6 +778,7 @@ def _create_dashboard_session(hass: HomeAssistant, user: Any) -> Dict[str, Any]:
         "user_id": _ha_user_id(user),
         "user_name": _ha_user_name(user),
         "is_admin": _ha_user_is_admin(user),
+        "dashboard_access": True,
     }
     _dashboard_sessions(hass)[token] = session
     return dict(session)
@@ -799,14 +800,18 @@ def _dashboard_allowed_user_ids(settings: Any) -> Set[str]:
 def _request_can_access_dashboard(hass: HomeAssistant, request: web.Request) -> bool:
     user = _request_hass_user(request)
     if not user:
-        return _request_dashboard_session(hass, request) is not None
+        session = _request_dashboard_session(hass, request)
+        return bool(session and session.get("dashboard_access") and session.get("is_admin"))
     if _ha_user_is_admin(user):
         return True
-    user_id = _ha_user_id(user)
-    if not user_id:
-        return False
-    root = hass.data.get(DOMAIN, {}) or {}
-    return user_id in _dashboard_allowed_user_ids(root.get("settings_store"))
+    return False
+
+
+def _request_is_admin(hass: HomeAssistant, request: web.Request) -> bool:
+    if _ha_user_is_admin(_request_hass_user(request)):
+        return True
+    session = _request_dashboard_session(hass, request)
+    return bool(session and session.get("is_admin"))
 
 
 def _request_can_manage_dashboard_access(
@@ -818,6 +823,45 @@ def _request_can_manage_dashboard_access(
         return False
     session = _request_dashboard_session(hass, request)
     return bool(session and session.get("is_admin"))
+
+
+def _request_self_service_context(
+    hass: HomeAssistant,
+    request: web.Request,
+) -> Optional[Dict[str, Any]]:
+    """Return the linked local profile for a non-dashboard HA user."""
+
+    root = hass.data.get(DOMAIN, {}) or {}
+    if not isinstance(root, dict):
+        return None
+
+    actor_id, actor_name = _request_actor_identity(hass, request, None)
+    if not actor_id:
+        return None
+
+    linked_id, profile = _linked_registry_user_for_ha_actor(
+        root,
+        ha_user_id=actor_id,
+        ha_user_name=actor_name,
+    )
+    linked_id = normalize_user_id(linked_id) or str(linked_id or "").strip()
+    if not linked_id or not isinstance(profile, dict):
+        return None
+    if _profile_is_empty_reserved(profile):
+        return None
+    if str(profile.get("status") or "").strip().lower() == "deleted":
+        return None
+
+    return {
+        "user_id": linked_id,
+        "profile": profile,
+        "ha_user_id": actor_id,
+        "ha_user_name": actor_name,
+    }
+
+
+def _request_can_access_self_service(hass: HomeAssistant, request: web.Request) -> bool:
+    return _request_self_service_context(hass, request) is not None
 
 
 async def _dashboard_access_payload(
@@ -2698,6 +2742,216 @@ async def _async_resolve_ha_user_name(hass: HomeAssistant, user_id: str) -> str:
     return ""
 
 
+def _sanitize_self_service_license_plates(raw: Any) -> List[str]:
+    values: Iterable[Any]
+    if raw is None:
+        values = []
+    elif isinstance(raw, str):
+        values = re.split(r"[,;\n]+", raw)
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = [raw]
+
+    cleaned: List[str] = []
+    seen: Set[str] = set()
+    for item in values:
+        value = ""
+        if isinstance(item, Mapping):
+            candidate = (
+                item.get("Plate")
+                or item.get("plate")
+                or item.get("value")
+                or item.get("Value")
+            )
+            if candidate is not None:
+                value = str(candidate).strip().upper()
+        else:
+            value = str(item or "").strip().upper()
+        if not value:
+            continue
+        folded = value.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        cleaned.append(value)
+        if len(cleaned) >= 5:
+            break
+    return cleaned
+
+
+def sanitize_self_service_profile_payload(
+    payload: Mapping[str, Any],
+    user_id: str,
+) -> Dict[str, Any]:
+    """Keep only fields a linked non-admin user may edit for their own profile."""
+
+    canonical = normalize_user_id(user_id) or str(user_id or "").strip()
+    cleaned: Dict[str, Any] = {"id": canonical}
+    if "name" in payload:
+        cleaned["name"] = str(payload.get("name") or "").strip()
+    if "pin" in payload:
+        raw_pin = payload.get("pin")
+        cleaned["pin"] = "" if raw_pin in (None, "") else str(raw_pin).strip()
+    if "phone" in payload:
+        cleaned["phone"] = str(payload.get("phone") or "").strip()
+    if "license_plate" in payload:
+        cleaned["license_plate"] = _sanitize_self_service_license_plates(
+            payload.get("license_plate")
+        )
+    return cleaned
+
+
+def self_service_profile_change_labels(
+    profile: Mapping[str, Any],
+    updates: Mapping[str, Any],
+) -> List[str]:
+    def _text(value: Any) -> str:
+        return str(value or "").strip()
+
+    labels: List[str] = []
+    if "name" in updates and _text(profile.get("name")) != _text(updates.get("name")):
+        labels.append("name")
+    if "pin" in updates and _text(profile.get("pin")) != _text(updates.get("pin")):
+        labels.append("PIN")
+    if "phone" in updates and _text(profile.get("phone")) != _text(updates.get("phone")):
+        labels.append("phone number")
+    if "license_plate" in updates:
+        before = _sanitize_self_service_license_plates(
+            profile.get("license_plate") or profile.get("LicensePlate")
+        )
+        after = _sanitize_self_service_license_plates(updates.get("license_plate"))
+        if before != after:
+            labels.append("license plates")
+    return labels
+
+
+async def async_send_user_profile_change_notification(
+    hass: HomeAssistant,
+    root: Dict[str, Any],
+    *,
+    user_id: str,
+    actor_name: str = "",
+    changes: Optional[Iterable[str]] = None,
+) -> None:
+    """Notify configured targets when a linked non-admin updates their own profile."""
+
+    settings = root.get("settings_store") if isinstance(root, dict) else None
+    if not settings or not hasattr(settings, "targets_for_event"):
+        return
+    try:
+        targets = list(settings.targets_for_event("user_changed", user_id=user_id))
+    except Exception as err:
+        _LOGGER.debug("Failed to resolve user profile change targets: %s", err)
+        return
+    if not targets:
+        return
+
+    users_store = root.get("users_store") if isinstance(root, dict) else None
+    profile: Any = {}
+    try:
+        if users_store:
+            profile = users_store.get(user_id) or {}
+    except Exception:
+        profile = {}
+    if not isinstance(profile, Mapping):
+        profile = {}
+
+    name = str(profile.get("name") or user_id).strip()
+    changed = [str(item).strip() for item in (changes or []) if str(item).strip()]
+    if changed:
+        message = f"{name} updated their Akuvox profile ({', '.join(changed)})."
+    else:
+        message = f"{name} updated their Akuvox profile."
+    actor = str(actor_name or "").strip()
+    if actor and actor != name:
+        message = f"{message} Changed by {actor}."
+
+    service = getattr(hass, "services", None)
+    if not service or not hasattr(service, "async_call"):
+        return
+
+    data = {
+        "event_type": "user_changed",
+        "user_id": user_id,
+        "user_name": name,
+        "changed_by": actor,
+        "changes": changed,
+    }
+    for target in targets:
+        try:
+            await service.async_call(
+                "notify",
+                target,
+                {
+                    "title": "Akuvox: User profile changed",
+                    "message": message,
+                    "data": data,
+                },
+                blocking=False,
+            )
+        except Exception as err:
+            _LOGGER.debug("Failed to notify %s about user profile change: %s", target, err)
+
+
+async def async_apply_self_service_profile_change(
+    hass: HomeAssistant,
+    root: Dict[str, Any],
+    *,
+    user_id: str,
+    payload: Mapping[str, Any],
+    actor_name: str = "",
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Apply a safe self-service profile edit and queue it for sync."""
+
+    users_store = root.get("users_store") if isinstance(root, dict) else None
+    if not users_store:
+        raise ValueError("users store unavailable")
+
+    canonical = normalize_user_id(user_id) or str(user_id or "").strip()
+    if not canonical:
+        raise ValueError("user id is required")
+
+    try:
+        existing = users_store.get(canonical) or {}
+    except Exception:
+        existing = {}
+    if not isinstance(existing, Mapping):
+        existing = {}
+
+    updates = sanitize_self_service_profile_payload(payload, canonical)
+    changes = self_service_profile_change_labels(existing, updates)
+
+    kwargs: Dict[str, Any] = {}
+    for key in ("name", "pin", "phone", "license_plate"):
+        if key in updates:
+            kwargs[key] = updates[key]
+    if changes:
+        kwargs["status"] = "pending"
+        kwargs["source"] = "Local"
+
+    if kwargs:
+        await users_store.upsert_profile(canonical, **kwargs)
+
+    queue = root.get("sync_queue") if isinstance(root, dict) else None
+    if queue and changes:
+        try:
+            queue.mark_change(None, trigger="self-service profile edit")
+        except Exception:
+            pass
+
+    if changes:
+        await async_send_user_profile_change_notification(
+            hass,
+            root,
+            user_id=canonical,
+            actor_name=actor_name,
+            changes=changes,
+        )
+
+    return updates, changes
+
+
 def _device_lookup_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
@@ -3570,12 +3824,12 @@ class AkuvoxDashboardView(HomeAssistantView):
             raise web.HTTPNotFound()
 
         hass: HomeAssistant = request.app["hass"]
-        if (
-            target not in ("unauthorized", "unauthorized-mob")
-            and _request_hass_user(request) is not None
-            and not _request_can_access_dashboard(hass, request)
-        ):
-            target = "unauthorized-mob" if target.endswith("-mob") else "unauthorized"
+        if target not in ("unauthorized", "unauthorized-mob") and _request_hass_user(request) is not None:
+            if not _request_can_access_dashboard(hass, request):
+                if _request_can_access_self_service(hass, request):
+                    target = "users-mob" if target.endswith("-mob") or _request_prefers_mobile(request) else "users"
+                else:
+                    target = "unauthorized-mob" if target.endswith("-mob") else "unauthorized"
 
         asset = _resolve_dashboard_asset(target, request)
         requested_mobile = target.endswith("-mob") or _request_prefers_mobile(request)
@@ -3604,7 +3858,9 @@ class AkuvoxUIView(HomeAssistantView):
 
     async def get(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        if not _request_can_access_dashboard(hass, request):
+        has_dashboard_access = _request_can_access_dashboard(hass, request)
+        self_service = None if has_dashboard_access else _request_self_service_context(hass, request)
+        if not has_dashboard_access and not self_service:
             return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
@@ -3643,6 +3899,11 @@ class AkuvoxUIView(HomeAssistantView):
                 "anpr": False,
                 "face": True,
                 "phone": True,
+            },
+            "dashboard_access": {
+                "can_manage": has_dashboard_access and _request_is_admin(hass, request),
+                "self_service": bool(self_service),
+                "self_user_id": (self_service or {}).get("user_id") if self_service else "",
             },
         }
 
@@ -3895,6 +4156,27 @@ class AkuvoxUIView(HomeAssistantView):
             response["groups"] = groups
             response["all_groups"] = groups
 
+            if self_service:
+                self_user_id = str(self_service.get("user_id") or "").strip()
+                response["registry_users"] = [
+                    user for user in registry_users if str(user.get("id") or "") == self_user_id
+                ]
+                response["devices"] = []
+                response["access_events"] = []
+                response["home_assistant_users"] = []
+                response["schedules"] = {}
+                response["schedule_ids"] = {}
+                response["groups"] = []
+                response["all_groups"] = []
+                response["capabilities"] = {"alarm_relay": False}
+                response["dashboard_access"] = {
+                    "can_manage": False,
+                    "self_service": True,
+                    "self_user_id": self_user_id,
+                    "current_user_id": str(self_service.get("ha_user_id") or ""),
+                    "current_user_name": str(self_service.get("ha_user_name") or ""),
+                }
+
         except Exception as err:
             _LOGGER.debug("Failed to build Akuvox state payload: %s", err)
 
@@ -3933,7 +4215,9 @@ class AkuvoxUIAction(AkuvoxUIView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        if not _request_can_access_dashboard(hass, request):
+        has_dashboard_access = _request_can_access_dashboard(hass, request)
+        self_service = None if has_dashboard_access else _request_self_service_context(hass, request)
+        if not has_dashboard_access and not self_service:
             return _dashboard_access_denied_response()
         raw_root = hass.data.get(DOMAIN, {}) or {}
         root = raw_root if isinstance(raw_root, dict) else {}
@@ -3955,6 +4239,32 @@ class AkuvoxUIAction(AkuvoxUIView):
         def err(msg: Exception | str, code: int = 400):
             text = str(msg) if isinstance(msg, str) else (str(msg) or "unknown error")
             return web.json_response({"ok": False, "error": text}, status=code)
+
+        if self_service and not has_dashboard_access:
+            self_user_id = str(self_service.get("user_id") or "").strip()
+            if action == "self_edit_profile":
+                try:
+                    _updates, changes = await async_apply_self_service_profile_change(
+                        hass,
+                        root,
+                        user_id=self_user_id,
+                        payload=payload,
+                        actor_name=str(self_service.get("ha_user_name") or ""),
+                    )
+                    return web.json_response(
+                        {"ok": True, "user_id": self_user_id, "changes": changes}
+                    )
+                except Exception as edit_err:
+                    return err(edit_err, code=400)
+            if action == "remove_face":
+                requested_id = normalize_user_id(payload.get("id") or payload.get("user_id"))
+                requested_id = requested_id or str(payload.get("id") or payload.get("user_id") or "").strip()
+                if requested_id and requested_id != self_user_id:
+                    return err("self-service users can only edit their own profile", code=403)
+                payload = dict(payload)
+                payload["id"] = self_user_id
+            else:
+                return err("action is unavailable for self-service users", code=403)
 
         if action == "call_service":
             service = str(payload.get("service") or "").strip()
@@ -4331,6 +4641,15 @@ class AkuvoxUIAction(AkuvoxUIView):
                     queue.mark_change(None)
                 except Exception:
                     pass
+
+            if self_service and not has_dashboard_access:
+                await async_send_user_profile_change_notification(
+                    hass,
+                    root,
+                    user_id=canonical,
+                    actor_name=str(self_service.get("ha_user_name") or ""),
+                    changes=["face photo removed"],
+                )
 
             return web.json_response({"ok": True})
 
@@ -6593,6 +6912,19 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             else:
                 id_val_raw = str(candidate or "").strip()
 
+        if self_service and not has_dashboard_access:
+            self_user_id = str(self_service.get("user_id") or "").strip()
+            requested_id = normalize_user_id(id_val_raw) or str(id_val_raw or "").strip()
+            if requested_id and requested_id != self_user_id:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": "self-service users can only edit their own profile",
+                    },
+                    status=403,
+                )
+            id_val_raw = self_user_id
+
         id_val = normalize_ha_id(id_val_raw)
         if not id_val:
             return web.json_response(
@@ -6649,6 +6981,15 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 queue.mark_change(None)
             except Exception:
                 pass
+
+        if self_service and not has_dashboard_access:
+            await async_send_user_profile_change_notification(
+                hass,
+                root,
+                user_id=id_val,
+                actor_name=str(self_service.get("ha_user_name") or ""),
+                changes=["face photo uploaded"],
+            )
 
         return web.json_response({"ok": True, "face_url": face_url_public})
 
