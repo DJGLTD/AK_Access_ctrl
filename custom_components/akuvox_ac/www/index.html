@@ -65,6 +65,9 @@
     .btn-outline-light:hover{background:#112a46;border-color:#4b7199;color:#fff}
     .btn-outline-info{color:#59aaff;border-color:#1d66a9}
     .btn-outline-danger{color:#ff747b;border-color:#8e3038}
+    .hacs-update-copy{display:inline-flex;flex-direction:column;align-items:flex-start;line-height:1.05}
+    .hacs-update-copy small{font-size:.66rem;font-weight:600;letter-spacing:0;color:#b8d8ff;margin-top:2px}
+    #btnSystemUpdate.hacs-restart-pending{display:inline-flex;align-items:center;gap:.45rem;text-align:left}
     .summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;max-width:1380px}
     .summary-card{
       min-height:94px;padding:16px 18px;border:1px solid var(--border);border-radius:9px;
@@ -2650,6 +2653,12 @@ function renderUsers(devs, registryUsers, kpis){
 async function refresh(){
   try{
     const state = await apiGet(stateUrl);
+    if (state && typeof state === 'object' && state.hacs_auto_update) {
+      LAST_HACS_UPDATE_STATUS = state.hacs_auto_update;
+      if (hacsUpdateNeedsRestart(LAST_HACS_UPDATE_STATUS)) {
+        renderHacsUpdateButtons(LAST_HACS_UPDATE_STATUS);
+      }
+    }
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
@@ -2955,35 +2964,63 @@ function hacsUpdateButtonLabel(status){
   return 'Check Sent';
 }
 
-async function promptForHacsRestart(status){
-  if (!status || String(status.last_result || '').toLowerCase() !== 'installed') return status;
-  if (confirm('Update installed. Restart Home Assistant now? Press Cancel to schedule it for later.')) {
-    const restartRes = await apiPost(actionUrl, { action: 'restart_homeassistant' });
-    return restartRes?.hacs_auto_update || status;
+const DEFAULT_HACS_UPDATE_BUTTON_HTML = '<i class="bi bi-cloud-arrow-down"></i> System Update';
+let LAST_HACS_UPDATE_STATUS = null;
+
+function hacsUpdateResult(status){
+  return String(status?.last_result || '').toLowerCase();
+}
+
+function hacsUpdateNeedsRestart(status){
+  return hacsUpdateResult(status) === 'installed';
+}
+
+function hacsUpdateButtonHtml(status){
+  if (hacsUpdateNeedsRestart(status)) {
+    return `<i class="bi bi-cloud-arrow-down"></i><span class="hacs-update-copy"><span>Update Installed</span><small>Click to reboot</small></span>`;
   }
-  const minutesText = prompt('Schedule Home Assistant restart in how many minutes?', '30');
-  if (minutesText === null || String(minutesText).trim() === '') return status;
-  const minutes = Number(minutesText);
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    alert('Enter a positive number of minutes to schedule the restart.');
-    return status;
-  }
-  const restartAt = new Date(Date.now() + Math.round(minutes) * 60 * 1000).toISOString();
-  const scheduleRes = await apiPost(actionUrl, {
-    action: 'schedule_homeassistant_restart',
-    payload: { restart_at: restartAt },
+  return `<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`;
+}
+
+function renderHacsUpdateButtons(status, options = {}){
+  const buttons = Array.from(document.querySelectorAll('[data-hacs-update]'));
+  buttons.forEach(btn => {
+    btn.classList.toggle('hacs-restart-pending', hacsUpdateNeedsRestart(status));
+    if (options.disabled) {
+      btn.setAttribute('disabled', 'disabled');
+      btn.classList.add('disabled');
+    } else {
+      btn.removeAttribute('disabled');
+      btn.classList.remove('disabled');
+    }
+    btn.innerHTML = options.html || (status ? hacsUpdateButtonHtml(status) : DEFAULT_HACS_UPDATE_BUTTON_HTML);
   });
-  return scheduleRes?.hacs_auto_update || status;
+}
+
+async function restartHomeAssistantForHacsUpdate(status){
+  if (!status || String(status.last_result || '').toLowerCase() !== 'installed') return status;
+  const restartRes = await apiPost(actionUrl, { action: 'restart_homeassistant' });
+  return restartRes?.hacs_auto_update || status;
 }
 
 async function runHacsAutoUpdate(){
-  const buttons = Array.from(document.querySelectorAll('[data-hacs-update]'));
-  const originalButtons = buttons.map(btn => ({ btn, html: btn.innerHTML }));
-  const setButtons = (html) => buttons.forEach(btn => {
-    btn.setAttribute('disabled', 'disabled');
-    btn.classList.add('disabled');
-    btn.innerHTML = html;
-  });
+  if (hacsUpdateNeedsRestart(LAST_HACS_UPDATE_STATUS)) {
+    try {
+      renderHacsUpdateButtons(LAST_HACS_UPDATE_STATUS, {
+        disabled: true,
+        html: '<i class="bi bi-arrow-repeat"></i> Rebooting...',
+      });
+      LAST_HACS_UPDATE_STATUS = await restartHomeAssistantForHacsUpdate(LAST_HACS_UPDATE_STATUS);
+      renderHacsUpdateButtons(LAST_HACS_UPDATE_STATUS);
+    } catch (err) {
+      if (handleAuthError(err)) return;
+      renderHacsUpdateButtons(LAST_HACS_UPDATE_STATUS);
+      alert(`Home Assistant restart failed: ${err?.message || err}`);
+    }
+    return;
+  }
+
+  const setButtons = (html) => renderHacsUpdateButtons(null, { disabled: true, html });
   setButtons('<i class="bi bi-arrow-repeat"></i> Checking...');
 
   let ok = false;
@@ -3017,16 +3054,16 @@ async function runHacsAutoUpdate(){
     alert(`HACS update check failed${lastError ? `: ${lastError}` : ''}`);
   } else {
     const result = String(status?.last_result || '').toLowerCase();
-    setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
+    LAST_HACS_UPDATE_STATUS = status;
+    renderHacsUpdateButtons(status, { disabled: true });
     if (result === 'update_available') {
       const version = status?.pending_version || status?.latest_version || 'the available version';
       if (confirm(`Install Akuvox Access Control update ${version}?`)) {
         try {
           const installRes = await apiPost(actionUrl, { action: 'hacs_update_install' });
           status = installRes?.hacs_auto_update || status;
-          setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
-          status = await promptForHacsRestart(status);
-          setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
+          LAST_HACS_UPDATE_STATUS = status;
+          renderHacsUpdateButtons(status, { disabled: hacsUpdateNeedsRestart(status) ? false : true });
           if (String(status?.last_result || '').toLowerCase() === 'install_unconfirmed') {
             alert(status?.last_error || 'Install command was sent, but HACS did not confirm the new version.');
           }
@@ -3036,13 +3073,7 @@ async function runHacsAutoUpdate(){
         }
       }
     } else if (result === 'installed') {
-      try {
-        status = await promptForHacsRestart(status);
-        setButtons(`<i class="bi bi-arrow-repeat"></i> ${hacsUpdateButtonLabel(status)}`);
-      } catch (err) {
-        if (handleAuthError(err)) return;
-        alert(`Home Assistant restart failed: ${err?.message || err}`);
-      }
+      renderHacsUpdateButtons(status);
     } else if (['entity_not_found','check_failed','install_failed'].includes(result)) {
       alert(status?.last_error || 'HACS update check did not complete.');
     } else if (result === 'install_unconfirmed') {
@@ -3051,11 +3082,11 @@ async function runHacsAutoUpdate(){
   }
 
   setTimeout(() => {
-    originalButtons.forEach(({ btn, html }) => {
-      btn.innerHTML = html;
-      btn.removeAttribute('disabled');
-      btn.classList.remove('disabled');
-    });
+    if (hacsUpdateNeedsRestart(LAST_HACS_UPDATE_STATUS)) {
+      renderHacsUpdateButtons(LAST_HACS_UPDATE_STATUS);
+    } else {
+      renderHacsUpdateButtons(null);
+    }
   }, ok ? 2500 : 0);
 }
 
