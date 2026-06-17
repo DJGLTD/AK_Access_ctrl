@@ -1118,6 +1118,21 @@ function formatScheduleDisplay(rawId, label){
   return displayId || name;
 }
 
+function formatLastAccess(value){
+  if (!value) return '—';
+  const text = String(value).trim();
+  if (!text) return '—';
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if (isoMatch) {
+    return `${isoMatch[1]} ${isoMatch[2].padStart(2, '0')}:${isoMatch[3]}`;
+  }
+  const match = text.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if (!match) return text;
+  const hh = match[1].padStart(2, '0');
+  const mm = match[2];
+  return text.replace(match[0], `${hh}:${mm}`);
+}
+
 function renderPinToggle(pin, name){
   const raw = typeof pin === 'number' ? String(pin) : String(pin || '').trim();
   if (!raw) return '<span class="text-muted">—</span>';
@@ -1572,7 +1587,7 @@ function renderUsers(list){
       </div>
       <div class="user-groups">${chips || '<span class="text-muted">No groups</span>'}</div>
       <div class="user-meta">
-        <div><i class="bi bi-clock-history"></i>Last access: ${escapeHtml(u.last || '—')}</div>
+        <div><i class="bi bi-clock-history"></i>Last access: ${escapeHtml(formatLastAccess(u.last))}</div>
         <div><i class="bi bi-key"></i>Code: ${pinToggle}</div>
         <div><i class="bi bi-calendar2-week"></i>Schedule: ${schedule}</div>
         <div><i class="bi bi-hdd-network"></i>${escapeHtml(coverageText)}${seenNote ? ` • ${escapeHtml(seenNote)}` : ''}</div>
