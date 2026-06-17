@@ -56,6 +56,27 @@ class _AuthStub:
         return SimpleNamespace(id=user_id, name="DJGLTD")
 
 
+class _HistoryStoreStub:
+    def __init__(self):
+        self.events = []
+        self.save_calls = 0
+
+    async def async_save_events(self, events):
+        self.events = [dict(event) for event in events]
+        self.save_calls += 1
+
+
+class _HassStub(SimpleNamespace):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.created_tasks = []
+
+    def async_create_task(self, coro):
+        task = asyncio.create_task(coro)
+        self.created_tasks.append(task)
+        return task
+
+
 def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     api = _ApiStub()
     coordinator = _CoordinatorStub()
@@ -110,6 +131,59 @@ def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     assert history[0]["_category"] == "access"
     assert history[0]["LinkedUserID"] == "HA001"
     assert history[0]["LinkedUserName"] == "Daniel"
+
+
+def test_open_gate_persists_home_assistant_event_for_restart_recovery():
+    async def _run():
+        api = _ApiStub()
+        coordinator = _CoordinatorStub()
+        history_store = _HistoryStoreStub()
+        root = {
+            "access_history": AccessHistory(),
+            "access_history_store": history_store,
+            "users_store": _UsersStoreStub(
+                {
+                    "HA001": {
+                        "name": "Daniel",
+                        "ha_user_id": "ha-user-1",
+                    }
+                }
+            ),
+            "entry-1": {
+                "api": api,
+                "coordinator": coordinator,
+                "options": {
+                    "relay_roles": {
+                        "relay_a": "door",
+                        "relay_b": "alarm",
+                    }
+                },
+            },
+        }
+        hass = _HassStub(data={DOMAIN: root})
+
+        await async_open_gate(
+            hass,
+            root,
+            entry_id="entry-1",
+            triggered_by_id="ha-user-1",
+            triggered_by_name="DJGLTD",
+        )
+        if hass.created_tasks:
+            await asyncio.gather(*hass.created_tasks)
+
+        assert history_store.save_calls == 1
+        assert len(history_store.events) == 1
+        assert history_store.events[0]["_source"] == "home_assistant"
+        assert history_store.events[0]["Event"] == "Opened with Home Assistant by Daniel"
+
+        restored = AccessHistory()
+        restored.ingest(history_store.events, 5)
+        restored_events = restored.snapshot(5)
+        assert restored_events[0]["Event"] == "Opened with Home Assistant by Daniel"
+        assert restored_events[0]["LinkedUserName"] == "Daniel"
+
+    asyncio.run(_run())
 
 
 def test_open_gate_resolves_raw_home_assistant_context_user_id():

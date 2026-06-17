@@ -65,7 +65,7 @@ from .relay import (
     normalize_roles as normalize_relay_roles,
 )
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
-from .access_history import AccessHistory, categorize_event
+from .access_history import AccessHistory, categorize_event, schedule_access_history_persist
 from .reboot_schedule import normalize_reboot_schedule
 
 COMPONENT_ROOT = Path(__file__).parent
@@ -992,7 +992,9 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
         event_copy["_category"] = categorize_event(event_copy)
 
     try:
-        history.ingest([event_copy], limit)
+        changed = history.ingest([event_copy], limit)
+        if changed:
+            schedule_access_history_persist(hass, root, limit)
     except Exception as err:
         _LOGGER.debug("Failed to ingest aggregated event: %s", err)
 
@@ -5306,7 +5308,9 @@ class AkuvoxUISettings(HomeAssistantView):
             history = root.get("access_history")
             if history and hasattr(history, "prune"):
                 try:
-                    history.prune(limit_value)
+                    changed = history.prune(limit_value)
+                    if changed:
+                        schedule_access_history_persist(hass, root, limit_value)
                 except Exception:
                     pass
 

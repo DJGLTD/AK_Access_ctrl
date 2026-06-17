@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+import asyncio
 import datetime as dt
 import re
+from typing import Any, Dict, Iterable, List, Optional
 
 
 _TYPE_KEYS = (
@@ -157,17 +158,19 @@ class AccessHistory:
         self._events.clear()
         self._seen.clear()
 
-    def ingest(self, events: Iterable[Dict[str, Any]], limit: int) -> None:
+    def ingest(self, events: Iterable[Dict[str, Any]], limit: int) -> bool:
         """Merge *events* into the history, keeping only the newest *limit* items."""
 
         limit = self._normalize_limit(limit)
         if limit <= 0:
+            changed = bool(self._events or self._seen)
             self.clear()
-            return
+            return changed
 
         # Ensure we work against a sorted baseline so we can compare against the current
         # oldest event when deciding whether to insert older entries.
         self._events.sort(key=lambda e: self._coerce_timestamp(e.get("_t")), reverse=True)
+        changed = False
 
         for event in events:
             if not isinstance(event, dict):
@@ -192,20 +195,22 @@ class AccessHistory:
 
             self._events.append(event_copy)
             self._seen.add(key)
+            changed = True
 
         if not self._events:
-            return
+            return changed
 
         self._events.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
-        self.prune(limit)
+        return self.prune(limit) or changed
 
-    def prune(self, limit: int) -> None:
+    def prune(self, limit: int) -> bool:
         """Trim stored events so at most *limit* remain."""
 
         limit = self._normalize_limit(limit)
         if limit <= 0:
+            changed = bool(self._events or self._seen)
             self.clear()
-            return
+            return changed
 
         self._events.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
 
@@ -215,7 +220,7 @@ class AccessHistory:
                 for evt in self._events
                 if self._coerce_key(evt.get("_key"))
             }
-            return
+            return False
 
         retained = self._events[:limit]
         self._events = retained
@@ -224,6 +229,7 @@ class AccessHistory:
             for evt in retained
             if self._coerce_key(evt.get("_key"))
         }
+        return True
 
     def snapshot(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Return a copy of the newest events, optionally limited to *limit* entries."""
@@ -318,4 +324,58 @@ class AccessHistory:
         return parsed.timestamp()
 
 
-__all__ = ["AccessHistory", "categorize_event"]
+def schedule_access_history_persist(
+    hass: Any,
+    root: Optional[Dict[str, Any]],
+    limit: Optional[int] = None,
+) -> bool:
+    """Persist the current access-history snapshot through the configured store."""
+
+    if not isinstance(root, dict):
+        return False
+    history = root.get("access_history")
+    store = root.get("access_history_store")
+    if history is None or store is None:
+        return False
+    if not hasattr(history, "snapshot"):
+        return False
+
+    try:
+        events = history.snapshot(limit)
+    except Exception:
+        return False
+
+    async def _save() -> None:
+        try:
+            save_events = getattr(store, "async_save_events", None)
+            if callable(save_events):
+                await save_events(events)
+                return
+
+            data = getattr(store, "data", None)
+            if isinstance(data, dict):
+                data["events"] = list(events)
+            save = getattr(store, "async_save", None)
+            if callable(save):
+                await save()
+        except Exception:
+            return
+
+    try:
+        create_task = getattr(hass, "async_create_task", None)
+        if callable(create_task):
+            create_task(_save())
+            return True
+
+        loop = getattr(hass, "loop", None)
+        if loop is not None and hasattr(loop, "create_task"):
+            loop.create_task(_save())
+            return True
+
+        asyncio.get_running_loop().create_task(_save())
+        return True
+    except RuntimeError:
+        return False
+
+
+__all__ = ["AccessHistory", "categorize_event", "schedule_access_history_persist"]
