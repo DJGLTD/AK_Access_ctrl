@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 import logging
@@ -2406,6 +2407,43 @@ def _log_full_sync(coord: AkuvoxCoordinator, triggered_by: str) -> None:
 
 
 # ---------------------- Persistent stores ---------------------- #
+class AkuvoxAccessHistoryStore(Store):
+    def __init__(self, hass: HomeAssistant):
+        super().__init__(hass, 1, f"{DOMAIN}_access_history.json")
+        self.data: Dict[str, Any] = {"events": []}
+
+    async def async_load(self):
+        existing = await super().async_load()
+        if isinstance(existing, dict):
+            events = existing.get("events")
+            if isinstance(events, list):
+                self.data = {"events": [dict(e) for e in events if isinstance(e, dict)]}
+                return
+        if isinstance(existing, list):
+            self.data = {"events": [dict(e) for e in existing if isinstance(e, dict)]}
+
+    async def async_save(self):
+        await super().async_save(self.data)
+
+    @staticmethod
+    def _json_safe_event(event: Mapping[str, Any]) -> Dict[str, Any]:
+        try:
+            return json.loads(json.dumps(dict(event), default=str))
+        except Exception:
+            return {str(k): str(v) for k, v in dict(event).items()}
+
+    def events(self) -> List[Dict[str, Any]]:
+        return [dict(e) for e in self.data.get("events", []) if isinstance(e, dict)]
+
+    async def async_save_events(self, events: Iterable[Mapping[str, Any]]):
+        self.data["events"] = [
+            self._json_safe_event(event)
+            for event in events or []
+            if isinstance(event, Mapping)
+        ]
+        await self.async_save()
+
+
 class AkuvoxGroupsStore(Store):
     def __init__(self, hass: HomeAssistant):
         super().__init__(hass, 1, GROUPS_STORAGE_KEY)
@@ -7290,6 +7328,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         root["settings_store"] = settings
 
     settings_store = root.get("settings_store")
+
+    if "access_history_store" not in root:
+        access_history_store = AkuvoxAccessHistoryStore(hass)
+        await access_history_store.async_load()
+        root["access_history_store"] = access_history_store
+
+    history = root.get("access_history")
+    access_history_store = root.get("access_history_store")
+    if history and access_history_store and hasattr(access_history_store, "events"):
+        try:
+            access_limit = (
+                settings_store.get_access_history_limit()
+                if settings_store and hasattr(settings_store, "get_access_history_limit")
+                else DEFAULT_ACCESS_HISTORY_LIMIT
+            )
+        except Exception:
+            access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
+        try:
+            history.ingest(access_history_store.events(), access_limit)
+        except Exception:
+            pass
+
     users_store = root.get("users_store")
     if settings_store and users_store and hasattr(settings_store, "prune_stale_alert_users"):
         try:

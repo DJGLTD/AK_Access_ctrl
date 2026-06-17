@@ -26,7 +26,7 @@ from .http import (
     _match_user_by_number,
     _normalize_call_number,
 )
-from .access_history import AccessHistory, categorize_event
+from .access_history import AccessHistory, categorize_event, schedule_access_history_persist
 
 
 CALLER_LOOKBACK_SECONDS = 120
@@ -1130,7 +1130,9 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             return
 
         try:
-            history.ingest(prepared, limit)
+            changed = history.ingest(prepared, limit)
+            if changed:
+                schedule_access_history_persist(self.hass, root, limit)
         except Exception as err:
             _LOGGER.debug(
                 "Failed to update aggregated access history for %s: %s",
