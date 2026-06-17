@@ -2062,6 +2062,10 @@ function formatLastAccess(value){
   if (!value) return '—';
   const text = String(value).trim();
   if (!text) return '—';
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  if (isoMatch) {
+    return `${isoMatch[1]} ${isoMatch[2].padStart(2, '0')}:${isoMatch[3]}`;
+  }
   const match = text.match(/(\d{1,2}):(\d{2}):(\d{2})/);
   if (!match) return text;
   const hh = match[1].padStart(2, '0');

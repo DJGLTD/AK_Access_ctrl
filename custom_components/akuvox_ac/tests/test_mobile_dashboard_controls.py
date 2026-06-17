@@ -192,3 +192,18 @@ def test_home_assistant_open_events_match_underscore_source():
         assert "function normalizeEventSearchText(" in page
         assert "replace(/[_-]+/g, ' ')" in page
         assert "compact.includes('homeassistant')" in page
+
+
+def test_user_last_access_formats_iso_offsets_consistently():
+    pages = {
+        "index.html": "formatLastAccess(u.last)",
+        "index-mob.html": "formatLastAccess(u.last)",
+        "user_overview-mob.html": "formatLastAccess(u.last)",
+    }
+
+    for name, usage in pages.items():
+        page = read_page(name)
+        assert "function formatLastAccess(value)" in page
+        assert r"[T\s]+" in page
+        assert r"(?:Z|[+-]\d{2}:?\d{2})?" in page
+        assert usage in page
