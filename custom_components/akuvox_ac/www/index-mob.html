@@ -1424,7 +1424,13 @@ function formatWhen(ts){
   if (!ts) return '—';
   let d = ts instanceof Date ? ts : new Date(ts);
   if (isNaN(d.getTime())) {
-    try { const clean = String(ts).split('.')[0] + 'Z'; d = new Date(clean); }
+    try {
+      const text = String(ts).trim();
+      const normalized = text.includes(' ') && !text.includes('T') ? text.replace(' ', 'T') : text;
+      const zone = (normalized.match(/(Z|[+-]\d{2}:?\d{2})$/i) || [''])[0];
+      const clean = normalized.includes('.') ? normalized.split('.')[0] + zone : normalized;
+      d = new Date(clean);
+    }
     catch { return String(ts); }
   }
   if (isNaN(d.getTime())) return String(ts);
@@ -1433,6 +1439,18 @@ function formatWhen(ts){
   const HH = pad(d.getHours()), mm = pad(d.getMinutes()), SS = pad(d.getSeconds());
   return `${HH}:${mm}:${SS} ${DD}-${MM}-${YYYY}`;
 }
+
+function eventTimestampValue(event){
+  if (!event || typeof event !== 'object') return '';
+  const direct = event._when || event.timestamp || event.Timestamp || event.DateTime || event.datetime || event.EventTime || event.LogTime || event.RecordTime || '';
+  const datePart = event.Date || event.date || event.EventDate || event.LogDate || '';
+  const timePart = event.Time || event.time || '';
+  if (datePart && timePart && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(String(timePart).trim())) {
+    return `${String(datePart).trim()} ${String(timePart).trim()}`;
+  }
+  return direct || timePart || datePart || '';
+}
+
 function parseEventTimestamp(value){
   if (!value) return 0;
   if (value instanceof Date) return isNaN(value.getTime()) ? 0 : value.getTime();
@@ -1482,12 +1500,12 @@ function applyEventFilter(){
   const listEl = document.getElementById('eventList');
   if (!listEl) return;
   const html = list.map(e => {
-    const when = formatWhen(e.timestamp || e.Time || '');
+    const when = formatWhen(eventTimestampValue(e));
     const info = describeEventForDisplay(e);
     const cls = classifyEvent(e, info.highlight);
     return `<li class="event-item" data-category="${info.category}">
       <span class="event-title ${cls}">${escapeHtml(info.title)}</span>
-      <div class="event-time">${when}</div>
+      <div class="event-time">${escapeHtml(when)}</div>
     </li>`;
   }).join('');
   const emptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
@@ -1509,9 +1527,10 @@ function renderEvents(devs, aggregated){
       seen.add(key);
     }
     if (typeof copy._t !== 'number') {
-      const rawTs = copy.timestamp || copy.Time || '';
+      const rawTs = eventTimestampValue(copy);
       const parsed = parseEventTimestamp(rawTs);
       copy._t = parsed || Number(copy._t) || 0;
+      if (!copy.timestamp && rawTs) copy.timestamp = rawTs;
     }
     copy._category = normalizeEventCategory(copy._category) || categorizeEvent(copy);
     copy._device = copy._device || copy.device || '';
@@ -1521,9 +1540,9 @@ function renderEvents(devs, aggregated){
   (devs || []).forEach(d => {
     const deviceName = safeDeviceName(d);
     (d.events || []).forEach(e => {
-      let ts = e.timestamp || e.Time || '';
+      let ts = eventTimestampValue(e);
       const parsed = parseEventTimestamp(ts);
-      const copy = { ...e, _device: deviceName, _t: parsed || 0 };
+      const copy = { ...e, timestamp: e.timestamp || ts, _device: deviceName, _t: parsed || 0 };
       copy._category = normalizeEventCategory(copy._category) || categorizeEvent(copy, d);
       const keyBase = copy._key || `${deviceName}|${ts || ''}|${copy.Event || copy.Result || ''}`;
       const key = keyBase ? String(keyBase) : '';

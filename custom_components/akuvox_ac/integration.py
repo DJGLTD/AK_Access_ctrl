@@ -8141,6 +8141,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             triggered_by_name=actor_name,
         )
 
+    async def svc_set_relay_delay(call):
+        data = call.data if isinstance(call.data, Mapping) else {}
+        root = hass.data.get(DOMAIN, {})
+        entry_id = str(data.get("entry_id") or "").strip()
+        device_name = str(data.get("device_name") or data.get("device") or data.get("name") or "").strip()
+
+        bucket = root.get(entry_id) if entry_id else None
+        if not isinstance(bucket, dict):
+            matches: List[Dict[str, Any]] = []
+            for value in root.values():
+                if not isinstance(value, dict):
+                    continue
+                api = value.get("api")
+                coord = value.get("coordinator")
+                if not api or not coord:
+                    continue
+                if device_name:
+                    friendly = str(getattr(coord, "device_name", "") or "").strip()
+                    if friendly.lower() != device_name.lower():
+                        continue
+                matches.append(value)
+            if len(matches) == 1:
+                bucket = matches[0]
+            elif device_name:
+                raise ValueError("device_name did not match a configured Akuvox device")
+            else:
+                raise ValueError("entry_id or device_name is required when more than one device is configured")
+
+        api = bucket.get("api") if isinstance(bucket, dict) else None
+        if not api or not hasattr(api, "set_relay_delay"):
+            raise RuntimeError("device API is not ready")
+
+        relay = data.get("relay") or data.get("relay_number") or data.get("num") or 1
+        delay = data.get("delay")
+        await api.set_relay_delay(relay, delay)
+
     async def svc_refresh_events(call):
         entry_id = call.data.get("entry_id")
         root = hass.data[DOMAIN]
@@ -8304,6 +8340,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.services.async_register(DOMAIN, "upload_face", svc_upload_face)
     hass.services.async_register(DOMAIN, "reboot_device", svc_reboot_device)
     hass.services.async_register(DOMAIN, "open_gate", svc_open_gate)
+    hass.services.async_register(DOMAIN, "set_relay_delay", svc_set_relay_delay)
     hass.services.async_register(DOMAIN, "refresh_events", svc_refresh_events)
     hass.services.async_register(DOMAIN, "force_full_sync", svc_force_full_sync)
     hass.services.async_register(DOMAIN, "sync_now", svc_sync_now)

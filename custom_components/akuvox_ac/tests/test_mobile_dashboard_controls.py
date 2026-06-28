@@ -207,3 +207,19 @@ def test_user_last_access_formats_iso_offsets_consistently():
         assert r"[T\s]+" in page
         assert r"(?:Z|[+-]\d{2}:?\d{2})?" in page
         assert usage in page
+
+
+def test_dashboard_event_feed_keeps_date_with_time():
+    dashboard = read_page("index.html")
+    mobile = read_page("index-mob.html")
+
+    assert "function eventTimestampValue(event)" in dashboard
+    assert "function formatEventFeedTimestamp(event)" in dashboard
+    assert "class=\"event-date\"" in dashboard
+    assert "copy.timestamp = rawTs;" in dashboard
+    assert "when.split(' ')[0]" not in dashboard
+    assert "? '' : 'Z'" not in dashboard
+
+    assert "function eventTimestampValue(event)" in mobile
+    assert "copy.timestamp = rawTs;" in mobile
+    assert "? '' : 'Z'" not in mobile

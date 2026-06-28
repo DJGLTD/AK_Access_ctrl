@@ -268,6 +268,41 @@ open_gate:
           max: 300
           mode: box
 
+set_relay_delay:
+  name: Set relay delay
+  description: Set a device relay hold time in seconds.
+  fields:
+    entry_id:
+      name: Device entry ID
+      description: Optional when only one Akuvox device is configured. You can use device name instead.
+      required: false
+      selector:
+        text:
+    device_name:
+      name: Device name
+      description: Optional friendly device name, for example Gate.
+      required: false
+      selector:
+        text:
+    relay:
+      name: Relay
+      description: Relay to update.
+      required: true
+      selector:
+        select:
+          options:
+            - "1"
+            - "2"
+    delay:
+      name: Delay
+      description: Relay hold time in seconds.
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 300
+          mode: box
+
 sync_now:
   name: Sync now
   fields:

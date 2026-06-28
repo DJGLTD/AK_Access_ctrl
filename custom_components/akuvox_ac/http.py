@@ -80,6 +80,7 @@ SUPPORT_BUNDLE_VALUE_TEXT_LIMIT = 1200
 EXIT_PERMISSION_MATCH = "match"
 EXIT_PERMISSION_WORKING_DAYS = "working_days"
 EXIT_PERMISSION_ALWAYS = "always"
+_TIME_ONLY_TEXT_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?$")
 
 
 def _component_face_dir() -> Path:
@@ -648,6 +649,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "service_refresh_events": "/api/services/akuvox_ac/refresh_events",
     "service_reboot_device": "/api/services/akuvox_ac/reboot_device",
     "service_open_gate": "/api/services/akuvox_ac/open_gate",
+    "service_set_relay_delay": "/api/services/akuvox_ac/set_relay_delay",
     "service_delete_user": "/api/services/akuvox_ac/delete_user",
     "service_reactivate_temporary_user": "/api/services/akuvox_ac/reactivate_temporary_user",
 }
@@ -666,6 +668,7 @@ ALLOWED_DASHBOARD_SERVICE_PROXY: Set[str] = {
     "reactivate_temporary_user",
     "reboot_device",
     "refresh_events",
+    "set_relay_delay",
     "set_user_groups",
     "sync_now",
     "upload_face",
@@ -942,6 +945,39 @@ def _json_clone(value: Any) -> Any:
         return value
 
 
+def _event_timestamp_value(event: Mapping[str, Any]) -> str:
+    date_text = _normalize_user_match_value(event.get("Date")) or _normalize_user_match_value(
+        event.get("date")
+    )
+    time_text = _normalize_user_match_value(event.get("Time")) or _normalize_user_match_value(
+        event.get("time")
+    )
+    if date_text and time_text and _TIME_ONLY_TEXT_RE.match(time_text):
+        return f"{date_text} {time_text}"
+
+    for key in (
+        "timestamp",
+        "Timestamp",
+        "DateTime",
+        "datetime",
+        "DateTimeStr",
+        "dateTime",
+        "EventTime",
+        "LogTime",
+        "RecordTime",
+        "CreateTime",
+        "Time",
+        "time",
+    ):
+        text = _normalize_user_match_value(event.get(key))
+        if text:
+            return text
+
+    if date_text and time_text:
+        return f"{date_text} {time_text}"
+    return date_text or time_text
+
+
 def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
     if not isinstance(event, dict):
         return
@@ -963,10 +999,10 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
 
     event_copy = dict(event)
 
-    timestamp = event_copy.get("timestamp") or event_copy.get("Time")
+    timestamp = _event_timestamp_value(event_copy)
     if not timestamp:
         timestamp = dt.datetime.utcnow().isoformat() + "Z"
-        event_copy.setdefault("timestamp", timestamp)
+    event_copy.setdefault("timestamp", timestamp)
 
     event_copy["_t"] = AccessHistory._coerce_timestamp(event_copy.get("_t") or timestamp)
 
@@ -3065,7 +3101,20 @@ async def async_open_gate(
     if relay_digit not in (1, 2):
         raise RuntimeError("relay must be 1 or 2")
 
-    result = await api.trigger_relay(relay_digit, delay=delay if delay not in (None, "") else 20)
+    relay_delay = delay if delay not in (None, "") else None
+    if relay_delay is None:
+        relay_delay = 20
+        get_delay = getattr(api, "get_relay_delay", None)
+        if callable(get_delay):
+            try:
+                configured_delay = await get_delay(relay_digit)
+            except Exception as err:
+                _LOGGER.debug("Unable to read relay %s delay: %s", relay_digit, err)
+                configured_delay = None
+            if configured_delay not in (None, ""):
+                relay_delay = configured_delay
+
+    result = await api.trigger_relay(relay_digit, delay=relay_delay)
 
     actor_id = str(triggered_by_id or "").strip()
     actor_name = str(triggered_by_name or "").strip() or actor_id or "HA User"
@@ -3097,6 +3146,8 @@ async def async_open_gate(
         "entry_id": target_entry,
         "timestamp": timestamp,
         "DateTime": timestamp,
+        "Date": now.date().isoformat(),
+        "Time": now.strftime("%H:%M:%S"),
         "Device": device_name,
         "DeviceName": device_name,
         "Event": title,
@@ -3108,6 +3159,8 @@ async def async_open_gate(
         "AccessResult": "Access Granted",
         "Status": "Access Granted",
         "Relay": str(relay_digit),
+        "RelayDelay": str(relay_delay),
+        "RelayDelaySeconds": relay_delay,
         "HomeAssistantUserID": actor_id,
         "HomeAssistantUserName": actor_name,
         "TriggeredBy": display_actor,
@@ -3131,6 +3184,7 @@ async def async_open_gate(
         "ok": True,
         "entry_id": target_entry,
         "relay": relay_digit,
+        "delay": relay_delay,
         "triggered_by": display_actor,
         "ha_user_id": actor_id,
         "ha_user_name": actor_name,
@@ -3546,18 +3600,10 @@ _EVENT_USER_KEYS = (
 
 
 def _event_timestamp_text(event: Dict[str, Any]) -> str:
-    for key in ("timestamp", "Time", "DateTime", "datetime", "EventTime", "LogTime"):
-        text = _normalize_user_match_value(event.get(key))
-        if text:
-            return text
-    date_text = _normalize_user_match_value(event.get("Date")) or _normalize_user_match_value(
-        event.get("date")
-    )
-    time_text = _normalize_user_match_value(event.get("Time")) or _normalize_user_match_value(
-        event.get("time")
-    )
-    if date_text and time_text:
-        return f"{date_text} {time_text}"
+    timestamp_text = _event_timestamp_value(event)
+    if timestamp_text:
+        return timestamp_text
+
     ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
     if ts_value:
         try:
@@ -3986,9 +4032,7 @@ class AkuvoxUIView(HomeAssistantView):
                     return
                 ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
                 if not ts_value:
-                    ts_value = AccessHistory._coerce_timestamp(event.get("timestamp"))
-                if not ts_value:
-                    ts_value = AccessHistory._coerce_timestamp(event.get("Time"))
+                    ts_value = AccessHistory._coerce_timestamp(_event_timestamp_value(event))
                 if ts_value and ts_value > last_event_epoch:
                     last_event_epoch = ts_value
 
@@ -4801,6 +4845,52 @@ class AkuvoxUIAction(AkuvoxUIView):
                         "relay_roles": normalized,
                         "alarm_capable": relay_alarm_capable(normalized),
                         "device_alarm_any": alarm_any,
+                    }
+                )
+            except Exception as e:
+                return err(e)
+
+        if action == "get_relay_config":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                api = bucket.get("api")
+                if not api or not hasattr(api, "relay_config"):
+                    return err("device api is not ready", code=409)
+                config = await api.relay_config()
+                return web.json_response({"ok": True, "relay_config": config})
+            except Exception as e:
+                return err(e)
+
+        if action == "set_relay_delay":
+            if not entry_id:
+                return err("entry_id required")
+            try:
+                bucket = root.get(entry_id)
+                if not isinstance(bucket, dict):
+                    return err("device entry not found", code=404)
+                api = bucket.get("api")
+                if not api or not hasattr(api, "set_relay_delay"):
+                    return err("device api is not ready", code=409)
+                relay = payload.get("relay") or payload.get("relay_number") or payload.get("num") or 1
+                delay = payload.get("delay")
+                result = await api.set_relay_delay(relay, delay)
+                config = {}
+                if hasattr(api, "relay_config"):
+                    try:
+                        config = await api.relay_config()
+                    except Exception:
+                        config = {}
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "relay": result.get("relay", relay) if isinstance(result, dict) else relay,
+                        "delay": result.get("delay", delay) if isinstance(result, dict) else delay,
+                        "relay_config": config,
+                        "device_response": result,
                     }
                 )
             except Exception as e:
@@ -5929,9 +6019,7 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
                 continue
             ts_value = AccessHistory._coerce_timestamp(event.get("_t"))
             if not ts_value:
-                ts_value = AccessHistory._coerce_timestamp(event.get("timestamp"))
-            if not ts_value:
-                ts_value = AccessHistory._coerce_timestamp(event.get("Time"))
+                ts_value = AccessHistory._coerce_timestamp(_event_timestamp_value(event))
             if ts_value and ts_value > last_event_epoch:
                 last_event_epoch = ts_value
 

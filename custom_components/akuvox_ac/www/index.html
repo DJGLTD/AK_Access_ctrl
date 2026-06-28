@@ -117,13 +117,14 @@
     .small-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem}
     .event-list{list-style:none;padding:0;margin:0}
     .event-item{
-      display:grid;grid-template-columns:34px 70px minmax(0,1fr) auto;align-items:center;gap:10px;
+      display:grid;grid-template-columns:34px 145px minmax(0,1fr) auto;align-items:center;gap:10px;
       min-height:48px;padding:8px 14px;border-bottom:1px solid rgba(42,63,87,.66);
     }
     .event-icon{width:27px;height:27px;border-radius:7px;display:grid;place-items:center;background:#10472f;color:var(--ok)}
     .event-icon.bad{background:#4c222b;color:#ff6972}
     .event-icon.call{background:#10472f;color:var(--ok)}
-    .event-time{font-size:.75rem;color:#d1dbe6;font-variant-numeric:tabular-nums}
+    .event-time{display:flex;align-items:center;gap:22px;font-size:.75rem;color:#d1dbe6;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .event-date{color:#9fb0c4}
     .event-title{font-size:.76rem;color:#eaf1f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .event-result{font-size:.74rem;white-space:nowrap}
     .event-result.ok{color:var(--ok)} .event-result.bad{color:var(--bad)} .event-result.dim{color:#68a9ff}
@@ -279,7 +280,7 @@
       .summary-icon{width:46px;height:46px;flex-basis:46px;font-size:1.2rem}
       .summary-value{font-size:1.25rem}
       .card-header{padding:11px 12px}
-      .event-item{grid-template-columns:30px 58px minmax(0,1fr);gap:7px;padding:8px 10px}
+      .event-item{grid-template-columns:30px 128px minmax(0,1fr);gap:7px;padding:8px 10px}
       .event-result{grid-column:3;justify-self:start}
       .device-overview-list{padding:10px}
       .device-overview-card{grid-template-columns:92px minmax(0,1fr);padding:12px;gap:12px}
@@ -1736,7 +1737,13 @@ function formatWhen(ts){
   if (!ts) return '—';
   let d = ts instanceof Date ? ts : new Date(ts);
   if (isNaN(d.getTime())) {
-    try { const clean = String(ts).split('.')[0] + 'Z'; d = new Date(clean); }
+    try {
+      const text = String(ts).trim();
+      const normalized = text.includes(' ') && !text.includes('T') ? text.replace(' ', 'T') : text;
+      const zone = (normalized.match(/(Z|[+-]\d{2}:?\d{2})$/i) || [''])[0];
+      const clean = normalized.includes('.') ? normalized.split('.')[0] + zone : normalized;
+      d = new Date(clean);
+    }
     catch { return String(ts); }
   }
   if (isNaN(d.getTime())) return String(ts);
@@ -1745,6 +1752,29 @@ function formatWhen(ts){
   const HH = pad(d.getHours()), mm = pad(d.getMinutes()), SS = pad(d.getSeconds());
   return `${HH}:${mm}:${SS} ${DD}-${MM}-${YYYY}`;
 }
+
+function eventTimestampValue(event){
+  if (!event || typeof event !== 'object') return '';
+  const direct = event._when || event.timestamp || event.Timestamp || event.DateTime || event.datetime || event.EventTime || event.LogTime || event.RecordTime || '';
+  const datePart = event.Date || event.date || event.EventDate || event.LogDate || '';
+  const timePart = event.Time || event.time || '';
+  if (datePart && timePart && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(String(timePart).trim())) {
+    return `${String(datePart).trim()} ${String(timePart).trim()}`;
+  }
+  return direct || timePart || datePart || '';
+}
+
+function formatEventFeedTimestamp(event){
+  const when = formatWhen(eventTimestampValue(event));
+  const parts = String(when || '—').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) {
+    return `<span>${escapeHtml(when || '—')}</span>`;
+  }
+  const time = parts.shift();
+  const date = parts.join(' ');
+  return `<span>${escapeHtml(time)}</span><span class="event-date">${escapeHtml(date)}</span>`;
+}
+
 function parseEventTimestamp(value){
   if (!value) return 0;
   if (value instanceof Date) return isNaN(value.getTime()) ? 0 : value.getTime();
@@ -1787,8 +1817,7 @@ function applyEventFilter(){
   const listEl = $('#eventList');
   if (!listEl) return;
   const html = list.map(e => {
-    const when = formatWhen(e.timestamp || e.Time || '');
-    const time = when.split(' ')[0] || '—';
+    const when = formatEventFeedTimestamp(e);
     const info = describeEventForDisplay(e);
     const cls  = classifyEvent(e, info.highlight);
     const iconClass = cls === 'bad' ? 'bad' : (info.category === 'call' ? 'call' : '');
@@ -1802,7 +1831,7 @@ function applyEventFilter(){
         : (cls === 'bad' ? 'Access Denied' : cls === 'ok' ? 'Access Granted' : 'Access Event');
     return `<li class="event-item" data-category="${info.category}">
       <span class="event-icon ${iconClass}"><i class="bi ${icon}"></i></span>
-      <span class="event-time">${escapeHtml(time)}</span>
+      <span class="event-time">${when}</span>
       <span class="event-title">${escapeHtml(info.title)}</span>
       <span class="event-result ${cls}">● ${escapeHtml(result)}</span>
     </li>`;
@@ -1826,9 +1855,10 @@ function renderEvents(devs, aggregated){
       seen.add(key);
     }
     if (typeof copy._t !== 'number') {
-      const rawTs = copy.timestamp || copy.Time || '';
+      const rawTs = eventTimestampValue(copy);
       const parsed = parseEventTimestamp(rawTs);
       copy._t = parsed || Number(copy._t) || 0;
+      if (!copy.timestamp && rawTs) copy.timestamp = rawTs;
     }
     copy._category = normalizeEventCategory(copy._category) || categorizeEvent(copy);
     copy._device = copy._device || copy.device || '';
@@ -1838,10 +1868,11 @@ function renderEvents(devs, aggregated){
   (devs || []).forEach(d => {
     const deviceName = safeDeviceName(d);
     (d.events || []).forEach(e => {
-      let ts = e.timestamp || e.Time || '';
+      let ts = eventTimestampValue(e);
       const parsed = parseEventTimestamp(ts);
       const copy = {
         ...e,
+        timestamp: e.timestamp || ts,
         _device: deviceName,
         _t: parsed || 0,
         _category: categorizeEvent(e, d),

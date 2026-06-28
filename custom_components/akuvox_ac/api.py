@@ -74,6 +74,12 @@ def _normalize_user_source(record: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+_RELAY_DELAY_KEYS = {
+    1: "Config.DoorSetting.RELAY.RelayADelay",
+    2: "Config.DoorSetting.RELAY.RelayBDelay",
+}
+
+
 def _truncate_string(value: str, limit: int = 800) -> str:
     """Trim very long strings so diagnostics stay manageable."""
 
@@ -666,6 +672,68 @@ class AkuvoxAPI:
         rels = (primary, *fallbacks)
         return await self._request_attempts("GET", rels, None)
 
+    @staticmethod
+    def _normalize_relay_number(relay_number: Any) -> int:
+        try:
+            relay = int(str(relay_number).strip())
+        except Exception as err:
+            raise ValueError("relay number must be 1 or 2") from err
+        if relay not in (1, 2):
+            raise ValueError("relay number must be 1 or 2")
+        return relay
+
+    @staticmethod
+    def _normalize_relay_delay(delay: Any, *, default: Optional[int] = 20) -> Optional[int]:
+        try:
+            return max(1, min(300, int(float(str(delay).strip()))))
+        except Exception:
+            return default
+
+    async def relay_config(self) -> Dict[str, Any]:
+        """Return the device relay configuration, including hold delays."""
+
+        try:
+            result = await self._get_api("/api/relay/get", "/api/relay/get/")
+            data = result.get("data") if isinstance(result, dict) else None
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+        payload = {
+            "target": "config",
+            "action": "get",
+            "data": {"filter": list(_RELAY_DELAY_KEYS.values())},
+        }
+        result = await self._post_api(payload, rel_paths=("/api/config/get", "/api/"))
+        data = result.get("data") if isinstance(result, dict) else None
+        return data if isinstance(data, dict) else {}
+
+    async def get_relay_delay(self, relay_number: Any = 1) -> Optional[int]:
+        """Return the configured relay hold delay in seconds, if the device exposes it."""
+
+        relay = self._normalize_relay_number(relay_number)
+        key = _RELAY_DELAY_KEYS[relay]
+        config = await self.relay_config()
+        return self._normalize_relay_delay(config.get(key), default=None)
+
+    async def set_relay_delay(self, relay_number: Any = 1, delay: Any = 20) -> Dict[str, Any]:
+        """Set the configured relay hold delay in seconds."""
+
+        relay = self._normalize_relay_number(relay_number)
+        delay_seconds = self._normalize_relay_delay(delay, default=20) or 20
+        key = _RELAY_DELAY_KEYS[relay]
+        payload = {
+            "target": "config",
+            "action": "set",
+            "data": {key: str(delay_seconds)},
+        }
+        result = await self._post_api(payload, rel_paths=("/api/config/set", "/api/"))
+        if isinstance(result, dict):
+            result.setdefault("relay", relay)
+            result.setdefault("delay", delay_seconds)
+        return result
+
     async def trigger_relay(
         self,
         relay_number: Any = 1,
@@ -676,17 +744,8 @@ class AkuvoxAPI:
     ) -> Dict[str, Any]:
         """Trigger an Akuvox relay using the device's authenticated web API."""
 
-        try:
-            relay = int(str(relay_number).strip())
-        except Exception as err:
-            raise ValueError("relay number must be 1 or 2") from err
-        if relay not in (1, 2):
-            raise ValueError("relay number must be 1 or 2")
-
-        try:
-            delay_seconds = max(1, min(300, int(float(str(delay).strip()))))
-        except Exception:
-            delay_seconds = 20
+        relay = self._normalize_relay_number(relay_number)
+        delay_seconds = self._normalize_relay_delay(delay, default=20) or 20
 
         path = (
             "/api/relay/trig"
