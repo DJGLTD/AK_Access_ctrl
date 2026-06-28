@@ -7,12 +7,18 @@ ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac.access_history import AccessHistory
 from custom_components.akuvox_ac.const import DOMAIN
-from custom_components.akuvox_ac.http import async_open_gate
+from custom_components.akuvox_ac.http import _event_timestamp_text, async_open_gate
 
 
 class _ApiStub:
-    def __init__(self):
+    def __init__(self, relay_delays=None):
         self.calls = []
+        self.relay_delays = relay_delays or {}
+        self.delay_reads = []
+
+    async def get_relay_delay(self, relay_number):
+        self.delay_reads.append(relay_number)
+        return self.relay_delays.get(relay_number)
 
     async def trigger_relay(self, relay_number, *, delay=20, mode=0, level=0):
         self.calls.append(
@@ -124,6 +130,8 @@ def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     assert event["HomeAssistantUserName"] == "DJGLTD"
     assert event["TriggeredBy"] == "Daniel"
     assert event["UserName"] == "Daniel"
+    assert event["Date"]
+    assert event["Time"]
     assert event["Event"] == "Opened with Home Assistant by Daniel"
 
     history = root["access_history"].snapshot(5)
@@ -131,6 +139,12 @@ def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     assert history[0]["_category"] == "access"
     assert history[0]["LinkedUserID"] == "HA001"
     assert history[0]["LinkedUserName"] == "Daniel"
+
+
+def test_event_timestamp_text_combines_device_date_and_time():
+    event = {"Date": "2026-06-27", "Time": "17:57:47"}
+
+    assert _event_timestamp_text(event) == "2026-06-27 17:57:47"
 
 
 def test_open_gate_persists_home_assistant_event_for_restart_recovery():
@@ -277,3 +291,54 @@ def test_open_gate_can_select_device_by_friendly_name():
     assert result["entry_id"] == "entry-gate"
     assert first_api.calls == [{"relay": 1, "delay": 20, "mode": 0, "level": 0}]
     assert second_api.calls == []
+
+
+def test_open_gate_uses_configured_device_relay_delay_by_default():
+    api = _ApiStub(relay_delays={1: 2})
+    coordinator = _CoordinatorStub()
+    root = {
+        "access_history": AccessHistory(),
+        "entry-1": {
+            "api": api,
+            "coordinator": coordinator,
+            "options": {"relay_roles": {"relay_a": "door", "relay_b": "alarm"}},
+        },
+    }
+    hass = SimpleNamespace(data={DOMAIN: root})
+
+    result = asyncio.run(
+        async_open_gate(hass, root, entry_id="entry-1", triggered_by_name="DJGLTD")
+    )
+
+    assert result["delay"] == 2
+    assert api.delay_reads == [1]
+    assert api.calls == [{"relay": 1, "delay": 2, "mode": 0, "level": 0}]
+    assert result["event"]["RelayDelaySeconds"] == 2
+
+
+def test_open_gate_explicit_delay_overrides_device_relay_delay():
+    api = _ApiStub(relay_delays={1: 2})
+    coordinator = _CoordinatorStub()
+    root = {
+        "access_history": AccessHistory(),
+        "entry-1": {
+            "api": api,
+            "coordinator": coordinator,
+            "options": {"relay_roles": {"relay_a": "door", "relay_b": "alarm"}},
+        },
+    }
+    hass = SimpleNamespace(data={DOMAIN: root})
+
+    result = asyncio.run(
+        async_open_gate(
+            hass,
+            root,
+            entry_id="entry-1",
+            delay=7,
+            triggered_by_name="DJGLTD",
+        )
+    )
+
+    assert result["delay"] == 7
+    assert api.delay_reads == []
+    assert api.calls == [{"relay": 1, "delay": 7, "mode": 0, "level": 0}]

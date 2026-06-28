@@ -1056,6 +1056,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not parsed:
             return 0.0
         try:
+            if parsed.tzinfo is None:
+                return parsed.timestamp()
             return dt_util.as_utc(parsed).timestamp()
         except Exception:
             return 0.0
