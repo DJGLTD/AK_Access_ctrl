@@ -6862,7 +6862,11 @@ class AkuvoxUIUploadFace(HomeAssistantView):
 
     async def post(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
-        if not _request_can_access_dashboard(hass, request):
+        has_dashboard_access = _request_can_access_dashboard(hass, request)
+        self_service = (
+            None if has_dashboard_access else _request_self_service_context(hass, request)
+        )
+        if not has_dashboard_access and not self_service:
             return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
 
