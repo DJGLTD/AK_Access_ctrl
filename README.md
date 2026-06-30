@@ -31,12 +31,13 @@ This integration supports **config flow** (Settings → Devices & services → A
 Follow the on‑screen steps. See the in‑integration options and services for details.
 
 ## Release Versioning
-Releases start at `v3.1.0`. The integration manifest and dashboard version label are updated by the release workflow so HACS and Home Assistant show release versions instead of commit hashes.
+Release versions are derived from the merged pull request number. The integration manifest and dashboard version label are updated by the release workflow so HACS and Home Assistant show release versions instead of commit hashes.
 
-- Small fixes and routine changes use patch versions, for example `3.1.0` → `3.1.1`.
-- Larger feature changes use minor versions, for example `3.1.x` → `3.2.0`.
-- Every merged PR or direct commit to `main` creates at least a patch release.
-- Use `feat:`, `[minor]`, `[feature]`, or `[major]` in the PR title or commit message for the next minor release.
+- PR `#416` releases as `v4.1.6`.
+- PR `#500` releases as `v5.0.0`.
+- PR `#525` releases as `v5.2.5`.
+- PR `#555` releases as `v5.5.5`.
+- Direct commits to `main` without an associated pull request do not create a release.
 
 ## Notes
 - Web assets (in `custom_components/akuvox_ac/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
