@@ -72,9 +72,23 @@
           <label class="form-label text-white" for="relayASelect">Relay A action</label>
           <select class="form-select" id="relayASelect"></select>
         </div>
+        <div class="col-sm-6 col-lg-2">
+          <label class="form-label text-white" for="relayADelay">Relay A trigger time</label>
+          <div class="input-group">
+            <input class="form-control" type="number" id="relayADelay" min="1" max="300" step="1" placeholder="—" disabled>
+            <span class="input-group-text">s</span>
+          </div>
+        </div>
         <div class="col-sm-6 col-lg-4" id="relayBCol">
           <label class="form-label text-white" for="relayBSelect">Relay B action</label>
           <select class="form-select" id="relayBSelect"></select>
+        </div>
+        <div class="col-sm-6 col-lg-2" id="relayBDelayCol">
+          <label class="form-label text-white" for="relayBDelay">Relay B trigger time</label>
+          <div class="input-group">
+            <input class="form-control" type="number" id="relayBDelay" min="1" max="300" step="1" placeholder="—" disabled>
+            <span class="input-group-text">s</span>
+          </div>
         </div>
       </div>
       <div class="form-text text-muted mt-2" id="relayKeypadNote"></div>
@@ -712,6 +726,20 @@ const RELAY_ROLE_LABELS = {
   door_alarm: 'Door and Alarm Relay'
 };
 const RELAY_ROLE_ORDER = ['none', 'door', 'pedestrian', 'alarm', 'door_alarm'];
+const RELAY_DELAY_CONFIG_KEYS = {
+  1: [
+    'Config.DoorSetting.RELAY.RelayADelay',
+    'RelayADelay',
+    'relayADelay',
+    'relay_a_delay'
+  ],
+  2: [
+    'Config.DoorSetting.RELAY.RelayBDelay',
+    'RelayBDelay',
+    'relayBDelay',
+    'relay_b_delay'
+  ]
+};
 const AKUVOX_MODELS = [
   'Other Akuvox', 'S539', 'S538', 'S535', 'S532', 'X916', 'X915', 'X912',
   'X910', 'R29', 'R28', 'R27', 'R25', 'R20', 'E21', 'E20', 'E18', 'E16',
@@ -721,6 +749,7 @@ const AKUVOX_MODELS = [
 let CURRENT_DEVICE = null;
 let relayStatusTimer = null;
 let relaySaving = false;
+let relayDelaySaving = false;
 let exitSaving = false;
 let autoRebootSaving = false;
 let modelSaving = false;
@@ -789,6 +818,120 @@ function populateRelaySelect(select, value, fallback = 'door'){
     select.appendChild(opt);
   });
   select.value = RELAY_ROLE_ORDER.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeRelayDelay(value, fallback = ''){
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number.parseInt(String(value).trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(300, parsed));
+}
+
+function relayDelayInput(relay){
+  return document.getElementById(relay === 2 ? 'relayBDelay' : 'relayADelay');
+}
+
+function relayDelayKey(relay){
+  return relay === 2 ? 'relay_b' : 'relay_a';
+}
+
+function relayDelayLabel(relay){
+  return relay === 2 ? 'Relay B' : 'Relay A';
+}
+
+function relayDelayFromConfig(config, relay, fallback = ''){
+  if (!config || typeof config !== 'object') return fallback;
+  const keys = RELAY_DELAY_CONFIG_KEYS[relay] || [];
+  for (const key of keys){
+    const normalized = normalizeRelayDelay(config[key], null);
+    if (normalized !== null) return normalized;
+  }
+  return fallback;
+}
+
+function updateRelayDelayControlState(disabled = false){
+  const isKeypad = String(CURRENT_DEVICE?.type || '').toLowerCase() === 'keypad';
+  const relayBDelayCol = document.getElementById('relayBDelayCol');
+  const relayAInput = relayDelayInput(1);
+  const relayBInput = relayDelayInput(2);
+  if (relayBDelayCol){
+    if (isKeypad) relayBDelayCol.classList.add('d-none');
+    else relayBDelayCol.classList.remove('d-none');
+  }
+  if (relayAInput) relayAInput.disabled = !!disabled;
+  if (relayBInput) relayBInput.disabled = !!disabled || isKeypad;
+}
+
+function applyRelayDelayConfig(config = {}){
+  if (!CURRENT_DEVICE) return;
+  const prev = CURRENT_DEVICE.relay_delays || {};
+  const relayA = relayDelayFromConfig(config, 1, prev.relay_a || '');
+  const relayB = relayDelayFromConfig(config, 2, prev.relay_b || '');
+  CURRENT_DEVICE.relay_delays = { relay_a: relayA, relay_b: relayB };
+  const inputA = relayDelayInput(1);
+  const inputB = relayDelayInput(2);
+  if (inputA) inputA.value = relayA || '';
+  if (inputB) inputB.value = relayB || '';
+  updateRelayDelayControlState(false);
+}
+
+async function loadRelayDelayConfig(){
+  if (!CURRENT_DEVICE) return;
+  updateRelayDelayControlState(true);
+  setRelayStatus('Loading relay trigger times…');
+  try {
+    const res = await apiPost(actionUrl, { action:'get_relay_config', entry_id: ENTRY_ID });
+    applyRelayDelayConfig(res?.relay_config || {});
+    setRelayStatus('Relay trigger times loaded ✓', 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    updateRelayDelayControlState(true);
+    setRelayStatus('Relay trigger times unavailable', 'error');
+  }
+}
+
+async function saveRelayDelay(relay){
+  if (relayDelaySaving || !CURRENT_DEVICE) return;
+  const input = relayDelayInput(relay);
+  if (!input || input.disabled) return;
+  const key = relayDelayKey(relay);
+  const previous = CURRENT_DEVICE.relay_delays?.[key] || '';
+  const delay = normalizeRelayDelay(input.value, null);
+  if (delay === null){
+    input.value = previous || '';
+    setRelayStatus(`${relayDelayLabel(relay)} trigger time must be 1-300 seconds`, 'error');
+    return;
+  }
+  input.value = String(delay);
+  relayDelaySaving = true;
+  updateRelayDelayControlState(true);
+  setRelayStatus(`Saving ${relayDelayLabel(relay)} trigger time…`);
+  try {
+    const res = await apiPost(actionUrl, {
+      action:'set_relay_delay',
+      entry_id: ENTRY_ID,
+      payload: { relay, delay }
+    });
+    const config = res?.relay_config && typeof res.relay_config === 'object'
+      ? res.relay_config
+      : {};
+    const saved = relayDelayFromConfig(config, relay, normalizeRelayDelay(res?.delay, delay));
+    CURRENT_DEVICE.relay_delays = {
+      ...(CURRENT_DEVICE.relay_delays || {}),
+      [key]: saved
+    };
+    applyRelayDelayConfig(config);
+    relayDelayInput(relay).value = saved || delay;
+    setRelayStatus(`${relayDelayLabel(relay)} trigger time saved ✓`, 'success');
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    input.value = previous || '';
+    setRelayStatus(`${relayDelayLabel(relay)} trigger time save failed`, 'error');
+    alert(`Failed to update ${relayDelayLabel(relay)} trigger time: ` + (err && err.message ? err.message : err));
+  } finally {
+    relayDelaySaving = false;
+    updateRelayDelayControlState(false);
+  }
 }
 
 function computeAlarmCapable(device){
@@ -867,6 +1010,7 @@ function applyRelayUI(device){
   if (exitToggle){
     exitToggle.checked = !!device?.exit_device;
   }
+  updateRelayDelayControlState(false);
   setRelayStatus('');
   updateRelayHelper();
 }
@@ -1092,14 +1236,18 @@ async function init(){
         relay_a: dev.relay_roles?.relay_a || 'door',
         relay_b: dev.relay_roles?.relay_b || 'none'
       },
+      relay_delays: { relay_a: '', relay_b: '' },
       exit_device: !!dev.exit_device,
       auto_reboot: normalizeAutoReboot(dev.auto_reboot),
       alarm_capable: computeAlarmCapable(dev)
     };
     applyRelayUI(CURRENT_DEVICE);
+    await loadRelayDelayConfig();
     applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
     document.getElementById('relayASelect')?.addEventListener('change', saveRelayRoles);
     document.getElementById('relayBSelect')?.addEventListener('change', saveRelayRoles);
+    document.getElementById('relayADelay')?.addEventListener('change', () => saveRelayDelay(1));
+    document.getElementById('relayBDelay')?.addEventListener('change', () => saveRelayDelay(2));
     document.getElementById('modelSelect')?.addEventListener('change', saveDeviceModel);
     document.getElementById('exitDeviceToggle')?.addEventListener('change', handleExitToggleChange);
     document.getElementById('autoRebootToggle')?.addEventListener('change', () => {
