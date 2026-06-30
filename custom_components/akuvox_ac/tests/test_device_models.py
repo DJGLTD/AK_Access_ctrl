@@ -105,6 +105,13 @@ def test_model_selectors_and_artwork_are_bundled():
         editor = (WWW / filename).read_text(encoding="utf-8")
         assert 'id="modelSelect"' in editor
         assert "action: 'set_device_model'" in editor
+        assert 'id="relayADelay"' in editor
+        assert 'id="relayBDelay"' in editor
+        assert 'id="relayBDelayCol"' in editor
+        assert "action:'get_relay_config'" in editor
+        assert "action:'set_relay_delay'" in editor
+        assert "Config.DoorSetting.RELAY.RelayADelay" in editor
+        assert "Config.DoorSetting.RELAY.RelayBDelay" in editor
 
     artwork = WWW / "device-models"
     for filename in (
