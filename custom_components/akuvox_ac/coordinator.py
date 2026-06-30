@@ -26,7 +26,13 @@ from .http import (
     _match_user_by_number,
     _normalize_call_number,
 )
-from .access_history import AccessHistory, categorize_event, schedule_access_history_persist
+from .access_history import (
+    AccessHistory,
+    access_history_retention_cutoff,
+    access_history_storage_limit,
+    categorize_event,
+    schedule_access_history_persist,
+)
 
 
 CALLER_LOOKBACK_SECONDS = 120
@@ -1117,22 +1123,18 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if history is None or not hasattr(history, "ingest"):
             return
 
-        settings = root.get("settings_store")
         try:
-            limit = (
-                settings.get_access_history_limit()
-                if settings and hasattr(settings, "get_access_history_limit")
-                else DEFAULT_ACCESS_HISTORY_LIMIT
-            )
+            limit = access_history_storage_limit(root)
         except Exception:
             limit = DEFAULT_ACCESS_HISTORY_LIMIT
+        cutoff = access_history_retention_cutoff(root)
 
         prepared = self._prepare_access_history_events(events)
         if not prepared or limit <= 0:
             return
 
         try:
-            changed = history.ingest(prepared, limit)
+            changed = history.ingest(prepared, limit, min_timestamp=cutoff)
             if changed:
                 schedule_access_history_persist(self.hass, root, limit)
         except Exception as err:

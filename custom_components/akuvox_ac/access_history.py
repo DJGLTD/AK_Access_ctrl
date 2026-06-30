@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional
+
+DEFAULT_ACCESS_HISTORY_STORAGE_LIMIT = 5000
+DEFAULT_ACCESS_HISTORY_RETENTION_DAYS = 30
 
 
 _TYPE_KEYS = (
@@ -158,7 +162,13 @@ class AccessHistory:
         self._events.clear()
         self._seen.clear()
 
-    def ingest(self, events: Iterable[Dict[str, Any]], limit: int) -> bool:
+    def ingest(
+        self,
+        events: Iterable[Dict[str, Any]],
+        limit: int,
+        *,
+        min_timestamp: Optional[float] = None,
+    ) -> bool:
         """Merge *events* into the history, keeping only the newest *limit* items."""
 
         limit = self._normalize_limit(limit)
@@ -166,6 +176,8 @@ class AccessHistory:
             changed = bool(self._events or self._seen)
             self.clear()
             return changed
+
+        cutoff = self._coerce_timestamp(min_timestamp)
 
         # Ensure we work against a sorted baseline so we can compare against the current
         # oldest event when deciding whether to insert older entries.
@@ -180,6 +192,8 @@ class AccessHistory:
                 continue
 
             ts_value = self._coerce_timestamp(event.get("_t"))
+            if cutoff and ts_value and ts_value < cutoff:
+                continue
 
             if len(self._events) >= limit:
                 oldest_ts = self._coerce_timestamp(self._events[-1].get("_t"))
@@ -201,9 +215,9 @@ class AccessHistory:
             return changed
 
         self._events.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
-        return self.prune(limit) or changed
+        return self.prune(limit, min_timestamp=cutoff) or changed
 
-    def prune(self, limit: int) -> bool:
+    def prune(self, limit: int, *, min_timestamp: Optional[float] = None) -> bool:
         """Trim stored events so at most *limit* remain."""
 
         limit = self._normalize_limit(limit)
@@ -212,7 +226,23 @@ class AccessHistory:
             self.clear()
             return changed
 
+        cutoff = self._coerce_timestamp(min_timestamp)
         self._events.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
+        if cutoff:
+            retained_by_age = [
+                evt
+                for evt in self._events
+                if self._coerce_timestamp(evt.get("_t")) >= cutoff
+            ]
+            if len(retained_by_age) != len(self._events):
+                self._events = retained_by_age
+                self._seen = {
+                    self._coerce_key(evt.get("_key"))
+                    for evt in self._events
+                    if self._coerce_key(evt.get("_key"))
+                }
+                if len(self._events) <= limit:
+                    return True
 
         if len(self._events) <= limit:
             self._seen = {
@@ -231,20 +261,35 @@ class AccessHistory:
         }
         return True
 
-    def snapshot(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def snapshot(
+        self,
+        limit: Optional[int] = None,
+        *,
+        min_timestamp: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """Return a copy of the newest events, optionally limited to *limit* entries."""
 
         self._events.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
+        cutoff = self._coerce_timestamp(min_timestamp)
+        source = (
+            [
+                evt
+                for evt in self._events
+                if self._coerce_timestamp(evt.get("_t")) >= cutoff
+            ]
+            if cutoff
+            else list(self._events)
+        )
 
         if limit is not None:
             limit = self._normalize_limit(limit)
             if limit >= 0:
                 slice_end = limit if limit > 0 else 0
-                events = self._events[:slice_end]
+                events = source[:slice_end]
             else:
                 events = []
         else:
-            events = list(self._events)
+            events = source
 
         return [dict(evt) for evt in events]
 
@@ -324,6 +369,56 @@ class AccessHistory:
         return parsed.timestamp()
 
 
+def access_history_storage_limit(root: Optional[Dict[str, Any]], fallback: Optional[int] = None) -> int:
+    """Return the count cap used for persisted access history."""
+
+    default = fallback if fallback is not None else DEFAULT_ACCESS_HISTORY_STORAGE_LIMIT
+    try:
+        value = int(default)
+    except Exception:
+        value = DEFAULT_ACCESS_HISTORY_STORAGE_LIMIT
+    value = max(0, value)
+
+    settings = root.get("settings_store") if isinstance(root, dict) else None
+    getter = getattr(settings, "get_access_history_storage_limit", None)
+    if callable(getter):
+        try:
+            return max(0, int(getter()))
+        except Exception:
+            return value
+
+    display_getter = getattr(settings, "get_access_history_limit", None)
+    if callable(display_getter):
+        try:
+            value = max(value, int(display_getter()))
+        except Exception:
+            pass
+    return value
+
+
+def access_history_retention_cutoff(
+    root: Optional[Dict[str, Any]],
+    *,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    """Return the oldest event timestamp that should be kept, if configured."""
+
+    settings = root.get("settings_store") if isinstance(root, dict) else None
+    getter = getattr(settings, "get_access_history_retention_seconds", None)
+    seconds: Optional[float] = None
+    if callable(getter):
+        try:
+            seconds = float(getter())
+        except Exception:
+            seconds = None
+    if seconds is None:
+        seconds = DEFAULT_ACCESS_HISTORY_RETENTION_DAYS * 24 * 60 * 60
+    if seconds <= 0:
+        return None
+    base = time.time() if now is None else float(now)
+    return base - seconds
+
+
 def schedule_access_history_persist(
     hass: Any,
     root: Optional[Dict[str, Any]],
@@ -341,7 +436,9 @@ def schedule_access_history_persist(
         return False
 
     try:
-        events = history.snapshot(limit)
+        persist_limit = access_history_storage_limit(root, fallback=limit)
+        cutoff = access_history_retention_cutoff(root)
+        events = history.snapshot(persist_limit, min_timestamp=cutoff)
     except Exception:
         return False
 
@@ -378,4 +475,10 @@ def schedule_access_history_persist(
         return False
 
 
-__all__ = ["AccessHistory", "categorize_event", "schedule_access_history_persist"]
+__all__ = [
+    "AccessHistory",
+    "access_history_retention_cutoff",
+    "access_history_storage_limit",
+    "categorize_event",
+    "schedule_access_history_persist",
+]

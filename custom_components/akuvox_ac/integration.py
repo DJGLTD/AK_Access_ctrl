@@ -50,9 +50,12 @@ from .const import (
     MIN_HEALTH_CHECK_INTERVAL,
     MAX_HEALTH_CHECK_INTERVAL,
     DEFAULT_ACCESS_HISTORY_LIMIT,
+    DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
     DEFAULT_DEVICE_MODEL,
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
+    MIN_ACCESS_HISTORY_RETENTION_DAYS,
+    MAX_ACCESS_HISTORY_RETENTION_DAYS,
     HA_CONTACT_GROUP_NAME,
     CONF_PARTICIPATE,
     CONF_POLL_INTERVAL,
@@ -76,7 +79,12 @@ from .relay import (
 from .api import AkuvoxAPI
 from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
-from .access_history import AccessHistory
+from .access_history import (
+    AccessHistory,
+    access_history_retention_cutoff,
+    access_history_storage_limit,
+    schedule_access_history_persist,
+)
 from .http import (
     async_apply_self_service_profile_change,
     async_open_gate,
@@ -3237,6 +3245,7 @@ class AkuvoxSettingsStore(Store):
 
     DEFAULT_INTEGRITY_MINUTES = 15
     DEFAULT_FACE_INTEGRITY_ENABLED = True
+    ACCESS_HISTORY_STORAGE_LIMIT = 5000
     DEFAULT_CREDENTIAL_PROMPTS = {
         "code": True,
         "token": True,
@@ -3280,6 +3289,7 @@ class AkuvoxSettingsStore(Store):
             "health_check_interval_seconds": self.DEFAULT_HEALTH_SECONDS,
             "credential_prompts": dict(self.DEFAULT_CREDENTIAL_PROMPTS),
             "access_history_limit": DEFAULT_ACCESS_HISTORY_LIMIT,
+            "access_history_retention_days": DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
             "hacs_auto_update": dict(self.DEFAULT_HACS_AUTO_UPDATE),
             "dashboard_access": {"allowed_user_ids": []},
             "expiry_reminders": {"last_sent": {}},
@@ -3358,6 +3368,17 @@ class AkuvoxSettingsStore(Store):
         except ValueError:
             access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
         self.data["access_history_limit"] = access_limit
+
+        try:
+            retention_days = self._normalize_access_history_retention_days(
+                self.data.get(
+                    "access_history_retention_days",
+                    DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
+                )
+            )
+        except ValueError:
+            retention_days = DEFAULT_ACCESS_HISTORY_RETENTION_DAYS
+        self.data["access_history_retention_days"] = retention_days
 
     async def async_save(self):
         await super().async_save(self.data)
@@ -3624,6 +3645,48 @@ class AkuvoxSettingsStore(Store):
     async def set_access_history_limit(self, limit: Any) -> int:
         value = self._normalize_access_history_limit(limit)
         self.data["access_history_limit"] = value
+        await self.async_save()
+        return value
+
+    def _normalize_access_history_retention_days(self, days: Any) -> int:
+        if days is None:
+            raise ValueError("Invalid access history retention")
+        try:
+            value = int(days)
+        except Exception as err:
+            raise ValueError("Invalid access history retention") from err
+        if value < MIN_ACCESS_HISTORY_RETENTION_DAYS:
+            return MIN_ACCESS_HISTORY_RETENTION_DAYS
+        if value > MAX_ACCESS_HISTORY_RETENTION_DAYS:
+            return MAX_ACCESS_HISTORY_RETENTION_DAYS
+        return value
+
+    def get_access_history_retention_days(self) -> int:
+        try:
+            return self._normalize_access_history_retention_days(
+                self.data.get(
+                    "access_history_retention_days",
+                    DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
+                )
+            )
+        except ValueError:
+            return DEFAULT_ACCESS_HISTORY_RETENTION_DAYS
+
+    def get_access_history_retention_seconds(self) -> int:
+        return self.get_access_history_retention_days() * 24 * 60 * 60
+
+    def get_access_history_retention_bounds(self) -> Tuple[int, int]:
+        return (MIN_ACCESS_HISTORY_RETENTION_DAYS, MAX_ACCESS_HISTORY_RETENTION_DAYS)
+
+    def get_access_history_storage_limit(self) -> int:
+        return max(
+            self.ACCESS_HISTORY_STORAGE_LIMIT,
+            self.get_access_history_limit(),
+        )
+
+    async def set_access_history_retention_days(self, days: Any) -> int:
+        value = self._normalize_access_history_retention_days(days)
+        self.data["access_history_retention_days"] = value
         await self.async_save()
         return value
 
@@ -7338,15 +7401,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     access_history_store = root.get("access_history_store")
     if history and access_history_store and hasattr(access_history_store, "events"):
         try:
-            access_limit = (
-                settings_store.get_access_history_limit()
-                if settings_store and hasattr(settings_store, "get_access_history_limit")
-                else DEFAULT_ACCESS_HISTORY_LIMIT
-            )
+            access_limit = access_history_storage_limit(root)
         except Exception:
             access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
         try:
-            history.ingest(access_history_store.events(), access_limit)
+            cutoff = access_history_retention_cutoff(root)
+            history.ingest(access_history_store.events(), access_limit, min_timestamp=cutoff)
+            history.prune(access_limit, min_timestamp=cutoff)
+            schedule_access_history_persist(hass, root, access_limit)
         except Exception:
             pass
 

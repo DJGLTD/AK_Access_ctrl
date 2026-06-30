@@ -54,6 +54,9 @@ from .const import (
     DEFAULT_ACCESS_HISTORY_LIMIT,
     MIN_ACCESS_HISTORY_LIMIT,
     MAX_ACCESS_HISTORY_LIMIT,
+    DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
+    MIN_ACCESS_HISTORY_RETENTION_DAYS,
+    MAX_ACCESS_HISTORY_RETENTION_DAYS,
     DEFAULT_DEVICE_MODEL,
     DEFAULT_POLL_INTERVAL,
     AKUVOX_DEVICE_MODELS,
@@ -65,7 +68,13 @@ from .relay import (
     normalize_roles as normalize_relay_roles,
 )
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
-from .access_history import AccessHistory, categorize_event, schedule_access_history_persist
+from .access_history import (
+    AccessHistory,
+    access_history_retention_cutoff,
+    access_history_storage_limit,
+    categorize_event,
+    schedule_access_history_persist,
+)
 from .reboot_schedule import normalize_reboot_schedule
 
 COMPONENT_ROOT = Path(__file__).parent
@@ -989,13 +998,10 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
 
     settings = root.get("settings_store")
     try:
-        limit = (
-            settings.get_access_history_limit()
-            if settings and hasattr(settings, "get_access_history_limit")
-            else DEFAULT_ACCESS_HISTORY_LIMIT
-        )
+        limit = access_history_storage_limit(root)
     except Exception:
         limit = DEFAULT_ACCESS_HISTORY_LIMIT
+    cutoff = access_history_retention_cutoff(root)
 
     event_copy = dict(event)
 
@@ -1028,7 +1034,7 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
         event_copy["_category"] = categorize_event(event_copy)
 
     try:
-        changed = history.ingest([event_copy], limit)
+        changed = history.ingest([event_copy], limit, min_timestamp=cutoff)
         if changed:
             schedule_access_history_persist(hass, root, limit)
     except Exception as err:
@@ -4018,7 +4024,8 @@ class AkuvoxUIView(HomeAssistantView):
             aggregated_events: List[Dict[str, Any]] = []
             if history and hasattr(history, "snapshot"):
                 try:
-                    aggregated_events = history.snapshot(access_limit)
+                    cutoff = access_history_retention_cutoff(root)
+                    aggregated_events = history.snapshot(access_limit, min_timestamp=cutoff)
                 except Exception:
                     aggregated_events = []
             response["access_events"] = aggregated_events
@@ -5127,6 +5134,11 @@ class AkuvoxUISettings(HomeAssistantView):
         health_bounds = (MIN_HEALTH_CHECK_INTERVAL, MAX_HEALTH_CHECK_INTERVAL)
         access_limit = DEFAULT_ACCESS_HISTORY_LIMIT
         access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
+        access_retention_days = DEFAULT_ACCESS_HISTORY_RETENTION_DAYS
+        access_retention_bounds = (
+            MIN_ACCESS_HISTORY_RETENTION_DAYS,
+            MAX_ACCESS_HISTORY_RETENTION_DAYS,
+        )
         alerts = {"targets": {}}
         face_integrity_enabled = True
         if settings:
@@ -5162,6 +5174,19 @@ class AkuvoxUISettings(HomeAssistantView):
                     access_bounds = (int(ab[0]), int(ab[1]))
             except Exception:
                 access_bounds = (MIN_ACCESS_HISTORY_LIMIT, MAX_ACCESS_HISTORY_LIMIT)
+            try:
+                access_retention_days = settings.get_access_history_retention_days()
+            except Exception:
+                access_retention_days = DEFAULT_ACCESS_HISTORY_RETENTION_DAYS
+            try:
+                rb = settings.get_access_history_retention_bounds()
+                if isinstance(rb, (tuple, list)) and len(rb) >= 2:
+                    access_retention_bounds = (int(rb[0]), int(rb[1]))
+            except Exception:
+                access_retention_bounds = (
+                    MIN_ACCESS_HISTORY_RETENTION_DAYS,
+                    MAX_ACCESS_HISTORY_RETENTION_DAYS,
+                )
             try:
                 if users_store and hasattr(settings, "prune_stale_alert_users"):
                     await settings.prune_stale_alert_users(users_store)
@@ -5263,6 +5288,9 @@ class AkuvoxUISettings(HomeAssistantView):
                 "access_event_limit": access_limit,
                 "min_access_event_limit": access_bounds[0],
                 "max_access_event_limit": access_bounds[1],
+                "access_event_retention_days": access_retention_days,
+                "min_access_event_retention_days": access_retention_bounds[0],
+                "max_access_event_retention_days": access_retention_bounds[1],
                 "credential_prompts": credential_prompts,
                 "hacs_auto_update": hacs_auto_update,
                 "min_hacs_auto_update_interval_hours": 1,
@@ -5398,9 +5426,38 @@ class AkuvoxUISettings(HomeAssistantView):
             history = root.get("access_history")
             if history and hasattr(history, "prune"):
                 try:
-                    changed = history.prune(limit_value)
+                    persist_limit = access_history_storage_limit(root)
+                    cutoff = access_history_retention_cutoff(root)
+                    changed = history.prune(persist_limit, min_timestamp=cutoff)
                     if changed:
-                        schedule_access_history_persist(hass, root, limit_value)
+                        schedule_access_history_persist(hass, root, persist_limit)
+                except Exception:
+                    pass
+
+        if "access_event_retention_days" in payload:
+            if not settings or not hasattr(settings, "set_access_history_retention_days"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+
+            try:
+                retention_days = await settings.set_access_history_retention_days(
+                    payload.get("access_event_retention_days")
+                )
+            except ValueError as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+            response["access_event_retention_days"] = retention_days
+
+            history = root.get("access_history")
+            if history and hasattr(history, "prune"):
+                try:
+                    persist_limit = access_history_storage_limit(root)
+                    cutoff = access_history_retention_cutoff(root)
+                    changed = history.prune(persist_limit, min_timestamp=cutoff)
+                    schedule_access_history_persist(hass, root, persist_limit)
+                    if not changed:
+                        pass
                 except Exception:
                     pass
 
@@ -6008,7 +6065,8 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
         aggregated_events: List[Dict[str, Any]] = []
         if history and hasattr(history, "snapshot"):
             try:
-                aggregated_events = history.snapshot(access_limit)
+                cutoff = access_history_retention_cutoff(root)
+                aggregated_events = history.snapshot(access_limit, min_timestamp=cutoff)
             except Exception:
                 aggregated_events = []
 

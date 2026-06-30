@@ -586,6 +586,9 @@ let SETTINGS_DATA = {
   access_event_limit: 200,
   min_access_event_limit: 5,
   max_access_event_limit: 200,
+  access_event_retention_days: 30,
+  min_access_event_retention_days: 1,
+  max_access_event_retention_days: 365,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
   hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
   dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
@@ -607,6 +610,8 @@ let healthSaving = false;
 let healthSavedTimer = null;
 let eventLimitSaving = false;
 let eventLimitSavedTimer = null;
+let eventRetentionSaving = false;
+let eventRetentionSavedTimer = null;
 let hacsUpdateSaving = false;
 let hacsUpdateChecking = false;
 let hacsUpdateInstalling = false;
@@ -805,6 +810,28 @@ function showEventLimitSavedOverlay(message = 'Saved'){
     eventLimitSavedTimer = null;
   }, 5000);
 }
+function hideEventRetentionSavedOverlay(){
+  const overlay = document.getElementById('eventRetentionSavedOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  if (eventRetentionSavedTimer){
+    clearTimeout(eventRetentionSavedTimer);
+    eventRetentionSavedTimer = null;
+  }
+}
+function showEventRetentionSavedOverlay(message = 'Saved'){
+  const overlay = document.getElementById('eventRetentionSavedOverlay');
+  if (!overlay) return;
+  overlay.textContent = message;
+  overlay.classList.add('visible');
+  if (eventRetentionSavedTimer){
+    clearTimeout(eventRetentionSavedTimer);
+  }
+  eventRetentionSavedTimer = setTimeout(() => {
+    overlay.classList.remove('visible');
+    eventRetentionSavedTimer = null;
+  }, 5000);
+}
 function setIntegrityStatus(text, tone = 'muted') {
   const el = document.getElementById('integrityStatus');
   if (!el) return;
@@ -885,6 +912,26 @@ function setEventLimitStatus(text, tone = 'muted') {
   if (tone === 'error') el.classList.add('text-danger');
   else el.classList.add('muted');
 }
+function setEventRetentionStatus(text, tone = 'muted') {
+  const el = document.getElementById('eventRetentionStatus');
+  if (!el) return;
+  if (tone === 'success') {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    showEventRetentionSavedOverlay(text || 'Saved');
+    return;
+  }
+  hideEventRetentionSavedOverlay();
+  if (!text) {
+    el.textContent = '';
+    el.className = 'visually-hidden small mt-2';
+    return;
+  }
+  el.textContent = text;
+  el.className = 'small mt-2';
+  if (tone === 'error') el.classList.add('text-danger');
+  else el.classList.add('muted');
+}
 function setHacsAutoUpdateStatus(text, tone = 'muted') {
   const el = document.getElementById('hacsAutoUpdateStatus');
   if (!el) return;
@@ -940,6 +987,15 @@ function eventLimitRange(){
   const maxRaw = Number(SETTINGS_DATA?.max_access_event_limit);
   const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 5;
   let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 200;
+  if (max < min) max = min;
+  return { min, max };
+}
+
+function eventRetentionRange(){
+  const minRaw = Number(SETTINGS_DATA?.min_access_event_retention_days);
+  const maxRaw = Number(SETTINGS_DATA?.max_access_event_retention_days);
+  const min = Number.isFinite(minRaw) ? Math.max(1, Math.round(minRaw)) : 1;
+  let max = Number.isFinite(maxRaw) ? Math.round(maxRaw) : 365;
   if (max < min) max = min;
   return { min, max };
 }
@@ -1200,6 +1256,22 @@ function renderEventLimit(){
   setEventLimitStatus('');
 }
 
+function renderEventRetention(){
+  const input = document.getElementById('accessEventRetentionInput');
+  if (!input) return;
+  const { min, max } = eventRetentionRange();
+  let value = Number(SETTINGS_DATA.access_event_retention_days);
+  if (!Number.isFinite(value)) value = 30;
+  value = Math.round(value);
+  if (value < min) value = min;
+  if (value > max) value = max;
+  SETTINGS_DATA.access_event_retention_days = value;
+  input.min = String(min);
+  input.max = String(max);
+  input.value = String(value);
+  setEventRetentionStatus('');
+}
+
 async function saveEventLimit(){
   if (eventLimitSaving) return;
   const input = document.getElementById('accessEventLimitInput');
@@ -1229,6 +1301,38 @@ async function saveEventLimit(){
     alert('Failed to update event history limit: ' + (err && err.message ? err.message : err));
   } finally {
     eventLimitSaving = false;
+  }
+}
+
+async function saveEventRetention(){
+  if (eventRetentionSaving) return;
+  const input = document.getElementById('accessEventRetentionInput');
+  if (!input) return;
+  const { min, max } = eventRetentionRange();
+  let raw = Number(input.value);
+  if (!Number.isFinite(raw)) raw = SETTINGS_DATA.access_event_retention_days;
+  let value = Math.round(raw);
+  if (value < min) value = min;
+  if (value > max) value = max;
+
+  eventRetentionSaving = true;
+  hideEventRetentionSavedOverlay();
+
+  try {
+    const res = await apiPost(API_SETTINGS, { access_event_retention_days: value });
+    const returned = Number(res?.access_event_retention_days);
+    if (Number.isFinite(returned)) {
+      SETTINGS_DATA.access_event_retention_days = returned;
+    } else {
+      SETTINGS_DATA.access_event_retention_days = value;
+    }
+    renderEventRetention();
+    showEventRetentionSavedOverlay();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert('Failed to update event retention: ' + (err && err.message ? err.message : err));
+  } finally {
+    eventRetentionSaving = false;
   }
 }
 
@@ -2518,6 +2622,7 @@ async function loadData(){
       auto_sync_delay_minutes: 15,
       health_check_interval_seconds: 30,
       access_event_limit: 30,
+      access_event_retention_days: 30,
       hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
       dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
       alerts: { targets: {} },
@@ -2582,6 +2687,24 @@ async function loadData(){
     if (eventLimitValue > safeMaxEvents) eventLimitValue = safeMaxEvents;
     SETTINGS_DATA.access_event_limit = eventLimitValue;
 
+    const minRetention = Number(settingsResp?.min_access_event_retention_days);
+    const maxRetention = Number(settingsResp?.max_access_event_retention_days);
+    const safeMinRetention = Number.isFinite(minRetention) ? Math.max(1, Math.round(minRetention)) : 1;
+    const safeMaxRetention = Number.isFinite(maxRetention)
+      ? Math.max(safeMinRetention, Math.round(maxRetention))
+      : Math.max(safeMinRetention, 365);
+    SETTINGS_DATA.min_access_event_retention_days = safeMinRetention;
+    SETTINGS_DATA.max_access_event_retention_days = safeMaxRetention;
+    const rawEventRetention = SETTINGS_DATA.access_event_retention_days;
+    let eventRetentionValue = Number(rawEventRetention);
+    if (!Number.isFinite(eventRetentionValue) || rawEventRetention === null || rawEventRetention === undefined || rawEventRetention === '') {
+      eventRetentionValue = 30;
+    }
+    eventRetentionValue = Math.round(eventRetentionValue);
+    if (eventRetentionValue < safeMinRetention) eventRetentionValue = safeMinRetention;
+    if (eventRetentionValue > safeMaxRetention) eventRetentionValue = safeMaxRetention;
+    SETTINGS_DATA.access_event_retention_days = eventRetentionValue;
+
     const faceIntegrityRaw = settingsResp?.face_integrity_enabled;
     SETTINGS_DATA.face_integrity_enabled = typeof faceIntegrityRaw === 'boolean' ? faceIntegrityRaw : true;
 
@@ -2617,6 +2740,7 @@ async function loadData(){
     renderAutoSyncDelay();
     renderHealthInterval();
     renderEventLimit();
+    renderEventRetention();
     renderHacsAutoUpdate();
     renderDashboardAccess();
     renderIntegrity();
@@ -2634,6 +2758,7 @@ async function loadData(){
     renderAutoSyncDelay();
     renderHealthInterval();
     renderEventLimit();
+    renderEventRetention();
     renderHacsAutoUpdate();
     renderDashboardAccess();
     renderIntegrity();
@@ -2731,6 +2856,40 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   eventLimitInput?.addEventListener('change', commitEventLimit);
   eventLimitInput?.addEventListener('blur', commitEventLimit);
+
+  const eventRetentionInput = document.getElementById('accessEventRetentionInput');
+  const commitEventRetention = async () => {
+    if (!eventRetentionInput) return;
+    const { min, max } = eventRetentionRange();
+    const rawStr = (eventRetentionInput.value ?? '').toString().trim();
+    if (!rawStr){
+      setEventRetentionStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const raw = Number(rawStr);
+    if (!Number.isFinite(raw)){
+      setEventRetentionStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    const val = Math.round(raw);
+    if (val < min || val > max){
+      setEventRetentionStatus(`Enter a number between ${min} and ${max}`, 'error');
+      return;
+    }
+    if (val === SETTINGS_DATA.access_event_retention_days){
+      setEventRetentionStatus('');
+      return;
+    }
+    SETTINGS_DATA.access_event_retention_days = val;
+    eventRetentionInput.value = String(val);
+    await saveEventRetention();
+  };
+  eventRetentionInput?.addEventListener('input', () => {
+    hideEventRetentionSavedOverlay();
+    setEventRetentionStatus('');
+  });
+  eventRetentionInput?.addEventListener('change', commitEventRetention);
+  eventRetentionInput?.addEventListener('blur', commitEventRetention);
 
   const hacsToggle = document.getElementById('hacsAutoUpdateToggle');
   hacsToggle?.addEventListener('change', async () => {
@@ -2968,6 +3127,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         <div id="eventLimitSavedOverlay" class="saved-overlay">Saved</div>
       </div>
       <div id="eventLimitStatus" class="visually-hidden small mt-2"></div>
+      <div class="mt-4">
+        <label class="form-label" for="accessEventRetentionInput">Store events for</label>
+        <p class="muted">Choose how many days access events remain available after Home Assistant restarts.</p>
+        <div class="saved-input-wrap">
+          <input id="accessEventRetentionInput" class="form-control" type="number" min="1" max="365" step="1" />
+          <div id="eventRetentionSavedOverlay" class="saved-overlay">Saved</div>
+        </div>
+        <div id="eventRetentionStatus" class="visually-hidden small mt-2"></div>
+      </div>
     </div>
   </div>
 

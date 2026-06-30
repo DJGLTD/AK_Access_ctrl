@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
@@ -63,13 +64,29 @@ class _AuthStub:
 
 
 class _HistoryStoreStub:
-    def __init__(self):
-        self.events = []
+    def __init__(self, events=None):
+        self.events = [dict(event) for event in events or []]
         self.save_calls = 0
 
     async def async_save_events(self, events):
         self.events = [dict(event) for event in events]
         self.save_calls += 1
+
+
+class _SettingsStoreStub:
+    def __init__(self, limit=5, storage_limit=5000, retention_days=30):
+        self.limit = limit
+        self.storage_limit = storage_limit
+        self.retention_days = retention_days
+
+    def get_access_history_limit(self):
+        return self.limit
+
+    def get_access_history_storage_limit(self):
+        return self.storage_limit
+
+    def get_access_history_retention_seconds(self):
+        return self.retention_days * 24 * 60 * 60
 
 
 class _HassStub(SimpleNamespace):
@@ -147,6 +164,22 @@ def test_event_timestamp_text_combines_device_date_and_time():
     assert _event_timestamp_text(event) == "2026-06-27 17:57:47"
 
 
+def test_access_history_retention_prunes_old_events():
+    history = AccessHistory()
+
+    changed = history.ingest(
+        [
+            {"_key": "old", "_t": 100, "Event": "Old event"},
+            {"_key": "new", "_t": 200, "Event": "New event"},
+        ],
+        10,
+        min_timestamp=150,
+    )
+
+    assert changed is True
+    assert [event["_key"] for event in history.snapshot(10)] == ["new"]
+
+
 def test_open_gate_persists_home_assistant_event_for_restart_recovery():
     async def _run():
         api = _ApiStub()
@@ -196,6 +229,82 @@ def test_open_gate_persists_home_assistant_event_for_restart_recovery():
         restored_events = restored.snapshot(5)
         assert restored_events[0]["Event"] == "Opened with Home Assistant by Daniel"
         assert restored_events[0]["LinkedUserName"] == "Daniel"
+
+    asyncio.run(_run())
+
+
+def test_open_gate_persisted_history_uses_storage_limit_not_display_limit():
+    async def _run():
+        api = _ApiStub()
+        coordinator = _CoordinatorStub()
+        history = AccessHistory()
+        now = time.time()
+        history.ingest(
+            [
+                {
+                    "_key": f"device:{index}",
+                    "_t": now - index - 1,
+                    "_source": "device",
+                    "Event": f"Device event {index}",
+                    "Date": "2026-06-30",
+                    "Time": f"12:00:{index:02d}",
+                }
+                for index in range(8)
+            ],
+            50,
+        )
+        history_store = _HistoryStoreStub()
+        root = {
+            "access_history": history,
+            "access_history_store": history_store,
+            "settings_store": _SettingsStoreStub(limit=5, storage_limit=50),
+            "users_store": _UsersStoreStub(
+                {
+                    "HA001": {
+                        "name": "Daniel",
+                        "ha_user_id": "ha-user-1",
+                    }
+                }
+            ),
+            "entry-1": {
+                "api": api,
+                "coordinator": coordinator,
+                "options": {
+                    "relay_roles": {
+                        "relay_a": "door",
+                        "relay_b": "alarm",
+                    }
+                },
+            },
+        }
+        hass = _HassStub(data={DOMAIN: root})
+
+        await async_open_gate(
+            hass,
+            root,
+            entry_id="entry-1",
+            triggered_by_id="ha-user-1",
+            triggered_by_name="DJGLTD",
+        )
+        if hass.created_tasks:
+            await asyncio.gather(*hass.created_tasks)
+
+        assert history_store.save_calls == 1
+        assert len(history_store.events) == 9
+        assert any(
+            event.get("_source") == "home_assistant"
+            and event.get("Event") == "Opened with Home Assistant by Daniel"
+            for event in history_store.events
+        )
+
+        restored = AccessHistory()
+        restored.ingest(history_store.events, 50)
+        restored_events = restored.snapshot(50)
+        assert len(restored_events) == 9
+        assert any(
+            event.get("Event") == "Opened with Home Assistant by Daniel"
+            for event in restored_events
+        )
 
     asyncio.run(_run())
 

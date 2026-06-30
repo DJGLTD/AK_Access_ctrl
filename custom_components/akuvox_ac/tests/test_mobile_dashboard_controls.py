@@ -194,6 +194,19 @@ def test_home_assistant_open_events_match_underscore_source():
         assert "compact.includes('homeassistant')" in page
 
 
+def test_settings_pages_expose_access_event_retention():
+    for name in ("settings.html", "settings-mob.html"):
+        page = read_page(name)
+
+        assert 'id="accessEventRetentionInput"' in page
+        assert 'id="eventRetentionSavedOverlay"' in page
+        assert "access_event_retention_days" in page
+        assert "min_access_event_retention_days" in page
+        assert "max_access_event_retention_days" in page
+        assert "function eventRetentionRange()" in page
+        assert "async function saveEventRetention()" in page
+
+
 def test_user_last_access_formats_iso_offsets_consistently():
     pages = {
         "index.html": "formatLastAccess(u.last)",
