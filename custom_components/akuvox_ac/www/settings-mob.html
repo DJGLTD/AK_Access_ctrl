@@ -79,17 +79,6 @@
     .device-option + .device-option{ margin-top:1rem; }
     .device-header{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:0.5rem; }
     .device-meta{ color:var(--muted); font-size:0.9rem; }
-    .dashboard-access-list{ display:flex; flex-direction:column; gap:0.5rem; }
-    .dashboard-access-user{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:0.75rem; }
-    .dashboard-access-user .form-check{ margin-bottom:0; }
-    .dashboard-access-main{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.75rem; }
-    .dashboard-access-actions{ display:flex; flex-wrap:wrap; gap:0.5rem; }
-    .dashboard-access-badge{ color:var(--muted); font-size:0.85rem; }
-    .impersonation-notice{ display:none; border:1px solid rgba(255,193,7,.45); background:rgba(255,193,7,.12); color:#ffe8a3; border-radius:0.75rem; padding:0.75rem; margin-bottom:0.75rem; }
-    .impersonation-notice.active{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.75rem; }
-    .event-visibility-list{ display:flex; flex-direction:column; gap:0.75rem; }
-    .event-visibility-user{ background:#0d1729; border:1px solid var(--border); border-radius:0.75rem; padding:0.75rem; }
-    .event-visibility-targets{ max-height:12rem; overflow-y:auto; padding:0.25rem 0; }
     .granted-users-list{
       max-height: calc(4 * 2.25rem);
       overflow-y: auto;
@@ -574,7 +563,6 @@ function escapeHtml(value){
 }
 
 const API_SETTINGS = signedPath('settings', '/api/akuvox_ac/ui/settings');
-const API_IMPERSONATION = signedPath('impersonation', '/api/akuvox_ac/ui/impersonation');
 const API_PHONES   = signedPath('phones', '/api/akuvox_ac/ui/phones');
 const API_ACTION   = signedPath('action', '/api/akuvox_ac/ui/action');
 const API_SUPPORT_BUNDLE = signedPath('support_bundle', '/api/akuvox_ac/ui/support_bundle');
@@ -599,9 +587,7 @@ let SETTINGS_DATA = {
   max_access_event_retention_days: 365,
   credential_prompts: { ...DEFAULT_CREDENTIAL_PROMPTS },
   hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
-  dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
-  event_visibility: { can_manage: false, rules: {}, users: [] },
-  impersonation: { can_manage: false, active: false, user_id: '', user_name: '', is_admin: false },
+  dashboard_access: { can_manage: false, current_user_is_admin: false },
 };
 let PHONES = [];
 let USERS = [];
@@ -627,9 +613,6 @@ let hacsUpdateChecking = false;
 let hacsUpdateInstalling = false;
 let hacsRestarting = false;
 let hacsRestartScheduling = false;
-let dashboardAccessSaving = false;
-let eventVisibilitySaving = false;
-let impersonationSaving = false;
 const BUILTIN_SCHEDULES = new Set(['24/7 Access', 'No Access']);
 const EXIT_CLONE_SUFFIX = ' - EP';
 const SCHEDULE_DAY_ORDER = [
@@ -965,30 +948,6 @@ function setAlertsStatus(text, tone = 'muted') {
   if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
   el.textContent = text;
   el.className = tone === 'error' ? 'text-danger small' : tone === 'success' ? 'text-success small' : 'muted small';
-  el.classList.remove('visually-hidden');
-}
-function setDashboardAccessStatus(text, tone = 'muted') {
-  const el = document.getElementById('dashboardAccessStatus');
-  if (!el) return;
-  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
-  el.textContent = text;
-  el.className = tone === 'error' ? 'text-danger small mt-2' : tone === 'success' ? 'text-success small mt-2' : 'muted small mt-2';
-  el.classList.remove('visually-hidden');
-}
-function setEventVisibilityStatus(text, tone = 'muted') {
-  const el = document.getElementById('eventVisibilityStatus');
-  if (!el) return;
-  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
-  el.textContent = text;
-  el.className = tone === 'error' ? 'text-danger small mt-2' : tone === 'success' ? 'text-success small mt-2' : 'muted small mt-2';
-  el.classList.remove('visually-hidden');
-}
-function setImpersonationStatus(text, tone = 'muted') {
-  const el = document.getElementById('impersonationStatus');
-  if (!el) return;
-  if (!text) { el.textContent = ''; el.classList.add('visually-hidden'); return; }
-  el.textContent = text;
-  el.className = tone === 'error' ? 'text-danger small mt-2' : tone === 'success' ? 'text-success small mt-2' : 'muted small mt-2';
   el.classList.remove('visually-hidden');
 }
 
@@ -1604,314 +1563,6 @@ function renderIntegrity(){
   const toggle = document.getElementById('faceIntegrityToggle');
   if (toggle) toggle.checked = SETTINGS_DATA.face_integrity_enabled !== false;
   setIntegrityStatus('');
-}
-
-function sanitizeImpersonation(raw){
-  return {
-    can_manage: !!raw?.can_manage,
-    active: !!raw?.active,
-    user_id: String(raw?.user_id || '').trim(),
-    user_name: String(raw?.user_name || '').trim(),
-    is_admin: !!raw?.is_admin
-  };
-}
-
-function sanitizeDashboardAccess(raw){
-  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
-  if (!raw || typeof raw !== 'object') return base;
-  base.can_manage = !!raw.can_manage;
-  base.current_user_id = String(raw.current_user_id || '');
-  base.current_user_is_admin = !!raw.current_user_is_admin;
-  if (Array.isArray(raw.allowed_user_ids)){
-    base.allowed_user_ids = raw.allowed_user_ids.map(item => String(item || '').trim()).filter(Boolean);
-  }
-  if (Array.isArray(raw.users)){
-    base.users = raw.users.map(item => ({
-      id: String(item?.id || '').trim(),
-      name: String(item?.name || item?.id || 'Home Assistant user'),
-      is_admin: !!item?.is_admin,
-      is_active: item?.is_active !== false,
-      allowed: !!item?.allowed,
-      can_impersonate: !!item?.can_impersonate
-    })).filter(item => item.id);
-  }
-  return base;
-}
-
-function dashboardAccessUserCanImpersonate(user, allowed){
-  if (!user || !user.id || !user.is_active) return false;
-  return !!(user.can_impersonate || user.is_admin || user.allowed || allowed.has(user.id));
-}
-
-function notifyParentImpersonationChanged(impersonation){
-  try {
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({
-        type: 'akuvox-impersonation-changed',
-        impersonation
-      }, window.location.origin);
-      return true;
-    }
-  } catch (err) {}
-  return false;
-}
-
-function renderImpersonationNotice(){
-  const notice = document.getElementById('impersonationNotice');
-  const nameEl = document.getElementById('impersonationNoticeName');
-  if (!notice || !nameEl) return;
-  const current = sanitizeImpersonation(SETTINGS_DATA.impersonation);
-  SETTINGS_DATA.impersonation = current;
-  nameEl.textContent = current.user_name || current.user_id || 'another user';
-  notice.classList.toggle('active', !!current.active);
-}
-
-async function setImpersonation(userId = ''){
-  if (impersonationSaving) return;
-  impersonationSaving = true;
-  setImpersonationStatus(userId ? 'Starting impersonation...' : 'Stopping impersonation...');
-  try {
-    const body = userId ? { user_id: userId } : { stop: true };
-    const res = await apiPost(API_IMPERSONATION, body);
-    SETTINGS_DATA.impersonation = sanitizeImpersonation(res?.impersonation);
-    renderDashboardAccess();
-    setImpersonationStatus(
-      SETTINGS_DATA.impersonation.active ? 'Impersonation started' : 'Impersonation stopped',
-      'success'
-    );
-    const delivered = notifyParentImpersonationChanged(SETTINGS_DATA.impersonation);
-    if (!delivered) {
-      setTimeout(() => window.location.reload(), 250);
-    }
-  } catch (err) {
-    if (handleAuthError(err)) return;
-    setImpersonationStatus(err && err.message ? err.message : 'Failed to update impersonation', 'error');
-  } finally {
-    impersonationSaving = false;
-    renderDashboardAccess();
-  }
-}
-
-function renderDashboardAccess(){
-  const card = document.getElementById('dashboardAccessCard');
-  const host = document.getElementById('dashboardAccessUsers');
-  if (!card || !host) return;
-  const cfg = sanitizeDashboardAccess(SETTINGS_DATA.dashboard_access);
-  SETTINGS_DATA.impersonation = sanitizeImpersonation(SETTINGS_DATA.impersonation || cfg.impersonation);
-  SETTINGS_DATA.dashboard_access = cfg;
-  if (!cfg.can_manage){
-    card.style.display = 'none';
-    host.innerHTML = '';
-    return;
-  }
-  card.style.display = '';
-  host.innerHTML = '';
-  renderImpersonationNotice();
-  const allowed = new Set(cfg.allowed_user_ids || []);
-  if (!cfg.users.length){
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = 'No Home Assistant users were found.';
-    host.appendChild(empty);
-    return;
-  }
-
-  cfg.users.forEach(user => {
-    const row = document.createElement('div');
-    row.className = 'dashboard-access-user';
-    const checked = user.is_admin || user.allowed || allowed.has(user.id);
-    const disabled = user.is_admin || !user.is_active || dashboardAccessSaving;
-    const canImpersonate = dashboardAccessUserCanImpersonate(user, allowed);
-    const activeImpersonation = SETTINGS_DATA.impersonation.active && SETTINGS_DATA.impersonation.user_id === user.id;
-    const impersonateDisabled = !canImpersonate || impersonationSaving || activeImpersonation;
-    const inputId = `dashAccess_${user.id.replace(/[^A-Za-z0-9_-]/g, '_')}`;
-    row.innerHTML = `
-      <div class="dashboard-access-main">
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" data-dashboard-user="${escapeHtml(user.id)}" id="${escapeHtml(inputId)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-          <label class="form-check-label" for="${escapeHtml(inputId)}">
-            ${escapeHtml(user.name)}
-            <span class="dashboard-access-badge">${user.is_admin ? 'Administrator - always allowed' : user.is_active ? 'Standard user' : 'Inactive user'}</span>
-          </label>
-        </div>
-        <div class="dashboard-access-actions">
-          <button class="btn btn-sm ${activeImpersonation ? 'btn-warning' : 'btn-outline-info'}" type="button" data-impersonate-user="${escapeHtml(user.id)}" ${impersonateDisabled ? 'disabled' : ''}>
-            ${activeImpersonation ? 'Impersonating' : 'Impersonate'}
-          </button>
-        </div>
-      </div>
-    `;
-    host.appendChild(row);
-  });
-  renderImpersonationNotice();
-}
-
-async function saveDashboardAccess(){
-  if (dashboardAccessSaving) return;
-  const cfg = sanitizeDashboardAccess(SETTINGS_DATA.dashboard_access);
-  if (!cfg.can_manage) return;
-  const selected = [];
-  document.querySelectorAll('#dashboardAccessUsers input[data-dashboard-user]').forEach(input => {
-    if (!input.checked || input.disabled) return;
-    const userId = input.getAttribute('data-dashboard-user');
-    if (userId) selected.push(userId);
-  });
-  dashboardAccessSaving = true;
-  setDashboardAccessStatus('Saving...');
-  try {
-    const res = await apiPost(API_SETTINGS, { dashboard_access: { allowed_user_ids: selected } });
-    if (res && res.dashboard_access){
-      SETTINGS_DATA.dashboard_access = sanitizeDashboardAccess(res.dashboard_access);
-    } else {
-      SETTINGS_DATA.dashboard_access = { ...cfg, allowed_user_ids: selected };
-    }
-    dashboardAccessSaving = false;
-    renderDashboardAccess();
-    setDashboardAccessStatus('Saved', 'success');
-  } catch (err) {
-    dashboardAccessSaving = false;
-    if (handleAuthError(err)) return;
-    setDashboardAccessStatus(err && err.message ? err.message : 'Failed to save dashboard access', 'error');
-    renderDashboardAccess();
-  } finally {
-    dashboardAccessSaving = false;
-  }
-}
-
-function sanitizeEventVisibility(raw){
-  const base = { can_manage: false, rules: {}, users: [] };
-  if (!raw || typeof raw !== 'object') return base;
-  base.can_manage = !!raw.can_manage;
-
-  const rawRules = raw.rules && typeof raw.rules === 'object'
-    ? raw.rules
-    : (!Array.isArray(raw.users) && raw.users && typeof raw.users === 'object' ? raw.users : {});
-  Object.entries(rawRules || {}).forEach(([viewerId, list]) => {
-    const viewerKey = String(viewerId || '').trim();
-    if (!viewerKey) return;
-    const values = Array.isArray(list) ? list : (list ? [list] : []);
-    const seen = new Set();
-    const cleaned = [];
-    values.forEach(item => {
-      const userId = String(item || '').trim();
-      if (!userId || normalizedUserKey(userId) === normalizedUserKey(viewerKey) || seen.has(normalizedUserKey(userId))) return;
-      seen.add(normalizedUserKey(userId));
-      cleaned.push(userId);
-    });
-    if (cleaned.length) base.rules[viewerKey] = cleaned;
-  });
-
-  const rawUsers = Array.isArray(raw.users) ? raw.users : [];
-  base.users = rawUsers.map(item => ({
-    id: String(item?.id || '').trim(),
-    name: String(item?.name || item?.id || 'User')
-  })).filter(item => item.id);
-  return base;
-}
-
-function eventVisibilityIncludes(rules, viewerId, userId){
-  const viewerKey = normalizedUserKey(viewerId);
-  const userKey = normalizedUserKey(userId);
-  if (!viewerKey || !userKey || viewerKey === userKey) return viewerKey === userKey;
-  const list = rules && Array.isArray(rules[viewerId]) ? rules[viewerId] : [];
-  return list.some(item => normalizedUserKey(item) === userKey);
-}
-
-function eventVisibilityUsers(){
-  const cfg = sanitizeEventVisibility(SETTINGS_DATA.event_visibility);
-  if (cfg.users.length) return cfg.users;
-  return (USERS || []).map(user => ({ id: String(user.id || ''), name: String(user.name || user.id || 'User') })).filter(user => user.id);
-}
-
-function renderEventVisibility(){
-  const card = document.getElementById('eventVisibilityCard');
-  const host = document.getElementById('eventVisibilityUsers');
-  if (!card || !host) return;
-  const cfg = sanitizeEventVisibility(SETTINGS_DATA.event_visibility);
-  SETTINGS_DATA.event_visibility = cfg;
-  if (!cfg.can_manage){
-    card.style.display = 'none';
-    host.innerHTML = '';
-    return;
-  }
-
-  card.style.display = '';
-  host.innerHTML = '';
-  const users = eventVisibilityUsers();
-  if (!users.length){
-    const empty = document.createElement('div');
-    empty.className = 'muted';
-    empty.textContent = 'No access-control users were found.';
-    host.appendChild(empty);
-    return;
-  }
-
-  users.forEach(viewer => {
-    const viewerId = String(viewer.id || '').trim();
-    const row = document.createElement('div');
-    row.className = 'event-visibility-user';
-    row.dataset.eventViewerCard = viewerId;
-    const safeViewerId = viewerId.replace(/[^A-Za-z0-9_-]/g, '_');
-    const targetRows = users.map(target => {
-      const targetId = String(target.id || '').trim();
-      const sameUser = normalizedUserKey(targetId) === normalizedUserKey(viewerId);
-      const checked = sameUser || eventVisibilityIncludes(cfg.rules, viewerId, targetId);
-      const disabled = sameUser || eventVisibilitySaving;
-      const inputId = `eventVis_${safeViewerId}_${targetId.replace(/[^A-Za-z0-9_-]/g, '_')}`;
-      return `
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" id="${escapeHtml(inputId)}" data-event-user="${escapeHtml(targetId)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-          <label class="form-check-label" for="${escapeHtml(inputId)}">${escapeHtml(target.name || targetId)} (${escapeHtml(targetId)})${sameUser ? ' - own events' : ''}</label>
-        </div>`;
-    }).join('');
-    row.innerHTML = `
-      <div class="fw-semibold text-white">${escapeHtml(viewer.name || viewerId)} (${escapeHtml(viewerId)})</div>
-      <div class="muted small mb-2">Visible event users</div>
-      <div class="event-visibility-targets">${targetRows}</div>
-    `;
-    host.appendChild(row);
-  });
-}
-
-function readEventVisibilityRules(){
-  const rules = {};
-  document.querySelectorAll('#eventVisibilityUsers [data-event-viewer-card]').forEach(row => {
-    const viewerId = row.getAttribute('data-event-viewer-card');
-    if (!viewerId) return;
-    const selected = Array.from(row.querySelectorAll('input[data-event-user]'))
-      .filter(input => input.checked && !input.disabled)
-      .map(input => input.getAttribute('data-event-user'))
-      .filter(userId => userId && normalizedUserKey(userId) !== normalizedUserKey(viewerId));
-    if (selected.length) rules[viewerId] = selected;
-  });
-  return rules;
-}
-
-async function saveEventVisibility(){
-  if (eventVisibilitySaving) return;
-  const cfg = sanitizeEventVisibility(SETTINGS_DATA.event_visibility);
-  if (!cfg.can_manage) return;
-  const rules = readEventVisibilityRules();
-  eventVisibilitySaving = true;
-  setEventVisibilityStatus('Saving...');
-  try {
-    const res = await apiPost(API_SETTINGS, { event_visibility: { users: rules } });
-    if (res && res.event_visibility){
-      SETTINGS_DATA.event_visibility = sanitizeEventVisibility(res.event_visibility);
-    } else {
-      SETTINGS_DATA.event_visibility = { ...cfg, rules };
-    }
-    eventVisibilitySaving = false;
-    renderEventVisibility();
-    setEventVisibilityStatus('Saved', 'success');
-  } catch (err) {
-    eventVisibilitySaving = false;
-    if (handleAuthError(err)) return;
-    setEventVisibilityStatus(err && err.message ? err.message : 'Failed to save event visibility', 'error');
-    renderEventVisibility();
-  } finally {
-    eventVisibilitySaving = false;
-  }
 }
 
 function renderDeviceAccess(){
@@ -2866,9 +2517,7 @@ async function loadData(){
       access_event_limit: 30,
       access_event_retention_days: 30,
       hacs_auto_update: { enabled: false, check_time: '02:00', auto_install: false, restart_after_install: false, interval_hours: 24, update_entity: '', backup: false, last_result: 'disabled' },
-      dashboard_access: { can_manage: false, allowed_user_ids: [], users: [] },
-      event_visibility: { can_manage: false, rules: {}, users: [] },
-      impersonation: { can_manage: false, active: false, user_id: '', user_name: '', is_admin: false },
+      dashboard_access: { can_manage: false, current_user_is_admin: false },
       alerts: { targets: {} },
       registry_users: [],
     };
@@ -2969,9 +2618,9 @@ async function loadData(){
     SETTINGS_DATA.min_hacs_auto_update_interval_hours = safeMinHacsHours;
     SETTINGS_DATA.max_hacs_auto_update_interval_hours = safeMaxHacsHours;
     SETTINGS_DATA.hacs_auto_update = sanitizeHacsAutoUpdate(settingsResp?.hacs_auto_update);
-    SETTINGS_DATA.dashboard_access = sanitizeDashboardAccess(settingsResp?.dashboard_access);
-    SETTINGS_DATA.impersonation = sanitizeImpersonation(settingsResp?.impersonation || settingsResp?.dashboard_access?.impersonation);
-    SETTINGS_DATA.event_visibility = sanitizeEventVisibility(settingsResp?.event_visibility);
+    SETTINGS_DATA.dashboard_access = settingsResp?.dashboard_access && typeof settingsResp.dashboard_access === 'object'
+      ? settingsResp.dashboard_access
+      : { can_manage: false, current_user_is_admin: false };
     const rawSchedules = settingsResp?.schedules;
     if (rawSchedules && typeof rawSchedules === 'object'){
       SCHEDULES = {};
@@ -2988,8 +2637,6 @@ async function loadData(){
     renderEventLimit();
     renderEventRetention();
     renderHacsAutoUpdate();
-    renderDashboardAccess();
-    renderEventVisibility();
     renderIntegrity();
     renderCredentialPrompts();
     renderDeviceAccess();
@@ -3006,9 +2653,7 @@ async function loadData(){
     renderHealthInterval();
     renderEventLimit();
     renderEventRetention();
-    renderEventVisibility();
     renderHacsAutoUpdate();
-    renderDashboardAccess();
     renderIntegrity();
     renderCredentialPrompts();
     renderDeviceAccess();
@@ -3191,28 +2836,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     await cancelHomeAssistantRestart();
   });
 
-  document.getElementById('dashboardAccessUsers')?.addEventListener('change', async (ev) => {
-    const target = ev.target;
-    if (!target || target.type !== 'checkbox' || !target.dataset.dashboardUser) return;
-    await saveDashboardAccess();
-  });
-  document.getElementById('dashboardAccessUsers')?.addEventListener('click', async (ev) => {
-    const btn = ev.target?.closest?.('[data-impersonate-user]');
-    if (!btn) return;
-    ev.preventDefault();
-    if (btn.disabled) return;
-    await setImpersonation(btn.getAttribute('data-impersonate-user') || '');
-  });
-  document.getElementById('stopImpersonationFromSettings')?.addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    await setImpersonation('');
-  });
-  document.getElementById('eventVisibilityUsers')?.addEventListener('change', async (ev) => {
-    const target = ev.target;
-    if (!target || target.type !== 'checkbox' || !target.dataset.eventUser) return;
-    await saveEventVisibility();
-  });
-
   const healthInput = document.getElementById('healthIntervalInput');
   const commitHealthInterval = async () => {
     if (!healthInput) return;
@@ -3329,7 +2952,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   renderCredentialPrompts();
-  renderDashboardAccess();
   await loadData();
 });
 </script>
@@ -3358,29 +2980,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
         <textarea class="form-control support-log-text mt-2" id="supportLogText" readonly spellcheck="false"></textarea>
       </div>
-    </div>
-  </div>
-
-  <div class="card mt-3" id="dashboardAccessCard" style="display:none;">
-    <div class="card-header text-white">Dashboard Access</div>
-    <div class="card-body">
-      <p class="muted">Home Assistant administrators always have dashboard access. Select any additional Home Assistant users who should be allowed to open the Akuvox dashboard.</p>
-      <div id="impersonationNotice" class="impersonation-notice">
-        <span>Currently impersonating <strong id="impersonationNoticeName">another user</strong>.</span>
-        <button class="btn btn-sm btn-warning" id="stopImpersonationFromSettings" type="button">Stop impersonating</button>
-      </div>
-      <div id="dashboardAccessUsers" class="dashboard-access-list"></div>
-      <div id="dashboardAccessStatus" class="visually-hidden small mt-2"></div>
-      <div id="impersonationStatus" class="visually-hidden small mt-2"></div>
-    </div>
-  </div>
-
-  <div class="card mt-3" id="eventVisibilityCard" style="display:none;">
-    <div class="card-header text-white">Event Visibility</div>
-    <div class="card-body">
-      <p class="muted">Each user can always see their own access events. Select additional users whose events should be visible to them.</p>
-      <div id="eventVisibilityUsers" class="event-visibility-list"></div>
-      <div id="eventVisibilityStatus" class="visually-hidden small mt-2"></div>
     </div>
   </div>
 
