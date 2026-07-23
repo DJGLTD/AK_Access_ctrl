@@ -63,6 +63,10 @@
       <option value="system">System events</option>
       <option value="access">Access events</option>
     </select>
+    <label for="userFilter">User</label>
+    <select id="userFilter" class="form-select form-select-sm" aria-label="Filter event history by user">
+      <option value="">All users</option>
+    </select>
   </div>
   <section class="summary-grid" aria-label="Event summary">
     <div class="summary-card">
@@ -473,6 +477,7 @@ const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const UI_ROOT   = '/akuvox-ac';
 let eventFilterMode = 'access';
 let cachedEvents = [];
+let eventAccess = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -567,6 +572,9 @@ function handleAuthError(err) {
 document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
 document.getElementById('eventFilter').addEventListener('change', (ev) => {
   eventFilterMode = ev.target?.value || 'access';
+  renderFilteredEvents();
+});
+document.getElementById('userFilter').addEventListener('change', () => {
   renderFilteredEvents();
 });
 
@@ -962,22 +970,105 @@ function buildUserLookup(devices, registryUsers){
   return lookup;
 }
 
+function normalizeEventAccess(raw){
+  const base = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  base.viewer_user_id = String(raw.viewer_user_id || '');
+  base.default_user_id = String(raw.default_user_id || '');
+  if (Array.isArray(raw.visible_user_ids)) {
+    base.visible_user_ids = raw.visible_user_ids.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw.users)) {
+    base.users = raw.users.map(item => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || 'User')
+    })).filter(item => item.id);
+  }
+  return base;
+}
+
+function eventUserLabel(user){
+  const id = String(user?.id || '').trim();
+  const name = String(user?.name || id || 'User').trim();
+  return id && name && normalizeUserMatch(name) !== normalizeUserMatch(id) ? `${name} (${id})` : (name || id || 'User');
+}
+
+function resolveRequestedUserId(users, raw){
+  const wanted = normalizeUserMatch(raw);
+  if (!wanted) return '';
+  const match = (users || []).find(user =>
+    normalizeUserMatch(user.id) === wanted || normalizeUserMatch(user.name) === wanted
+  );
+  return match ? match.id : String(raw || '').trim();
+}
+
+function populateUserFilter(accessRaw, registryUsers){
+  const select = document.getElementById('userFilter');
+  if (!select) return;
+  eventAccess = normalizeEventAccess(accessRaw);
+  const users = eventAccess.users.length
+    ? eventAccess.users
+    : (registryUsers || []).map(user => ({ id: String(user.id || ''), name: String(user.name || user.id || 'User') })).filter(user => user.id);
+  const canManage = !!eventAccess.can_manage;
+  const requested = resolveRequestedUserId(users, getUserFilter());
+  const defaultUser = eventAccess.default_user_id || eventAccess.viewer_user_id || '';
+
+  select.innerHTML = '';
+  const addOption = (value, label) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  };
+  if (canManage) {
+    addOption('', 'All users');
+  } else if (users.length > 1) {
+    addOption('__all_visible__', 'All visible users');
+  }
+  users.forEach(user => addOption(user.id, eventUserLabel(user)));
+
+  const optionValues = new Set(Array.from(select.options).map(option => option.value));
+  let desired = requested || (canManage ? '' : defaultUser);
+  if (!canManage && !optionValues.has(desired)) desired = defaultUser;
+  if (canManage && desired && !optionValues.has(desired)) addOption(desired, desired);
+  select.value = optionValues.has(desired) || (canManage && desired) ? desired : '';
+  if (!canManage && !select.value && defaultUser && optionValues.has(defaultUser)) select.value = defaultUser;
+  select.disabled = !canManage && users.length <= 1;
+}
+
+function currentUserFilter(){
+  const select = document.getElementById('userFilter');
+  if (select) {
+    const value = select.value || '';
+    const selected = select.options[select.selectedIndex];
+    return { value, label: selected ? selected.textContent : value };
+  }
+  const raw = getUserFilter();
+  return { value: raw, label: raw };
+}
+
 function matchesUserFilter(evt, filter){
-  if (!filter) return true;
+  if (!filter || filter === '__all_visible__') return true;
   const candidates = [
+    evt.LinkedUserID, evt.linked_user_id, evt.linkedUserId,
+    evt.LinkedUserName, evt.linked_user_name, evt.linkedUserName,
     evt.UserID, evt.User, evt.UserName, evt.Name, evt.NameID,
     evt.user, evt.name, evt.user_id, evt.userId, evt.user_name, evt.userName,
-    evt._user_name
+    evt._user_name,
+    evt.HomeAssistantUserID, evt.home_assistant_user_id, evt.ha_user_id,
+    evt.HomeAssistantUserName, evt.home_assistant_user_name, evt.ha_user_name,
+    evt.TriggeredBy, evt.triggered_by
   ];
   return candidates.some(candidate => normalizeUserMatch(candidate) === filter);
 }
 
 function applyUserFilter(events){
-  const raw = getUserFilter();
-  const filter = normalizeUserMatch(raw);
+  const current = currentUserFilter();
+  const filter = normalizeUserMatch(current.value);
   if (!filter) return { filterLabel: '', events };
   const filtered = events.filter(evt => matchesUserFilter(evt, filter));
-  return { filterLabel: raw, events: filtered };
+  return { filterLabel: current.label, events: filtered };
 }
 
 function safeDeviceName(d){
@@ -1146,8 +1237,11 @@ async function refresh(){
     const devices = state.devices || [];
     const aggregated = Array.isArray(state?.access_events) ? state.access_events : [];
     const registryUsers = state.registry_users || [];
-    const userLookup = buildUserLookup(devices, registryUsers);
+    const access = normalizeEventAccess(state?.event_access);
+    const lookupUsers = registryUsers.concat(access.users || []);
+    const userLookup = buildUserLookup(devices, lookupUsers);
     cachedEvents = gatherEvents(devices, aggregated, userLookup);
+    populateUserFilter(access, registryUsers);
     renderFilteredEvents();
     const ts = new Date();
     document.getElementById('lastUpdated').textContent = `Updated ${ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
