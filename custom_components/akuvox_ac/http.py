@@ -3937,24 +3937,21 @@ def _event_access_payload(
     visible_user_ids: Optional[Set[str]],
     registry_users: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    visible = (
-        {
+    users = _event_user_option_payload(registry_users)
+    if can_manage:
+        visible = {str(user.get("id") or "").strip() for user in users}
+    else:
+        visible = {
             normalize_user_id(item) or str(item or "").strip()
             for item in (visible_user_ids or set())
         }
-        if visible_user_ids is not None
-        else set()
-    )
     visible = {item for item in visible if item}
     return {
         "can_manage": bool(can_manage),
         "viewer_user_id": viewer_user_id or "",
         "default_user_id": "" if can_manage else (viewer_user_id or ""),
         "visible_user_ids": sorted(visible),
-        "users": _event_user_option_payload(
-            registry_users,
-            None if can_manage else visible,
-        ),
+        "users": users if can_manage else _event_user_option_payload(registry_users, visible),
     }
 
 

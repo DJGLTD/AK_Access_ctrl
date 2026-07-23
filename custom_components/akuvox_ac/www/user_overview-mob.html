@@ -527,9 +527,13 @@ function signedPath(key, fallback){
 
 const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
+const impersonationUrl = signedPath('impersonation', '/api/akuvox_ac/ui/impersonation');
 const UI_ROOT   = '/akuvox-ac';
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let DASHBOARD_ACCESS = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+let IMPERSONATION = { can_manage: false, active: false, user_id: '', user_name: '', is_admin: false };
+let impersonationSaving = false;
 const PAUSED_USERS_KEY = 'akuvox_paused_users';
 const PAUSE_SCHEDULE_ID = '1002';
 const PAUSE_SCHEDULE_NAME = 'No Access';
@@ -576,6 +580,38 @@ function saveUserSort(value){
     sessionStorage.setItem(USER_SORT_KEY, value);
     localStorage.setItem(USER_SORT_KEY, value);
   } catch (err) {}
+}
+
+function sanitizeImpersonation(raw){
+  return {
+    can_manage: !!raw?.can_manage,
+    active: !!raw?.active,
+    user_id: String(raw?.user_id || '').trim(),
+    user_name: String(raw?.user_name || '').trim(),
+    is_admin: !!raw?.is_admin
+  };
+}
+
+function sanitizeDashboardAccess(raw){
+  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  base.current_user_id = String(raw.current_user_id || '');
+  base.current_user_is_admin = !!raw.current_user_is_admin;
+  if (Array.isArray(raw.allowed_user_ids)) {
+    base.allowed_user_ids = raw.allowed_user_ids.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw.users)) {
+    base.users = raw.users.map(item => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || 'Home Assistant user'),
+      is_admin: !!item?.is_admin,
+      is_active: item?.is_active !== false,
+      allowed: !!item?.allowed,
+      can_impersonate: !!item?.can_impersonate
+    })).filter(item => item.id);
+  }
+  return base;
 }
 
 let PAUSED_USERS = loadPausedUsers();
@@ -1178,6 +1214,67 @@ function attachPinRevealHandlers(container){
   });
 }
 
+function linkedHaUserIdForProfile(user){
+  return String(user?.ha_user_id || user?.home_assistant_user_id || '').trim();
+}
+
+function dashboardAccessUserFor(haUserId){
+  const key = String(haUserId || '').trim();
+  if (!key) return null;
+  return (DASHBOARD_ACCESS.users || []).find(user => String(user.id || '').trim() === key) || null;
+}
+
+function canImpersonateProfile(user){
+  const haUserId = linkedHaUserIdForProfile(user);
+  if (!DASHBOARD_ACCESS.can_manage || !haUserId) return false;
+  const haUser = dashboardAccessUserFor(haUserId);
+  if (!haUser) return true;
+  return haUser.is_active !== false && haUser.can_impersonate !== false;
+}
+
+function notifyParentImpersonationChanged(impersonation){
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'akuvox-impersonation-changed',
+        impersonation
+      }, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function impersonationButtonForUser(user){
+  if (!canImpersonateProfile(user)) return '';
+  const haUserId = linkedHaUserIdForProfile(user);
+  const activeForUser = !!(IMPERSONATION.active && IMPERSONATION.user_id === haUserId);
+  const disabled = impersonationSaving ? ' disabled' : '';
+  const label = activeForUser ? 'Stop' : 'Impersonate';
+  const icon = activeForUser ? 'bi-person-dash' : 'bi-person-check';
+  const target = activeForUser ? '' : haUserId;
+  return `<button class="btn btn-sm btn-outline-info" data-impersonate-user="${escapeHtml(target)}"${disabled}><i class="bi ${icon}"></i> ${label}</button>`;
+}
+
+async function setOverviewImpersonation(userId = ''){
+  if (impersonationSaving) return;
+  impersonationSaving = true;
+  renderUsers(applyUserFilters(LAST_USERS));
+  try {
+    const body = userId ? { user_id: userId } : { stop: true };
+    const res = await apiPost(impersonationUrl, body);
+    IMPERSONATION = sanitizeImpersonation(res?.impersonation);
+    const delivered = notifyParentImpersonationChanged(IMPERSONATION);
+    if (!delivered) await refresh();
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert(`Impersonation failed: ${err && err.message ? err.message : err}`);
+  } finally {
+    impersonationSaving = false;
+    renderUsers(applyUserFilters(LAST_USERS));
+  }
+}
+
 function compileUsers(devices, registryUsers, kpis){
   const normalizedDevices = (devices || []).map(d => ({
     entryId: String(d.entry_id || d.id || ''),
@@ -1218,6 +1315,8 @@ function compileUsers(devices, registryUsers, kpis){
       temporary_expires_at: r.temporary_expires_at || '',
       temporary_used_at: r.temporary_used_at || '',
       temporary_created_at: r.temporary_created_at || '',
+      ha_user_id: r.ha_user_id || r.home_assistant_user_id || '',
+      ha_user_name: r.ha_user_name || r.home_assistant_user_name || '',
       remote_enrol_pending: !!r.remote_enrol_pending,
       pin,
       face_url: extractFaceUrl(r),
@@ -1266,6 +1365,8 @@ function compileUsers(devices, registryUsers, kpis){
           schedule_id: u.ScheduleID || u.schedule_id || '',
           access_level: u.AccessLevel || u.access_level || '',
           key_holder: !!u.KeyHolder,
+          ha_user_id: u.ha_user_id || u.home_assistant_user_id || u.HomeAssistantUserID || '',
+          ha_user_name: u.ha_user_name || u.home_assistant_user_name || u.HomeAssistantUserName || '',
           face_url: deviceFaceUrl,
           face_status: deviceFaceActive ? 'active' : '',
           face_active: deviceFaceActive,
@@ -1540,6 +1641,7 @@ function renderUsers(list){
     const errorCount = Number(u.face_error_count || 0);
     const errorText = errorCount > 0 ? `${errorCount} face sync error${errorCount === 1 ? '' : 's'}` : '0 face sync errors';
     const pinToggle = renderPinToggle(u.pin, u.name);
+    const impersonationAction = impersonationButtonForUser(u);
 
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
@@ -1560,6 +1662,7 @@ function renderUsers(list){
           ${isTemporaryUser ? '' : `
             <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
           `}
+          ${isTemporaryUser ? '' : impersonationAction}
           ${isTemporaryUser ? `
             <a class="btn btn-sm btn-primary" data-extend-user="${escapeHtml(u.id)}" data-extend-name="${escapeHtml(u.name || '')}" data-extend-start="${escapeHtml(u.access_start || '')}" data-extend-end="${escapeHtml(u.access_end || '')}" data-extend-expires="${escapeHtml(u.temporary_expires_at || '')}" href="${escapeHtml(extendHref)}"><i class="bi bi-calendar-plus"></i> Extend</a>
           ` : ''}
@@ -1613,6 +1716,13 @@ function renderUsers(list){
       ev.preventDefault();
       const id = link.dataset.userEvents || '';
       openInApp('event-history', id ? { user: id } : {});
+    });
+  });
+
+  host.querySelectorAll('[data-impersonate-user]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      await setOverviewImpersonation(btn.getAttribute('data-impersonate-user') || '');
     });
   });
 
@@ -1705,6 +1815,8 @@ async function refresh(){
   try {
     const state = await apiGet(stateUrl);
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
+    DASHBOARD_ACCESS = sanitizeDashboardAccess(state?.dashboard_access);
+    IMPERSONATION = sanitizeImpersonation(state?.impersonation || state?.dashboard_access?.impersonation);
     const devices = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     syncPausedUsersFromState(state.registry_users || []);
     const list = compileUsers(devices, state.registry_users || [], state.kpis || {});
