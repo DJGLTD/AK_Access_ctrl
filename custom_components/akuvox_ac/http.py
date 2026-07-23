@@ -875,6 +875,26 @@ def _request_self_service_context(
         return None
 
     actor_id, actor_name = _request_actor_identity(hass, request, None)
+    return _self_service_context_for_actor(
+        root,
+        ha_user_id=actor_id,
+        ha_user_name=actor_name,
+    )
+
+
+def _self_service_context_for_actor(
+    root: Dict[str, Any],
+    *,
+    ha_user_id: str,
+    ha_user_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the linked local profile for a constrained dashboard viewer."""
+
+    if not isinstance(root, dict):
+        return None
+
+    actor_id = str(ha_user_id or "").strip()
+    actor_name = str(ha_user_name or "").strip()
     if not actor_id:
         return None
 
@@ -897,6 +917,39 @@ def _request_self_service_context(
         "ha_user_id": actor_id,
         "ha_user_name": actor_name,
     }
+
+
+def _effective_self_service_context(
+    hass: HomeAssistant,
+    request: web.Request,
+    root: Dict[str, Any],
+    *,
+    has_dashboard_access: bool,
+    impersonation: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return constrained profile context for self-service and manager views."""
+
+    if not has_dashboard_access:
+        return _request_self_service_context(hass, request)
+
+    if impersonation and impersonation.get("active"):
+        if bool(impersonation.get("is_admin")):
+            return None
+        return _self_service_context_for_actor(
+            root,
+            ha_user_id=str(impersonation.get("user_id") or ""),
+            ha_user_name=str(impersonation.get("user_name") or ""),
+        )
+
+    if _request_is_admin(hass, request):
+        return None
+
+    actor_id, actor_name = _request_actor_identity(hass, request, None)
+    return _self_service_context_for_actor(
+        root,
+        ha_user_id=actor_id,
+        ha_user_name=actor_name,
+    )
 
 
 def _request_can_access_self_service(hass: HomeAssistant, request: web.Request) -> bool:
@@ -2920,21 +2973,13 @@ def sanitize_self_service_profile_payload(
     payload: Mapping[str, Any],
     user_id: str,
 ) -> Dict[str, Any]:
-    """Keep only fields a linked non-admin user may edit for their own profile."""
+    """Keep only profile fields a linked non-admin user may edit themselves."""
 
     canonical = normalize_user_id(user_id) or str(user_id or "").strip()
     cleaned: Dict[str, Any] = {"id": canonical}
-    if "name" in payload:
-        cleaned["name"] = str(payload.get("name") or "").strip()
     if "pin" in payload:
         raw_pin = payload.get("pin")
         cleaned["pin"] = "" if raw_pin in (None, "") else str(raw_pin).strip()
-    if "phone" in payload:
-        cleaned["phone"] = str(payload.get("phone") or "").strip()
-    if "license_plate" in payload:
-        cleaned["license_plate"] = _sanitize_self_service_license_plates(
-            payload.get("license_plate")
-        )
     return cleaned
 
 
@@ -2946,19 +2991,8 @@ def self_service_profile_change_labels(
         return str(value or "").strip()
 
     labels: List[str] = []
-    if "name" in updates and _text(profile.get("name")) != _text(updates.get("name")):
-        labels.append("name")
     if "pin" in updates and _text(profile.get("pin")) != _text(updates.get("pin")):
         labels.append("PIN")
-    if "phone" in updates and _text(profile.get("phone")) != _text(updates.get("phone")):
-        labels.append("phone number")
-    if "license_plate" in updates:
-        before = _sanitize_self_service_license_plates(
-            profile.get("license_plate") or profile.get("LicensePlate")
-        )
-        after = _sanitize_self_service_license_plates(updates.get("license_plate"))
-        if before != after:
-            labels.append("license plates")
     return labels
 
 
@@ -3059,7 +3093,7 @@ async def async_apply_self_service_profile_change(
     changes = self_service_profile_change_labels(existing, updates)
 
     kwargs: Dict[str, Any] = {}
-    for key in ("name", "pin", "phone", "license_plate"):
+    for key in ("pin",):
         if key in updates:
             kwargs[key] = updates[key]
     if changes:
@@ -4414,6 +4448,23 @@ class AkuvoxUIView(HomeAssistantView):
                 settings_store,
             )
             response["impersonation"] = impersonation
+            self_service = _effective_self_service_context(
+                hass,
+                request,
+                root,
+                has_dashboard_access=has_dashboard_access,
+                impersonation=impersonation,
+            )
+            restricted_view = bool(self_service) or (
+                has_dashboard_access
+                and (
+                    not _request_is_admin(hass, request)
+                    or (
+                        bool(impersonation.get("active"))
+                        and not bool(impersonation.get("is_admin"))
+                    )
+                )
+            )
             if has_dashboard_access:
                 try:
                     response["dashboard_access"] = await _dashboard_access_payload(
@@ -4421,7 +4472,22 @@ class AkuvoxUIView(HomeAssistantView):
                         settings_store,
                         request,
                     )
-                    response["dashboard_access"]["self_service"] = False
+                    response["dashboard_access"]["self_service"] = bool(restricted_view)
+                    if restricted_view:
+                        response["dashboard_access"]["can_manage"] = False
+                        response["dashboard_access"]["self_user_id"] = (
+                            str((self_service or {}).get("user_id") or "")
+                        )
+                        response["dashboard_access"]["current_user_id"] = str(
+                            (self_service or {}).get("ha_user_id")
+                            or impersonation.get("user_id")
+                            or ""
+                        )
+                        response["dashboard_access"]["current_user_name"] = str(
+                            (self_service or {}).get("ha_user_name")
+                            or impersonation.get("user_name")
+                            or ""
+                        )
                 except Exception:
                     response["dashboard_access"]["impersonation"] = impersonation
 
@@ -4604,6 +4670,8 @@ class AkuvoxUIView(HomeAssistantView):
                     str(impersonation.get("user_name") or ""),
                 )
                 can_manage_events = bool(impersonation.get("is_admin"))
+            if restricted_view:
+                can_manage_events = False
             viewer_user_id = _event_viewer_user_id(
                 hass,
                 request,
@@ -4678,8 +4746,8 @@ class AkuvoxUIView(HomeAssistantView):
             response["groups"] = groups
             response["all_groups"] = groups
 
-            if self_service:
-                self_user_id = str(self_service.get("user_id") or "").strip()
+            if restricted_view:
+                self_user_id = str((self_service or {}).get("user_id") or viewer_user_id or "").strip()
                 response["registry_users"] = [
                     user for user in registry_users if str(user.get("id") or "") == self_user_id
                 ]
@@ -4694,8 +4762,17 @@ class AkuvoxUIView(HomeAssistantView):
                     "can_manage": False,
                     "self_service": True,
                     "self_user_id": self_user_id,
-                    "current_user_id": str(self_service.get("ha_user_id") or ""),
-                    "current_user_name": str(self_service.get("ha_user_name") or ""),
+                    "current_user_id": str(
+                        (self_service or {}).get("ha_user_id")
+                        or impersonation.get("user_id")
+                        or ""
+                    ),
+                    "current_user_name": str(
+                        (self_service or {}).get("ha_user_name")
+                        or impersonation.get("user_name")
+                        or ""
+                    ),
+                    "impersonation": impersonation,
                 }
 
         except Exception as err:
@@ -4738,6 +4815,11 @@ class AkuvoxUIImpersonation(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         settings = root.get("settings_store") if isinstance(root, dict) else None
         payload = await _dashboard_impersonation_payload(hass, request, settings)
@@ -4813,6 +4895,28 @@ class AkuvoxUIAction(AkuvoxUIView):
             return _dashboard_access_denied_response()
         raw_root = hass.data.get(DOMAIN, {}) or {}
         root = raw_root if isinstance(raw_root, dict) else {}
+        impersonation = await _dashboard_impersonation_payload(
+            hass,
+            request,
+            root.get("settings_store"),
+        )
+        self_service = _effective_self_service_context(
+            hass,
+            request,
+            root,
+            has_dashboard_access=has_dashboard_access,
+            impersonation=impersonation,
+        )
+        restricted_view = bool(self_service) or (
+            has_dashboard_access
+            and (
+                not _request_is_admin(hass, request)
+                or (
+                    bool(impersonation.get("active"))
+                    and not bool(impersonation.get("is_admin"))
+                )
+            )
+        )
 
         try:
             data = await request.json()
@@ -4832,7 +4936,9 @@ class AkuvoxUIAction(AkuvoxUIView):
             text = str(msg) if isinstance(msg, str) else (str(msg) or "unknown error")
             return web.json_response({"ok": False, "error": text}, status=code)
 
-        if self_service and not has_dashboard_access:
+        if restricted_view:
+            if not self_service:
+                return err("linked Akuvox profile not found", code=403)
             self_user_id = str(self_service.get("user_id") or "").strip()
             if action == "self_edit_profile":
                 try:
@@ -5234,7 +5340,7 @@ class AkuvoxUIAction(AkuvoxUIView):
                 except Exception:
                     pass
 
-            if self_service and not has_dashboard_access:
+            if restricted_view and self_service:
                 await async_send_user_profile_change_notification(
                     hass,
                     root,
@@ -5660,6 +5766,11 @@ class AkuvoxUISettings(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -5859,6 +5970,11 @@ class AkuvoxUISettings(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:
@@ -6683,6 +6799,11 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         payload = await self._build_payload(root)
         return web.json_response(payload)
@@ -6691,6 +6812,11 @@ class AkuvoxUIDiagnostics(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
 
         settings = root.get("settings_store")
@@ -7353,6 +7479,11 @@ class AkuvoxUISupportBundle(AkuvoxUIDiagnostics):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
 
         bundle = await self._build_support_bundle(hass)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -7382,6 +7513,11 @@ class AkuvoxUIReserveId(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -7479,6 +7615,11 @@ class AkuvoxUIReleaseId(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -7527,6 +7668,11 @@ class AkuvoxUIReservationPing(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         users_store = root.get("users_store")
         if not users_store:
@@ -7589,6 +7735,28 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         if not has_dashboard_access and not self_service:
             return _dashboard_access_denied_response()
         root = hass.data.get(DOMAIN, {}) or {}
+        impersonation = await _dashboard_impersonation_payload(
+            hass,
+            request,
+            root.get("settings_store") if isinstance(root, dict) else None,
+        )
+        self_service = _effective_self_service_context(
+            hass,
+            request,
+            root if isinstance(root, dict) else {},
+            has_dashboard_access=has_dashboard_access,
+            impersonation=impersonation,
+        )
+        restricted_view = bool(self_service) or (
+            has_dashboard_access
+            and (
+                not _request_is_admin(hass, request)
+                or (
+                    bool(impersonation.get("active"))
+                    and not bool(impersonation.get("is_admin"))
+                )
+            )
+        )
 
         id_val_raw: Optional[str] = None
         file_bytes: Optional[bytes] = None
@@ -7640,7 +7808,12 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             else:
                 id_val_raw = str(candidate or "").strip()
 
-        if self_service and not has_dashboard_access:
+        if restricted_view:
+            if not self_service:
+                return web.json_response(
+                    {"ok": False, "error": "linked Akuvox profile not found"},
+                    status=403,
+                )
             self_user_id = str(self_service.get("user_id") or "").strip()
             requested_id = normalize_user_id(id_val_raw) or str(id_val_raw or "").strip()
             if requested_id and requested_id != self_user_id:
@@ -7710,7 +7883,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             except Exception:
                 pass
 
-        if self_service and not has_dashboard_access:
+        if restricted_view and self_service:
             await async_send_user_profile_change_notification(
                 hass,
                 root,
@@ -7743,6 +7916,11 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         if not _request_can_access_dashboard(hass, request):
             return _dashboard_access_denied_response()
+        if not _request_can_manage_dashboard_access(request, hass):
+            return web.json_response(
+                {"ok": False, "error": "administrator access required"},
+                status=403,
+            )
         root = hass.data.get(DOMAIN, {}) or {}
 
         try:

@@ -2004,6 +2004,9 @@ function applySelfServiceMode(){
   const title = document.getElementById('title');
   if (title) title.textContent = 'Edit Your Profile';
   [
+    'nameRow',
+    'phoneRow',
+    'anprSection',
     'haUserLinkRow',
     'scheduleRow',
     'pedestrianAccessRow',
@@ -2024,6 +2027,13 @@ function applySelfServiceMode(){
   if (cancelBtn) cancelBtn.style.display = 'none';
   const select = document.getElementById('ha_user_id');
   if (select) select.disabled = true;
+  ['name', 'phone'].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.disabled = true;
+  });
+  const addPlateBtn = document.getElementById('addLicensePlateBtn');
+  if (addPlateBtn) addPlateBtn.disabled = true;
+  document.querySelectorAll('#licensePlateList input').forEach(input => { input.disabled = true; });
 }
 
 function fillForm(){
@@ -2443,9 +2453,13 @@ async function save(){
 
     // Save/update the profile against the reserved ID
     if (SELF_SERVICE_MODE){
+      const selfServicePayload = { id: CURRENT.id };
+      if (Object.prototype.hasOwnProperty.call(payload, 'pin')) {
+        selfServicePayload.pin = payload.pin;
+      }
       await apiPost(API_ACTION, {
         action: 'self_edit_profile',
-        payload: { id: CURRENT.id, ...payload }
+        payload: selfServicePayload
       });
     } else {
       const saveRes = await fetchWithAuth(API_EDIT_USER, {
@@ -2577,7 +2591,7 @@ function showPanel(which){
       <div class="form-text muted">IDs shown are unique to each Akuvox device.</div>
     </div>
 
-    <div class="mb-3"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
+    <div class="mb-3" id="nameRow"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
 
     <div class="mb-3" id="pinRow">
       <label class="form-label">PIN</label>

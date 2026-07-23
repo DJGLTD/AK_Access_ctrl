@@ -35,6 +35,22 @@ class _Settings:
         return {"allowed_user_ids": list(self._allowed)}
 
 
+class _UsersStore:
+    def __init__(self, users):
+        self.users = users
+        self.upserts = []
+
+    def all(self):
+        return self.users
+
+    def get(self, user_id):
+        return self.users.get(user_id)
+
+    async def upsert_profile(self, user_id, **kwargs):
+        self.upserts.append((user_id, kwargs))
+        self.users.setdefault(user_id, {}).update(kwargs)
+
+
 class _Request(dict):
     def __init__(self, *, user=None, headers=None, query=None):
         super().__init__()
@@ -208,6 +224,137 @@ def test_event_viewer_user_id_can_use_impersonated_actor_identity():
     )
 
 
+def test_non_admin_dashboard_user_gets_restricted_self_service_context():
+    settings = _Settings(["ha-manager"])
+    users_store = _UsersStore(
+        {
+            "HA010": {
+                "name": "Manager",
+                "ha_user_id": "ha-manager",
+                "pin": "1111",
+            }
+        }
+    )
+    session = {
+        "token": "token-1",
+        "expires_at": http_module.time.time() + 60,
+        "user_id": "ha-manager",
+        "user_name": "Manager",
+        "is_admin": False,
+        "dashboard_access": True,
+    }
+    root = {
+        "settings_store": settings,
+        "dashboard_sessions": {"token-1": session},
+        "users_store": users_store,
+    }
+    hass = SimpleNamespace(data={DOMAIN: root})
+    request = _Request(headers={http_module.DASHBOARD_SESSION_HEADER: "token-1"})
+
+    assert http_module._request_can_access_dashboard(hass, request) is True
+
+    context = http_module._effective_self_service_context(
+        hass,
+        request,
+        root,
+        has_dashboard_access=True,
+        impersonation={"active": False},
+    )
+
+    assert context["user_id"] == "HA010"
+    assert context["ha_user_id"] == "ha-manager"
+
+
+def test_admin_impersonating_normal_user_gets_target_self_service_context():
+    admin = _User("ha-admin", "Admin", is_admin=True)
+    target = _User("ha-target", "Target")
+    settings = _Settings(["ha-target"])
+    users_store = _UsersStore(
+        {
+            "HA002": {
+                "name": "Target",
+                "ha_user_id": "ha-target",
+                "pin": "2222",
+            }
+        }
+    )
+    session = {
+        "token": "token-1",
+        "expires_at": http_module.time.time() + 60,
+        "user_id": admin.id,
+        "user_name": admin.name,
+        "is_admin": True,
+        "dashboard_access": True,
+        "impersonate_user_id": target.id,
+    }
+    root = {
+        "settings_store": settings,
+        "dashboard_sessions": {"token-1": session},
+        "users_store": users_store,
+    }
+    hass = SimpleNamespace(auth=_Auth([admin, target]), data={DOMAIN: root})
+    request = _Request(headers={http_module.DASHBOARD_SESSION_HEADER: "token-1"})
+
+    impersonation = asyncio.run(
+        http_module._dashboard_impersonation_payload(hass, request, settings)
+    )
+    context = http_module._effective_self_service_context(
+        hass,
+        request,
+        root,
+        has_dashboard_access=True,
+        impersonation=impersonation,
+    )
+
+    assert impersonation["active"] is True
+    assert impersonation["is_admin"] is False
+    assert context["user_id"] == "HA002"
+    assert context["ha_user_id"] == "ha-target"
+
+
+def test_self_service_profile_edits_are_limited_to_pin():
+    payload = {
+        "name": "New Name",
+        "pin": " 1234 ",
+        "phone": "07123456789",
+        "license_plate": ["AK01 ABC"],
+    }
+    users_store = _UsersStore(
+        {
+            "HA001": {
+                "name": "Original",
+                "pin": "0000",
+                "phone": "07000000000",
+                "license_plate": ["OLD123"],
+            }
+        }
+    )
+
+    assert http_module.sanitize_self_service_profile_payload(payload, "HA001") == {
+        "id": "HA001",
+        "pin": "1234",
+    }
+
+    updates, changes = asyncio.run(
+        http_module.async_apply_self_service_profile_change(
+            SimpleNamespace(),
+            {"users_store": users_store},
+            user_id="HA001",
+            payload=payload,
+            actor_name="Manager",
+        )
+    )
+
+    assert updates == {"id": "HA001", "pin": "1234"}
+    assert changes == ["PIN"]
+    assert users_store.users["HA001"]["name"] == "Original"
+    assert users_store.users["HA001"]["phone"] == "07000000000"
+    assert users_store.users["HA001"]["license_plate"] == ["OLD123"]
+    assert users_store.upserts == [
+        ("HA001", {"pin": "1234", "status": "pending", "source": "Local"})
+    ]
+
+
 def test_dashboard_frontend_contains_impersonation_controls():
     www = Path(http_module.STATIC_ROOT)
 
@@ -222,6 +369,20 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "data-impersonate-user" in html
         assert "API_IMPERSONATION" in html
         assert "stopImpersonationFromSettings" in html
+
+
+def test_self_service_frontend_limits_profile_identity_fields():
+    www = Path(http_module.STATIC_ROOT)
+
+    for page_name in ("users.html", "users-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert 'id="nameRow"' in html
+        assert "'nameRow'" in html
+        assert "'phoneRow'" in html
+        assert "'anprSection'" in html
+        assert "const selfServicePayload = { id: CURRENT.id }" in html
+        assert "selfServicePayload.pin = payload.pin" in html
+        assert "payload: selfServicePayload" in html
 
 
 def test_support_bundle_is_signed_and_redacts_sensitive_values():
