@@ -471,6 +471,7 @@ const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const UI_ROOT   = '/akuvox-ac';
 let cachedEvents = [];
 let eventAccess = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
+let eventUserMatchIndex = new Map();
 
 function buildHref(slug, params = {}) {
   const search = new URLSearchParams();
@@ -852,6 +853,14 @@ function normalizeUserMatch(value){
   return String(value).trim().toLowerCase();
 }
 
+function canonicalUserId(value){
+  if (value === undefined || value === null) return '';
+  const text = String(value).trim();
+  const match = text.match(/^(ha|tmp)-?(\d+)$/i);
+  if (!match) return '';
+  return `${match[1].toUpperCase()}${String(Number(match[2])).padStart(3, '0')}`;
+}
+
 function addUserLookupEntry(map, id, name){
   const key = normalizeUserMatch(id);
   if (!key) return;
@@ -891,6 +900,63 @@ function buildUserLookup(devices, registryUsers){
     });
   });
   return lookup;
+}
+
+function addUserMatchEntry(map, value, canonical){
+  const canonicalId = canonicalUserId(canonical) || String(canonical || '').trim();
+  if (!canonicalId) return;
+  const key = normalizeUserMatch(value);
+  if (key && !map.has(key)) map.set(key, canonicalId);
+  const normalized = canonicalUserId(value);
+  const normalizedKey = normalizeUserMatch(normalized);
+  if (normalizedKey && !map.has(normalizedKey)) map.set(normalizedKey, canonicalId);
+}
+
+function userMatchFields(user){
+  if (!user || typeof user !== 'object') return [];
+  return [
+    user.id, user.UserID, user.UserId, user.ID, user.user_id, user.userId,
+    user.name, user.Name, user.user_name, user.UserName,
+    user.ha_user_id, user.home_assistant_user_id, user.HomeAssistantUserID,
+    user.ha_user_name, user.home_assistant_user_name, user.HomeAssistantUserName,
+    user.device_id, user.DeviceUserID, user.device_user_id,
+    user.card_code, user.CardCode
+  ];
+}
+
+function buildUserMatchIndex(devices, registryUsers){
+  const matchIndex = new Map();
+  const labelToCanonical = new Map();
+  (registryUsers || []).forEach(entry => {
+    const canonical = canonicalUserId(entry?.id || entry?.UserID || entry?.UserId || entry?.ID)
+      || String(entry?.id || entry?.UserID || entry?.UserId || entry?.ID || '').trim();
+    if (!canonical) return;
+    userMatchFields(entry).forEach(value => addUserMatchEntry(matchIndex, value, canonical));
+    const label = normalizeUserMatch(entry?.name || entry?.Name || entry?.user_name || entry?.UserName);
+    if (label && !labelToCanonical.has(label)) labelToCanonical.set(label, canonical);
+  });
+  (devices || []).forEach(device => {
+    (device?._users || device?.users || []).forEach(user => {
+      const rowId = user?.id || user?.UserID || user?.UserId || user?.ID || user?.user_id || user?.userId || '';
+      const label = normalizeUserMatch(user?.name || user?.Name || user?.user_name || user?.UserName);
+      const canonical = canonicalUserId(rowId) || labelToCanonical.get(label) || '';
+      if (!canonical) return;
+      userMatchFields(user).forEach(value => addUserMatchEntry(matchIndex, value, canonical));
+    });
+  });
+  return matchIndex;
+}
+
+function resolveUserMatchId(value, userMatchIndex){
+  const key = normalizeUserMatch(value);
+  if (!key) return '';
+  const normalized = canonicalUserId(value);
+  const normalizedKey = normalizeUserMatch(normalized);
+  if (userMatchIndex && userMatchIndex.size) {
+    const mapped = userMatchIndex.get(key) || (normalizedKey ? userMatchIndex.get(normalizedKey) : '');
+    if (mapped) return normalizeUserMatch(canonicalUserId(mapped) || mapped);
+  }
+  return normalizedKey || key;
 }
 
 function normalizeEventAccess(raw){
@@ -971,8 +1037,10 @@ function currentUserFilter(){
   return { value: raw, label: raw };
 }
 
-function matchesUserFilter(evt, filter){
+function matchesUserFilter(evt, filter, userMatchIndex = eventUserMatchIndex){
   if (!filter || filter === '__all_visible__') return true;
+  const target = resolveUserMatchId(filter, userMatchIndex);
+  if (!target) return true;
   const candidates = [
     evt.LinkedUserID, evt.linked_user_id, evt.linkedUserId,
     evt.LinkedUserName, evt.linked_user_name, evt.linkedUserName,
@@ -983,14 +1051,17 @@ function matchesUserFilter(evt, filter){
     evt.HomeAssistantUserName, evt.home_assistant_user_name, evt.ha_user_name,
     evt.TriggeredBy, evt.triggered_by
   ];
-  return candidates.some(candidate => normalizeUserMatch(candidate) === filter);
+  return candidates.some(candidate =>
+    normalizeUserMatch(candidate) === filter ||
+    resolveUserMatchId(candidate, userMatchIndex) === target
+  );
 }
 
 function applyUserFilter(events){
   const current = currentUserFilter();
   const filter = normalizeUserMatch(current.value);
   if (!filter) return { filterLabel: '', events };
-  const filtered = events.filter(evt => matchesUserFilter(evt, filter));
+  const filtered = events.filter(evt => matchesUserFilter(evt, filter, eventUserMatchIndex));
   return { filterLabel: current.label, events: filtered };
 }
 
@@ -1150,6 +1221,7 @@ async function refresh(){
     const registryUsers = state.registry_users || [];
     const access = normalizeEventAccess(state?.event_access);
     const lookupUsers = registryUsers.concat(access.users || []);
+    eventUserMatchIndex = buildUserMatchIndex(devices, lookupUsers);
     const userLookup = buildUserLookup(devices, lookupUsers);
     cachedEvents = gatherEvents(devices, aggregated, userLookup);
     populateUserFilter(access, registryUsers);

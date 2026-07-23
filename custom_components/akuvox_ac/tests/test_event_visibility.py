@@ -111,3 +111,15 @@ def test_event_history_pages_include_user_filter_selector():
         assert 'id="userFilter"' in html
         assert "function populateUserFilter(" in html
         assert "state?.event_access" in html
+
+
+def test_event_history_user_filter_maps_names_to_canonical_ids():
+    www = Path(__file__).resolve().parents[1] / "www"
+
+    for page_name in ("event_history.html", "event_history-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "function buildUserMatchIndex(" in html
+        assert "function resolveUserMatchId(" in html
+        assert "eventUserMatchIndex = buildUserMatchIndex(devices, lookupUsers)" in html
+        assert "matchesUserFilter(evt, filter, eventUserMatchIndex)" in html
+        assert "resolveUserMatchId(candidate, userMatchIndex) === target" in html
