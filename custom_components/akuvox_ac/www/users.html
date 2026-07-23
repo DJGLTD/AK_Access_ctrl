@@ -25,6 +25,8 @@
     .action-buttons{ display:flex; gap:0.5rem; flex-wrap:wrap; }
     .license-plate-row .btn{ min-width:3rem; }
     .license-plate-input{text-transform:uppercase; }
+    .event-visibility-scroll{max-height:min(18rem,42vh);overflow-y:auto;border:1px solid #243a61;border-radius:0.5rem;background:#0e1a2c;padding:0.6rem 0.75rem;}
+    .event-visibility-scroll .form-check{margin-bottom:0.35rem;}
     @media (max-width: 992px){
       .container-narrow{ max-width:100%; }
     }
@@ -35,6 +37,7 @@
       .face-options{ flex-direction:column; }
       .action-buttons{ flex-direction:column; }
       .action-buttons .btn, .action-buttons a{ width:100%; }
+      .event-visibility-scroll{max-height:38vh;}
     }
   </style>
 </head>
@@ -3018,7 +3021,7 @@ function showPanel(which){
       </div>
       <div class="mt-3" id="eventVisibilityProfileRow">
         <label class="form-label">Visible event users</label>
-        <div id="eventVisibilityTargets"></div>
+        <div id="eventVisibilityTargets" class="event-visibility-scroll"></div>
         <div class="form-text muted">This user can always see their own events. Select any additional users whose events they can view.</div>
       </div>
       <div id="userSettingsStatus" class="visually-hidden small mt-2"></div>

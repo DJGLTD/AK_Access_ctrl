@@ -123,3 +123,20 @@ def test_event_history_user_filter_maps_names_to_canonical_ids():
         assert "eventUserMatchIndex = buildUserMatchIndex(devices, lookupUsers)" in html
         assert "matchesUserFilter(evt, filter, eventUserMatchIndex)" in html
         assert "resolveUserMatchId(candidate, userMatchIndex) === target" in html
+
+
+def test_event_access_payload_defaults_admins_to_all_users():
+    payload = http_module._event_access_payload(
+        can_manage=True,
+        viewer_user_id="HA001",
+        visible_user_ids=None,
+        registry_users=[
+            {"id": "HA002", "name": "Maddie"},
+            {"id": "HA001", "name": "Lee"},
+        ],
+    )
+
+    assert payload["can_manage"] is True
+    assert payload["default_user_id"] == ""
+    assert payload["visible_user_ids"] == ["HA001", "HA002"]
+    assert [user["id"] for user in payload["users"]] == ["HA001", "HA002"]
