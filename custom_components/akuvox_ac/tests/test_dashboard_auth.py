@@ -203,6 +203,53 @@ def test_dashboard_impersonation_payload_uses_admin_session_target():
     }
 
 
+def test_dashboard_impersonation_allows_standard_user_without_dashboard_access():
+    admin = _User("ha-admin", "Admin", is_admin=True)
+    target = _User("ha-target", "Target")
+    settings = _Settings([])
+    session = {
+        "token": "token-1",
+        "expires_at": http_module.time.time() + 60,
+        "user_id": admin.id,
+        "user_name": admin.name,
+        "is_admin": True,
+        "dashboard_access": True,
+        "impersonate_user_id": target.id,
+    }
+    hass = SimpleNamespace(
+        auth=_Auth([admin, target]),
+        data={DOMAIN: {"settings_store": settings, "dashboard_sessions": {"token-1": session}}},
+    )
+    request = _Request(headers={http_module.DASHBOARD_SESSION_HEADER: "token-1"})
+
+    payload = asyncio.run(
+        http_module._dashboard_impersonation_payload(hass, request, settings)
+    )
+
+    assert payload["active"] is True
+    assert payload["user_id"] == "ha-target"
+    assert payload["is_admin"] is False
+
+
+def test_dashboard_access_payload_marks_active_standard_users_impersonatable():
+    admin = _User("ha-admin", "Admin", is_admin=True)
+    target = _User("ha-target", "Target")
+    inactive = _User("ha-inactive", "Inactive", is_active=False)
+    settings = _Settings([])
+    hass = SimpleNamespace(auth=_Auth([admin, target, inactive]))
+    request = _Request(user=admin)
+
+    payload = asyncio.run(
+        http_module._dashboard_access_payload(hass, settings, request)
+    )
+
+    users = {item["id"]: item for item in payload["users"]}
+    assert users["ha-target"]["allowed"] is False
+    assert users["ha-target"]["can_impersonate"] is True
+    assert users["ha-inactive"]["allowed"] is False
+    assert users["ha-inactive"]["can_impersonate"] is False
+
+
 def test_event_viewer_user_id_can_use_impersonated_actor_identity():
     root = {
         "users_store": SimpleNamespace(
@@ -364,11 +411,31 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "stopImpersonation" in html
         assert "akuvox-impersonation-changed" in html
 
-    for page_name in ("settings.html", "settings-mob.html"):
+    for page_name in ("users.html", "users-mob.html"):
         html = (www / page_name).read_text(encoding="utf-8")
+        assert "userAdminSettingsSection" in html
+        assert "dashboard_access_enabled" in html
+        assert "eventVisibilityTargets" in html
+        assert "saveUserAdminSettings" in html
         assert "data-impersonate-user" in html
         assert "API_IMPERSONATION" in html
-        assert "stopImpersonationFromSettings" in html
+
+    for page_name in ("settings.html", "settings-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "dashboardAccessCard" not in html
+        assert "eventVisibilityCard" not in html
+        assert "stopImpersonationFromSettings" not in html
+
+
+def test_user_frontend_fetches_face_preview_with_dashboard_auth():
+    www = Path(http_module.STATIC_ROOT)
+
+    for page_name in ("users.html", "users-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "async function setFacePreviewUrl" in html
+        assert "fetchWithAuth(finalUrl" in html
+        assert "URL.createObjectURL(blob)" in html
+        assert "No local face photo to display" in html
 
 
 def test_self_service_frontend_limits_profile_identity_fields():
@@ -380,6 +447,7 @@ def test_self_service_frontend_limits_profile_identity_fields():
         assert "'nameRow'" in html
         assert "'phoneRow'" in html
         assert "'anprSection'" in html
+        assert "'userAdminSettingsSection'" in html
         assert "const selfServicePayload = { id: CURRENT.id }" in html
         assert "selfServicePayload.pin = payload.pin" in html
         assert "payload: selfServicePayload" in html

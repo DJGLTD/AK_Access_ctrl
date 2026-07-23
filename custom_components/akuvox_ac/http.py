@@ -1002,7 +1002,7 @@ async def _dashboard_impersonation_payload(
         return payload
 
     user = await _async_get_ha_user(hass, target_id)
-    if not _ha_user_has_dashboard_access(user, settings):
+    if not _ha_user_id(user) or not _ha_user_is_active(user):
         _clear_dashboard_impersonation(session)
         return payload
 
@@ -1050,7 +1050,7 @@ async def _dashboard_access_payload(
                     "is_admin": admin,
                     "is_active": active,
                     "allowed": allowed_access,
-                    "can_impersonate": allowed_access,
+                    "can_impersonate": active,
                 }
             )
 
@@ -4866,11 +4866,11 @@ class AkuvoxUIImpersonation(HomeAssistantView):
             return web.json_response({"ok": True, "impersonation": current})
 
         user = await _async_get_ha_user(hass, target_id)
-        if not _ha_user_has_dashboard_access(user, settings):
+        if not _ha_user_id(user) or not _ha_user_is_active(user):
             return web.json_response(
                 {
                     "ok": False,
-                    "error": "selected user does not have dashboard access",
+                    "error": "selected user is inactive or unavailable",
                 },
                 status=400,
             )

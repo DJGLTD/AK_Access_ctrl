@@ -230,6 +230,9 @@ function setFacePreview(file) {
   const preview = document.getElementById('facePreview');
   const placeholder = document.getElementById('facePreviewPlaceholder');
   if (!preview) return;
+  facePreviewLoadToken += 1;
+  preview.onload = null;
+  preview.onerror = null;
   if (facePreviewUrl) {
     URL.revokeObjectURL(facePreviewUrl);
     facePreviewUrl = null;
@@ -255,10 +258,11 @@ function buildFacePreviewUrl(url) {
   return text.includes('?') ? `${text}&${stamp}` : `${text}?${stamp}`;
 }
 
-function setFacePreviewUrl(url) {
+async function setFacePreviewUrl(url) {
   const preview = document.getElementById('facePreview');
   const placeholder = document.getElementById('facePreviewPlaceholder');
   if (!preview) return;
+  const token = ++facePreviewLoadToken;
   if (facePreviewUrl) {
     URL.revokeObjectURL(facePreviewUrl);
     facePreviewUrl = null;
@@ -268,10 +272,50 @@ function setFacePreviewUrl(url) {
     setFacePreview(null);
     return;
   }
-  preview.src = finalUrl;
-  preview.style.display = 'block';
-  if (placeholder) placeholder.style.display = 'none';
-  facePreviewMode = 'remote';
+  preview.onload = null;
+  preview.onerror = null;
+  preview.src = '';
+  preview.style.display = 'none';
+  if (placeholder) {
+    placeholder.textContent = 'Loading current photo...';
+    placeholder.style.display = 'block';
+  }
+  try {
+    const response = await fetchWithAuth(finalUrl, { cache: 'no-store' }, { allowRetry: false });
+    if (token !== facePreviewLoadToken) return;
+    if (!response.ok) throw new Error(`${response.status}: ${response.statusText || 'Face photo unavailable'}`);
+    const blob = await response.blob();
+    if (token !== facePreviewLoadToken) return;
+    if (!blob || (blob.type && !blob.type.toLowerCase().startsWith('image/'))) {
+      throw new Error('Face photo response was not an image');
+    }
+    facePreviewUrl = URL.createObjectURL(blob);
+    preview.onload = () => {
+      if (token !== facePreviewLoadToken) return;
+      preview.style.display = 'block';
+      if (placeholder) placeholder.style.display = 'none';
+    };
+    preview.onerror = () => {
+      if (token !== facePreviewLoadToken) return;
+      setFacePreview(null);
+      if (placeholder) placeholder.textContent = 'No local face photo to display';
+    };
+    preview.src = facePreviewUrl;
+    facePreviewMode = 'remote';
+  } catch (err) {
+    if (token !== facePreviewLoadToken) return;
+    preview.src = '';
+    preview.style.display = 'none';
+    if (facePreviewUrl) {
+      URL.revokeObjectURL(facePreviewUrl);
+      facePreviewUrl = null;
+    }
+    if (placeholder) {
+      placeholder.textContent = 'No local face photo to display';
+      placeholder.style.display = 'block';
+    }
+    facePreviewMode = 'none';
+  }
 }
 
 function hasExistingFace() {
@@ -646,12 +690,19 @@ const API_RESERVATION_PING = signedPath('reservation_ping', '/api/akuvox_ac/ui/r
 const API_UPLOAD_FACE     = signedPath('upload_face', '/api/akuvox_ac/ui/upload_face');
 const API_REMOTE_ENROL    = signedPath('remote_enrol', '/api/akuvox_ac/ui/remote_enrol');
 const API_ACTION          = signedPath('action', '/api/akuvox_ac/ui/action');
+const API_IMPERSONATION   = signedPath('impersonation', '/api/akuvox_ac/ui/impersonation');
 const API_EDIT_USER       = signedPath('service_edit_user', '/api/services/akuvox_ac/edit_user');
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 const MAX_LICENSE_PLATES = 5;
 let ALERT_TARGETS = {};
+let DASHBOARD_ACCESS = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+let EVENT_VISIBILITY = { can_manage: false, rules: {}, users: [] };
+let IMPERSONATION = { can_manage: false, active: false, user_id: '', user_name: '', is_admin: false };
+let USER_SETTINGS_AVAILABLE = false;
+let impersonationSaving = false;
+let facePreviewLoadToken = 0;
 
 async function apiGet(url){
   const r = await fetchWithAuth(url);
@@ -973,6 +1024,289 @@ function normalizedUserKey(value){
   const match = text.match(/^(HA|TMP)-?(\d+)$/i);
   if (match) return `${match[1].toUpperCase()}${match[2].padStart(3, '0')}`.toLowerCase();
   return text.toLowerCase();
+}
+
+function setUserSettingsStatus(message, tone = 'muted'){
+  const el = document.getElementById('userSettingsStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = message
+    ? `small mt-2 ${tone === 'error' ? 'text-danger' : tone === 'success' ? 'text-success' : 'muted'}`
+    : 'visually-hidden small mt-2';
+}
+
+function sanitizeImpersonation(raw){
+  return {
+    can_manage: !!raw?.can_manage,
+    active: !!raw?.active,
+    user_id: String(raw?.user_id || '').trim(),
+    user_name: String(raw?.user_name || '').trim(),
+    is_admin: !!raw?.is_admin
+  };
+}
+
+function sanitizeDashboardAccess(raw){
+  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  base.current_user_id = String(raw.current_user_id || '');
+  base.current_user_is_admin = !!raw.current_user_is_admin;
+  if (Array.isArray(raw.allowed_user_ids)){
+    base.allowed_user_ids = raw.allowed_user_ids.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw.users)){
+    base.users = raw.users.map(item => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || 'Home Assistant user'),
+      is_admin: !!item?.is_admin,
+      is_active: item?.is_active !== false,
+      allowed: !!item?.allowed,
+      can_impersonate: !!item?.can_impersonate
+    })).filter(item => item.id);
+  }
+  return base;
+}
+
+function sanitizeEventVisibility(raw){
+  const base = { can_manage: false, rules: {}, users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  const rawRules = raw.rules && typeof raw.rules === 'object'
+    ? raw.rules
+    : (!Array.isArray(raw.users) && raw.users && typeof raw.users === 'object' ? raw.users : {});
+  Object.entries(rawRules || {}).forEach(([viewerId, list]) => {
+    const viewerKey = String(viewerId || '').trim();
+    if (!viewerKey) return;
+    const values = Array.isArray(list) ? list : (list ? [list] : []);
+    const seen = new Set();
+    const cleaned = [];
+    values.forEach(item => {
+      const userId = String(item || '').trim();
+      const userKey = normalizedUserKey(userId);
+      if (!userId || !userKey || userKey === normalizedUserKey(viewerKey) || seen.has(userKey)) return;
+      seen.add(userKey);
+      cleaned.push(userId);
+    });
+    if (cleaned.length) base.rules[viewerKey] = cleaned;
+  });
+  const rawUsers = Array.isArray(raw.users) ? raw.users : [];
+  base.users = rawUsers.map(item => ({
+    id: String(item?.id || '').trim(),
+    name: String(item?.name || item?.id || 'User')
+  })).filter(item => item.id);
+  return base;
+}
+
+function currentLinkedHaUserId(){
+  return String(CURRENT?.ha_user_id || CURRENT?.home_assistant_user_id || '').trim();
+}
+
+function dashboardAccessUserFor(userId){
+  const key = String(userId || '').trim();
+  if (!key) return null;
+  const fromDashboard = (DASHBOARD_ACCESS.users || []).find(user => user.id === key);
+  if (fromDashboard) return fromDashboard;
+  const fromHa = (HA_USERS || []).find(user => String(user.id || '').trim() === key);
+  if (!fromHa) return null;
+  return {
+    id: key,
+    name: String(fromHa.name || fromHa.id || 'Home Assistant user'),
+    is_admin: !!fromHa.is_admin,
+    is_active: fromHa.is_active !== false,
+    allowed: false,
+    can_impersonate: false
+  };
+}
+
+function dashboardAccessUserCanImpersonate(user, allowed){
+  if (!user || !user.id || !user.is_active) return false;
+  return true;
+}
+
+function notifyParentImpersonationChanged(impersonation){
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'akuvox-impersonation-changed',
+        impersonation
+      }, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+async function setProfileImpersonation(userId = ''){
+  if (impersonationSaving) return;
+  impersonationSaving = true;
+  setUserSettingsStatus(userId ? 'Starting impersonation...' : 'Stopping impersonation...');
+  renderUserAdminSettings();
+  try {
+    const body = userId ? { user_id: userId } : { stop: true };
+    const res = await apiPost(API_IMPERSONATION, body);
+    IMPERSONATION = sanitizeImpersonation(res?.impersonation);
+    setUserSettingsStatus(IMPERSONATION.active ? 'Impersonation started' : 'Impersonation stopped', 'success');
+    const delivered = notifyParentImpersonationChanged(IMPERSONATION);
+    if (!delivered) {
+      setTimeout(() => window.location.reload(), 250);
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    setUserSettingsStatus(err && err.message ? err.message : 'Failed to update impersonation', 'error');
+  } finally {
+    impersonationSaving = false;
+    renderUserAdminSettings();
+  }
+}
+
+function eventVisibilityUsers(){
+  const cfg = sanitizeEventVisibility(EVENT_VISIBILITY);
+  if (cfg.users.length) return cfg.users;
+  return (REGISTRY || []).map(user => ({
+    id: String(user.id || ''),
+    name: String(user.name || user.id || 'User')
+  })).filter(user => user.id);
+}
+
+function eventVisibilityListForCurrent(){
+  if (!CURRENT?.id) return [];
+  const viewerKey = normalizedUserKey(CURRENT.id);
+  const cfg = sanitizeEventVisibility(EVENT_VISIBILITY);
+  for (const [viewerId, values] of Object.entries(cfg.rules || {})){
+    if (normalizedUserKey(viewerId) === viewerKey) return Array.isArray(values) ? values : [];
+  }
+  return [];
+}
+
+function renderUserAdminSettings(){
+  const section = document.getElementById('userAdminSettingsSection');
+  const dashboardRow = document.getElementById('dashboardAccessProfileRow');
+  const dashboardToggle = document.getElementById('dashboard_access_enabled');
+  const dashboardHelp = document.getElementById('dashboardAccessProfileHelp');
+  const impersonateBtn = document.getElementById('profileImpersonateBtn');
+  const visibilityRow = document.getElementById('eventVisibilityProfileRow');
+  const visibilityTargets = document.getElementById('eventVisibilityTargets');
+  if (!section) return;
+  const accessCfg = sanitizeDashboardAccess(DASHBOARD_ACCESS);
+  const visibilityCfg = sanitizeEventVisibility(EVENT_VISIBILITY);
+  const show = !!(!SELF_SERVICE_MODE && USER_SETTINGS_AVAILABLE && CURRENT && CURRENT.id && (accessCfg.can_manage || visibilityCfg.can_manage));
+  section.style.display = show ? '' : 'none';
+  if (!show) return;
+
+  const linkedHaUser = currentLinkedHaUserId();
+  const allowed = new Set(accessCfg.allowed_user_ids || []);
+  const haUser = dashboardAccessUserFor(linkedHaUser);
+  if (dashboardRow) dashboardRow.style.display = accessCfg.can_manage ? '' : 'none';
+  if (dashboardToggle && dashboardHelp) {
+    const checked = !!(haUser && (haUser.is_admin || haUser.allowed || allowed.has(haUser.id)));
+    dashboardToggle.checked = checked;
+    dashboardToggle.disabled = !linkedHaUser || !haUser || haUser.is_admin || haUser.is_active === false;
+    if (!linkedHaUser) {
+      dashboardHelp.textContent = 'Link a Home Assistant user above to control dashboard access.';
+    } else if (!haUser) {
+      dashboardHelp.textContent = 'The linked Home Assistant user could not be found.';
+    } else if (haUser.is_admin) {
+      dashboardHelp.textContent = 'Home Assistant administrators always have dashboard access.';
+    } else if (haUser.is_active === false) {
+      dashboardHelp.textContent = 'Inactive Home Assistant users cannot access the dashboard.';
+    } else {
+      dashboardHelp.textContent = checked
+        ? 'This linked Home Assistant user can open the dashboard as a manager.'
+        : 'Enable this to create a view-only manager dashboard account for this linked user.';
+    }
+  }
+  if (impersonateBtn) {
+    const activeForUser = !!(IMPERSONATION.active && linkedHaUser && IMPERSONATION.user_id === linkedHaUser);
+    const canImpersonate = !!(haUser && dashboardAccessUserCanImpersonate(haUser, allowed));
+    impersonateBtn.style.display = accessCfg.can_manage && linkedHaUser ? '' : 'none';
+    impersonateBtn.disabled = impersonationSaving || !canImpersonate;
+    impersonateBtn.textContent = activeForUser ? 'Stop impersonating' : 'Impersonate this user';
+    impersonateBtn.setAttribute('data-impersonate-user', activeForUser ? '' : linkedHaUser);
+  }
+
+  if (visibilityRow) visibilityRow.style.display = visibilityCfg.can_manage ? '' : 'none';
+  if (visibilityTargets) {
+    visibilityTargets.innerHTML = '';
+    if (!visibilityCfg.can_manage) return;
+    const users = eventVisibilityUsers();
+    const viewerKey = normalizedUserKey(CURRENT.id);
+    const selected = new Set(eventVisibilityListForCurrent().map(normalizedUserKey));
+    if (!users.length) {
+      visibilityTargets.innerHTML = '<div class="form-text muted">No access-control users were found.</div>';
+      return;
+    }
+    users.forEach(user => {
+      const userId = String(user.id || '').trim();
+      if (!userId) return;
+      const userKey = normalizedUserKey(userId);
+      const sameUser = userKey === viewerKey;
+      const inputId = `eventVisible_${userId.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+      const row = document.createElement('div');
+      row.className = 'form-check';
+      row.innerHTML = `
+        <input class="form-check-input" type="checkbox" id="${escapeHtml(inputId)}" data-visible-event-user="${escapeHtml(userId)}" ${sameUser || selected.has(userKey) ? 'checked' : ''} ${sameUser ? 'disabled' : ''}>
+        <label class="form-check-label" for="${escapeHtml(inputId)}">${escapeHtml(user.name || userId)} (${escapeHtml(userId)})${sameUser ? ' - own events' : ''}</label>
+      `;
+      visibilityTargets.appendChild(row);
+    });
+  }
+}
+
+function dashboardAccessPayloadForCurrent(){
+  const cfg = sanitizeDashboardAccess(DASHBOARD_ACCESS);
+  if (!cfg.can_manage || !CURRENT) return null;
+  const allowed = new Set(cfg.allowed_user_ids || []);
+  const linkedHaUser = currentLinkedHaUserId();
+  const originalHaUser = String(CURRENT._original_ha_user_id || '').trim();
+  if (originalHaUser && normalizedUserKey(originalHaUser) !== normalizedUserKey(linkedHaUser)) {
+    const originalUser = dashboardAccessUserFor(originalHaUser);
+    if (!originalUser || !originalUser.is_admin) allowed.delete(originalHaUser);
+  }
+  const toggle = document.getElementById('dashboard_access_enabled');
+  const haUser = dashboardAccessUserFor(linkedHaUser);
+  if (linkedHaUser && haUser && !haUser.is_admin && haUser.is_active !== false && toggle) {
+    if (toggle.checked) allowed.add(linkedHaUser);
+    else allowed.delete(linkedHaUser);
+  }
+  const allowed_user_ids = Array.from(allowed).filter(Boolean).sort();
+  DASHBOARD_ACCESS = { ...cfg, allowed_user_ids };
+  return { allowed_user_ids };
+}
+
+function eventVisibilityPayloadForCurrent(){
+  const cfg = sanitizeEventVisibility(EVENT_VISIBILITY);
+  if (!cfg.can_manage || !CURRENT?.id) return null;
+  const viewerId = String(CURRENT.id || '').trim();
+  const viewerKey = normalizedUserKey(viewerId);
+  const rules = {};
+  Object.entries(cfg.rules || {}).forEach(([key, values]) => {
+    if (normalizedUserKey(key) === viewerKey) return;
+    if (Array.isArray(values) && values.length) rules[key] = [...values];
+  });
+  const selected = Array.from(document.querySelectorAll('#eventVisibilityTargets input[data-visible-event-user]'))
+    .filter(input => input.checked && !input.disabled)
+    .map(input => input.getAttribute('data-visible-event-user'))
+    .filter(userId => userId && normalizedUserKey(userId) !== viewerKey);
+  if (selected.length) rules[viewerId] = selected;
+  EVENT_VISIBILITY = { ...cfg, rules };
+  return { users: rules };
+}
+
+async function saveUserAdminSettings(){
+  if (SELF_SERVICE_MODE || !USER_SETTINGS_AVAILABLE || !CURRENT?.id) return;
+  const payload = {};
+  const dashboardAccess = dashboardAccessPayloadForCurrent();
+  const eventVisibility = eventVisibilityPayloadForCurrent();
+  if (dashboardAccess) payload.dashboard_access = dashboardAccess;
+  if (eventVisibility) payload.event_visibility = eventVisibility;
+  if (!Object.keys(payload).length) return;
+  setUserSettingsStatus('Saving user settings...');
+  const res = await apiPost(API_SETTINGS, payload);
+  if (res?.dashboard_access) DASHBOARD_ACCESS = sanitizeDashboardAccess(res.dashboard_access);
+  if (res?.event_visibility) EVENT_VISIBILITY = sanitizeEventVisibility(res.event_visibility);
+  CURRENT._original_ha_user_id = currentLinkedHaUserId();
+  renderUserAdminSettings();
+  setUserSettingsStatus('User settings saved', 'success');
 }
 
 function isRegistryUser(userId){
@@ -1354,6 +1688,7 @@ function selectExistingUser(id, options = {}){
   if (CURRENT && CURRENT.id) {
     CURRENT.notify_targets = getNotifyTargetsForUser(CURRENT.id);
   }
+  CURRENT._original_ha_user_id = currentLinkedHaUserId();
 
   RESERVED_ID = null;
   stopReservationHeartbeat();
@@ -1477,6 +1812,7 @@ function blankProfile(id = ''){
     ha_user_id: '',
     ha_user_name: '',
     notify_targets: [],
+    _original_ha_user_id: '',
   };
 }
 
@@ -1868,6 +2204,10 @@ async function load(){
     if (SELF_SERVICE_MODE) {
       PHONES = [];
       ALERT_TARGETS = {};
+      USER_SETTINGS_AVAILABLE = false;
+      DASHBOARD_ACCESS = sanitizeDashboardAccess(null);
+      EVENT_VISIBILITY = sanitizeEventVisibility(null);
+      IMPERSONATION = sanitizeImpersonation(null);
     } else {
       try {
         const resp = await apiGet(API_PHONES);
@@ -1879,11 +2219,19 @@ async function load(){
       }
       try {
         const settingsResp = await apiGet(API_SETTINGS);
+        USER_SETTINGS_AVAILABLE = true;
         ALERT_TARGETS = settingsResp?.alerts?.targets || {};
+        DASHBOARD_ACCESS = sanitizeDashboardAccess(settingsResp?.dashboard_access);
+        EVENT_VISIBILITY = sanitizeEventVisibility(settingsResp?.event_visibility);
+        IMPERSONATION = sanitizeImpersonation(settingsResp?.impersonation || settingsResp?.dashboard_access?.impersonation);
       } catch (err) {
         if (handleAuthError(err)) return;
         console.warn('Failed to load notification settings', err);
+        USER_SETTINGS_AVAILABLE = false;
         ALERT_TARGETS = {};
+        DASHBOARD_ACCESS = sanitizeDashboardAccess(null);
+        EVENT_VISIBILITY = sanitizeEventVisibility(null);
+        IMPERSONATION = sanitizeImpersonation(null);
       }
     }
 
@@ -1901,6 +2249,7 @@ async function load(){
         handledBySelect = true;
       } else {
         CURRENT = blankProfile(selfId);
+        CURRENT._original_ha_user_id = '';
         RESERVED_ID = null;
         stopReservationHeartbeat();
         setReservationMessage('');
@@ -1994,6 +2343,7 @@ function applyHomeAssistantUserSelect(){
       const option = select.options[select.selectedIndex];
       CURRENT.ha_user_id = select.value || '';
       CURRENT.ha_user_name = option ? (option.dataset.name || '') : '';
+      renderUserAdminSettings();
     });
     select._bound = true;
   }
@@ -2007,6 +2357,7 @@ function applySelfServiceMode(){
     'nameRow',
     'phoneRow',
     'anprSection',
+    'userAdminSettingsSection',
     'haUserLinkRow',
     'scheduleRow',
     'pedestrianAccessRow',
@@ -2141,6 +2492,7 @@ function fillForm(){
   applyCredentialPrompts();
   applySelfServiceMode();
   refreshNotifyState();
+  renderUserAdminSettings();
   if (CREDENTIAL_PROMPTS.face && hasExistingFace()) {
     showPanel('local');
   }
@@ -2163,6 +2515,14 @@ function fillForm(){
       renderNotifyTargets();
     });
     notifyToggle._bound = true;
+  }
+  const impersonateBtn = document.getElementById('profileImpersonateBtn');
+  if (impersonateBtn && !impersonateBtn._bound){
+    impersonateBtn.addEventListener('click', async (ev) => {
+      if (ev) ev.preventDefault();
+      await setProfileImpersonation(impersonateBtn.getAttribute('data-impersonate-user') || '');
+    });
+    impersonateBtn._bound = true;
   }
   bindFaceFileInput();
   bindRemoveFaceButton();
@@ -2479,6 +2839,7 @@ async function save(){
     if (!SELF_SERVICE_MODE){
       applyNotifyTargetsForUser(CURRENT.id, notifySelection.targets, notifySelection.enabled);
       CURRENT.notify_targets = notifySelection.targets;
+      await saveUserAdminSettings();
     }
 
     // If a photo is selected, upload it now
@@ -2644,6 +3005,23 @@ function showPanel(which){
       <label class="form-label">Home Assistant user link</label>
       <select id="ha_user_id" class="form-select"></select>
       <div class="form-text muted">Links Home Assistant gate opens to this access-control user for access notifications.</div>
+    </div>
+
+    <div class="mb-3" id="userAdminSettingsSection" style="display:none;">
+      <div class="form-check mb-2" id="dashboardAccessProfileRow">
+        <input class="form-check-input" type="checkbox" id="dashboard_access_enabled">
+        <label class="form-check-label" for="dashboard_access_enabled">Allow dashboard access</label>
+        <div class="form-text muted" id="dashboardAccessProfileHelp"></div>
+        <button type="button" class="btn btn-outline-info btn-sm mt-2" id="profileImpersonateBtn" data-impersonate-user="">
+          Impersonate this user
+        </button>
+      </div>
+      <div class="mt-3" id="eventVisibilityProfileRow">
+        <label class="form-label">Visible event users</label>
+        <div id="eventVisibilityTargets"></div>
+        <div class="form-text muted">This user can always see their own events. Select any additional users whose events they can view.</div>
+      </div>
+      <div id="userSettingsStatus" class="visually-hidden small mt-2"></div>
     </div>
 
     <div class="mb-3" id="anprSection">
