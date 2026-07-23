@@ -642,6 +642,7 @@ SIGNED_API_PATHS: Dict[str, str] = {
     "action": "/api/akuvox_ac/ui/action",
     "settings": "/api/akuvox_ac/ui/settings",
     "session": "/api/akuvox_ac/ui/session",
+    "impersonation": "/api/akuvox_ac/ui/impersonation",
     "phones": "/api/akuvox_ac/ui/phones",
     "diagnostics": "/api/akuvox_ac/ui/diagnostics",
     "support_bundle": "/api/akuvox_ac/ui/support_bundle",
@@ -719,6 +720,13 @@ def _ha_user_is_admin(user: Any) -> bool:
         return bool(getattr(user, "is_admin", False))
     except Exception:
         return False
+
+
+def _ha_user_is_active(user: Any) -> bool:
+    try:
+        return bool(getattr(user, "is_active", True))
+    except Exception:
+        return True
 
 
 def _dashboard_access_denied_response() -> web.Response:
@@ -809,14 +817,33 @@ def _dashboard_allowed_user_ids(settings: Any) -> Set[str]:
     return {str(item).strip() for item in raw if str(item or "").strip()}
 
 
+def _ha_user_has_dashboard_access(user: Any, settings: Any) -> bool:
+    user_id = _ha_user_id(user)
+    if not user_id:
+        return False
+    if bool(getattr(user, "system_generated", False)):
+        return False
+    if not _ha_user_is_active(user):
+        return False
+    if _ha_user_is_admin(user):
+        return True
+    return user_id in _dashboard_allowed_user_ids(settings)
+
+
 def _request_can_access_dashboard(hass: HomeAssistant, request: web.Request) -> bool:
+    root = hass.data.get(DOMAIN, {}) or {}
+    settings = root.get("settings_store") if isinstance(root, dict) else None
     user = _request_hass_user(request)
     if not user:
         session = _request_dashboard_session(hass, request)
-        return bool(session and session.get("dashboard_access") and session.get("is_admin"))
-    if _ha_user_is_admin(user):
-        return True
-    return False
+        if not session or not session.get("dashboard_access"):
+            return False
+        if session.get("is_admin"):
+            return True
+        return str(session.get("user_id") or "").strip() in _dashboard_allowed_user_ids(
+            settings
+        )
+    return _ha_user_has_dashboard_access(user, settings)
 
 
 def _request_is_admin(hass: HomeAssistant, request: web.Request) -> bool:
@@ -876,6 +903,67 @@ def _request_can_access_self_service(hass: HomeAssistant, request: web.Request) 
     return _request_self_service_context(hass, request) is not None
 
 
+async def _async_get_ha_user(hass: HomeAssistant, user_id: Any) -> Any:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return None
+    try:
+        user = hass.auth.async_get_user(user_id)
+        if inspect.isawaitable(user):
+            user = await user
+        return user
+    except Exception:
+        return None
+
+
+def _clear_dashboard_impersonation(session: Optional[Dict[str, Any]]) -> None:
+    if not isinstance(session, dict):
+        return
+    for key in (
+        "impersonate_user_id",
+        "impersonate_user_name",
+        "impersonate_is_admin",
+    ):
+        session.pop(key, None)
+
+
+async def _dashboard_impersonation_payload(
+    hass: HomeAssistant,
+    request: web.Request,
+    settings: Any,
+) -> Dict[str, Any]:
+    can_manage = _request_is_admin(hass, request)
+    session = _request_dashboard_session(hass, request)
+    payload: Dict[str, Any] = {
+        "can_manage": bool(can_manage),
+        "active": False,
+        "user_id": "",
+        "user_name": "",
+        "is_admin": False,
+    }
+    if not can_manage or not isinstance(session, dict) or not session.get("is_admin"):
+        return payload
+
+    target_id = str(session.get("impersonate_user_id") or "").strip()
+    if not target_id:
+        return payload
+
+    user = await _async_get_ha_user(hass, target_id)
+    if not _ha_user_has_dashboard_access(user, settings):
+        _clear_dashboard_impersonation(session)
+        return payload
+
+    payload.update(
+        {
+            "active": True,
+            "user_id": _ha_user_id(user),
+            "user_name": _ha_user_name(user),
+            "is_admin": _ha_user_is_admin(user),
+        }
+    )
+    return payload
+
+
 async def _dashboard_access_payload(
     hass: HomeAssistant,
     settings: Any,
@@ -901,23 +989,27 @@ async def _dashboard_access_payload(
                 continue
             active = bool(getattr(item, "is_active", True))
             admin = _ha_user_is_admin(item)
+            allowed_access = active and (admin or item_id in allowed)
             users.append(
                 {
                     "id": item_id,
                     "name": _ha_user_name(item),
                     "is_admin": admin,
                     "is_active": active,
-                    "allowed": admin or item_id in allowed,
+                    "allowed": allowed_access,
+                    "can_impersonate": allowed_access,
                 }
             )
 
     users.sort(key=lambda item: (not bool(item.get("is_admin")), str(item.get("name") or "").lower()))
+    impersonation = await _dashboard_impersonation_payload(hass, request, settings)
     return {
         "can_manage": can_manage,
         "current_user_id": current_user_id,
         "current_user_is_admin": can_manage,
         "allowed_user_ids": sorted(allowed),
         "users": users,
+        "impersonation": impersonation,
     }
 
 _CALL_TYPE_MAP = {
@@ -3550,6 +3642,12 @@ def _build_user_match_index(users: Dict[str, Any]) -> Dict[str, str]:
             _add(profile.get("ID"), canonical)
             _add(profile.get("card_code"), canonical)
             _add(profile.get("CardCode"), canonical)
+            _add(profile.get("ha_user_id"), canonical)
+            _add(profile.get("home_assistant_user_id"), canonical)
+            _add(profile.get("HomeAssistantUserID"), canonical)
+            _add(profile.get("ha_user_name"), canonical)
+            _add(profile.get("home_assistant_user_name"), canonical)
+            _add(profile.get("HomeAssistantUserName"), canonical)
 
     return index
 
@@ -3591,6 +3689,12 @@ def _merge_last_access(root: Dict[str, Any], users: Dict[str, Any]) -> Dict[str,
 
 
 _EVENT_USER_KEYS = (
+    "LinkedUserID",
+    "linked_user_id",
+    "linkedUserId",
+    "LinkedUserName",
+    "linked_user_name",
+    "linkedUserName",
     "UserID",
     "UserId",
     "User",
@@ -3602,7 +3706,283 @@ _EVENT_USER_KEYS = (
     "ID",
     "CardNo",
     "CardNumber",
+    "HomeAssistantUserID",
+    "home_assistant_user_id",
+    "ha_user_id",
+    "HomeAssistantUserName",
+    "home_assistant_user_name",
+    "ha_user_name",
+    "TriggeredBy",
+    "triggered_by",
 )
+
+
+def _active_registry_user_ids(users: Mapping[str, Any]) -> Set[str]:
+    active: Set[str] = set()
+    if not isinstance(users, Mapping):
+        return active
+
+    for key, profile in users.items():
+        canonical = normalize_user_id(key)
+        if not canonical:
+            continue
+        if not isinstance(profile, Mapping):
+            continue
+        if _profile_is_empty_reserved(profile):
+            continue
+        if str(profile.get("status") or "").strip().lower() == "deleted":
+            continue
+        active.add(canonical)
+    return active
+
+
+def _event_viewer_user_id(
+    hass: HomeAssistant,
+    request: web.Request,
+    root: Dict[str, Any],
+    self_service: Optional[Dict[str, Any]] = None,
+    actor_identity: Optional[Tuple[str, str]] = None,
+) -> str:
+    if self_service:
+        return normalize_user_id(self_service.get("user_id")) or str(
+            self_service.get("user_id") or ""
+        ).strip()
+
+    if actor_identity:
+        actor_id, actor_name = actor_identity
+    else:
+        actor_id, actor_name = _request_actor_identity(hass, request, None)
+    linked_id, _profile = _linked_registry_user_for_ha_actor(
+        root,
+        ha_user_id=actor_id,
+        ha_user_name=actor_name,
+    )
+    return normalize_user_id(linked_id) or str(linked_id or "").strip()
+
+
+def _visible_event_user_ids(
+    settings: Any,
+    viewer_user_id: Any,
+    users: Mapping[str, Any],
+) -> Set[str]:
+    viewer = normalize_user_id(viewer_user_id) or str(viewer_user_id or "").strip()
+    if not viewer:
+        return set()
+
+    active_ids = _active_registry_user_ids(users)
+    if active_ids and viewer not in active_ids:
+        return set()
+
+    visible: Set[str] = {viewer}
+    if settings and hasattr(settings, "event_visible_user_ids"):
+        try:
+            configured = settings.event_visible_user_ids(viewer)
+        except Exception:
+            configured = []
+    elif settings and hasattr(settings, "get_event_visibility"):
+        try:
+            raw = settings.get_event_visibility()
+            configured = (raw.get("users") or {}).get(viewer) or []
+        except Exception:
+            configured = []
+    else:
+        configured = []
+
+    for item in configured or []:
+        canonical = normalize_user_id(item) or str(item or "").strip()
+        if canonical:
+            visible.add(canonical)
+
+    return visible & active_ids if active_ids else visible
+
+
+def _event_matches_visible_users(
+    event: Dict[str, Any],
+    match_index: Mapping[str, str],
+    visible_user_ids: Set[str],
+) -> bool:
+    if not isinstance(event, dict) or not visible_user_ids:
+        return False
+
+    for key in _EVENT_USER_KEYS:
+        raw_text = _normalize_user_match_value(event.get(key))
+        if not raw_text:
+            continue
+
+        normalized = normalize_user_id(raw_text)
+        if normalized and normalized in visible_user_ids:
+            return True
+
+        match_id = match_index.get(raw_text.lower())
+        if match_id and match_id in visible_user_ids:
+            return True
+
+        if normalized:
+            match_id = match_index.get(normalized.lower())
+            if match_id and match_id in visible_user_ids:
+                return True
+
+    return False
+
+
+def _filter_events_for_visible_users(
+    events: Iterable[Dict[str, Any]],
+    users: Mapping[str, Any],
+    visible_user_ids: Set[str],
+) -> List[Dict[str, Any]]:
+    visible = {
+        normalize_user_id(item) or str(item or "").strip()
+        for item in (visible_user_ids or set())
+    }
+    visible = {item for item in visible if item}
+    if not visible:
+        return []
+
+    match_index = _build_user_match_index(dict(users or {}))
+    filtered: List[Dict[str, Any]] = []
+    for event in events or []:
+        if _event_matches_visible_users(event, match_index, visible):
+            filtered.append(event)
+    return filtered
+
+
+def _filter_device_events_for_visible_users(
+    devices: Iterable[Dict[str, Any]],
+    users: Mapping[str, Any],
+    visible_user_ids: Set[str],
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for device in devices or []:
+        if not isinstance(device, dict):
+            continue
+        copy = dict(device)
+        copy["events"] = _filter_events_for_visible_users(
+            copy.get("events") or [],
+            users,
+            visible_user_ids,
+        )
+        out.append(copy)
+    return out
+
+
+def _event_user_option_payload(
+    users: Iterable[Dict[str, Any]],
+    visible_user_ids: Optional[Set[str]] = None,
+) -> List[Dict[str, str]]:
+    allowed = None
+    if visible_user_ids is not None:
+        allowed = {
+            normalize_user_id(item) or str(item or "").strip()
+            for item in visible_user_ids
+        }
+        allowed = {item for item in allowed if item}
+
+    out: List[Dict[str, str]] = []
+    for user in users or []:
+        user_id = normalize_user_id((user or {}).get("id")) or str(
+            (user or {}).get("id") or ""
+        ).strip()
+        if not user_id:
+            continue
+        if allowed is not None and user_id not in allowed:
+            continue
+        out.append(
+            {
+                "id": user_id,
+                "name": str((user or {}).get("name") or user_id),
+            }
+        )
+    out.sort(key=lambda item: str(item.get("name") or "").lower())
+    return out
+
+
+def _event_access_payload(
+    *,
+    can_manage: bool,
+    viewer_user_id: str,
+    visible_user_ids: Optional[Set[str]],
+    registry_users: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    visible = (
+        {
+            normalize_user_id(item) or str(item or "").strip()
+            for item in (visible_user_ids or set())
+        }
+        if visible_user_ids is not None
+        else set()
+    )
+    visible = {item for item in visible if item}
+    return {
+        "can_manage": bool(can_manage),
+        "viewer_user_id": viewer_user_id or "",
+        "default_user_id": "" if can_manage else (viewer_user_id or ""),
+        "visible_user_ids": sorted(visible),
+        "users": _event_user_option_payload(
+            registry_users,
+            None if can_manage else visible,
+        ),
+    }
+
+
+def _settings_event_visibility_payload(
+    settings: Any,
+    registry_users: Iterable[Dict[str, Any]],
+    *,
+    can_manage: bool,
+) -> Dict[str, Any]:
+    rules: Dict[str, List[str]] = {}
+    if settings and hasattr(settings, "get_event_visibility"):
+        try:
+            raw = settings.get_event_visibility()
+            raw_rules = raw.get("users") if isinstance(raw, dict) else {}
+        except Exception:
+            raw_rules = {}
+        if isinstance(raw_rules, Mapping):
+            for viewer, visible in raw_rules.items():
+                viewer_id = normalize_user_id(viewer) or str(viewer or "").strip()
+                if not viewer_id:
+                    continue
+                values: List[str] = []
+                for item in visible or []:
+                    user_id = normalize_user_id(item) or str(item or "").strip()
+                    if user_id and user_id != viewer_id and user_id not in values:
+                        values.append(user_id)
+                if values:
+                    rules[viewer_id] = values
+
+    return {
+        "can_manage": bool(can_manage),
+        "rules": rules,
+        "users": _event_user_option_payload(registry_users),
+    }
+
+
+def _registry_users_payload(users_store: Any) -> List[Dict[str, str]]:
+    registry_users: List[Dict[str, str]] = []
+    if not users_store:
+        return registry_users
+
+    try:
+        raw_users = users_store.all() or {}
+    except Exception:
+        raw_users = {}
+    if not isinstance(raw_users, Mapping):
+        return registry_users
+
+    for key, prof in raw_users.items():
+        canonical = normalize_user_id(key)
+        if not canonical:
+            continue
+        if _profile_is_empty_reserved(prof):
+            continue
+        status = str((prof or {}).get("status") or "").strip().lower()
+        if status == "deleted":
+            continue
+        name = str((prof or {}).get("name") or canonical)
+        registry_users.append({"id": canonical, "name": name})
+
+    registry_users.sort(key=lambda item: item.get("name", "").lower())
+    return registry_users
 
 
 def _event_timestamp_text(event: Dict[str, Any]) -> str:
@@ -3881,7 +4261,10 @@ class AkuvoxDashboardView(HomeAssistantView):
         if target not in ("unauthorized", "unauthorized-mob") and _request_hass_user(request) is not None:
             if not _request_can_access_dashboard(hass, request):
                 if _request_can_access_self_service(hass, request):
-                    target = "users-mob" if target.endswith("-mob") or _request_prefers_mobile(request) else "users"
+                    if target in ("event_history", "event_history-mob"):
+                        pass
+                    else:
+                        target = "users-mob" if target.endswith("-mob") or _request_prefers_mobile(request) else "users"
                 else:
                     target = "unauthorized-mob" if target.endswith("-mob") else "unauthorized"
 
@@ -3959,6 +4342,20 @@ class AkuvoxUIView(HomeAssistantView):
                 "self_service": bool(self_service),
                 "self_user_id": (self_service or {}).get("user_id") if self_service else "",
             },
+            "event_access": {
+                "can_manage": has_dashboard_access and _request_is_admin(hass, request),
+                "viewer_user_id": "",
+                "default_user_id": "",
+                "visible_user_ids": [],
+                "users": [],
+            },
+            "impersonation": {
+                "can_manage": has_dashboard_access and _request_is_admin(hass, request),
+                "active": False,
+                "user_id": "",
+                "user_name": "",
+                "is_admin": False,
+            },
         }
 
         kpis: Dict[str, Any] = response["kpis"]
@@ -4011,6 +4408,23 @@ class AkuvoxUIView(HomeAssistantView):
                 )
 
             settings_store = root.get("settings_store")
+            impersonation = await _dashboard_impersonation_payload(
+                hass,
+                request,
+                settings_store,
+            )
+            response["impersonation"] = impersonation
+            if has_dashboard_access:
+                try:
+                    response["dashboard_access"] = await _dashboard_access_payload(
+                        hass,
+                        settings_store,
+                        request,
+                    )
+                    response["dashboard_access"]["self_service"] = False
+                except Exception:
+                    response["dashboard_access"]["impersonation"] = impersonation
+
             try:
                 access_limit = (
                     settings_store.get_access_history_limit()
@@ -4028,7 +4442,6 @@ class AkuvoxUIView(HomeAssistantView):
                     aggregated_events = history.snapshot(access_limit, min_timestamp=cutoff)
                 except Exception:
                     aggregated_events = []
-            response["access_events"] = aggregated_events
             response["access_event_limit"] = access_limit
 
             last_event_epoch = 0.0
@@ -4183,6 +4596,62 @@ class AkuvoxUIView(HomeAssistantView):
                         entry["last_access"] = last_access_by_user[user_id]
             response["registry_users"] = registry_users
 
+            can_manage_events = _request_is_admin(hass, request)
+            impersonated_actor: Optional[Tuple[str, str]] = None
+            if impersonation.get("active"):
+                impersonated_actor = (
+                    str(impersonation.get("user_id") or ""),
+                    str(impersonation.get("user_name") or ""),
+                )
+                can_manage_events = bool(impersonation.get("is_admin"))
+            viewer_user_id = _event_viewer_user_id(
+                hass,
+                request,
+                root,
+                self_service,
+                actor_identity=impersonated_actor,
+            )
+            visible_user_ids: Optional[Set[str]] = None
+            visible_events = aggregated_events
+            if not can_manage_events:
+                visible_user_ids = _visible_event_user_ids(
+                    settings_store,
+                    viewer_user_id,
+                    all_users,
+                )
+                visible_events = _filter_events_for_visible_users(
+                    aggregated_events,
+                    all_users,
+                    visible_user_ids,
+                )
+                devices = _filter_device_events_for_visible_users(
+                    devices,
+                    all_users,
+                    visible_user_ids,
+                )
+                response["devices"] = devices
+                last_event_epoch = 0.0
+                kpis["events_last_sync"] = None
+                for item in visible_events:
+                    _consider_event_timestamp(item)
+                for device in devices:
+                    for event in device.get("events", []) or []:
+                        _consider_event_timestamp(event)
+                if last_event_epoch:
+                    try:
+                        kpis["events_last_sync"] = dt.datetime.fromtimestamp(
+                            last_event_epoch, dt.timezone.utc
+                        ).isoformat()
+                    except Exception:
+                        kpis["events_last_sync"] = last_event_epoch
+            response["access_events"] = visible_events
+            response["event_access"] = _event_access_payload(
+                can_manage=can_manage_events,
+                viewer_user_id=viewer_user_id,
+                visible_user_ids=visible_user_ids,
+                registry_users=registry_users,
+            )
+
             schedules = {}
             ss = root.get("schedules_store")
             if ss:
@@ -4215,7 +4684,6 @@ class AkuvoxUIView(HomeAssistantView):
                     user for user in registry_users if str(user.get("id") or "") == self_user_id
                 ]
                 response["devices"] = []
-                response["access_events"] = []
                 response["home_assistant_users"] = []
                 response["schedules"] = {}
                 response["schedule_ids"] = {}
@@ -4259,6 +4727,77 @@ class AkuvoxUISession(HomeAssistantView):
                 "is_admin": session.get("is_admin"),
             }
         )
+
+
+class AkuvoxUIImpersonation(HomeAssistantView):
+    url = "/api/akuvox_ac/ui/impersonation"
+    name = "api:akuvox_ac:ui_impersonation"
+    requires_auth = False
+
+    async def get(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
+        root = hass.data.get(DOMAIN, {}) or {}
+        settings = root.get("settings_store") if isinstance(root, dict) else None
+        payload = await _dashboard_impersonation_payload(hass, request, settings)
+        return web.json_response({"ok": True, "impersonation": payload})
+
+    async def post(self, request: web.Request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _request_can_access_dashboard(hass, request):
+            return _dashboard_access_denied_response()
+
+        session = _request_dashboard_session(hass, request)
+        if not isinstance(session, dict) or not session.get("is_admin"):
+            return web.json_response(
+                {"ok": False, "error": "administrator dashboard session required"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        root = hass.data.get(DOMAIN, {}) or {}
+        settings = root.get("settings_store") if isinstance(root, dict) else None
+
+        stop_requested = bool(payload.get("stop") or payload.get("clear"))
+        target_id = str(
+            payload.get("user_id")
+            or payload.get("target_user_id")
+            or payload.get("impersonate_user_id")
+            or ""
+        ).strip()
+
+        if stop_requested or not target_id:
+            _clear_dashboard_impersonation(session)
+            current = await _dashboard_impersonation_payload(hass, request, settings)
+            return web.json_response({"ok": True, "impersonation": current})
+
+        if target_id == str(session.get("user_id") or "").strip():
+            _clear_dashboard_impersonation(session)
+            current = await _dashboard_impersonation_payload(hass, request, settings)
+            return web.json_response({"ok": True, "impersonation": current})
+
+        user = await _async_get_ha_user(hass, target_id)
+        if not _ha_user_has_dashboard_access(user, settings):
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "selected user does not have dashboard access",
+                },
+                status=400,
+            )
+
+        session["impersonate_user_id"] = _ha_user_id(user)
+        session["impersonate_user_name"] = _ha_user_name(user)
+        session["impersonate_is_admin"] = _ha_user_is_admin(user)
+        current = await _dashboard_impersonation_payload(hass, request, settings)
+        return web.json_response({"ok": True, "impersonation": current})
 
 
 # ========================= ACTIONS =========================
@@ -5141,6 +5680,7 @@ class AkuvoxUISettings(HomeAssistantView):
         )
         alerts = {"targets": {}}
         face_integrity_enabled = True
+        event_visibility = {"can_manage": False, "rules": {}, "users": []}
         if settings:
             try:
                 interval = settings.get_integrity_interval_minutes()
@@ -5190,6 +5730,8 @@ class AkuvoxUISettings(HomeAssistantView):
             try:
                 if users_store and hasattr(settings, "prune_stale_alert_users"):
                     await settings.prune_stale_alert_users(users_store)
+                if users_store and hasattr(settings, "prune_stale_event_visibility_users"):
+                    await settings.prune_stale_event_visibility_users(users_store)
                 alerts = {"targets": settings.get_alert_targets()}
             except Exception:
                 data = getattr(settings, "data", {})
@@ -5266,6 +5808,16 @@ class AkuvoxUISettings(HomeAssistantView):
             except Exception:
                 pass
         dashboard_access = await _dashboard_access_payload(hass, settings, request)
+        impersonation = await _dashboard_impersonation_payload(
+            hass,
+            request,
+            settings,
+        )
+        event_visibility = _settings_event_visibility_payload(
+            settings,
+            registry_users,
+            can_manage=_request_is_admin(hass, request),
+        )
 
         return web.json_response(
             {
@@ -5298,6 +5850,8 @@ class AkuvoxUISettings(HomeAssistantView):
                 "default_hacs_auto_update_check_time": "02:00",
                 "groups": groups,
                 "dashboard_access": dashboard_access,
+                "event_visibility": event_visibility,
+                "impersonation": impersonation,
             }
         )
 
@@ -5331,6 +5885,26 @@ class AkuvoxUISettings(HomeAssistantView):
                 await settings.set_dashboard_access(payload.get("dashboard_access"))
                 response["dashboard_access"] = await _dashboard_access_payload(
                     hass, settings, request
+                )
+            except Exception as err:
+                return web.json_response({"ok": False, "error": str(err)}, status=400)
+
+        if "event_visibility" in payload:
+            if not _request_can_manage_dashboard_access(request, hass):
+                return web.json_response(
+                    {"ok": False, "error": "administrator access required"},
+                    status=403,
+                )
+            if not settings or not hasattr(settings, "set_event_visibility"):
+                return web.json_response({"ok": False, "error": "settings unavailable"}, status=500)
+            try:
+                await settings.set_event_visibility(payload.get("event_visibility"))
+                if users_store and hasattr(settings, "prune_stale_event_visibility_users"):
+                    await settings.prune_stale_event_visibility_users(users_store)
+                response["event_visibility"] = _settings_event_visibility_payload(
+                    settings,
+                    _registry_users_payload(users_store),
+                    can_manage=_request_is_admin(hass, request),
                 )
             except Exception as err:
                 return web.json_response({"ok": False, "error": str(err)}, status=400)
@@ -7274,6 +7848,7 @@ def register_ui(hass: HomeAssistant) -> None:
     hass.http.register_view(AkuvoxDashboardView())
     hass.http.register_view(AkuvoxUIView())
     hass.http.register_view(AkuvoxUISession())
+    hass.http.register_view(AkuvoxUIImpersonation())
     hass.http.register_view(AkuvoxUIAction())
     hass.http.register_view(AkuvoxUIDevices())
     hass.http.register_view(AkuvoxUISettings())

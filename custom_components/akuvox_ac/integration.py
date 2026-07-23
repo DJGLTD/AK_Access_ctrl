@@ -693,6 +693,75 @@ def _prune_notify_targets_to_users(
     return targets, changed
 
 
+def _sanitize_event_visibility_rules(raw: Any) -> Dict[str, List[str]]:
+    """Return viewer -> additional visible user IDs for access event history."""
+
+    if isinstance(raw, Mapping):
+        raw_rules = raw.get("users") if isinstance(raw.get("users"), Mapping) else raw
+    else:
+        raw_rules = {}
+
+    cleaned: Dict[str, List[str]] = {}
+    if not isinstance(raw_rules, Mapping):
+        return cleaned
+
+    for viewer_raw, visible_raw in raw_rules.items():
+        viewer = normalize_user_id(viewer_raw)
+        if not viewer:
+            continue
+
+        if isinstance(visible_raw, str):
+            visible_iterable: Iterable[Any] = [visible_raw]
+        elif isinstance(visible_raw, (list, tuple, set)):
+            visible_iterable = visible_raw
+        else:
+            visible_iterable = []
+
+        visible: List[str] = []
+        seen: Set[str] = set()
+        for item in visible_iterable:
+            user_id = normalize_user_id(item)
+            if not user_id or user_id == viewer or user_id in seen:
+                continue
+            seen.add(user_id)
+            visible.append(user_id)
+
+        if visible:
+            cleaned[viewer] = visible
+
+    return cleaned
+
+
+def _prune_event_visibility_to_users(
+    raw_rules: Any,
+    active_user_ids: Set[str],
+) -> Tuple[Dict[str, List[str]], bool]:
+    rules = _sanitize_event_visibility_rules(raw_rules)
+    changed = False
+    cleaned: Dict[str, List[str]] = {}
+
+    for viewer, visible_users in rules.items():
+        if viewer not in active_user_ids:
+            changed = True
+            continue
+
+        retained: List[str] = []
+        for user_id in visible_users:
+            if user_id not in active_user_ids:
+                changed = True
+                continue
+            retained.append(user_id)
+
+        if retained:
+            cleaned[viewer] = retained
+        elif visible_users:
+            changed = True
+
+    if cleaned != rules:
+        changed = True
+    return cleaned, changed
+
+
 async def _set_notify_on_access_for_user(
     settings_store: Any,
     user_id: Any,
@@ -3292,6 +3361,7 @@ class AkuvoxSettingsStore(Store):
             "access_history_retention_days": DEFAULT_ACCESS_HISTORY_RETENTION_DAYS,
             "hacs_auto_update": dict(self.DEFAULT_HACS_AUTO_UPDATE),
             "dashboard_access": {"allowed_user_ids": []},
+            "event_visibility": {"users": {}},
             "expiry_reminders": {"last_sent": {}},
         }
 
@@ -3359,6 +3429,9 @@ class AkuvoxSettingsStore(Store):
         )
         self.data["dashboard_access"] = self._sanitize_dashboard_access(
             self.data.get("dashboard_access")
+        )
+        self.data["event_visibility"] = self._sanitize_event_visibility(
+            self.data.get("event_visibility")
         )
 
         try:
@@ -3444,6 +3517,29 @@ class AkuvoxSettingsStore(Store):
         self.data["dashboard_access"] = sanitized
         await self.async_save()
         return dict(sanitized)
+
+    def _sanitize_event_visibility(self, raw: Any) -> Dict[str, Any]:
+        return {"users": _sanitize_event_visibility_rules(raw)}
+
+    def get_event_visibility(self) -> Dict[str, Any]:
+        return self._sanitize_event_visibility(self.data.get("event_visibility"))
+
+    async def set_event_visibility(self, config: Any) -> Dict[str, Any]:
+        sanitized = self._sanitize_event_visibility(config)
+        self.data["event_visibility"] = sanitized
+        await self.async_save()
+        return {"users": {key: list(value) for key, value in sanitized["users"].items()}}
+
+    def event_visible_user_ids(self, user_id: Any) -> List[str]:
+        viewer = normalize_user_id(user_id) or str(user_id or "").strip()
+        if not viewer:
+            return []
+        rules = self.get_event_visibility().get("users") or {}
+        visible = [viewer]
+        for item in rules.get(viewer) or []:
+            if item and item not in visible:
+                visible.append(item)
+        return visible
 
     def _normalize_hacs_auto_update_hours(self, hours: Any) -> int:
         try:
@@ -3782,6 +3878,14 @@ class AkuvoxSettingsStore(Store):
         updated, changed = _prune_notify_targets_to_users(targets, active_user_ids)
         if changed:
             await self.set_alert_targets(updated)
+        return changed
+
+    async def prune_stale_event_visibility_users(self, users_store: Any) -> bool:
+        active_user_ids = _active_notification_user_ids(users_store)
+        rules = self.get_event_visibility().get("users") or {}
+        updated, changed = _prune_event_visibility_to_users(rules, active_user_ids)
+        if changed:
+            await self.set_event_visibility({"users": updated})
         return changed
 
     def _sanitize_expiry_reminders(self, raw: Any) -> Dict[str, Any]:

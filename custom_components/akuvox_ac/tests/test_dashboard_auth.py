@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,6 +7,53 @@ from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 ensure_homeassistant_stubs()
 
 from custom_components.akuvox_ac import http as http_module  # noqa: E402
+from custom_components.akuvox_ac.const import DOMAIN  # noqa: E402
+
+
+class _User:
+    def __init__(
+        self,
+        user_id,
+        name,
+        *,
+        is_admin=False,
+        is_active=True,
+        system_generated=False,
+    ):
+        self.id = user_id
+        self.name = name
+        self.is_admin = is_admin
+        self.is_active = is_active
+        self.system_generated = system_generated
+
+
+class _Settings:
+    def __init__(self, allowed_user_ids=None):
+        self._allowed = list(allowed_user_ids or [])
+
+    def get_dashboard_access(self):
+        return {"allowed_user_ids": list(self._allowed)}
+
+
+class _Request(dict):
+    def __init__(self, *, user=None, headers=None, query=None):
+        super().__init__()
+        if user is not None:
+            self[http_module.KEY_HASS_USER] = user
+        self.headers = headers or {}
+        self.query = query or {}
+        self.rel_url = SimpleNamespace(query=self.query)
+
+
+class _Auth:
+    def __init__(self, users):
+        self._users = {user.id: user for user in users}
+
+    def async_get_user(self, user_id):
+        return self._users.get(user_id)
+
+    async def async_get_users(self):
+        return list(self._users.values())
 
 
 def _dashboard_request(query=None, user_agent=""):
@@ -58,11 +106,122 @@ def test_dashboard_injects_signing_helper_without_initial_signed_paths():
 def test_dashboard_post_views_use_dashboard_session_token_instead_of_signed_post():
     assert http_module.AkuvoxUISession.requires_auth is True
     assert http_module.AkuvoxUIView.requires_auth is False
+    assert http_module.AkuvoxUIImpersonation.requires_auth is False
     assert http_module.AkuvoxUIAction.requires_auth is False
     assert http_module.AkuvoxUISettings.requires_auth is False
     assert http_module.AkuvoxUISupportBundle.requires_auth is False
+    assert http_module.SIGNED_API_PATHS["impersonation"] == "/api/akuvox_ac/ui/impersonation"
     assert "refresh_events" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
     assert "delete_user" in http_module.ALLOWED_DASHBOARD_SERVICE_PROXY
+
+
+def test_dashboard_access_allows_configured_non_admin_users():
+    allowed = _User("ha-allowed", "Allowed")
+    denied = _User("ha-denied", "Denied")
+    admin = _User("ha-admin", "Admin", is_admin=True)
+    settings = _Settings(["ha-allowed"])
+    hass = SimpleNamespace(data={DOMAIN: {"settings_store": settings}})
+
+    assert http_module._request_can_access_dashboard(
+        hass, _Request(user=admin)
+    ) is True
+    assert http_module._request_can_access_dashboard(
+        hass, _Request(user=allowed)
+    ) is True
+    assert http_module._request_can_access_dashboard(
+        hass, _Request(user=denied)
+    ) is False
+
+
+def test_dashboard_session_access_honors_allowed_user_list():
+    settings = _Settings(["ha-allowed"])
+    session = {
+        "token": "token-1",
+        "expires_at": http_module.time.time() + 60,
+        "user_id": "ha-allowed",
+        "user_name": "Allowed",
+        "is_admin": False,
+        "dashboard_access": True,
+    }
+    hass = SimpleNamespace(
+        data={DOMAIN: {"settings_store": settings, "dashboard_sessions": {"token-1": session}}}
+    )
+    request = _Request(headers={http_module.DASHBOARD_SESSION_HEADER: "token-1"})
+
+    assert http_module._request_can_access_dashboard(hass, request) is True
+
+    settings._allowed = []
+
+    assert http_module._request_can_access_dashboard(hass, request) is False
+
+
+def test_dashboard_impersonation_payload_uses_admin_session_target():
+    admin = _User("ha-admin", "Admin", is_admin=True)
+    target = _User("ha-target", "Target")
+    settings = _Settings(["ha-target"])
+    session = {
+        "token": "token-1",
+        "expires_at": http_module.time.time() + 60,
+        "user_id": admin.id,
+        "user_name": admin.name,
+        "is_admin": True,
+        "dashboard_access": True,
+        "impersonate_user_id": target.id,
+    }
+    hass = SimpleNamespace(
+        auth=_Auth([admin, target]),
+        data={DOMAIN: {"settings_store": settings, "dashboard_sessions": {"token-1": session}}},
+    )
+    request = _Request(headers={http_module.DASHBOARD_SESSION_HEADER: "token-1"})
+
+    payload = asyncio.run(
+        http_module._dashboard_impersonation_payload(hass, request, settings)
+    )
+
+    assert payload == {
+        "can_manage": True,
+        "active": True,
+        "user_id": "ha-target",
+        "user_name": "Target",
+        "is_admin": False,
+    }
+
+
+def test_event_viewer_user_id_can_use_impersonated_actor_identity():
+    root = {
+        "users_store": SimpleNamespace(
+            all=lambda: {
+                "HA001": {"name": "Admin", "ha_user_id": "ha-admin"},
+                "HA002": {"name": "Target", "ha_user_id": "ha-target"},
+            }
+        )
+    }
+
+    assert (
+        http_module._event_viewer_user_id(
+            SimpleNamespace(),
+            _Request(),
+            root,
+            actor_identity=("ha-target", "Target"),
+        )
+        == "HA002"
+    )
+
+
+def test_dashboard_frontend_contains_impersonation_controls():
+    www = Path(http_module.STATIC_ROOT)
+
+    for page_name in ("head.html", "head-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "impersonationBanner" in html
+        assert "stopImpersonation" in html
+        assert "akuvox-impersonation-changed" in html
+
+    for page_name in ("settings.html", "settings-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "data-impersonate-user" in html
+        assert "API_IMPERSONATION" in html
+        assert "stopImpersonationFromSettings" in html
 
 
 def test_support_bundle_is_signed_and_redacts_sensitive_values():

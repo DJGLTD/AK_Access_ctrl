@@ -131,6 +131,35 @@
       border-color: rgba(47,240,196,.6);
       outline: none;
     }
+    .impersonation-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.65rem 1rem;
+      background: #5d3b04;
+      border-bottom: 1px solid rgba(255,193,7,.42);
+      color: #fff8df;
+      font-size: 0.9rem;
+      z-index: 2;
+    }
+    .impersonation-banner.active { display: flex; }
+    .impersonation-banner strong { color: #fff; }
+    .impersonation-banner button {
+      border: 1px solid rgba(255,255,255,.75);
+      background: rgba(255,255,255,.12);
+      color: #fff;
+      border-radius: 999px;
+      padding: 0.25rem 0.75rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .impersonation-banner button:hover,
+    .impersonation-banner button:focus {
+      background: rgba(255,255,255,.22);
+      outline: none;
+    }
     .mobile-launcher {
       display: none;
       padding: 0.75rem;
@@ -463,6 +492,10 @@
       </div>
     </div>
   </header>
+  <div class="impersonation-banner" id="impersonationBanner" role="status" aria-live="polite">
+    <span>Impersonating <strong id="impersonationBannerName">another user</strong></span>
+    <button type="button" id="stopImpersonationBtn">Stop</button>
+  </div>
   <section class="mobile-launcher" id="mobileLauncher" aria-label="Quick actions">
     <div class="mobile-launcher-intro">
       <span class="mobile-launcher-title">Access Control</span>
@@ -1201,6 +1234,35 @@ function isSignedPath(url){
 }
 
 const API_STATE = signedPath('state', '/api/akuvox_ac/ui/state');
+const API_IMPERSONATION = signedPath('impersonation', '/api/akuvox_ac/ui/impersonation');
+
+function renderImpersonationBanner(impersonation){
+  const banner = document.getElementById('impersonationBanner');
+  const nameEl = document.getElementById('impersonationBannerName');
+  if (!banner || !nameEl) return;
+  const active = !!(impersonation && impersonation.active);
+  const name = String((impersonation && (impersonation.user_name || impersonation.user_id)) || '').trim();
+  nameEl.textContent = name || 'another user';
+  banner.classList.toggle('active', active);
+}
+
+async function stopImpersonation(){
+  try {
+    const res = await fetch(API_IMPERSONATION, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ stop: true })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const payload = await res.json();
+    renderImpersonationBanner(payload?.impersonation);
+    reloadActiveView({ updateHistory: false, replaceState: false });
+    try { fetchVersion(); } catch (err) {}
+  } catch (err) {
+    console.warn('Failed to stop Akuvox impersonation', err);
+  }
+}
 
 async function ensureDashboardSignedPaths(){
   const paths = window.AK_AC_API_PATHS || {};
@@ -1702,6 +1764,7 @@ async function fetchVersion(){
     }
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    renderImpersonationBanner(data?.impersonation || data?.dashboard_access?.impersonation);
     const label = data?.kpis?.version || '—';
     if (data?.hacs_auto_update && typeof data.hacs_auto_update === 'object') {
       hacsUpdateStatus = data.hacs_auto_update;
@@ -1865,6 +1928,11 @@ if (mobileBackBtn) {
   });
 }
 
+document.getElementById('stopImpersonationBtn')?.addEventListener('click', (ev) => {
+  ev.preventDefault();
+  stopImpersonation();
+});
+
 const mobileMenuBtn = document.getElementById('mobileMenuBtn');
 if (mobileMenuBtn) {
   mobileMenuBtn.addEventListener('click', (ev) => {
@@ -1883,6 +1951,12 @@ updateGroupExpansion();
 window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin) return;
   const data = event.data || {};
+  if (data.type === 'akuvox-impersonation-changed') {
+    renderImpersonationBanner(data.impersonation);
+    reloadActiveView({ updateHistory: false, replaceState: false });
+    try { fetchVersion(); } catch (err) {}
+    return;
+  }
   if (data.type !== 'akuvox-nav') return;
   const view = normalizeView(data.view || data.slug || data.target || DEFAULT_VIEW);
   const params = data.params || {};
