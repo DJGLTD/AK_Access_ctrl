@@ -1246,6 +1246,33 @@ function renderImpersonationBanner(impersonation){
   banner.classList.toggle('active', active);
 }
 
+function routeAfterImpersonationChange(impersonation){
+  if (impersonation && impersonation.active) {
+    const frame = document.getElementById('viewFrame');
+    const previousHref = frame?.dataset?.currentHref || '';
+    if (isMobileMode) {
+      const menuGroup = mobileGroupForView('index');
+      setMobileStage('content', { preserveGroups: true, syncHistory: false });
+      rememberMobileDestination('index', {}, { reset: true, menuGroup });
+      loadView('index', {}, {
+        replaceState: true,
+        mobileMenuEntry: false,
+        mobileMenuGroup: menuGroup
+      });
+      if (frame && frame.dataset.currentHref && frame.dataset.currentHref === previousHref) {
+        frame.src = frame.dataset.currentHref;
+      }
+      return;
+    }
+    loadView('index', {}, { replaceState: true });
+    if (frame && frame.dataset.currentHref && frame.dataset.currentHref === previousHref) {
+      frame.src = frame.dataset.currentHref;
+    }
+    return;
+  }
+  reloadActiveView({ updateHistory: false, replaceState: false });
+}
+
 async function stopImpersonation(){
   try {
     const res = await fetch(API_IMPERSONATION, {
@@ -1565,6 +1592,7 @@ function reloadActiveView(options = {}){
   const frame = document.getElementById('viewFrame');
   if (!frame) return;
   const view = frame.dataset.currentView || DEFAULT_VIEW;
+  const previousHref = frame.dataset.currentHref || '';
   let params = {};
   if (frame.dataset.currentParams) {
     try {
@@ -1574,6 +1602,9 @@ function reloadActiveView(options = {}){
     }
   }
   loadView(view, params, { updateHistory: options.updateHistory ?? false, replaceState: !!options.replaceState });
+  if (frame.dataset.currentHref && frame.dataset.currentHref === previousHref) {
+    frame.src = frame.dataset.currentHref;
+  }
 }
 
 async function handleTokenChanged(){
@@ -1953,7 +1984,7 @@ window.addEventListener('message', (event) => {
   const data = event.data || {};
   if (data.type === 'akuvox-impersonation-changed') {
     renderImpersonationBanner(data.impersonation);
-    reloadActiveView({ updateHistory: false, replaceState: false });
+    routeAfterImpersonationChange(data.impersonation);
     try { fetchVersion(); } catch (err) {}
     return;
   }

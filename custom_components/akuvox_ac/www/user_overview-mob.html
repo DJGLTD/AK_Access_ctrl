@@ -1265,7 +1265,10 @@ async function setOverviewImpersonation(userId = ''){
     const res = await apiPost(impersonationUrl, body);
     IMPERSONATION = sanitizeImpersonation(res?.impersonation);
     const delivered = notifyParentImpersonationChanged(IMPERSONATION);
-    if (!delivered) await refresh();
+    if (!delivered) {
+      if (IMPERSONATION.active) openInApp('index', {}, { replaceState: true });
+      else await refresh();
+    }
   } catch (err) {
     if (handleAuthError(err)) return;
     alert(`Impersonation failed: ${err && err.message ? err.message : err}`);
