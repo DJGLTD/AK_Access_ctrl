@@ -9,17 +9,20 @@ def read_page(name):
     return (WWW / name).read_text(encoding="utf-8")
 
 
-def test_standalone_mobile_event_history_has_category_filter():
-    mobile = read_page("event_history-mob.html")
+def test_standalone_event_history_pages_have_matching_filters():
+    for name in ("event_history.html", "event_history-mob.html"):
+        page = read_page(name)
 
-    assert 'id="eventFilter"' in mobile
-    assert '<option value="all">All events</option>' in mobile
-    assert '<option value="system">System events</option>' in mobile
-    assert '<option value="access">Access events</option>' in mobile
-    assert "let eventFilterMode = 'access';" in mobile
-    assert "function applyCategoryFilter(events)" in mobile
-    assert "evt._category === 'access' || evt._category === 'call'" in mobile
-    assert "renderFilteredEvents();" in mobile
+        assert 'id="eventFilter"' in page
+        assert 'id="userFilter"' in page
+        assert '<option value="all">All events</option>' in page
+        assert '<option value="system">System events</option>' in page
+        assert '<option value="access">Access events</option>' in page
+        assert "let eventFilterMode = 'access';" in page
+        assert "function applyCategoryFilter(events)" in page
+        assert "evt._category === 'access' || evt._category === 'call'" in page
+        assert "document.getElementById('eventFilter').value = eventFilterMode;" in page
+        assert "renderFilteredEvents();" in page
 
 
 def test_mobile_user_sort_recovers_from_unknown_stored_value():

@@ -130,6 +130,7 @@
     .event-result.ok{color:var(--ok)} .event-result.bad{color:var(--bad)} .event-result.dim{color:#68a9ff}
     .event-filter{background:#0b1b2f;color:var(--text);border:1px solid #294866;min-width:8.7rem}
     .event-filter:focus{color:var(--text);background:#0e2036;border-color:#1686ff;box-shadow:0 0 0 .18rem rgba(22,134,255,.16)}
+    .event-user-filter{min-width:11.8rem}
     .device-overview-list{display:flex;flex-direction:column;justify-content:flex-start;gap:12px;padding:14px;height:100%}
     .device-overview-card{
       border:1px solid #1c3856;border-radius:8px;background:rgba(6,20,35,.62);
@@ -247,6 +248,7 @@
       #sectionEvents .card-header>span{font-size:.8rem;line-height:1.1;white-space:nowrap}
       #sectionEvents .card-header .gap-2{gap:.35rem!important}
       .event-filter{min-width:7.2rem;font-size:.72rem}
+      .event-user-filter{min-width:8.4rem}
       #btnViewEvents span{display:none}
       #btnViewEvents .bi{display:inline-block;font-size:.9rem}
       .device-overview-card{padding:8px;grid-template-columns:72px minmax(0,1fr);gap:10px}
@@ -971,18 +973,29 @@ const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face:
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
 
 let eventFilterMode = 'access';
+let eventUserFilterValue = '';
 let cachedEvents = [];
+let eventFeedAccess = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
+let eventFeedUserMatchIndex = new Map();
 let eventHistoryInitialized = false;
 let lastEventRefreshAttempt = 0;
 
 window.addEventListener('DOMContentLoaded', () => {
   const select = document.getElementById('eventFilter');
-  if (!select) return;
-  select.value = eventFilterMode;
-  select.addEventListener('change', (ev) => {
-    eventFilterMode = ev.target?.value || 'all';
-    applyEventFilter();
-  });
+  if (select) {
+    select.value = eventFilterMode;
+    select.addEventListener('change', (ev) => {
+      eventFilterMode = ev.target?.value || 'all';
+      applyEventFilter();
+    });
+  }
+  const userSelect = document.getElementById('eventUserFilter');
+  if (userSelect) {
+    userSelect.addEventListener('change', (ev) => {
+      eventUserFilterValue = ev.target?.value || '';
+      applyEventFilter();
+    });
+  }
 });
 
 function parseIsoDate(value){
@@ -1733,6 +1746,190 @@ const EVENT_EMPTY_MESSAGES = {
   system: 'No system events',
   access: 'No access events',
 };
+
+function normalizeUserMatch(value){
+  if (value === undefined || value === null) return '';
+  return String(value).trim().toLowerCase();
+}
+
+function canonicalUserId(value){
+  if (value === undefined || value === null) return '';
+  const text = String(value).trim();
+  const match = text.match(/^(ha|tmp)-?(\d+)$/i);
+  if (!match) return '';
+  return `${match[1].toUpperCase()}${String(Number(match[2])).padStart(3, '0')}`;
+}
+
+function normalizeEventAccess(raw){
+  const base = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  base.viewer_user_id = String(raw.viewer_user_id || '');
+  base.default_user_id = String(raw.default_user_id || '');
+  if (Array.isArray(raw.visible_user_ids)) {
+    base.visible_user_ids = raw.visible_user_ids.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw.users)) {
+    base.users = raw.users.map(item => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || 'User').trim()
+    })).filter(item => item.id);
+  }
+  return base;
+}
+
+function eventUserLabel(user){
+  const id = String(user?.id || '').trim();
+  const name = String(user?.name || id || 'User').trim();
+  return id && name && normalizeUserMatch(name) !== normalizeUserMatch(id) ? `${name} (${id})` : (name || id || 'User');
+}
+
+function dashboardEventUsers(access, registryUsers){
+  if (access.users.length) return access.users;
+  return (registryUsers || [])
+    .map(user => ({ id: String(user?.id || '').trim(), name: String(user?.name || user?.id || 'User').trim() }))
+    .filter(user => user.id);
+}
+
+function resolveRequestedEventUserId(users, raw){
+  const wanted = normalizeUserMatch(raw);
+  if (!wanted) return '';
+  const match = (users || []).find(user =>
+    normalizeUserMatch(user.id) === wanted || normalizeUserMatch(user.name) === wanted
+  );
+  return match ? match.id : String(raw || '').trim();
+}
+
+function populateEventUserFilter(accessRaw, registryUsers){
+  const select = document.getElementById('eventUserFilter');
+  eventFeedAccess = normalizeEventAccess(accessRaw);
+  if (!select) return;
+  const users = dashboardEventUsers(eventFeedAccess, registryUsers);
+  const canManage = !!eventFeedAccess.can_manage;
+  const requested = resolveRequestedEventUserId(users, eventUserFilterValue || select.value);
+  const defaultUser = eventFeedAccess.default_user_id || eventFeedAccess.viewer_user_id || '';
+
+  select.innerHTML = '';
+  const addOption = (value, label) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  };
+  if (canManage) {
+    addOption('', 'All users');
+  } else if (users.length > 1) {
+    addOption('__all_visible__', 'All visible users');
+  }
+  users.forEach(user => addOption(user.id, eventUserLabel(user)));
+
+  const optionValues = new Set(Array.from(select.options).map(option => option.value));
+  let desired = requested || (canManage ? '' : defaultUser);
+  if (!canManage && !optionValues.has(desired)) desired = defaultUser;
+  if (canManage && desired && !optionValues.has(desired)) addOption(desired, desired);
+  select.value = optionValues.has(desired) || (canManage && desired) ? desired : '';
+  if (!canManage && !select.value && defaultUser && optionValues.has(defaultUser)) select.value = defaultUser;
+  select.disabled = !canManage && users.length <= 1;
+  eventUserFilterValue = select.value || '';
+}
+
+function addUserMatchEntry(matchIndex, value, userId){
+  const key = normalizeUserMatch(value);
+  const normalizedId = normalizeUserMatch(canonicalUserId(userId) || userId);
+  if (key && normalizedId) matchIndex.set(key, normalizedId);
+}
+
+function userMatchFields(user){
+  if (!user || typeof user !== 'object') return [];
+  return [
+    user.id, user.user_id, user.UserID, user.ha_user_id, user.HomeAssistantUserID,
+    user.name, user.Name, user.user_name, user.UserName, user.full_name, user.display_name,
+    user.home_assistant_user_name, user.HomeAssistantUserName, user.ha_user_name
+  ];
+}
+
+function buildUserMatchIndex(devices, registryUsers){
+  const matchIndex = new Map();
+  const labelToCanonical = new Map();
+  (registryUsers || []).forEach(user => {
+    const rowId = user?.id || user?.user_id || user?.UserID || user?.ha_user_id || user?.HomeAssistantUserID;
+    const canonical = canonicalUserId(rowId);
+    if (!canonical) return;
+    userMatchFields(user).forEach(value => addUserMatchEntry(matchIndex, value, canonical));
+    const label = normalizeUserMatch(user?.name || user?.Name || user?.user_name || user?.UserName);
+    if (label) labelToCanonical.set(label, canonical);
+  });
+  (devices || []).forEach(device => {
+    (device?._users || device?.users || []).forEach(user => {
+      const rowId = user?.id || user?.user_id || user?.UserID || user?.NameID || user?.ha_user_id || user?.HomeAssistantUserID;
+      const label = normalizeUserMatch(user?.name || user?.Name || user?.user_name || user?.UserName);
+      const canonical = canonicalUserId(rowId) || labelToCanonical.get(label) || '';
+      if (!canonical) return;
+      userMatchFields(user).forEach(value => addUserMatchEntry(matchIndex, value, canonical));
+    });
+  });
+  return matchIndex;
+}
+
+function resolveUserMatchId(value, userMatchIndex){
+  const key = normalizeUserMatch(value);
+  if (!key) return '';
+  const normalized = canonicalUserId(value);
+  const normalizedKey = normalizeUserMatch(normalized);
+  if (userMatchIndex && userMatchIndex.size) {
+    const mapped = userMatchIndex.get(key) || (normalizedKey ? userMatchIndex.get(normalizedKey) : '');
+    if (mapped) return normalizeUserMatch(canonicalUserId(mapped) || mapped);
+  }
+  return normalizedKey || key;
+}
+
+function currentEventUserFilter(){
+  const select = document.getElementById('eventUserFilter');
+  if (select) {
+    const value = select.value || '';
+    const selected = select.options[select.selectedIndex];
+    return { value, label: selected ? selected.textContent : value };
+  }
+  return { value: eventUserFilterValue, label: eventUserFilterValue };
+}
+
+function matchesEventUserFilter(evt, filter, userMatchIndex = eventFeedUserMatchIndex){
+  if (!filter || filter === '__all_visible__') return true;
+  const target = resolveUserMatchId(filter, userMatchIndex);
+  if (!target) return true;
+  const candidates = [
+    evt.LinkedUserID, evt.linked_user_id, evt.linkedUserId,
+    evt.LinkedUserName, evt.linked_user_name, evt.linkedUserName,
+    evt.UserID, evt.User, evt.UserName, evt.Name, evt.NameID,
+    evt.user, evt.name, evt.user_id, evt.userId, evt.user_name, evt.userName,
+    evt._user_name,
+    evt.HomeAssistantUserID, evt.home_assistant_user_id, evt.ha_user_id,
+    evt.HomeAssistantUserName, evt.home_assistant_user_name, evt.ha_user_name,
+    evt.TriggeredBy, evt.triggered_by
+  ];
+  return candidates.some(candidate =>
+    normalizeUserMatch(candidate) === filter ||
+    resolveUserMatchId(candidate, userMatchIndex) === target
+  );
+}
+
+function applyEventCategoryFilter(events){
+  if (eventFilterMode === 'all') return events;
+  return events.filter((evt) => {
+    if (eventFilterMode === 'access') {
+      return evt._category === 'access' || evt._category === 'call';
+    }
+    return evt._category === eventFilterMode;
+  });
+}
+
+function applyEventUserFilter(events){
+  const current = currentEventUserFilter();
+  const filter = normalizeUserMatch(current.value);
+  if (!filter) return { filterLabel: '', events };
+  const filtered = events.filter(evt => matchesEventUserFilter(evt, filter, eventFeedUserMatchIndex));
+  return { filterLabel: current.label, events: filtered };
+}
 function formatWhen(ts){
   if (!ts) return '—';
   let d = ts instanceof Date ? ts : new Date(ts);
@@ -1806,14 +2003,8 @@ function parseEventTimestamp(value){
   return 0;
 }
 function applyEventFilter(){
-  const list = eventFilterMode === 'all'
-    ? cachedEvents
-    : cachedEvents.filter((evt) => {
-      if (eventFilterMode === 'access') {
-        return evt._category === 'access' || evt._category === 'call';
-      }
-      return evt._category === eventFilterMode;
-    });
+  const categoryEvents = applyEventCategoryFilter(cachedEvents);
+  const { filterLabel, events: list } = applyEventUserFilter(categoryEvents);
   const listEl = $('#eventList');
   if (!listEl) return;
   const html = list.map(e => {
@@ -1836,7 +2027,8 @@ function applyEventFilter(){
       <span class="event-result ${cls}">● ${escapeHtml(result)}</span>
     </li>`;
   }).join('');
-  const emptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
+  const baseEmptyMessage = EVENT_EMPTY_MESSAGES[eventFilterMode] || EVENT_EMPTY_MESSAGES.all;
+  const emptyMessage = filterLabel ? `${baseEmptyMessage} for ${filterLabel}` : baseEmptyMessage;
   listEl.innerHTML = html || `<li class="event-item"><span class="event-title dim">${emptyMessage}</span></li>`;
 }
 
@@ -2706,6 +2898,11 @@ async function refresh(){
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
     const devs = (state.devices || []).map(d => ({ ...d, _users: d._users || d.users || [] }));
     const accessEvents = extractAccessEventsCollection(state?.access_events);
+    const registryUsers = state.registry_users || [];
+    const access = normalizeEventAccess(state?.event_access);
+    const lookupUsers = registryUsers.concat(access.users || []);
+    eventFeedUserMatchIndex = buildUserMatchIndex(devs, lookupUsers);
+    populateEventUserFilter(access, registryUsers);
     renderDevices(devs);
     renderEvents(devs, accessEvents);
     renderSystemAlerts({ ...state, devices: devs });
@@ -2713,13 +2910,13 @@ async function refresh(){
       eventHistoryInitialized = true;
     }
     await maybeRequestEventHistory(state);
-    syncPausedUsersFromState(state.registry_users || []);
+    syncPausedUsersFromState(registryUsers);
     LAST_USERS_STATE = {
       devs,
-      registry: state.registry_users || [],
+      registry: registryUsers,
       kpis: state.kpis || {}
     };
-    renderUsers(devs, state.registry_users || [], state.kpis || {});
+    renderUsers(devs, registryUsers, state.kpis || {});
   } catch(e){
     console.error('state load failed', e);
     if (handleAuthError(e)) return;
@@ -3377,11 +3574,14 @@ function startNextSyncCountdown(iso, fallbackTime){
       <article class="card" id="sectionEvents">
         <div class="card-header d-flex align-items-center justify-content-between gap-2">
           <span>Live Access Feed</span>
-          <div class="d-flex align-items-center gap-2">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
             <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
               <option value="all">All events</option>
               <option value="system">System events</option>
               <option value="access">Access events</option>
+            </select>
+            <select id="eventUserFilter" class="form-select form-select-sm event-filter event-user-filter" aria-label="Filter live access feed by user">
+              <option value="">All users</option>
             </select>
             <a id="btnViewEvents" class="panel-link" href="/akuvox-ac/event-history" aria-label="View all events"><span>View all events</span><i class="bi bi-arrow-right"></i></a>
           </div>
