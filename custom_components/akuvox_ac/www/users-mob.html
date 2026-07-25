@@ -1149,7 +1149,11 @@ async function setProfileImpersonation(userId = ''){
     setUserSettingsStatus(IMPERSONATION.active ? 'Impersonation started' : 'Impersonation stopped', 'success');
     const delivered = notifyParentImpersonationChanged(IMPERSONATION);
     if (!delivered) {
-      setTimeout(() => window.location.reload(), 250);
+      if (IMPERSONATION.active) {
+        openInApp('index', {}, { replaceState: true });
+      } else {
+        setTimeout(() => window.location.reload(), 250);
+      }
     }
   } catch (err) {
     if (handleAuthError(err)) return;

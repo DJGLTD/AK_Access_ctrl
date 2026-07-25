@@ -967,10 +967,14 @@ function signedPath(key, fallback) {
 /* ========= RENDERERS + WIRING ========= */
 const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
+const impersonationUrl = signedPath('impersonation', '/api/akuvox_ac/ui/impersonation');
 const $ = (sel) => document.querySelector(sel);
 
 const DEFAULT_CREDENTIAL_PROMPTS = { code: true, token: true, anpr: false, face: true, phone: true };
 let CREDENTIAL_PROMPTS = { ...DEFAULT_CREDENTIAL_PROMPTS };
+let DASHBOARD_ACCESS = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+let IMPERSONATION = { can_manage: false, active: false, user_id: '', user_name: '', is_admin: false };
+let impersonationSaving = false;
 
 let eventFilterMode = 'access';
 let eventUserFilterValue = '';
@@ -2331,6 +2335,106 @@ function attachPinRevealHandlers(container){
   });
 }
 
+function sanitizeImpersonation(raw){
+  return {
+    can_manage: !!raw?.can_manage,
+    active: !!raw?.active,
+    user_id: String(raw?.user_id || '').trim(),
+    user_name: String(raw?.user_name || '').trim(),
+    is_admin: !!raw?.is_admin
+  };
+}
+
+function sanitizeDashboardAccess(raw){
+  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  if (!raw || typeof raw !== 'object') return base;
+  base.can_manage = !!raw.can_manage;
+  base.current_user_id = String(raw.current_user_id || '');
+  base.current_user_is_admin = !!raw.current_user_is_admin;
+  if (Array.isArray(raw.allowed_user_ids)) {
+    base.allowed_user_ids = raw.allowed_user_ids.map(item => String(item || '').trim()).filter(Boolean);
+  }
+  if (Array.isArray(raw.users)) {
+    base.users = raw.users.map(item => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || 'Home Assistant user'),
+      is_admin: !!item?.is_admin,
+      is_active: item?.is_active !== false,
+      allowed: !!item?.allowed,
+      can_impersonate: !!item?.can_impersonate
+    })).filter(item => item.id);
+  }
+  return base;
+}
+
+function linkedHaUserIdForProfile(user){
+  return String(user?.ha_user_id || user?.home_assistant_user_id || '').trim();
+}
+
+function dashboardAccessUserFor(haUserId){
+  const key = String(haUserId || '').trim();
+  if (!key) return null;
+  return (DASHBOARD_ACCESS.users || []).find(user => String(user.id || '').trim() === key) || null;
+}
+
+function canImpersonateProfile(user){
+  const haUserId = linkedHaUserIdForProfile(user);
+  if (!DASHBOARD_ACCESS.can_manage || !haUserId) return false;
+  const haUser = dashboardAccessUserFor(haUserId);
+  if (!haUser) return true;
+  return haUser.is_active !== false && haUser.can_impersonate !== false;
+}
+
+function notifyParentImpersonationChanged(impersonation){
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'akuvox-impersonation-changed',
+        impersonation
+      }, window.location.origin);
+      return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function impersonationButtonForUser(user){
+  if (!canImpersonateProfile(user)) return '';
+  const haUserId = linkedHaUserIdForProfile(user);
+  const activeForUser = !!(IMPERSONATION.active && IMPERSONATION.user_id === haUserId);
+  const disabled = impersonationSaving ? ' disabled' : '';
+  const label = activeForUser ? 'Stop' : 'Impersonate';
+  const icon = activeForUser ? 'bi-person-dash' : 'bi-person-check';
+  const target = activeForUser ? '' : haUserId;
+  return `<button class="btn btn-sm btn-outline-info me-1" data-impersonate-user="${escapeHtml(target)}"${disabled}><i class="bi ${icon}"></i> ${label}</button>`;
+}
+
+async function setDashboardImpersonation(userId = ''){
+  if (impersonationSaving) return;
+  impersonationSaving = true;
+  if (LAST_USERS_STATE) {
+    renderUsers(LAST_USERS_STATE.devs, LAST_USERS_STATE.registry, LAST_USERS_STATE.kpis);
+  }
+  try {
+    const body = userId ? { user_id: userId } : { stop: true };
+    const res = await apiPost(impersonationUrl, body);
+    IMPERSONATION = sanitizeImpersonation(res?.impersonation);
+    const delivered = notifyParentImpersonationChanged(IMPERSONATION);
+    if (!delivered) {
+      if (IMPERSONATION.active) openInApp('index', {}, { replaceState: true });
+      else await refresh();
+    }
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    alert(`Impersonation failed: ${err && err.message ? err.message : err}`);
+  } finally {
+    impersonationSaving = false;
+    if (LAST_USERS_STATE) {
+      renderUsers(LAST_USERS_STATE.devs, LAST_USERS_STATE.registry, LAST_USERS_STATE.kpis);
+    }
+  }
+}
+
 function renderUsersTableHeader(tableBody, showPinColumn){
   const headerRow = tableBody?.closest('table')?.querySelector('thead tr');
   if (!headerRow) return;
@@ -2749,7 +2853,9 @@ function renderUsers(devs, registryUsers, kpis){
           <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
       } else {
+        const impersonationAction = impersonationButtonForUser(u);
         actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+           ${impersonationAction}
            <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
            <button class="btn btn-sm btn-outline-warning me-1" data-toggle-access="${safeId}">
              <i class="bi ${paused ? 'bi-play-circle' : 'bi-pause-circle'}"></i>
@@ -2829,6 +2935,13 @@ function renderUsers(devs, registryUsers, kpis){
     });
   });
 
+  tableBody.querySelectorAll('button[data-impersonate-user]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      await setDashboardImpersonation(btn.getAttribute('data-impersonate-user') || '');
+    });
+  });
+
   tableBody.querySelectorAll('a[data-extend-user]').forEach(link => {
     link.addEventListener('click', (ev) => {
       ev.preventDefault();
@@ -2888,6 +3001,8 @@ function renderUsers(devs, registryUsers, kpis){
 async function refresh(){
   try{
     const state = await apiGet(stateUrl);
+    DASHBOARD_ACCESS = sanitizeDashboardAccess(state?.dashboard_access);
+    IMPERSONATION = sanitizeImpersonation(state?.impersonation || state?.dashboard_access?.impersonation);
     if (state && typeof state === 'object' && state.hacs_auto_update) {
       LAST_HACS_UPDATE_STATUS = state.hacs_auto_update;
       if (hacsUpdateNeedsRestart(LAST_HACS_UPDATE_STATUS)) {

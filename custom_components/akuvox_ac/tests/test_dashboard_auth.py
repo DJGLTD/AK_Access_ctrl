@@ -410,6 +410,9 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "impersonationBanner" in html
         assert "stopImpersonation" in html
         assert "akuvox-impersonation-changed" in html
+        assert "routeAfterImpersonationChange" in html
+        assert "loadView('index', {}, { replaceState: true" in html
+        assert "frame.src = frame.dataset.currentHref" in html
 
     for page_name in ("users.html", "users-mob.html"):
         html = (www / page_name).read_text(encoding="utf-8")
@@ -420,12 +423,23 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "saveUserAdminSettings" in html
         assert "data-impersonate-user" in html
         assert "API_IMPERSONATION" in html
+        assert "openInApp('index', {}, { replaceState: true });" in html
 
     overview = (www / "user_overview-mob.html").read_text(encoding="utf-8")
     assert "impersonationUrl" in overview
     assert "data-impersonate-user" in overview
     assert "setOverviewImpersonation" in overview
     assert "akuvox-impersonation-changed" in overview
+    assert "openInApp('index', {}, { replaceState: true })" in overview
+
+    for page_name in ("index.html", "index-mob.html"):
+        html = (www / page_name).read_text(encoding="utf-8")
+        assert "const impersonationUrl" in html
+        assert "DASHBOARD_ACCESS = sanitizeDashboardAccess(state?.dashboard_access)" in html
+        assert "setDashboardImpersonation" in html
+        assert "impersonationButtonForUser" in html
+        assert "data-impersonate-user" in html
+        assert "akuvox-impersonation-changed" in html
 
     for page_name in ("settings.html", "settings-mob.html"):
         html = (www / page_name).read_text(encoding="utf-8")
