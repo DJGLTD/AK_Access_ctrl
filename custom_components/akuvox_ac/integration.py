@@ -111,6 +111,7 @@ HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit overr
 _LOGGER = logging.getLogger(__name__)
 FACE_SYNC_ERROR_THRESHOLD = 5
 FACE_SYNC_RETRY_COOLDOWN_MINUTES = 15
+TEMPORARY_USER_RETENTION_DAYS = 7
 LEGACY_INTEGRATION_DEVICE_NAME = "Akuvox Access Control"
 LEGACY_INTEGRATION_DEVICE_MODEL = "Home Assistant Integration"
 OBSOLETE_ENTITY_UNIQUE_SUFFIXES: Dict[str, Set[str]] = {
@@ -5286,12 +5287,49 @@ class SyncManager:
         return out
 
     @staticmethod
-    def _profile_is_temporary(profile: Dict[str, Any]) -> bool:
+    def _profile_is_temporary(profile: Mapping[str, Any]) -> bool:
         return bool(
             profile.get("temporary")
             or profile.get("temporary_one_time")
             or profile.get("temporary_expires_at")
         )
+
+    @staticmethod
+    def _temporary_expired_at(
+        profile: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> Optional[datetime]:
+        if not isinstance(profile, Mapping):
+            return None
+
+        used_at = _parse_temp_datetime(profile.get("temporary_used_at"))
+        if used_at:
+            return used_at
+
+        expires_at = _parse_temp_datetime(profile.get("temporary_expires_at"))
+        if expires_at and now >= expires_at:
+            return expires_at
+
+        access_end = _parse_access_date(profile.get("access_end"))
+        if access_end and access_end < now.date():
+            expired_date = access_end + timedelta(days=1)
+            expired_at = datetime.combine(expired_date, datetime.min.time())
+            return expired_at.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+        return None
+
+    @classmethod
+    def _temporary_retention_elapsed(
+        cls,
+        profile: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> bool:
+        expired_at = cls._temporary_expired_at(profile, now=now)
+        if not expired_at:
+            return False
+        return now >= expired_at + timedelta(days=TEMPORARY_USER_RETENTION_DAYS)
 
     @staticmethod
     def _temp_profile_matches_user(
@@ -5332,13 +5370,16 @@ class SyncManager:
 
     async def _temporary_cleanup_interval(self, now):
         await self._cleanup_temporary_users(reason="interval")
+        await self._cleanup_retained_temporary_users(reason="interval")
 
     async def _startup_user_cleanup(self) -> None:
         await self._cleanup_temporary_users(reason="startup")
+        await self._cleanup_retained_temporary_users(reason="startup")
         await self._cleanup_expired_access_users(reason="startup")
 
     async def _temporary_cleanup_midnight(self, now):
         await self._cleanup_temporary_users(reason="midnight")
+        await self._cleanup_retained_temporary_users(reason="midnight")
         await self._cleanup_expired_access_users(reason="midnight")
 
     async def _access_expiry_reminder_morning(self, now):
@@ -5435,6 +5476,40 @@ class SyncManager:
                     now=now,
                     today=today,
                     used=used,
+                )
+
+    async def _cleanup_retained_temporary_users(self, *, reason: str) -> None:
+        if self._temp_cleanup_lock.locked():
+            return
+
+        async with self._temp_cleanup_lock:
+            users_store = self._users_store()
+            if not users_store:
+                return
+            try:
+                profiles = users_store.all() or {}
+            except Exception:
+                return
+
+            now = dt_util.now()
+            today = now.date()
+            to_delete: List[Tuple[str, Mapping[str, Any]]] = []
+            for key, profile in profiles.items():
+                if not isinstance(profile, Mapping):
+                    continue
+                if not self._profile_is_temporary(profile):
+                    continue
+                if str(profile.get("status") or "").strip().lower() == "deleted":
+                    continue
+                if self._temporary_retention_elapsed(profile, now=now):
+                    to_delete.append((str(key), profile))
+
+            for key, profile in to_delete:
+                await self._delete_expired_access_user(
+                    key,
+                    profile,
+                    today=today,
+                    reason=f"{reason} temporary retention",
                 )
 
     @staticmethod
@@ -5574,6 +5649,8 @@ class SyncManager:
             to_delete: List[Tuple[str, Mapping[str, Any]]] = []
             for key, profile in profiles.items():
                 if not self._profile_can_expire(profile):
+                    continue
+                if self._profile_is_temporary(profile):
                     continue
                 access_end = _parse_access_date(profile.get("access_end"))
                 if access_end and access_end < today:
