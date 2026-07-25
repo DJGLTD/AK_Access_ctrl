@@ -57,6 +57,12 @@
     <button class="btn btn-outline-info btn-sm" id="refreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
   </header>
   <div class="event-toolbar">
+    <label for="eventFilter">Show events</label>
+    <select id="eventFilter" class="form-select form-select-sm" aria-label="Filter event history">
+      <option value="all">All events</option>
+      <option value="system">System events</option>
+      <option value="access">Access events</option>
+    </select>
     <label for="userFilter">User</label>
     <select id="userFilter" class="form-select form-select-sm" aria-label="Filter event history by user">
       <option value="">All users</option>
@@ -469,6 +475,7 @@ function signedPath(key, fallback){
 const stateUrl  = signedPath('state', '/api/akuvox_ac/ui/state');
 const actionUrl = signedPath('action', '/api/akuvox_ac/ui/action');
 const UI_ROOT   = '/akuvox-ac';
+let eventFilterMode = 'access';
 let cachedEvents = [];
 let eventAccess = { can_manage: false, viewer_user_id: '', default_user_id: '', visible_user_ids: [], users: [] };
 let eventUserMatchIndex = new Map();
@@ -563,6 +570,10 @@ function handleAuthError(err) {
 }
 
 document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+document.getElementById('eventFilter').addEventListener('change', (ev) => {
+  eventFilterMode = ev.target?.value || 'access';
+  renderFilteredEvents();
+});
 document.getElementById('userFilter').addEventListener('change', () => {
   renderFilteredEvents();
 });
@@ -575,6 +586,71 @@ function escapeHtml(value){
 function getEventStatusText(evt){
   if (!evt || typeof evt !== 'object') return '';
   return evt.Result || evt.Event || evt.status_label || evt.status || evt.action || evt.Message || evt.Description || '';
+}
+
+function hasMeaningfulValue(obj, key) {
+  if (!obj) return false;
+  const value = obj[key];
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+function normalizeEventCategory(value){
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim().toLowerCase();
+  if (text === 'access' || text === 'call' || text === 'system') return text;
+  return '';
+}
+
+function categorizeEvent(event, device) {
+  const evt = event || {};
+  const normalizedType = String(evt.Type ?? evt.type ?? '').trim().toLowerCase();
+  if (normalizedType === 'dtmf') return 'call';
+  if (normalizedType === 'face') return 'access';
+  if (['private pin', 'privatepin', 'pin', 'passcode'].includes(normalizedType)) return 'access';
+
+  const textParts = [];
+  [
+    'EventType', 'Type', 'EventCategory', 'Category', 'LogType', 'LogTypeName',
+    'CallType', 'SubType', 'Event', 'Result', 'action', 'Message', 'Description', 'Detail',
+  ].forEach((key) => {
+    const value = evt[key];
+    if (value !== undefined && value !== null && String(value).trim()) {
+      textParts.push(String(value).trim());
+    }
+  });
+  if (device && typeof device === 'object') {
+    [device.device_type, device.deviceModel, device.device_model, device.model].forEach((value) => {
+      if (value !== undefined && value !== null && String(value).trim()) {
+        textParts.push(String(value).trim());
+      }
+    });
+  }
+  const combined = textParts.join(' ').toLowerCase();
+  const callKeys = [
+    'CallNo', 'CallNum', 'CallNumber', 'CallType', 'CallMode', 'CallStatus',
+    'PriorityCall', 'RoomNumber', 'RoomNo', 'Terminal', 'Intercom', 'SipAccount', 'SipNumber',
+  ];
+  const accessKeys = [
+    'AccessMode', 'Method', 'AccessType', 'AccessPoint', 'Door', 'DoorName', 'Reader',
+    'OpenType', 'User', 'UserID', 'UserName', 'Name', 'CardNo', 'CardNumber',
+    'Credential', 'CredentialType', 'Pin', 'PIN', 'Passcode', 'Password',
+    'AccessResult', 'AccessStatus', 'OpenResult',
+  ];
+
+  if (callKeys.some((key) => hasMeaningfulValue(evt, key))
+      || /\bcall\b|doorbell|ringback|\bsip\b|intercom|monitor/i.test(combined)) {
+    return 'call';
+  }
+  if (/system|integrity|mismatch|sync|reboot|restart|online|offline|power|network|alarm|error|update|config|firmware|tamper|maintenance|diagnostic/i.test(combined)) {
+    return 'system';
+  }
+  if (accessKeys.some((key) => hasMeaningfulValue(evt, key))
+      || /\baccess\b|\bdoor\b|unlock|granted|denied|card|pin|keypad|entry|credential|passcode|face|finger/i.test(combined)) {
+    return 'access';
+  }
+  return 'system';
 }
 
 function getEventTypeLabel(evt){
@@ -1135,6 +1211,7 @@ function gatherEvents(devices, aggregated, userLookup){
     if (when) normalized._when = when;
     normalized._ts = epoch;
     normalized._device = deviceName;
+    normalized._category = normalizeEventCategory(normalized._category) || categorizeEvent(normalized, deviceRef);
     applyUserLookup(normalized, userLookup);
     events.push(normalized);
   }
@@ -1202,8 +1279,19 @@ function renderEvents(events){
   });
 }
 
+function applyCategoryFilter(events){
+  if (eventFilterMode === 'all') return events;
+  return events.filter((evt) => {
+    if (eventFilterMode === 'access') {
+      return evt._category === 'access' || evt._category === 'call';
+    }
+    return evt._category === eventFilterMode;
+  });
+}
+
 function renderFilteredEvents(){
-  const { filterLabel, events: filtered } = applyUserFilter(cachedEvents);
+  const { filterLabel, events: userEvents } = applyUserFilter(cachedEvents);
+  const filtered = applyCategoryFilter(userEvents);
   const title = document.querySelector('header.page-header h1');
   if (title) {
     title.textContent = filterLabel ? `Event History • ${filterLabel}` : 'Event History';
@@ -1238,6 +1326,7 @@ async function refresh(){
   }
 }
 
+document.getElementById('eventFilter').value = eventFilterMode;
 refresh();
 </script>
 </body>
