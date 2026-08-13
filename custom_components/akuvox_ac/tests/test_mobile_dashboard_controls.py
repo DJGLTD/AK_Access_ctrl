@@ -222,7 +222,22 @@ def test_user_last_access_formats_iso_offsets_consistently():
         assert "function formatLastAccess(value)" in page
         assert r"[T\s]+" in page
         assert r"(?:Z|[+-]\d{2}:?\d{2})?" in page
+        assert r"(?:\b|[\s,])" in page
         assert usage in page
+
+
+def test_dashboards_restrict_manager_views_to_events_and_own_profile():
+    for name in ("index.html", "index-mob.html"):
+        page = read_page(name)
+        assert "body.restricted-dashboard" in page
+        assert "function isRestrictedDashboard()" in page
+        assert "function applyDashboardAccessMode()" in page
+        assert "applyDashboardAccessMode();" in page
+        assert "const allVisibleDefault = !canManage && users.length > 1 ? '__all_visible__' : '';" in page
+        assert "let desired = requested || (canManage ? '' : (allVisibleDefault || defaultUser));" in page
+        assert "const restrictedDashboard = isRestrictedDashboard();" in page
+        assert "body.restricted-dashboard #btnAddUser" in page
+        assert "body.restricted-dashboard #btnAddTempUser" in page
 
 
 def test_dashboard_event_feed_keeps_date_with_time():

@@ -593,9 +593,10 @@ function sanitizeImpersonation(raw){
 }
 
 function sanitizeDashboardAccess(raw){
-  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  const base = { can_manage: false, self_service: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
   if (!raw || typeof raw !== 'object') return base;
   base.can_manage = !!raw.can_manage;
+  base.self_service = !!raw.self_service;
   base.current_user_id = String(raw.current_user_id || '');
   base.current_user_is_admin = !!raw.current_user_is_admin;
   if (Array.isArray(raw.allowed_user_ids)) {
@@ -612,6 +613,10 @@ function sanitizeDashboardAccess(raw){
     })).filter(item => item.id);
   }
   return base;
+}
+
+function isRestrictedDashboard(){
+  return !!(DASHBOARD_ACCESS.self_service && !DASHBOARD_ACCESS.can_manage);
 }
 
 let PAUSED_USERS = loadPausedUsers();
@@ -1158,7 +1163,7 @@ function formatLastAccess(value){
   if (!value) return '—';
   const text = String(value).trim();
   if (!text) return '—';
-  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?:\b|[\s,])/);
   if (isoMatch) {
     return `${isoMatch[1]} ${isoMatch[2].padStart(2, '0')}:${isoMatch[3]}`;
   }
@@ -1648,6 +1653,7 @@ function renderUsers(list){
 
     const eventFilter = String(u.name || u.id || '').trim() || String(u.id || '').trim();
     const eventsHref = buildHref('event-history', { user: eventFilter });
+    const restrictedDashboard = isRestrictedDashboard();
     const extendHref = buildHref('temp-user', {
       extend: u.id,
       name: u.name,
@@ -1656,7 +1662,14 @@ function renderUsers(list){
       expires_at: u.temporary_expires_at
     });
     const actions = (!u.isCloud && idMatchesFilter(u.id))
-      ? (u.temporary_expired
+      ? (restrictedDashboard
+        ? `
+          ${isTemporaryUser ? '' : `
+            <button class="btn btn-sm btn-outline-light" data-edit-user="${escapeHtml(u.id)}"><i class="bi bi-pencil"></i> Manage</button>
+          `}
+          <a class="btn btn-sm btn-info" data-user-events="${escapeHtml(eventFilter || u.id)}" href="${escapeHtml(eventsHref)}"><i class="bi bi-clock-history"></i> Events</a>
+        `
+        : u.temporary_expired
         ? `
           <button class="btn btn-sm btn-outline-success" data-reactivate-user="${escapeHtml(u.id)}" data-reactivate-name="${escapeHtml(u.name)}"><i class="bi bi-arrow-counterclockwise"></i> Reactivate</button>
           <button class="btn btn-sm btn-outline-danger" data-delete-user="${escapeHtml(u.id)}"><i class="bi bi-trash"></i> Revoke</button>

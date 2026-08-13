@@ -160,6 +160,17 @@
       background: rgba(255,255,255,.22);
       outline: none;
     }
+    body.shell-restricted nav.nav-buttons .nav-btn[data-view="device-edit"],
+    body.shell-restricted nav.nav-buttons .nav-btn[data-view="settings"],
+    body.shell-restricted nav.nav-buttons .nav-btn[data-group-toggle="global"],
+    body.shell-restricted #navQuickActions .quick-btn[data-mode="add"],
+    body.shell-restricted #navQuickActions .quick-group[data-group="global"],
+    body.shell-restricted .mobile-group[data-group="global"],
+    body.shell-restricted .mobile-launcher [data-view="device-management"],
+    body.shell-restricted .mobile-launcher [data-view="settings"],
+    body.shell-restricted .mobile-launcher [data-mode="add"],
+    body.shell-restricted .mobile-launcher [data-submenu="user-add"],
+    body.shell-restricted .mobile-launcher [data-view="temp-user"]{display:none!important}
     .mobile-launcher {
       display: none;
       padding: 0.75rem;
@@ -1246,6 +1257,11 @@ function renderImpersonationBanner(impersonation){
   banner.classList.toggle('active', active);
 }
 
+function applyShellAccessMode(dashboardAccess){
+  const restricted = !!(dashboardAccess && dashboardAccess.self_service && !dashboardAccess.can_manage);
+  document.body.classList.toggle('shell-restricted', restricted);
+}
+
 function routeAfterImpersonationChange(impersonation){
   if (impersonation && impersonation.active) {
     const frame = document.getElementById('viewFrame');
@@ -1795,6 +1811,7 @@ async function fetchVersion(){
     }
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    applyShellAccessMode(data?.dashboard_access);
     renderImpersonationBanner(data?.impersonation || data?.dashboard_access?.impersonation);
     const label = data?.kpis?.version || '—';
     if (data?.hacs_auto_update && typeof data.hacs_auto_update === 'object') {

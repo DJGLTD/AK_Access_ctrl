@@ -4745,9 +4745,10 @@ class AkuvoxUIView(HomeAssistantView):
 
             if restricted_view:
                 self_user_id = str((self_service or {}).get("user_id") or viewer_user_id or "").strip()
-                response["registry_users"] = [
+                restricted_registry_users = [
                     user for user in registry_users if str(user.get("id") or "") == self_user_id
                 ]
+                response["registry_users"] = restricted_registry_users
                 response["devices"] = []
                 response["home_assistant_users"] = []
                 response["schedules"] = {}
@@ -4755,6 +4756,14 @@ class AkuvoxUIView(HomeAssistantView):
                 response["groups"] = []
                 response["all_groups"] = []
                 response["capabilities"] = {"alarm_relay": False}
+                kpis["users"] = len(restricted_registry_users)
+                kpis["devices"] = 0
+                kpis["pending"] = 0
+                kpis["next_sync"] = "—"
+                kpis["next_sync_eta"] = None
+                kpis["next_health_check_eta"] = None
+                kpis["auto_sync_time"] = None
+                kpis["events_last_sync"] = None
                 response["dashboard_access"] = {
                     "can_manage": False,
                     "self_service": True,
