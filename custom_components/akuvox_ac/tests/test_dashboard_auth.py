@@ -411,6 +411,9 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "stopImpersonation" in html
         assert "akuvox-impersonation-changed" in html
         assert "routeAfterImpersonationChange" in html
+        assert "applyShellAccessMode(data?.dashboard_access)" in html
+        assert "body.shell-restricted" in html
+        assert 'body.shell-restricted #navQuickActions .quick-btn[data-mode="add"]' in html
         assert "loadView('index', {}, { replaceState: true" in html
         assert "frame.src = frame.dataset.currentHref" in html
 
@@ -431,6 +434,7 @@ def test_dashboard_frontend_contains_impersonation_controls():
     assert "setOverviewImpersonation" in overview
     assert "akuvox-impersonation-changed" in overview
     assert "openInApp('index', {}, { replaceState: true })" in overview
+    assert "function isRestrictedDashboard()" in overview
 
     for page_name in ("index.html", "index-mob.html"):
         html = (www / page_name).read_text(encoding="utf-8")
@@ -440,6 +444,12 @@ def test_dashboard_frontend_contains_impersonation_controls():
         assert "impersonationButtonForUser" in html
         assert "data-impersonate-user" in html
         assert "akuvox-impersonation-changed" in html
+
+    http = (www.parent / "http.py").read_text(encoding="utf-8")
+    assert "restricted_registry_users" in http
+    assert 'kpis["users"] = len(restricted_registry_users)' in http
+    assert 'kpis["devices"] = 0' in http
+    assert 'kpis["events_last_sync"] = None' in http
 
     for page_name in ("settings.html", "settings-mob.html"):
         html = (www / page_name).read_text(encoding="utf-8")

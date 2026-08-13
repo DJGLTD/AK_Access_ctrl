@@ -197,6 +197,14 @@
     .footer-note{opacity:.52;font-size:.74rem;text-align:center;padding:2px 0 0}
     .card.pulse-highlight{border-color:rgba(22,134,255,.62);box-shadow:0 0 0 .15rem rgba(22,134,255,.2)}
     .visually-held{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important}
+    body.restricted-dashboard .top-actions,
+    body.restricted-dashboard .summary-grid,
+    body.restricted-dashboard #sectionDevices,
+    body.restricted-dashboard #sectionAlerts,
+    body.restricted-dashboard #btnAddUser,
+    body.restricted-dashboard #btnAddTempUser,
+    body.restricted-dashboard .user-toolbar{display:none!important}
+    body.restricted-dashboard .section-33{grid-template-columns:minmax(0,1fr)}
     @media (min-width:901px){
       html,body{height:100%;overflow:hidden}
       .workspace{
@@ -1812,6 +1820,7 @@ function populateEventUserFilter(accessRaw, registryUsers){
   const canManage = !!eventFeedAccess.can_manage;
   const requested = resolveRequestedEventUserId(users, eventUserFilterValue || select.value);
   const defaultUser = eventFeedAccess.default_user_id || eventFeedAccess.viewer_user_id || '';
+  const allVisibleDefault = !canManage && users.length > 1 ? '__all_visible__' : '';
 
   select.innerHTML = '';
   const addOption = (value, label) => {
@@ -1828,7 +1837,7 @@ function populateEventUserFilter(accessRaw, registryUsers){
   users.forEach(user => addOption(user.id, eventUserLabel(user)));
 
   const optionValues = new Set(Array.from(select.options).map(option => option.value));
-  let desired = requested || (canManage ? '' : defaultUser);
+  let desired = requested || (canManage ? '' : (allVisibleDefault || defaultUser));
   if (!canManage && !optionValues.has(desired)) desired = defaultUser;
   if (canManage && desired && !optionValues.has(desired)) addOption(desired, desired);
   select.value = optionValues.has(desired) || (canManage && desired) ? desired : '';
@@ -2289,7 +2298,7 @@ function formatLastAccess(value){
   if (!value) return '—';
   const text = String(value).trim();
   if (!text) return '—';
-  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?:\b|[\s,])/);
   if (isoMatch) {
     return `${isoMatch[1]} ${isoMatch[2].padStart(2, '0')}:${isoMatch[3]}`;
   }
@@ -2346,9 +2355,10 @@ function sanitizeImpersonation(raw){
 }
 
 function sanitizeDashboardAccess(raw){
-  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  const base = { can_manage: false, self_service: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
   if (!raw || typeof raw !== 'object') return base;
   base.can_manage = !!raw.can_manage;
+  base.self_service = !!raw.self_service;
   base.current_user_id = String(raw.current_user_id || '');
   base.current_user_is_admin = !!raw.current_user_is_admin;
   if (Array.isArray(raw.allowed_user_ids)) {
@@ -2365,6 +2375,14 @@ function sanitizeDashboardAccess(raw){
     })).filter(item => item.id);
   }
   return base;
+}
+
+function isRestrictedDashboard(){
+  return !!(DASHBOARD_ACCESS.self_service && !DASHBOARD_ACCESS.can_manage);
+}
+
+function applyDashboardAccessMode(){
+  document.body.classList.toggle('restricted-dashboard', isRestrictedDashboard());
 }
 
 function linkedHaUserIdForProfile(user){
@@ -2781,6 +2799,7 @@ function renderUsers(devs, registryUsers, kpis){
   renderUsersTableHeader(tableBody, showPinColumn);
 
   const listById = new Map(list.map(user => [String(user.id || ''), user]));
+  const restrictedDashboard = isRestrictedDashboard();
   const rows = dedupedByName.map(u => {
     const scheduleRaw = u.access_schedule
       || formatScheduleDisplay(u.schedule_id, u.access_level || u.schedule_name || '');
@@ -2844,17 +2863,24 @@ function renderUsers(devs, registryUsers, kpis){
         || u.temporary_used_at
       );
       if (u.temporary_expired) {
-        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
+        actions = restrictedDashboard
+          ? `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+          : `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
           </button>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
       } else if (isTemporaryUser) {
-        actions = `<a class="btn btn-sm btn-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
+        actions = restrictedDashboard
+          ? `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+          : `<a class="btn btn-sm btn-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
           <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
       } else {
         const impersonationAction = impersonationButtonForUser(u);
-        actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+        actions = restrictedDashboard
+          ? `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+           <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+          : `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
            ${impersonationAction}
            <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
            <button class="btn btn-sm btn-outline-warning me-1" data-toggle-access="${safeId}">
@@ -3002,6 +3028,7 @@ async function refresh(){
   try{
     const state = await apiGet(stateUrl);
     DASHBOARD_ACCESS = sanitizeDashboardAccess(state?.dashboard_access);
+    applyDashboardAccessMode();
     IMPERSONATION = sanitizeImpersonation(state?.impersonation || state?.dashboard_access?.impersonation);
     if (state && typeof state === 'object' && state.hacs_auto_update) {
       LAST_HACS_UPDATE_STATUS = state.hacs_auto_update;

@@ -67,6 +67,12 @@
     .mobile-user-controls .form-control{min-width:0;}
     .mobile-user-controls .form-select{width:100%;color:#fff;}
     .mobile-footer-toolbar .footer-note{flex:0 0 auto;text-align:right;}
+    body.restricted-dashboard .kpi,
+    body.restricted-dashboard #sectionDevices,
+    body.restricted-dashboard #btnAddUser,
+    body.restricted-dashboard #btnAddTempUser,
+    body.restricted-dashboard .mobile-user-controls{display:none!important}
+    body.restricted-dashboard .section-33{height:auto}
     @media (max-width: 1200px){
       .workspace{ width:95vw; }
     }
@@ -1558,6 +1564,7 @@ function populateEventUserFilter(accessRaw, registryUsers){
   const canManage = !!eventFeedAccess.can_manage;
   const requested = resolveRequestedEventUserId(users, eventUserFilterValue || select.value);
   const defaultUser = eventFeedAccess.default_user_id || eventFeedAccess.viewer_user_id || '';
+  const allVisibleDefault = !canManage && users.length > 1 ? '__all_visible__' : '';
 
   select.innerHTML = '';
   const addOption = (value, label) => {
@@ -1574,7 +1581,7 @@ function populateEventUserFilter(accessRaw, registryUsers){
   users.forEach(user => addOption(user.id, eventUserLabel(user)));
 
   const optionValues = new Set(Array.from(select.options).map(option => option.value));
-  let desired = requested || (canManage ? '' : defaultUser);
+  let desired = requested || (canManage ? '' : (allVisibleDefault || defaultUser));
   if (!canManage && !optionValues.has(desired)) desired = defaultUser;
   if (canManage && desired && !optionValues.has(desired)) addOption(desired, desired);
   select.value = optionValues.has(desired) || (canManage && desired) ? desired : '';
@@ -1892,7 +1899,7 @@ function formatLastAccess(value){
   if (!value) return '—';
   const text = String(value).trim();
   if (!text) return '—';
-  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?:\b|[\s,])/);
   if (isoMatch) {
     return `${isoMatch[1]} ${isoMatch[2].padStart(2, '0')}:${isoMatch[3]}`;
   }
@@ -1914,9 +1921,10 @@ function sanitizeImpersonation(raw){
 }
 
 function sanitizeDashboardAccess(raw){
-  const base = { can_manage: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
+  const base = { can_manage: false, self_service: false, current_user_id: '', current_user_is_admin: false, allowed_user_ids: [], users: [] };
   if (!raw || typeof raw !== 'object') return base;
   base.can_manage = !!raw.can_manage;
+  base.self_service = !!raw.self_service;
   base.current_user_id = String(raw.current_user_id || '');
   base.current_user_is_admin = !!raw.current_user_is_admin;
   if (Array.isArray(raw.allowed_user_ids)) {
@@ -1933,6 +1941,14 @@ function sanitizeDashboardAccess(raw){
     })).filter(item => item.id);
   }
   return base;
+}
+
+function isRestrictedDashboard(){
+  return !!(DASHBOARD_ACCESS.self_service && !DASHBOARD_ACCESS.can_manage);
+}
+
+function applyDashboardAccessMode(){
+  document.body.classList.toggle('restricted-dashboard', isRestrictedDashboard());
 }
 
 function linkedHaUserIdForProfile(user){
@@ -2302,6 +2318,7 @@ function renderUsers(devs, registryUsers, kpis){
 
   sortUsers(listSorted);
 
+  const restrictedDashboard = isRestrictedDashboard();
   const rows = listSorted.map(u => {
     if (u.isCloud) {
       return `<tr>
@@ -2363,7 +2380,9 @@ function renderUsers(devs, registryUsers, kpis){
     let actions = '';
     if (/^(HA|TMP)\d+$/.test(u.id)) {
       if (u.temporary_expired) {
-        actions = `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}" data-reactivate-name="${escapeHtml(u.name)}">
+        actions = restrictedDashboard
+          ? `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+          : `<button class="btn btn-sm btn-outline-success me-1" data-reactivate-user="${safeId}" data-reactivate-name="${escapeHtml(u.name)}">
             <i class="bi bi-arrow-counterclockwise"></i> Reactivate
           </button>
           <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
@@ -2375,12 +2394,17 @@ function renderUsers(devs, registryUsers, kpis){
           || u.temporary_used_at
         );
         if (isTemporaryUser) {
-          actions = `<a class="btn btn-sm btn-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
+          actions = restrictedDashboard
+            ? `<a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+            : `<a class="btn btn-sm btn-primary me-1" data-extend-user="${safeId}" data-extend-name="${safeName}" data-extend-start="${safeAccessStart}" data-extend-end="${safeAccessEnd}" data-extend-expires="${safeExpiresAt}" href="${escapeHtml(extendHref)}">Extend</a>
            <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
            <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Revoke</button>`;
         } else {
           const impersonationAction = impersonationButtonForUser(u);
-          actions = `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+          actions = restrictedDashboard
+            ? `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
+             <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>`
+            : `<a class="btn btn-sm btn-primary me-1" data-edit-user="${safeId}" href="${escapeHtml(editHref)}">Edit</a>
              ${impersonationAction}
              <a class="btn btn-sm btn-info me-1" data-user-events="${safeEventFilter}" href="${escapeHtml(eventsHref)}">Events</a>
              <button class="btn btn-sm btn-danger" data-user="${safeId}" data-act="delete">Delete</button>`;
@@ -2475,6 +2499,7 @@ async function refresh(){
   try{
     const state = await apiGet(stateUrl);
     DASHBOARD_ACCESS = sanitizeDashboardAccess(state?.dashboard_access);
+    applyDashboardAccessMode();
     IMPERSONATION = sanitizeImpersonation(state?.impersonation || state?.dashboard_access?.impersonation);
     CREDENTIAL_PROMPTS = sanitizeCredentialPrompts(state?.credential_prompts);
     renderKPIs(state.kpis || {devices:0, users:0, pending:0});
