@@ -128,7 +128,9 @@
     .event-title{font-size:.76rem;color:#eaf1f8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .event-result{font-size:.74rem;white-space:nowrap}
     .event-result.ok{color:var(--ok)} .event-result.bad{color:var(--bad)} .event-result.dim{color:#68a9ff}
-    .event-filter{background:#0b1b2f;color:var(--text);border:1px solid #294866;min-width:8.7rem}
+    #sectionEvents .card-header{flex:0 0 auto;overflow:visible}
+    .event-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:.5rem;flex-wrap:wrap;min-width:0}
+    .event-filter{width:auto;max-width:100%;flex:0 1 auto;background:#0b1b2f;color:var(--text);border:1px solid #294866;min-width:8.7rem}
     .event-filter:focus{color:var(--text);background:#0e2036;border-color:#1686ff;box-shadow:0 0 0 .18rem rgba(22,134,255,.16)}
     .event-user-filter{min-width:11.8rem}
     .device-overview-list{display:flex;flex-direction:column;justify-content:flex-start;gap:12px;padding:14px;height:100%}
@@ -180,7 +182,7 @@
     .user-toolbar .user-search{position:relative;flex:1 1 270px;min-width:250px}
     .user-toolbar .user-search i{position:absolute;right:11px;top:50%;transform:translateY(-50%);z-index:2}
     .user-toolbar .user-search .form-control{padding-right:34px}
-    .table-responsive-shell{padding:0 16px 10px}
+    .table-responsive-shell{padding:0 16px 24px}
     .table{--bs-table-bg:transparent;--bs-table-color:#dfe8f1;--bs-table-border-color:#22364d;margin:0;font-size:.76rem}
     .table thead th{background:#0d1c2e;color:#f1f5f9;font-weight:700;border-bottom:1px solid #2b4057;padding:.42rem .5rem}
     .table tbody td{padding:.28rem .5rem;border-color:#22364d}
@@ -254,7 +256,7 @@
       .section-33{gap:10px}
       #sectionEvents .card-header{padding-left:10px;padding-right:10px}
       #sectionEvents .card-header>span{font-size:.8rem;line-height:1.1;white-space:nowrap}
-      #sectionEvents .card-header .gap-2{gap:.35rem!important}
+      .event-toolbar{gap:.35rem}
       .event-filter{min-width:7.2rem;font-size:.72rem}
       .event-user-filter{min-width:8.4rem}
       #btnViewEvents span{display:none}
@@ -290,6 +292,10 @@
       .summary-icon{width:46px;height:46px;flex-basis:46px;font-size:1.2rem}
       .summary-value{font-size:1.25rem}
       .card-header{padding:11px 12px}
+      #sectionEvents .card-header{align-items:stretch!important;flex-direction:column}
+      .event-toolbar{display:grid;grid-template-columns:minmax(0,1fr);width:100%}
+      .event-filter,.event-user-filter{width:100%;min-width:0}
+      #btnViewEvents{justify-self:start}
       .event-item{grid-template-columns:30px 128px minmax(0,1fr);gap:7px;padding:8px 10px}
       .event-result{grid-column:3;justify-self:start}
       .device-overview-list{padding:10px}
@@ -305,7 +311,7 @@
       .user-toolbar .form-control,
       .user-toolbar .form-select{width:100%;min-width:0;max-width:none}
       .user-toolbar .user-search{flex:0 0 auto}
-      #sectionUsers .table-responsive-shell{padding:10px;overflow:visible}
+      #sectionUsers .table-responsive-shell{padding:10px 10px 22px;overflow:visible}
       #sectionUsers .table,
       #sectionUsers .table tbody,
       #sectionUsers .table tr,
@@ -3716,7 +3722,7 @@ function startNextSyncCountdown(iso, fallbackTime){
       <article class="card" id="sectionEvents">
         <div class="card-header d-flex align-items-center justify-content-between gap-2">
           <span>Live Access Feed</span>
-          <div class="d-flex align-items-center gap-2 flex-wrap">
+          <div class="event-toolbar">
             <select id="eventFilter" class="form-select form-select-sm event-filter" aria-label="Filter event history">
               <option value="all">All events</option>
               <option value="system">System events</option>
