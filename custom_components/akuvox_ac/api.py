@@ -1820,21 +1820,34 @@ class AkuvoxAPI:
 
         return []
 
-    async def user_list(self) -> List[Dict[str, Any]]:
-        # Try POST get/list then GET fallback
+    @staticmethod
+    def _checked_items(result: Any, target: str) -> List[Dict[str, Any]]:
+        """Reject failed or incomplete reads before comparing device records."""
+        retcode, _ = AkuvoxAPI._parse_result_status(result)
+        if not _retcode_is_success(retcode):
+            raise RuntimeError(f"Akuvox {target}.get returned retcode {retcode}")
+        data = result.get("data") if isinstance(result, dict) else None
+        items = data.get("item") if isinstance(data, dict) else None
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise ValueError(f"Akuvox {target}.get did not return a valid item list")
+        return items
+
+    async def user_list(self, *, strict: bool = False) -> List[Dict[str, Any]]:
+        """Read users, optionally distinguishing an empty device from a failed read."""
         rel_paths = (
             "/new_api/user/get",
             "/api/user/get",
             "/api/web/user/get",
         )
 
+        last_error: Optional[Exception] = None
         for payload in (
             {"target": "user", "action": "get"},
         ):
             for rel in rel_paths:
                 try:
                     r = await self._post_api(payload, rel_paths=(rel,))
-                    items = r.get("data", {}).get("item")
+                    items = self._checked_items(r, "user") if strict else r.get("data", {}).get("item")
                     if isinstance(items, list):
                         return [
                             _normalize_user_source(item)
@@ -1842,8 +1855,10 @@ class AkuvoxAPI:
                             else item
                             for item in items
                         ]
-                except Exception:
-                    pass
+                except Exception as err:
+                    last_error = err
+        if strict:
+            raise RuntimeError("Unable to read device users for integrity check") from last_error
         return []
 
     async def user_get(self, name_or_per_id: str) -> List[Dict[str, Any]]:
@@ -3085,26 +3100,30 @@ class AkuvoxAPI:
 
         return item
 
-    async def schedule_get(self) -> List[Dict[str, Any]]:
+    async def schedule_get(self, *, strict: bool = False) -> List[Dict[str, Any]]:
+        """Read schedules; strict reads must not treat failures as an empty list."""
         # Try POST per manual; GET fallback
+        last_error: Optional[Exception] = None
         for payload in (
             {"target": "schedule", "action": "get"},
             {"target": "schedule", "action": "list"},
         ):
             try:
                 r = await self._post_api(payload)
-                items = r.get("data", {}).get("item")
+                items = self._checked_items(r, "schedule") if strict else r.get("data", {}).get("item")
                 if isinstance(items, list):
                     return items
-            except Exception:
-                pass
+            except Exception as err:
+                last_error = err
         try:
             r = await self._get_api("/api/schedule/get")
-            items = r.get("data", {}).get("item")
+            items = self._checked_items(r, "schedule") if strict else r.get("data", {}).get("item")
             if isinstance(items, list):
                 return items
-        except Exception:
-            pass
+        except Exception as err:
+            last_error = err
+        if strict:
+            raise RuntimeError("Unable to read device schedules for integrity check") from last_error
         return []
 
     async def schedule_add(self, name: str, spec: Dict[str, Any]) -> Dict[str, Any]:

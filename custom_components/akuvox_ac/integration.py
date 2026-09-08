@@ -5086,6 +5086,13 @@ class SyncQueue:
                         pass
                     try:
                         await manager.reconcile_device(entry_id, full=full_sync)
+                        # Both incremental Sync and Force Sync must read back
+                        # the device before reporting success to the dashboard.
+                        verified = await manager.async_check_integrity(
+                            entry_id=entry_id, repair=False
+                        )
+                        if not verified.get(entry_id):
+                            raise RuntimeError("Post-sync integrity verification failed")
                         coord.health["sync_status"] = "in_sync"
                         coord.health["last_sync"] = _now_hh_mm()
                         try:
@@ -5164,6 +5171,8 @@ class SyncManager:
         self._expiry_reminder_unsub = None
         self._temp_cleanup_lock = asyncio.Lock()
         self._integrity_minutes = 15
+        self._integrity_running = False
+        self._last_integrity_attempt: Dict[str, float] = {}
         self._face_enroll_initial_delay_seconds = 5.0
         self._face_enroll_poll_interval_seconds = 3.0
         self._face_enroll_poll_timeout_seconds = 45.0
@@ -5219,7 +5228,10 @@ class SyncManager:
         self._integrity_unsub = async_track_time_interval(
             self.hass,
             self._integrity_check_cb,
-            timedelta(minutes=minutes),
+            # The persisted per-device timestamp determines when a check is
+            # due. A long interval must not postpone a new device's first
+            # check, or restart its countdown whenever Home Assistant starts.
+            timedelta(minutes=1),
         )
 
     def set_integrity_interval(self, minutes: Optional[int]):
@@ -7233,14 +7245,97 @@ class SyncManager:
                     err,
                 )
 
+    def _integrity_check_due(self, coord: AkuvoxCoordinator) -> bool:
+        timestamp = str(coord.health.get("last_checked") or "").strip()
+        try:
+            checked_at = dt_util.parse_datetime(timestamp) if timestamp else None
+        except (TypeError, ValueError):
+            checked_at = None
+        if checked_at is None or checked_at.tzinfo is None:
+            return True
+        elapsed = (dt_util.now() - checked_at).total_seconds()
+        return elapsed < 0 or elapsed >= self.get_integrity_interval_minutes() * 60
+
     async def _integrity_check_cb(self, now):
-        devices = self._devices()
-        await self._refresh_scheduled_access_events(devices)
+        # Avoid credential/face repairs before HA and the FaceData routes are ready.
+        if not getattr(self.hass, "is_running", False):
+            return
+        if getattr(self, "_integrity_running", False):
+            return
+        self._integrity_running = True
+        try:
+            await self.async_check_integrity(due_only=True)
+        finally:
+            self._integrity_running = False
+
+    async def async_check_integrity(
+        self,
+        *,
+        entry_id: Optional[str] = None,
+        repair: bool = True,
+        due_only: bool = False,
+    ) -> Dict[str, bool]:
+        """Compare fresh device data; verification mode never queues another sync."""
+        sq = self._root().get("sync_queue")
+        if repair and sq:
+            if getattr(sq, "_active", False):
+                return {}
+            # Keep scheduled reads/face repairs separate from a manual sync.
+            # Queue repairs only after releasing the queue's lock.
+            async with sq._lock:
+                results, repairs = await self._async_compare_integrity(
+                    entry_id=entry_id, repair=repair, due_only=due_only
+                )
+        else:
+            # Post-sync verification is called while SyncQueue owns its lock.
+            results, repairs = await self._async_compare_integrity(
+                entry_id=entry_id, repair=repair, due_only=due_only
+            )
+        if repair and sq:
+            for device_id, reason in repairs:
+                sq.mark_change(device_id, full=True, trigger=reason)
+                await sq.sync_now(device_id, full=True, trigger=reason)
+        return results
+
+    async def _async_compare_integrity(
+        self,
+        *,
+        entry_id: Optional[str],
+        repair: bool,
+        due_only: bool,
+    ) -> Tuple[Dict[str, bool], List[Tuple[str, str]]]:
+        """Read and compare under the caller's sync lock, without reentering it."""
+        devices = [
+            device for device in self._devices()
+            if (entry_id is None or device[0] == entry_id)
+            and (not due_only or self._integrity_check_due(device[1]))
+            and (
+                not due_only
+                or time.monotonic() - getattr(self, "_last_integrity_attempt", {}).get(
+                    device[0], float("-inf")
+                ) >= 300
+            )
+        ]
+        if not devices:
+            return {}, []
+        if not hasattr(self, "_last_integrity_attempt"):
+            self._last_integrity_attempt = {}
+        if repair:
+            await self._refresh_scheduled_access_events(devices)
 
         root = self._root()
         sq = root.get("sync_queue")
-        if sq and getattr(sq, "_handle", None) is not None:
-            return
+
+        if repair:
+            # A pending or offline device must not prevent other devices from
+            # receiving their first check. Pending targets retain their delay.
+            devices = [
+                device for device in devices
+                if device[1].health.get("sync_status") == "in_sync"
+                and device[1].health.get("online", True)
+            ]
+        if not devices:
+            return {}, []
 
         include_face = True
         settings = self._settings_store()
@@ -7249,10 +7344,6 @@ class SyncManager:
                 include_face = settings.get_face_integrity_enabled()
             except Exception:
                 include_face = True
-
-        for _, coord, *_ in devices:
-            if coord.health.get("sync_status") != "in_sync":
-                return
 
         users_store = self._users_store()
         raw_registry = users_store.all() if users_store else {}
@@ -7278,10 +7369,13 @@ class SyncManager:
 
         face_root_base = face_base_url(self.hass)
 
+        results: Dict[str, bool] = {}
+        repairs: List[Tuple[str, str]] = []
         for entry_id, coord, api, opts in devices:
             try:
+                self._last_integrity_attempt[entry_id] = time.monotonic()
                 opts = opts or {}
-                dev_users = await api.user_list()
+                dev_users = await api.user_list(strict=True)
                 _set_coordinator_users(coord, dev_users or [])
                 await _store_device_user_ids(getattr(coord, "storage", None), coord.users)
                 device_records: Dict[str, List[Dict[str, Any]]] = {}
@@ -7301,13 +7395,8 @@ class SyncManager:
                     if any(g in device_groups for g in ha_groups):
                         should_have.add(k)
 
-                device_schedules: Optional[List[Dict[str, Any]]]
-                try:
-                    device_schedules = await api.schedule_get()
-                except Exception:
-                    device_schedules = None
-                if device_schedules is not None:
-                    _set_coordinator_schedule_ids(coord, device_schedules)
+                device_schedules = await api.schedule_get(strict=True)
+                _set_coordinator_schedule_ids(coord, device_schedules)
                 sched_map = await self._device_schedule_map(
                     api,
                     device_schedules=device_schedules or [],
@@ -7341,9 +7430,9 @@ class SyncManager:
                             include_face
                             and any(diff in ("face status", "face url") for diff in diffs)
                         )
-                        if face_mismatch and device_type_raw.lower() == "intercom":
+                        if repair and face_mismatch and device_type_raw.lower() == "intercom":
                             stored_profile = registry.get(ha_key) or {}
-                            if _face_sync_on_cooldown(stored_profile) and not full:
+                            if _face_sync_on_cooldown(stored_profile):
                                 continue
                             profile_face_status = str(
                                 stored_profile.get("face_status") or ""
@@ -7506,6 +7595,7 @@ class SyncManager:
 
                 checked_at = dt_util.now().replace(microsecond=0).isoformat()
                 await coord.async_record_integrity_check(checked_at)
+                results[entry_id] = mismatch_reason is None
 
                 if mismatch_reason is None:
                     try:
@@ -7514,26 +7604,24 @@ class SyncManager:
                         pass
                 else:
                     try:
-                        coord._append_event(f"Integrity mismatch — {mismatch_reason}; queued sync")  # type: ignore[attr-defined]
+                        suffix = "; queued sync" if repair and sq else ""
+                        coord._append_event(f"Integrity mismatch — {mismatch_reason}{suffix}")  # type: ignore[attr-defined]
                     except Exception:
                         pass
                     try:
-                        if hasattr(coord, "_send_alert_notification"):
+                        if repair and hasattr(coord, "_send_alert_notification"):
                             await coord._send_alert_notification("integrity_failed")  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                    if sq:
-                        sq.mark_change(entry_id, full=True, trigger=f"integrity mismatch: {mismatch_reason}")
-                        await sq.sync_now(
-                            entry_id,
-                            full=True,
-                            trigger=f"integrity mismatch: {mismatch_reason}",
-                        )
-            except Exception:
+                    if repair and sq:
+                        repairs.append((entry_id, f"integrity mismatch: {mismatch_reason}"))
+            except Exception as err:
+                _LOGGER.warning("Integrity check failed for %s: %s", entry_id, err)
                 try:
                     coord._append_event("Integrity check error")  # type: ignore[attr-defined]
                 except Exception:
                     pass
+        return results, repairs
 
 
 # ---------------------- Setup / teardown ---------------------- #
@@ -8495,7 +8583,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     async def svc_sync_now(call):
         data = call.data if isinstance(call.data, Mapping) else {}
         entry_id = data.get("entry_id")
-        await hass.data[DOMAIN]["sync_queue"].sync_now(entry_id, trigger="sync_now service")
+        await hass.data[DOMAIN]["sync_queue"].sync_now(
+            entry_id, include_all=not entry_id, trigger="sync_now service"
+        )
 
     async def svc_hacs_update_check(call):
         root = hass.data.get(DOMAIN, {})

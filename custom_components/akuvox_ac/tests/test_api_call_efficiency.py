@@ -131,10 +131,12 @@ def test_schedule_push_does_not_add_when_initial_schedule_read_fails():
 
 def test_integrity_tick_refreshes_access_events_before_deferred_sync():
     manager = object.__new__(SyncManager)
+    manager.hass = SimpleNamespace(is_running=True)
 
     class _Coordinator:
         def __init__(self):
             self.refresh_calls = 0
+            self.health = {"sync_status": "pending"}
 
         async def async_refresh_access_history(self):
             self.refresh_calls += 1
@@ -142,7 +144,7 @@ def test_integrity_tick_refreshes_access_events_before_deferred_sync():
     coordinator = _Coordinator()
     devices = [("entry-1", coordinator, object(), {})]
     manager._devices = lambda: devices
-    manager._root = lambda: {"sync_queue": SimpleNamespace(_handle=object())}
+    manager._root = lambda: {"sync_queue": SimpleNamespace(_handle=object(), _lock=asyncio.Lock())}
 
     asyncio.run(manager._integrity_check_cb(None))
 
@@ -153,10 +155,10 @@ def test_integrity_tick_records_completed_device_comparison():
     manager = object.__new__(SyncManager)
 
     class _Api:
-        async def user_list(self):
+        async def user_list(self, *, strict=False):
             return []
 
-        async def schedule_get(self):
+        async def schedule_get(self, *, strict=False):
             return []
 
     class _Coordinator:
@@ -180,6 +182,7 @@ def test_integrity_tick_records_completed_device_comparison():
 
     coordinator = _Coordinator()
     manager.hass = SimpleNamespace(
+        is_running=True,
         config=SimpleNamespace(internal_url=None, external_url=None)
     )
     manager._devices = lambda: [("entry-1", coordinator, _Api(), {})]
