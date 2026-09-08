@@ -4702,6 +4702,9 @@ async def _delete_user_every_way(api: AkuvoxAPI, rec: Dict[str, str]):
 
 # ---------------------- Debounced sync queue ---------------------- #
 class SyncQueue:
+    _RETRY_BASE_SECONDS = 5 * 60
+    _RETRY_MAX_SECONDS = 60 * 60
+
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._handle: Optional[Callable[[], None]] = None
@@ -4716,6 +4719,11 @@ class SyncQueue:
         self._last_mark: Optional[datetime] = None
         self._last_delay_from_default = False
         self._active: bool = False
+        self._run_scheduled = False
+        self._run_generation = 0
+        self._pending_revision = 0
+        self._retry_state: Dict[str, Dict[str, Any]] = {}
+        self._next_profile_retry_at = 0.0
         self._tick_unsub: Optional[Callable[[], None]] = None
         self._startup_unsub: Optional[Callable[[], None]] = None
 
@@ -4751,6 +4759,53 @@ class SyncQueue:
 
     def _root(self) -> Dict[str, Any]:
         return self.hass.data.get(DOMAIN, {}) or {}
+
+    def _schedule_run(self) -> None:
+        """Deduplicate immediate work before the event loop starts the task."""
+        if getattr(self, "_run_scheduled", False):
+            return
+        self._run_scheduled = True
+        generation = getattr(self, "_run_generation", 0) + 1
+        self._run_generation = generation
+
+        async def queued_run():
+            try:
+                await self.run(_generation=generation)
+            finally:
+                if generation == getattr(self, "_run_generation", 0):
+                    self._run_scheduled = False
+
+        self._schedule_task(queued_run())
+
+    def _invalidate_scheduled_run(self) -> None:
+        self._run_generation = getattr(self, "_run_generation", 0) + 1
+        self._run_scheduled = False
+
+    def _record_sync_failure(self, entry_id: str, *, full: bool) -> int:
+        if not hasattr(self, "_retry_state"):
+            self._retry_state = {}
+        previous = self._retry_state.get(entry_id, {})
+        attempts = min(int(previous.get("attempts", 0)) + 1, 5)
+        delay = min(self._RETRY_BASE_SECONDS * 2 ** (attempts - 1), self._RETRY_MAX_SECONDS)
+        self._retry_state[entry_id] = {
+            "attempts": attempts,
+            "not_before": time.monotonic() + delay,
+            "full": full or bool(previous.get("full")),
+        }
+        return delay
+
+    def get_retry_eta(self) -> Optional[datetime]:
+        deadlines = []
+        root = self._root()
+        for entry_id, state in getattr(self, "_retry_state", {}).items():
+            data = root.get(entry_id)
+            coord = data.get("coordinator") if isinstance(data, Mapping) else None
+            health = getattr(coord, "health", {}) or {}
+            if health.get("sync_status") == "pending" and health.get("online", True):
+                deadlines.append(state["not_before"])
+        if not deadlines:
+            return None
+        return datetime.now() + timedelta(seconds=max(0, min(deadlines) - time.monotonic()))
 
     def _default_delay_minutes(self) -> int:
         root = self._root()
@@ -4825,6 +4880,7 @@ class SyncQueue:
         full: bool = False,
         trigger: Optional[str] = None,
     ):
+        self._pending_revision = getattr(self, "_pending_revision", 0) + 1
         trigger_label = str(trigger or "").strip()
         if entry_id:
             if trigger_label:
@@ -4857,11 +4913,11 @@ class SyncQueue:
         self.next_sync_eta = eta
 
         if effective_delay <= 0:
-            self._schedule_task(self.run())
+            self._schedule_run()
             return
 
         def _schedule_cb(_now):
-            self._schedule_task(self.run())
+            self._schedule_run()
 
         self._handle = async_call_later(self.hass, effective_delay * 60, _schedule_cb)
 
@@ -4882,19 +4938,19 @@ class SyncQueue:
         if remaining <= 0:
             self.next_sync_eta = datetime.now()
             self._last_delay_from_default = True
-            self._schedule_task(self.run())
+            self._schedule_run()
             return
 
         self.next_sync_eta = eta
         self._last_delay_from_default = True
 
         def _schedule_cb(_now):
-            self._schedule_task(self.run())
+            self._schedule_run()
 
         self._handle = async_call_later(self.hass, remaining, _schedule_cb)
 
     def ensure_future_run(self):
-        if self._active:
+        if self._active or getattr(self, "_run_scheduled", False):
             return
 
         eta = self.next_sync_eta
@@ -4903,16 +4959,8 @@ class SyncQueue:
                 self._handle is None
                 and not self._pending_all
                 and not self._pending_devices
-                and self._has_auto_pending_work()
             ):
-                try:
-                    self.mark_change(
-                        None,
-                        delay_minutes=0,
-                        trigger="auto-detected pending state",
-                    )
-                except Exception:
-                    pass
+                self._queue_auto_pending_work()
             return
 
         if eta > datetime.now():
@@ -4928,23 +4976,10 @@ class SyncQueue:
                 pass
 
         self.next_sync_eta = datetime.now()
-        self._schedule_task(self.run())
+        self._schedule_run()
 
-    def _has_auto_pending_work(self) -> bool:
+    def _has_pending_profiles(self) -> bool:
         root = self._root()
-
-        for data in root.values():
-            if not isinstance(data, Mapping):
-                continue
-            coord = data.get("coordinator")
-            if not coord:
-                continue
-            health = getattr(coord, "health", {}) or {}
-            status = str(health.get("sync_status") or "").strip().lower()
-            online = bool(health.get("online", True))
-            if online and status == "pending":
-                return True
-
         users_store = root.get("users_store")
         if users_store and hasattr(users_store, "all"):
             try:
@@ -4962,6 +4997,47 @@ class SyncQueue:
                     return True
 
         return False
+
+    def _auto_pending_entries(self) -> List[str]:
+        now = time.monotonic()
+        profile_recovery = (
+            now >= getattr(self, "_next_profile_retry_at", 0.0)
+            and self._has_pending_profiles()
+        )
+        retry_state = getattr(self, "_retry_state", {})
+        targets: List[str] = []
+        for entry_id, data in self._root().items():
+            if not isinstance(data, Mapping):
+                continue
+            coord = data.get("coordinator")
+            if not coord or not data.get("api"):
+                continue
+            health = getattr(coord, "health", {}) or {}
+            status = str(health.get("sync_status") or "").strip().lower()
+            if not health.get("online", True) or status == "in_progress":
+                continue
+            if status != "pending" and not profile_recovery:
+                continue
+            if now < retry_state.get(entry_id, {}).get("not_before", 0.0):
+                continue
+            targets.append(entry_id)
+        return targets
+
+    def _queue_auto_pending_work(self) -> None:
+        targets = self._auto_pending_entries()
+        if not targets:
+            return
+        now = time.monotonic()
+        if now >= getattr(self, "_next_profile_retry_at", 0.0) and self._has_pending_profiles():
+            self._next_profile_retry_at = now + self._RETRY_BASE_SECONDS
+        for entry_id in targets:
+            state = getattr(self, "_retry_state", {}).get(entry_id, {})
+            self.mark_change(
+                entry_id,
+                delay_minutes=0,
+                full=bool(state.get("full")),
+                trigger="automatic retry" if state else "auto-detected pending state",
+            )
 
     def _handle_hass_started(self, _event):
         try:
@@ -4982,19 +5058,8 @@ class SyncQueue:
         except Exception:
             pass
 
-        if self._active or self._handle is not None:
-            return
-
-        if self._pending_all or self._pending_devices:
-            return
-
-        if self._has_auto_pending_work():
-            try:
-                self.mark_change(None, delay_minutes=0, trigger="auto-detected pending state")
-            except Exception:
-                pass
-
     def shutdown(self):
+        self._invalidate_scheduled_run()
         if self._tick_unsub:
             try:
                 self._tick_unsub()
@@ -5019,8 +5084,19 @@ class SyncQueue:
         self._pending_all = False
         self._pending_devices.clear()
 
-    async def run(self, only_entry: Optional[str] = None, full: Optional[bool] = None):
+    async def run(
+        self,
+        only_entry: Optional[str] = None,
+        full: Optional[bool] = None,
+        *,
+        _generation: Optional[int] = None,
+    ):
         async with self._lock:
+            if _generation is not None and _generation != getattr(self, "_run_generation", 0):
+                return
+            if _generation is not None:
+                self._run_scheduled = False
+            pending_revision = getattr(self, "_pending_revision", 0)
             self.next_sync_eta = None
             self._active = True
             try:
@@ -5070,9 +5146,14 @@ class SyncQueue:
                         or "unspecified trigger"
                     )
                     if full is None:
-                        full_sync = self._pending_full or entry_id in self._pending_full_devices
+                        full_sync = (
+                            self._pending_full
+                            or entry_id in self._pending_full_devices
+                            or bool(getattr(self, "_retry_state", {}).get(entry_id, {}).get("full"))
+                        )
                     else:
                         full_sync = full
+                    retry_full = full_sync
                     try:
                         try:
                             mode = "full sync" if full_sync else "sync"
@@ -5091,10 +5172,15 @@ class SyncQueue:
                         verified = await manager.async_check_integrity(
                             entry_id=entry_id, repair=False
                         )
+                        if verified.get(entry_id) is False:
+                            # Incremental reconciliation only adds missing
+                            # schedules. A confirmed mismatch needs a full repair.
+                            retry_full = True
                         if not verified.get(entry_id):
                             raise RuntimeError("Post-sync integrity verification failed")
                         coord.health["sync_status"] = "in_sync"
                         coord.health["last_sync"] = _now_hh_mm()
+                        getattr(self, "_retry_state", {}).pop(entry_id, None)
                         try:
                             coord._append_event(
                                 f"Sync succeeded (trigger: {sync_trigger})"
@@ -5103,8 +5189,11 @@ class SyncQueue:
                             pass
                     except Exception as err:
                         coord.health["sync_status"] = "pending"
+                        retry_seconds = self._record_sync_failure(entry_id, full=retry_full)
                         try:
-                            coord._append_event(f"Sync failed: {err}")  # type: ignore[attr-defined]
+                            coord._append_event(
+                                f"Sync failed: {err}; automatic retry in {retry_seconds // 60} minutes"
+                            )  # type: ignore[attr-defined]
                         except Exception:
                             pass
                     try:
@@ -5112,13 +5201,16 @@ class SyncQueue:
                     except Exception:
                         pass
             finally:
-                self._pending_all = False
-                self._pending_devices.clear()
-                self._pending_full = False
-                self._pending_full_devices.clear()
-                self._pending_reason_all = None
-                self._pending_reason_devices.clear()
-                self._handle = None
+                # A change arriving during device I/O belongs to the next run.
+                # Do not erase its target, full-repair flag, or delayed callback.
+                if pending_revision == getattr(self, "_pending_revision", 0):
+                    self._pending_all = False
+                    self._pending_devices.clear()
+                    self._pending_full = False
+                    self._pending_full_devices.clear()
+                    self._pending_reason_all = None
+                    self._pending_reason_devices.clear()
+                    self._handle = None
                 self._active = False
 
     async def sync_now(
@@ -5129,6 +5221,10 @@ class SyncQueue:
         full: Optional[bool] = None,
         trigger: Optional[str] = None,
     ):
+        # An explicit request bypasses retry cooldown and supersedes queued
+        # automatic work that has not yet acquired the sync lock.
+        self._invalidate_scheduled_run()
+        self._pending_revision = getattr(self, "_pending_revision", 0) + 1
         if include_all and entry_id:
             include_all = False
 
@@ -6430,15 +6526,13 @@ class SyncManager:
     def get_next_sync_text(self) -> str:
         sq: SyncQueue = self._root().get("sync_queue")
         if sq:
-            if hasattr(sq, "ensure_future_run"):
-                try:
-                    sq.ensure_future_run()
-                except Exception:
-                    pass
             if getattr(sq, "_active", False):
                 return "Syncing…"
             if sq.next_sync_eta:
                 return sq.next_sync_eta.strftime("%H:%M")
+            retry_eta = sq.get_retry_eta()
+            if retry_eta:
+                return retry_eta.strftime("%H:%M")
         settings: AkuvoxSettingsStore = self._settings_store()
         return settings.get_auto_sync_time() or "—"
 

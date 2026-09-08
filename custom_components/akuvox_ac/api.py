@@ -2950,6 +2950,10 @@ class AkuvoxAPI:
                         minutes = int(parts[1])
                     except ValueError:
                         return None
+                # Text values are clock times, not a count of minutes. Keep the
+                # bounds consistent with the schedule store's clock parser.
+                hours = max(0, min(23, hours))
+                minutes = hours * 60 + max(0, min(59, minutes))
             if minutes < 0:
                 minutes = 0
             max_minutes = 23 * 60 + 59
@@ -3041,13 +3045,16 @@ class AkuvoxAPI:
         if sched_type in {"", "0"} and (date_range or date_start or date_end):
             sched_type = "1"
 
-        start_input = (
-            spec.get("start")
-            or spec.get("Start")
-            or spec.get("time_start")
-            or spec.get("TimeStart")
+        start_input = next(
+            (spec[key] for key in ("start", "Start", "time_start", "TimeStart")
+             if spec.get(key) not in (None, "")),
+            None,
         )
-        end_input = spec.get("end") or spec.get("End") or spec.get("time_end") or spec.get("TimeEnd")
+        end_input = next(
+            (spec[key] for key in ("end", "End", "time_end", "TimeEnd")
+             if spec.get(key) not in (None, "")),
+            None,
+        )
         daily_range = spec.get("daily") or spec.get("Daily")
         if (start_input is None or end_input is None) and isinstance(daily_range, str) and "-" in daily_range:
             parts = [chunk.strip() for chunk in daily_range.split("-", 1)]
@@ -3059,8 +3066,6 @@ class AkuvoxAPI:
 
         start_time = _clean_time(start_input, default="00:00")
         end_time = _clean_time(end_input, default="23:59")
-        display_start = str(start_input) if start_input not in (None, "") else start_time
-        display_end = str(end_input) if end_input not in (None, "") else end_time
         start_compact = start_time.replace(":", "")
         end_compact = end_time.replace(":", "")
 
@@ -3071,8 +3076,8 @@ class AkuvoxAPI:
             "DateEnd": date_end,
             "TimeStart": start_compact,
             "TimeEnd": end_compact,
-            "Start": display_start,
-            "End": display_end,
+            "Start": start_time,
+            "End": end_time,
         }
 
         for low_key, api_key in day_map.items():
@@ -3092,7 +3097,7 @@ class AkuvoxAPI:
             week_lookup[day] for day in ("sun", "mon", "tue", "wed", "thu", "fri", "sat") if day in selected_days
         )
         item["Week"] = ordered_week
-        item["Daily"] = f"{display_start}-{display_end}"
+        item["Daily"] = f"{start_time}-{end_time}"
         if not date_range:
             if date_start or date_end:
                 date_range = f"{date_start}-{date_end}".strip("-")
