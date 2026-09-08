@@ -689,12 +689,22 @@ def test_set_user_on_device_preserves_active_face_record():
     assert api.set_calls == []
 
 
+def _face_recovery_hass(users_store):
+    return SimpleNamespace(data={integration.DOMAIN: {
+        "users_store": users_store,
+        "intercom": {
+            "coordinator": SimpleNamespace(health={"online": True, "sync_status": "in_sync"}),
+            "api": object(),
+        },
+    }})
+
+
 def test_sync_queue_kicks_stale_face_error_without_existing_eta():
     scheduled = []
     users_store = SimpleNamespace(
         all=lambda: {"HA001": {"status": "active", "face_status": "error"}}
     )
-    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    hass = _face_recovery_hass(users_store)
     queue = object.__new__(integration.SyncQueue)
     queue.hass = hass
     queue._handle = None
@@ -715,8 +725,9 @@ def test_sync_queue_kicks_stale_face_error_without_existing_eta():
 
     queue.ensure_future_run()
 
-    assert queue._pending_all is True
-    assert queue._pending_reason_all == "auto-detected pending state"
+    assert queue._pending_all is False
+    assert queue._pending_devices == {"intercom"}
+    assert queue._pending_reason_devices["intercom"] == "auto-detected pending state"
     assert queue.next_sync_eta is not None
     assert scheduled
 
@@ -727,7 +738,7 @@ def test_sync_queue_ignores_non_pending_device_health_states():
         health={"online": True, "sync_status": "in_progress"}
     )
     hass = SimpleNamespace(
-        data={integration.DOMAIN: {"device-1": {"coordinator": coordinator}}}
+        data={integration.DOMAIN: {"device-1": {"coordinator": coordinator, "api": object()}}}
     )
     queue = object.__new__(integration.SyncQueue)
     queue.hass = hass
@@ -767,7 +778,7 @@ def test_sync_queue_waits_for_face_retry_cooldown():
             }
         }
     )
-    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    hass = _face_recovery_hass(users_store)
     queue = object.__new__(integration.SyncQueue)
     queue.hass = hass
     queue._handle = None
@@ -806,7 +817,7 @@ def test_sync_queue_retries_after_face_retry_cooldown_expires():
             }
         }
     )
-    hass = SimpleNamespace(data={integration.DOMAIN: {"users_store": users_store}})
+    hass = _face_recovery_hass(users_store)
     queue = object.__new__(integration.SyncQueue)
     queue.hass = hass
     queue._handle = None
@@ -827,7 +838,8 @@ def test_sync_queue_retries_after_face_retry_cooldown_expires():
 
     queue.ensure_future_run()
 
-    assert queue._pending_all is True
-    assert queue._pending_reason_all == "auto-detected pending state"
+    assert queue._pending_all is False
+    assert queue._pending_devices == {"intercom"}
+    assert queue._pending_reason_devices["intercom"] == "auto-detected pending state"
     assert queue.next_sync_eta is not None
     assert scheduled
