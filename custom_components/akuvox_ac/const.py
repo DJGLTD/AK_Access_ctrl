@@ -3,8 +3,8 @@ from homeassistant.const import Platform
 
 DOMAIN = "akuvox_ac"
 
-INTEGRATION_VERSION = "4.2.9"
-INTEGRATION_VERSION_LABEL = "4.2.9"
+INTEGRATION_VERSION = "4.3.0"
+INTEGRATION_VERSION_LABEL = "4.3.0"
 
 # Bump when you change stored config structure
 ENTRY_VERSION = 3
