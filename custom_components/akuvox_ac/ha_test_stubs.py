@@ -81,6 +81,11 @@ def ensure_homeassistant_stubs() -> None:
     components_module = types.ModuleType("homeassistant.components")
     components_module.__path__ = []
 
+    button_module = types.ModuleType("homeassistant.components.button")
+    button_module.ButtonEntity = type("ButtonEntity", (), {})
+    entity_platform_module = types.ModuleType("homeassistant.helpers.entity_platform")
+    entity_platform_module.AddEntitiesCallback = object
+
     frontend_module = types.ModuleType("homeassistant.components.frontend")
 
     async def _frontend_register(*args, **kwargs):
@@ -238,6 +243,8 @@ def ensure_homeassistant_stubs() -> None:
     sys.modules.setdefault("homeassistant.helpers.event", event_module)
     sys.modules.setdefault("homeassistant.helpers.aiohttp_client", aiohttp_client_module)
     sys.modules.setdefault("homeassistant.components", components_module)
+    sys.modules.setdefault("homeassistant.components.button", button_module)
+    sys.modules.setdefault("homeassistant.helpers.entity_platform", entity_platform_module)
     sys.modules.setdefault("homeassistant.components.frontend", frontend_module)
     sys.modules.setdefault("homeassistant.helpers.update_coordinator", update_coordinator_module)
     sys.modules.setdefault("homeassistant.components.http.view", http_view_module)

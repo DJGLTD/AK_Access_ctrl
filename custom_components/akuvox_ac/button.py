@@ -60,11 +60,7 @@ class AkuvoxAccessPermittedButton(_Base):
             "device_name": self._coord.device_name,
         }
         _ingest_history_event(self.hass, event)
-        await self._coord.async_handle_manual_event(event)
-        await self._coord.async_refresh_access_history(
-            force_latest=True,
-            suppress_notifications=True,
-        )
+        await self._coord.async_refresh_after_access_permitted()
 
 
 class AkuvoxCallEndButton(_Base):
