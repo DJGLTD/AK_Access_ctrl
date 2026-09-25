@@ -1,6 +1,11 @@
 import asyncio
+import inspect
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
@@ -72,6 +77,16 @@ class _Hass:
         self.states = _States(self._state)
         self.services = _Services(self._state, confirm_install=confirm_install)
         self.data = {DOMAIN: {"settings_store": settings}}
+        self.is_running = False
+        self.bus = SimpleNamespace(async_listen_once=Mock(return_value=Mock()))
+
+    def async_create_task(self, coroutine):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coroutine.close()
+            raise RuntimeError("async_create_task called outside the event loop")
+        return loop.create_task(coroutine)
 
 
 class _GithubResponse:
@@ -285,3 +300,183 @@ def test_hacs_auto_update_matches_release_versions():
     assert HacsAutoUpdater._versions_match("3.1.1", "v3.1.1") is True
     assert HacsAutoUpdater._versions_match("3.1.1", "3.2.0") is False
     assert HacsAutoUpdater._versions_match("71d1bd2", "3.2.0") is False
+
+
+async def _dispatch_ha_job(callback, argument):
+    """HA runs unmarked synchronous listeners in its executor."""
+    if inspect.iscoroutinefunction(callback):
+        await callback(argument)
+    else:
+        await asyncio.to_thread(callback, argument)
+
+
+def test_daily_timer_runs_repeatedly_and_keeps_install_time(monkeypatch):
+    store = _settings_store()
+    installed = "2026-09-08T04:17:37+01:00"
+    store.data["hacs_auto_update"].update(last_checked=installed, last_installed=installed)
+    hass = _Hass(store)
+    callbacks = []
+    monkeypatch.setattr(integration_module, "async_track_time_change",
+                        lambda _hass, callback, **kwargs: callbacks.append(callback) or Mock())
+    monkeypatch.setattr(integration_module, "async_get_clientsession", lambda _hass: _GithubSession())
+    updater = HacsAutoUpdater(hass)
+    updater.apply_settings()
+
+    async def run():
+        for day in (25, 26):
+            now = datetime(2026, 9, day, 4, 30, tzinfo=UTC)
+            monkeypatch.setattr(integration_module.dt_util, "now", lambda: now)
+            await _dispatch_ha_job(callbacks[0], now)
+            status = updater.status()
+            assert status["last_checked"] == now.isoformat()
+            assert status["last_installed"] == installed
+
+    asyncio.run(run())
+
+
+def test_changing_daily_schedule_cancels_previous_timer(monkeypatch):
+    store = _settings_store()
+    track = Mock(side_effect=lambda *args, **kwargs: Mock())
+    monkeypatch.setattr(integration_module, "async_track_time_change", track)
+    updater = HacsAutoUpdater(_Hass(store))
+    updater.apply_settings()
+    cancel = updater._interval_unsub
+    asyncio.run(store.set_hacs_auto_update({"check_time": "04:30"}))
+    updater.apply_settings()
+    cancel.assert_called_once()
+    assert track.call_args.kwargs == {"hour": 4, "minute": 30, "second": 0}
+    cancel = updater._interval_unsub
+    asyncio.run(store.set_hacs_auto_update({"enabled": False}))
+    updater.apply_settings()
+    cancel.assert_called_once()
+    assert updater.status()["active"] is False
+
+
+def test_stale_settings_form_cannot_overwrite_updater_status():
+    store = _settings_store()
+    stale = store.get_hacs_auto_update()
+    new_status = {"last_checked": "2026-09-25T04:30:00+01:00",
+                  "last_installed": "2026-09-08T04:17:37+01:00",
+                  "last_result": "check_failed", "last_error": "Connection failed"}
+    asyncio.run(store.update_hacs_auto_update_status(**new_status))
+    stale["check_time"] = "04:30"
+    result = asyncio.run(store.set_hacs_auto_update(stale))
+    assert result["check_time"] == "04:30"
+    for key, value in new_status.items():
+        assert result[key] == value
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("due", [False, True])
+def test_startup_or_reload_catches_up_once_when_due(monkeypatch, running, due):
+    store = _settings_store()
+    hass = _Hass(store)
+    hass.is_running = running
+    updater = HacsAutoUpdater(hass)
+    updater.async_run_scheduled_update = AsyncMock()
+    monkeypatch.setattr(updater, "_startup_check_due", lambda config: due)
+    monkeypatch.setattr(updater, "apply_settings", Mock())
+    monkeypatch.setattr(updater, "apply_restart_schedule", Mock())
+
+    async def run():
+        updater.start()
+        updater.start()  # Multiple configured devices share this updater.
+        if running:
+            hass.bus.async_listen_once.assert_not_called()
+            await asyncio.sleep(0)
+        else:
+            hass.bus.async_listen_once.assert_called_once()
+            callback = hass.bus.async_listen_once.call_args.args[1]
+            await _dispatch_ha_job(callback, None)
+        updater.start()
+        await asyncio.sleep(0)
+        assert updater.async_run_scheduled_update.await_count == int(due)
+        updater.shutdown()
+
+    asyncio.run(run())
+
+
+def test_scheduled_restart_callback_runs_on_event_loop(monkeypatch):
+    store = _settings_store()
+    hass = _Hass(store)
+    callbacks = []
+    monkeypatch.setattr(integration_module, "async_call_later",
+                        lambda _hass, delay, callback: callbacks.append(callback) or Mock())
+    updater = HacsAutoUpdater(hass)
+
+    async def run():
+        await updater.async_schedule_restart(datetime.now(UTC) + timedelta(minutes=30))
+        await _dispatch_ha_job(callbacks[0], None)
+        assert updater.status()["last_result"] == "restart_requested"
+        assert updater.status()["restart_scheduled_for"] is None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("confirm_install", [False, True])
+def test_install_keeps_time_of_actual_release_check(monkeypatch, confirm_install):
+    store = _settings_store()
+    hass = _Hass(store, confirm_install=confirm_install)
+    checked_at = datetime(2026, 9, 25, 4, 30, tzinfo=UTC)
+    installed_at = checked_at + timedelta(minutes=2)
+    now = checked_at
+    monkeypatch.setattr(integration_module.dt_util, "now", lambda: now)
+    monkeypatch.setattr(integration_module, "async_get_clientsession", lambda _hass: _GithubSession())
+    service_call = hass.services.async_call
+
+    async def install_with_delay(domain, service, *args, **kwargs):
+        nonlocal now
+        if (domain, service) == ("update", "install"):
+            now = installed_at
+        return await service_call(domain, service, *args, **kwargs)
+
+    hass.services.async_call = install_with_delay
+    status = asyncio.run(HacsAutoUpdater(hass).async_install_update(force=True))
+    assert status["last_checked"] == checked_at.isoformat()
+    assert status["last_installed"] == (installed_at.isoformat() if confirm_install else None)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_startup_skips_disabled_or_already_checked_today(monkeypatch, enabled):
+    store = _settings_store()
+    now = datetime(2026, 9, 25, 12, tzinfo=UTC)
+    store.data["hacs_auto_update"].update(enabled=enabled, last_checked=now.isoformat())
+    monkeypatch.setattr(integration_module.dt_util, "now", lambda: now)
+    updater = HacsAutoUpdater(_Hass(store))
+    updater.async_run_scheduled_update = AsyncMock()
+    asyncio.run(updater._handle_hass_started(None))
+    updater.async_run_scheduled_update.assert_not_awaited()
+
+
+def test_failed_check_records_attempt_without_changing_last_install(monkeypatch):
+    store = _settings_store()
+    installed = "2026-09-08T04:17:37+01:00"
+    store.data["hacs_auto_update"]["last_installed"] = installed
+    now = datetime(2026, 9, 25, 4, 30, tzinfo=UTC)
+    monkeypatch.setattr(integration_module.dt_util, "now", lambda: now)
+    hass = _Hass(store)
+    hass.services.async_call = AsyncMock(side_effect=RuntimeError("HACS unavailable"))
+    status = asyncio.run(HacsAutoUpdater(hass).async_run_scheduled_update())
+    assert status["last_checked"] == now.isoformat()
+    assert status["last_installed"] == installed
+    assert status["last_result"] == "check_failed"
+    assert status["last_error"] == "HACS unavailable"
+
+
+def test_shutdown_cancels_reload_catchup(monkeypatch):
+    hass = _Hass(_settings_store())
+    hass.is_running = True
+    updater = HacsAutoUpdater(hass)
+    updater.async_run_scheduled_update = AsyncMock()
+    monkeypatch.setattr(updater, "apply_settings", Mock())
+    monkeypatch.setattr(updater, "apply_restart_schedule", Mock())
+
+    async def run():
+        updater.start()
+        task = updater._startup_task
+        updater.shutdown()
+        await asyncio.sleep(0)
+        assert task.cancelled()
+        updater.async_run_scheduled_update.assert_not_awaited()
+
+    asyncio.run(run())

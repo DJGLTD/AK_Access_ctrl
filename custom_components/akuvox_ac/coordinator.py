@@ -10,11 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 from .const import DOMAIN, EVENT_NON_KEY_ACCESS_GRANTED, DEFAULT_ACCESS_HISTORY_LIMIT
 from .ha_id import normalize_ha_id, normalize_user_id
-from .api import AkuvoxAPI
+from .api import AkuvoxAPI, DOOR_LOG_PAGE_SIZE
 from .http import (
     _build_phone_index,
     _call_entry_is_received,
@@ -27,7 +27,6 @@ from .http import (
     _normalize_call_number,
 )
 from .access_history import (
-    AccessHistory,
     access_history_retention_cutoff,
     access_history_storage_limit,
     categorize_event,
@@ -41,6 +40,8 @@ CALLER_EVENT_WINDOW_SECONDS = 30
 ACCESS_PERMITTED_NOTIFICATION_WINDOW_SECONDS = 10
 NOTIFICATION_DIAGNOSTICS_LIMIT = 200
 USER_LIST_REFRESH_INTERVAL_SECONDS = 300
+ACCESS_EVENT_POLL_INTERVAL_SECONDS = 5
+ACCESS_EVENT_BATCH_LIMIT = 25
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,7 +168,6 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         alerts_state = self.storage.data.get("alerts_state")
         if not isinstance(alerts_state, dict):
             self.storage.data["alerts_state"] = {}
-        self._alerts_state = self.storage.data.get("alerts_state", {})
         persisted_last_checked = str(
             self.storage.data.get("last_checked") or ""
         ).strip() or None
@@ -214,6 +214,49 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self._event_reset_handles: Dict[str, Callable[[], None]] = {}
         self.caller_state: Dict[str, Any] = self._empty_caller_state()
         self._caller_reset_handle: Optional[Callable[[], None]] = None
+        self._door_events_lock = asyncio.Lock()
+        self._event_poll_unsub: Optional[Callable[[], None]] = None
+        self._event_poll_task: Optional[asyncio.Task] = None
+
+    def start_event_polling(self) -> None:
+        """Check access events independently of slow health and user refreshes."""
+        if self._event_poll_unsub is None:
+            self._event_poll_unsub = async_track_time_interval(
+                self.hass,
+                self._async_poll_events,
+                timedelta(seconds=ACCESS_EVENT_POLL_INTERVAL_SECONDS),
+            )
+
+    async def _async_poll_events(self, _now) -> None:
+        if (
+            self._event_poll_unsub is None
+            or not self.health.get("online")
+            or self.health.get("status") == "rebooting"
+            or self._door_events_lock.locked()
+            or self._event_poll_task is not None
+        ):
+            return
+        self._event_poll_task = asyncio.current_task()
+        try:
+            await self.async_refresh_access_history(recent_only=True)
+        except Exception as err:
+            _LOGGER.debug("Access event refresh failed for %s: %s", self.entry_id, err)
+        finally:
+            self._event_poll_task = None
+
+    def shutdown(self) -> None:
+        """Stop device timers and any in-flight background event refresh."""
+        if self._event_poll_unsub is not None:
+            self._event_poll_unsub()
+            self._event_poll_unsub = None
+        if self._event_poll_task is not None:
+            self._event_poll_task.cancel()
+        for cancel in self._event_reset_handles.values():
+            cancel()
+        self._event_reset_handles.clear()
+        if self._caller_reset_handle is not None:
+            self._caller_reset_handle()
+            self._caller_reset_handle = None
 
     # Stable accessor other code can use
     @property
@@ -277,18 +320,6 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         # keep a generous history to make UI feel “unlimited”
         self.events[:] = self.events[:1000]
 
-    async def _kick_sync_now(self):
-        """Ask the SyncQueue to sync this device immediately."""
-        try:
-            root = self.hass.data.get(DOMAIN, {}) or {}
-            sq = root.get("sync_queue")
-            if sq:
-                # Surface an in-progress state immediately so dashboards update
-                self.health["sync_status"] = "in_progress"
-                await sq.sync_now(self.entry_id)
-        except Exception:
-            # best-effort only
-            pass
 
     async def _async_update_data(self):
         """HA calls this: refresh health/users/events."""
@@ -392,14 +423,17 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
 
             self.health["last_ping"] = last_ping
 
+            # On startup/recovery, deliver events before downloading users.
+            # Otherwise the dedicated timer owns the event polling cadence.
+            if getattr(self, "_event_poll_unsub", None) is None or prev is not True:
+                await self._process_door_events()
+
             # Load users so integrity checker & UI can see them
             try:
                 await self.async_refresh_users()
             except Exception:
                 # don't fail the whole refresh just because the user list failed
                 pass
-
-            await self._process_door_events()
 
         except Exception as e:
             last_error = _safe_str(e)
@@ -439,6 +473,25 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         *,
         force_latest: bool = False,
         suppress_notifications: bool = False,
+        recent_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        # Timer, dashboard and button refreshes must not process the same cursor
+        # concurrently, or an event can notify twice before its cursor is saved.
+        if not hasattr(self, "_door_events_lock"):
+            self._door_events_lock = asyncio.Lock()
+        async with self._door_events_lock:
+            return await self._process_door_events_locked(
+                force_latest=force_latest,
+                suppress_notifications=suppress_notifications,
+                recent_only=recent_only,
+            )
+
+    async def _process_door_events_locked(
+        self,
+        *,
+        force_latest: bool = False,
+        suppress_notifications: bool = False,
+        recent_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """Fetch recent door events and handle non-key access notifications."""
 
@@ -449,7 +502,10 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         events: List[Dict[str, Any]] = []
 
         try:
-            raw_events = await self.api.events_last()
+            if recent_only:
+                raw_events = await self.api.events_last(recent_only=True)
+            else:
+                raw_events = await self.api.events_last()
         except Exception as err:
             _LOGGER.debug("Failed to fetch door events: %s", _safe_str(err))
             return events
@@ -464,6 +520,27 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not events:
             return events
 
+        state = self.storage.data.setdefault("door_events", {})
+        last_seen = _safe_str(state.get("last_event_key")) or None
+        if recent_only:
+            if (
+                last_seen
+                and len(events) == DOOR_LOG_PAGE_SIZE
+                and not any(self._event_unique_key(event) == last_seen for event in events)
+            ):
+                # More than one page may have arrived between polls. Retain the
+                # existing bounded catch-up behaviour instead of losing a burst.
+                try:
+                    events = await self.api.events_last()
+                except Exception as err:
+                    _LOGGER.debug("Door-log catch-up failed: %s", _safe_str(err))
+                    return []
+                if not events:
+                    return []
+            # Old firmware can ignore page=1. Bound local processing even when
+            # the device cannot reduce its response size.
+            events = events[:ACCESS_EVENT_BATCH_LIMIT]
+
         try:
             self._publish_access_history(events)
         except Exception as err:
@@ -473,8 +550,6 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 _safe_str(err),
             )
 
-        state = self.storage.data.setdefault("door_events", {})
-        last_seen = _safe_str(state.get("last_event_key")) or None
         last_seen_epoch_raw = state.get("last_event_epoch")
         try:
             last_seen_epoch = float(last_seen_epoch_raw)
@@ -482,6 +557,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             last_seen_epoch = 0.0
 
         events_to_process: List[Tuple[str, Dict[str, Any], float]] = []
+        cursor_found = False
         for event in reversed(events):
             key = self._event_unique_key(event)
             if key is None:
@@ -489,12 +565,16 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             if last_seen and key == last_seen:
                 # Drop everything collected so far (they are older events).
                 events_to_process = []
+                cursor_found = True
                 continue
             timestamp_text = self._extract_event_timestamp(event, fallback=False)
             parsed_ts = 0.0
             if timestamp_text:
                 parsed_ts = self._coerce_event_timestamp_to_epoch(timestamp_text)
-            if parsed_ts and parsed_ts <= last_seen_epoch:
+            if parsed_ts and (
+                parsed_ts < last_seen_epoch
+                or (parsed_ts == last_seen_epoch and not cursor_found)
+            ):
                 continue
             events_to_process.append((key, event, parsed_ts))
 
@@ -525,7 +605,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             return events
 
         # Avoid processing an unbounded backlog.
-        max_events = 25
+        max_events = ACCESS_EVENT_BATCH_LIMIT
         if len(events_to_process) > max_events:
             events_to_process = events_to_process[-max_events:]
 
@@ -1474,12 +1554,14 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         *,
         force_latest: bool = False,
         suppress_notifications: bool = False,
+        recent_only: bool = False,
     ) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         try:
             result = await self._process_door_events(
                 force_latest=force_latest,
                 suppress_notifications=suppress_notifications,
+                recent_only=recent_only,
             )
             if isinstance(result, list):
                 events = result

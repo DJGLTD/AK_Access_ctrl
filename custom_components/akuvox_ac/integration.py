@@ -12,13 +12,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Set, Coroutine
 from urllib.parse import urlencode, urlsplit
 
-from homeassistant.const import Platform
-
 try:  # pragma: no cover - fallback for test stubs without full HA constants
     from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 except (ImportError, AttributeError):  # pragma: no cover - executed in unit tests
     EVENT_HOMEASSISTANT_STARTED = "homeassistant_start"
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import (
@@ -104,8 +102,6 @@ from .ha_id import (
     normalize_user_id,
     temp_id_from_int,
 )
-
-HA_EVENT_ACCCESS = "akuvox_access_event"  # fired for access denied / exit override
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -1967,18 +1963,6 @@ def _desired_device_user_payload(
                 return text
         return default
 
-    def _first_group(*sources: Any) -> str:
-        for source in sources:
-            if isinstance(source, (list, tuple)):
-                for entry in source:
-                    text = _string_or_default(entry, default="")
-                    if text:
-                        return text
-            else:
-                text = _string_or_default(source, default="")
-                if text:
-                    return text
-        return "Default"
 
     def _normalise_license_plate() -> List[Dict[str, Any]]:
         if not anpr_enabled:
@@ -3609,7 +3593,14 @@ class AkuvoxSettingsStore(Store):
     async def set_hacs_auto_update(self, config: Any) -> Dict[str, Any]:
         current = self.get_hacs_auto_update()
         if isinstance(config, dict):
-            current.update(config)
+            # Dashboard forms also carry cached status; only the updater may
+            # write those fields, or a settings save can roll timestamps back.
+            for key in (
+                "enabled", "interval_hours", "check_time", "auto_install",
+                "restart_after_install", "update_entity", "backup",
+            ):
+                if key in config:
+                    current[key] = config[key]
         sanitized = self._sanitize_hacs_auto_update(current)
         if sanitized["enabled"] and sanitized.get("last_result") == "disabled":
             sanitized["last_result"] = "enabled"
@@ -3971,6 +3962,8 @@ class HacsAutoUpdater:
         self._interval_unsub: Optional[Callable[[], None]] = None
         self._startup_unsub: Optional[Callable[[], None]] = None
         self._restart_unsub: Optional[Callable[[], None]] = None
+        self._startup_task: Optional[asyncio.Task] = None
+        self._started = False
         self._lock = asyncio.Lock()
 
     def _root(self) -> Dict[str, Any]:
@@ -3995,9 +3988,13 @@ class HacsAutoUpdater:
         return status
 
     def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
         self.apply_settings()
         self.apply_restart_schedule()
-        if self._startup_unsub is not None:
+        if self.hass.is_running:
+            self._startup_task = self.hass.async_create_task(self._handle_hass_started(None))
             return
         try:
             self._startup_unsub = self.hass.bus.async_listen_once(
@@ -4006,10 +4003,16 @@ class HacsAutoUpdater:
             )
         except Exception:
             self._startup_unsub = None
+            self._started = False
+            _LOGGER.exception("Unable to register the HACS updater startup listener")
 
     def shutdown(self) -> None:
+        self._started = False
         self._cancel_interval()
         self._cancel_restart_schedule()
+        if self._startup_task is not None:
+            self._startup_task.cancel()
+            self._startup_task = None
         if self._startup_unsub:
             try:
                 self._startup_unsub()
@@ -4025,8 +4028,9 @@ class HacsAutoUpdater:
 
         hour, minute = self._check_time_parts(config)
 
-        def _schedule(_now):
-            self.hass.async_create_task(self.async_run_scheduled_update(reason="scheduled"))
+        async def _schedule(_now):
+            # HA dispatches unmarked synchronous listeners to a worker thread.
+            await self.async_run_scheduled_update(reason="scheduled")
 
         try:
             self._interval_unsub = async_track_time_change(
@@ -4038,6 +4042,7 @@ class HacsAutoUpdater:
             )
         except Exception:
             self._interval_unsub = None
+            _LOGGER.exception("Unable to schedule the daily HACS update check")
 
     def _cancel_interval(self) -> None:
         if self._interval_unsub:
@@ -4096,13 +4101,14 @@ class HacsAutoUpdater:
             )
             return
 
-        def _restart_cb(_now):
-            self.hass.async_create_task(self.async_restart_now(reason="scheduled"))
+        async def _restart_cb(_now):
+            await self.async_restart_now(reason="scheduled")
 
         try:
             self._restart_unsub = async_call_later(self.hass, remaining, _restart_cb)
         except Exception:
             self._restart_unsub = None
+            _LOGGER.exception("Unable to schedule the Home Assistant restart")
 
     async def async_schedule_restart(self, restart_at: Any) -> Dict[str, Any]:
         parsed = self._parse_restart_time(restart_at)
@@ -4152,7 +4158,7 @@ class HacsAutoUpdater:
             restart_scheduled_for=None,
         )
 
-    def _handle_hass_started(self, _event) -> None:
+    async def _handle_hass_started(self, _event) -> None:
         self._startup_unsub = None
         config = self._config()
         if not config.get("enabled"):
@@ -4161,7 +4167,7 @@ class HacsAutoUpdater:
             return
         if not self._startup_check_due(config):
             return
-        self.hass.async_create_task(self.async_run_scheduled_update(reason="startup"))
+        await self.async_run_scheduled_update(reason="startup")
 
     @staticmethod
     def _check_time_parts(config: Mapping[str, Any]) -> Tuple[int, int]:
@@ -4563,7 +4569,6 @@ class HacsAutoUpdater:
                 )
             except Exception as err:
                 return await self._record_status(
-                    last_checked=dt_util.now().isoformat(),
                     last_entity_id=entity_id,
                     installed_version=check_status.get("installed_version"),
                     latest_version=check_status.get("latest_version"),
@@ -4603,7 +4608,6 @@ class HacsAutoUpdater:
 
             if not confirmed:
                 return await self._record_status(
-                    last_checked=dt_util.now().isoformat(),
                     last_entity_id=entity_id,
                     installed_version=installed_after,
                     latest_version=pending_display or latest_after,
@@ -4618,7 +4622,6 @@ class HacsAutoUpdater:
 
             await self._create_restart_notification(entity_id)
             return await self._record_status(
-                last_checked=dt_util.now().isoformat(),
                 last_entity_id=entity_id,
                 installed_version=installed_after,
                 latest_version=pending_display or latest_after,
@@ -5311,6 +5314,21 @@ class SyncManager:
             second=0,
         )
 
+    def shutdown(self) -> None:
+        """Cancel shared schedules when the last device is unloaded."""
+        for name in (
+            "_auto_unsub", "_contact_sync_unsub", "_integrity_unsub",
+            "_temp_cleanup_unsub", "_temp_midnight_unsub",
+            "_expiry_reminder_unsub", "_reboot_unsub", "_interval_unsub",
+        ):
+            cancel = getattr(self, name, None)
+            if cancel is not None:
+                try:
+                    cancel()
+                except Exception as err:
+                    _LOGGER.debug("Failed to cancel %s: %s", name, err)
+                setattr(self, name, None)
+
     def _apply_integrity_interval(self, minutes: int):
         minutes = max(5, min(24 * 60, int(minutes)))
         if self._integrity_unsub:
@@ -5861,14 +5879,6 @@ class SyncManager:
             return count
         return count
 
-    async def _reset_face_error_count(self, ha_key: str) -> None:
-        users_store = self._users_store()
-        if not users_store:
-            return
-        try:
-            await users_store.upsert_profile(ha_key, face_error_count=0)
-        except Exception:
-            return
 
     async def _mark_face_sync_attempt(self, ha_key: str) -> Tuple[str, str]:
         """Record a face sync attempt and the next allowed retry time."""
@@ -5886,16 +5896,6 @@ class SyncManager:
                 pass
         return attempt_at, retry_after
 
-    async def _clear_face_sync_retry_after(self, ha_key: str) -> None:
-        """Clear the retry delay once the device has an active face template."""
-
-        users_store = self._users_store()
-        if not users_store:
-            return
-        try:
-            await users_store.upsert_profile(ha_key, face_retry_after="")
-        except Exception:
-            return
 
     async def _wait_for_device_face_active(
         self,
@@ -5955,14 +5955,6 @@ class SyncManager:
                 return False, latest
             await asyncio.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
-    async def _recreate_user_for_face_mismatch(
-        self,
-        api: AkuvoxAPI,
-        ha_key: str,
-        desired: Dict[str, Any],
-        existing: Optional[Dict[str, Any]],
-    ) -> None:
-        await self._replace_user_on_device(api, ha_key, desired, existing=existing)
 
     async def _upload_face_asset_to_device(
         self,
@@ -8086,7 +8078,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         face_url: Optional[str] = None
         if face_reference_supplied:
-            face_filename = _normalise_face_filename(face_reference or f"{ha_id}.jpg", ha_id)
+            face_filename = _normalise_face_filename(face_reference or f"{temp_id}.jpg", temp_id)
             if face_bytes:
                 _store_face_bytes(face_filename, face_bytes, source=face_source_path)
             face_url = f"{face_base_url(hass)}/{face_filename}"
@@ -8821,6 +8813,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
 
     entry.async_on_unload(entry.add_update_listener(_options_updated))
+    coord.start_event_polling()
+    entry.async_on_unload(coord.shutdown)
     return True
 
 
@@ -8830,42 +8824,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         root = hass.data.get(DOMAIN, {})
         root.pop(entry.entry_id, None)
 
-        only_special = all(
-            k
-            in (
-                "groups_store",
-                "users_store",
-                "schedules_store",
-                "settings_store",
-                "sync_manager",
-                "sync_queue",
-                "hacs_auto_updater",
-                "_ui_registered",
-                "_panel_registered",
-            )
-            for k in root.keys()
+        devices_remaining = any(
+            isinstance(value, dict) and "coordinator" in value
+            for value in root.values()
         )
-        if only_special:
-            sq = root.get("sync_queue")
-            if sq:
-                if hasattr(sq, "shutdown"):
+        if not devices_remaining:
+            # Drop stopped workers so a subsequent setup creates fresh timers.
+            for key in ("sync_queue", "sync_manager", "hacs_auto_updater"):
+                worker = root.pop(key, None)
+                if worker is not None:
                     try:
-                        sq.shutdown()
-                    except Exception:
-                        pass
-                elif getattr(sq, "_handle", None) is not None:
-                    try:
-                        sq._handle()
-                    except Exception:
-                        pass
-                    root["sync_queue"]._handle = None  # type: ignore[attr-defined]
-
-            updater = root.get("hacs_auto_updater")
-            if updater and hasattr(updater, "shutdown"):
-                try:
-                    updater.shutdown()
-                except Exception:
-                    pass
+                        worker.shutdown()
+                    except Exception as err:
+                        _LOGGER.debug("Failed to stop %s: %s", key, err)
 
             if root.pop("_panel_registered", False):
                 _remove_admin_dashboard(hass)

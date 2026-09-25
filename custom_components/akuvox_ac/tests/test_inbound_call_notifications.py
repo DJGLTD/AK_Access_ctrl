@@ -13,13 +13,18 @@ from custom_components.akuvox_ac.http import _process_inbound_call_webhook  # no
 
 
 class _CallApiStub:
+    def __init__(self):
+        # The call precedes the webhook. Creating its timestamp during the
+        # lookup puts it after the handler's clock snapshot on faster clocks.
+        self.timestamp = (dt.datetime.now() - dt.timedelta(seconds=1)).isoformat()
+
     async def call_log(self):
         return [
             {
                 "ID": "call-1",
                 "Type": "received",
                 "Number": "07920671814",
-                "Timestamp": dt.datetime.now().isoformat(),
+                "Timestamp": self.timestamp,
             }
         ]
 

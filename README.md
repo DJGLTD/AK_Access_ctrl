@@ -40,6 +40,8 @@ Release versions are derived from the merged pull request number. The integratio
 - Direct commits to `main` without an associated pull request do not create a release.
 
 ## Notes
+
+- Access events are checked every five seconds while a device is online, independently of the health-check setting and the five-minute user-list cache. Routine checks request the newest ten-record page from the device. If the saved event has fallen outside that page, a catch-up read retains the existing 25-event processing limit. Explicit history refreshes, startup and recovery still read the full log. Firmware that rejects or ignores pagination falls back to unpaged reads, with routine local processing capped at 25 records. The five-second interval is a polling target; device response times and Home Assistant's notification provider still affect delivery.
 - Web assets (in `custom_components/akuvox_ac/www/`) are served via `/api/AK_AC/...` and require Home Assistant authentication (cookie session or long‑lived token).
 - Uploaded face images are stored in the Home Assistant config at `config/akuvox_ac/FaceData/` and are preserved across updates.
 - Hidden Akuvox dashboards are available at `/akuvox-ac/index`, `/akuvox-ac/users`, `/akuvox-ac/device-edit`, `/akuvox-ac/schedules`, and `/akuvox-ac/face-rec`; they respect the same authentication (HA session or `?token=` query parameter).
@@ -48,5 +50,17 @@ Release versions are derived from the merged pull request number. The integratio
 - If you previously used a different folder layout (e.g., "Config Files" / "WWW Files"), that has been normalized to the Home Assistant conventions here.
 
 ---
+### Development checks
+
+Use Python 3.12 or newer and Node.js. In a virtual environment, install `requirements-dev.txt`, then run:
+
+```text
+python -m ruff check .
+python -m pytest -q
+node scripts/check-web-scripts.cjs
+```
+
+The Python tests use lightweight Home Assistant stubs. They do not replace testing on a running Home Assistant instance with an Akuvox device. Pull requests run these checks automatically.
+
 ### Support
 Open an issue in this repository with logs and details of your setup.
