@@ -42,6 +42,9 @@ NOTIFICATION_DIAGNOSTICS_LIMIT = 200
 USER_LIST_REFRESH_INTERVAL_SECONDS = 300
 ACCESS_EVENT_POLL_INTERVAL_SECONDS = 5
 ACCESS_EVENT_BATCH_LIMIT = 25
+RELAY_EVENT_RETRY_INTERVAL_SECONDS = 0.25
+RELAY_EVENT_REFRESH_ATTEMPTS = 13
+RELAY_EVENT_REFRESH_WINDOW_SECONDS = 3
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -217,6 +220,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self._door_events_lock = asyncio.Lock()
         self._event_poll_unsub: Optional[Callable[[], None]] = None
         self._event_poll_task: Optional[asyncio.Task] = None
+        self._relay_refresh_task: Optional[asyncio.Task] = None
 
     def start_event_polling(self) -> None:
         """Check access events independently of slow health and user refreshes."""
@@ -251,6 +255,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             self._event_poll_unsub = None
         if self._event_poll_task is not None:
             self._event_poll_task.cancel()
+        if self._relay_refresh_task is not None:
+            self._relay_refresh_task.cancel()
         for cancel in self._event_reset_handles.values():
             cancel()
         self._event_reset_handles.clear()
@@ -1548,6 +1554,47 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
                 return None
 
         return None
+
+    async def async_refresh_after_access_permitted(self) -> None:
+        """Read a relay event promptly even when its webhook beats the door log."""
+        task = self._relay_refresh_task
+        if task is None or task.done():
+            task = self.hass.async_create_task(self._async_refresh_relay_event())
+            self._relay_refresh_task = task
+        try:
+            # Repeated relay webhooks share one burst. Cancelling a caller must
+            # not cancel another caller's refresh; unload cancels the task itself.
+            await asyncio.shield(task)
+        finally:
+            if task.done() and self._relay_refresh_task is task:
+                self._relay_refresh_task = None
+
+    async def _async_refresh_relay_event(self) -> None:
+        # Device log timestamps have one-second precision. Allow one additional
+        # second for webhook delivery, without treating an old grant as this one.
+        earliest_event = int(time.time()) - 1
+        deadline = time.monotonic() + RELAY_EVENT_REFRESH_WINDOW_SECONDS
+        for attempt in range(RELAY_EVENT_REFRESH_ATTEMPTS):
+            if attempt and time.monotonic() >= deadline:
+                break
+            # Normal cursor handling owns notification delivery for both this
+            # burst and the regular poll. Never force replay or suppress a new row.
+            events = await self.async_refresh_access_history(recent_only=True)
+            for event in events:
+                timestamp = self._extract_event_timestamp(event, fallback=False)
+                epoch = self._coerce_event_timestamp_to_epoch(timestamp)
+                if (
+                    earliest_event <= epoch <= time.time() + 1
+                    and self._event_is_access_granted(self._event_summary_tokens(event))
+                ):
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or attempt + 1 == RELAY_EVENT_REFRESH_ATTEMPTS:
+                break
+            await asyncio.sleep(min(RELAY_EVENT_RETRY_INTERVAL_SECONDS, remaining))
+        # The deadline limits retries, without interrupting notification dispatch
+        # or cursor persistence mid-event. Normal device request timeouts apply.
+        _LOGGER.debug("Relay event not yet visible for %s; regular polling will retry", self.entry_id)
 
     async def async_refresh_access_history(
         self,
