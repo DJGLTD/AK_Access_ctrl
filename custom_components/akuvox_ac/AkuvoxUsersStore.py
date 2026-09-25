@@ -1,7 +1,7 @@
-"""Backward compatible shim for :mod:`custom_components.AK_Access_ctrl.__init__`.
+"""Backward compatible import for the Akuvox user store.
 
 The integration historically exposed :class:`AkuvoxUsersStore` from this module.
-The implementation now lives alongside the rest of the runtime in ``__init__.py``
+The implementation now lives alongside the rest of the runtime in ``integration.py``
 so we simply re-export it here to keep dotted-imports working and to avoid stale
 inline documentation referencing ``relays`` instead of schedule/key-holder data.
 """

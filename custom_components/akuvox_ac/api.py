@@ -23,6 +23,7 @@ from .const import (
 
 
 _LOGGER = logging.getLogger(__name__)
+DOOR_LOG_PAGE_SIZE = 10
 
 
 def _retcode_is_success(retcode: Optional[int]) -> bool:
@@ -111,7 +112,6 @@ class AkuvoxAPI:
         self.use_https = True
         self.verify_ssl = False
         self._session = session
-        self._rest_ok = True
 
         # Keep a rolling window of recent requests for diagnostics
         self._history_limit = self._coerce_history_limit(diagnostics_history_limit)
@@ -471,18 +471,16 @@ class AkuvoxAPI:
         _add_base(True, 443, False)
 
         # Try all combinations
-        last_exc: Optional[Exception] = None
         for use_https, port, verify in bases:
             for rel in rel_paths:
                 try:
                     return await _attempt(use_https, port, verify, rel)
                 except Exception as e:
-                    last_exc = e
                     _LOGGER.debug(
                         "%s attempt failed for %s://%s:%s%s -> %s",
                         method,
-                        self.host,
                         "https" if use_https else "http",
+                        self.host,
                         port,
                         rel,
                         e,
@@ -1040,16 +1038,6 @@ class AkuvoxAPI:
         item.pop("FaceUrl", None)
         item.pop("FaceURL", None)
 
-    @classmethod
-    def _normalize_device_face_import_reference(cls, reference: Any, filename: str) -> str:
-        """Normalize a device face import reference to the path accepted by user.add."""
-
-        text = str(reference or "").strip().replace("\\", "/")
-        if text.startswith("mnt/"):
-            text = f"/{text}"
-        if cls._is_device_face_import_reference(text):
-            return text
-        return f"/mnt/Face/{filename}"
 
     def _normalize_user_items_for_add_or_set(
         self,
@@ -1776,19 +1764,44 @@ class AkuvoxAPI:
 
         return []
 
-    async def events_last(self) -> List[Dict[str, Any]]:
-        # GET door log; limited variations in practice
+    async def events_last(self, *, recent_only: bool = False) -> List[Dict[str, Any]]:
+        """Read the newest page for polling, or the full log for history.
+
+        Akuvox pagination uses fixed ten-record pages. Firmware that rejects or
+        ignores it falls back to the existing unpaged endpoint for this session.
+        """
+        paged = recent_only and getattr(self, "_doorlog_paging_supported", True)
+        path = "/api/doorlog/get/" + ("?page=1" if paged else "")
         try:
-            result = await self._get_api("/api/doorlog/get/")
+            result = await self._get_api(path)
+            retcode, message = self._parse_result_status(result)
+            if not _retcode_is_success(retcode):
+                raise RuntimeError(message or "Door log request failed")
         except Exception:
-            return []
+            if not paged:
+                return []
+            try:
+                result = await self._get_api("/api/doorlog/get/")
+                retcode, _ = self._parse_result_status(result)
+                if not _retcode_is_success(retcode):
+                    return []
+            except Exception:
+                return []
+            self._doorlog_paging_supported = False
+            _LOGGER.debug("Door-log paging unavailable on %s; using unpaged reads", self.host)
 
         items = []
         if isinstance(result, dict):
-            items = self._coerce_event_list(result.get("data", {}).get("item"))
+            data = result.get("data")
+            if isinstance(data, dict):
+                items = self._coerce_event_list(data.get("item"))
 
         if not items:
             items = self._extract_doorlog_items(result)
+
+        if paged and len(items) > DOOR_LOG_PAGE_SIZE:
+            self._doorlog_paging_supported = False
+            _LOGGER.debug("Door-log paging ignored by %s; using unpaged reads", self.host)
 
         return items
 

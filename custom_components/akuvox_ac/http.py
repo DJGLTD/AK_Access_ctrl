@@ -4,7 +4,6 @@ import datetime as dt
 import inspect
 import json
 import logging
-import json
 import platform
 import re
 import secrets
@@ -384,21 +383,6 @@ def _sanitise_device_record(record: Optional[Dict[str, Any]]) -> Dict[str, str]:
     return out
 
 
-def _record_matches_user(record: Dict[str, Any], user_id: str) -> bool:
-    if not isinstance(record, dict):
-        return False
-    target = str(user_id or "").strip()
-    if not target:
-        return False
-    for key in ("UserID", "UserId", "userId", "UserID", "ID", "Name"):
-        candidate = record.get(key)
-        if candidate is None:
-            continue
-        if str(candidate).strip() == target:
-            return True
-    return False
-
-
 def _build_face_upload_payload(
     profile: Dict[str, Any],
     device_record: Optional[Dict[str, Any]],
@@ -487,154 +471,6 @@ def _build_face_upload_payload(
 
     return payload
 
-
-async def _push_face_to_devices(
-    hass: HomeAssistant,
-    root: Dict[str, Any],
-    user_id: str,
-    face_bytes: bytes,
-    face_url_public: str,
-) -> None:
-    manager = root.get("sync_manager")
-    if not manager:
-        return
-
-    users_store = root.get("users_store")
-    profile: Dict[str, Any] = {}
-    if users_store:
-        try:
-            profile = users_store.get(user_id) or {}
-        except Exception:
-            profile = {}
-
-    for entry_id, coord, api, _opts in manager._devices():
-        device_name = getattr(coord, "device_name", entry_id)
-        device_type = str((getattr(coord, "health", {}) or {}).get("device_type") or "").strip().lower()
-        if device_type == "keypad":
-            _LOGGER.debug("Skipping face upload for keypad %s", device_name)
-            continue
-        record = None
-        try:
-            for candidate in list(getattr(coord, "users", []) or []):
-                if _record_matches_user(candidate, user_id):
-                    record = candidate
-                    break
-        except Exception:
-            record = None
-
-        if record is None:
-            try:
-                device_users = await api.user_list()
-            except Exception as err:
-                _LOGGER.debug("Unable to refresh users before face upload on %s: %s", device_name, err)
-                device_users = []
-            for candidate in device_users or []:
-                if _record_matches_user(candidate, user_id):
-                    record = candidate
-                    break
-
-        record_face_source: Optional[str] = None
-        if isinstance(record, dict):
-            for key in ("FaceFileName", "faceFileName", "FaceUrl", "FaceURL"):
-                candidate = record.get(key)
-                if candidate in (None, ""):
-                    continue
-                record_face_source = str(candidate)
-                break
-
-        profile_face_source = profile.get("face_url") if isinstance(profile, dict) else None
-        reference = record_face_source or profile_face_source or face_url_public
-        face_filename = face_filename_from_reference(reference, user_id)
-
-        if not isinstance(record, dict) or not str(record.get("ID") or "").strip():
-            lookup_values: List[str] = []
-            if isinstance(record, dict):
-                for key in ("UserID", "Name"):
-                    candidate = str(record.get(key) or "").strip()
-                    if candidate:
-                        lookup_values.append(candidate)
-            lookup_values.append(user_id)
-
-            seen_lookup: set[str] = set()
-            for lookup in lookup_values:
-                clean_lookup = lookup.strip()
-                if not clean_lookup or clean_lookup in seen_lookup:
-                    continue
-                seen_lookup.add(clean_lookup)
-                try:
-                    matches = await api.user_get(clean_lookup)
-                except Exception as err:
-                    _LOGGER.debug(
-                        "Unable to fetch user.get for %s on %s while resolving numeric ID: %s",
-                        clean_lookup,
-                        device_name,
-                        err,
-                    )
-                    continue
-                for candidate in matches or []:
-                    try:
-                        if _record_matches_user(candidate, user_id):
-                            record = candidate
-                            break
-                    except Exception:
-                        continue
-                if isinstance(record, dict) and str(record.get("ID") or "").strip():
-                    break
-
-        try:
-            upload_result = await api.face_upload(
-                face_bytes,
-                filename=face_filename,
-            )
-        except Exception as err:
-            _LOGGER.debug(
-                "Direct face upload failed for %s on %s: %s", user_id, device_name, err
-            )
-            continue
-
-        face_import_path = ""
-        if isinstance(upload_result, dict):
-            raw_path = upload_result.get("path")
-            if isinstance(raw_path, str):
-                face_import_path = raw_path.strip()
-            if not face_import_path:
-                raw_field = upload_result.get("raw")
-                if isinstance(raw_field, str) and raw_field.strip():
-                    face_import_path = raw_field.strip()
-        elif isinstance(upload_result, str):
-            face_import_path = upload_result.strip()
-
-        face_link_reference = face_import_path or reference
-
-        try:
-            payload = _build_face_upload_payload(
-                profile, record, user_id, face_link_reference
-            )
-        except Exception as err:
-            _LOGGER.debug(
-                "Failed to prepare face payload for %s on %s: %s",
-                user_id,
-                device_name,
-                err,
-            )
-            continue
-
-        existing_record = record if isinstance(record, dict) else None
-
-        try:
-            await manager._replace_user_on_device(
-                api,
-                user_id,
-                payload,
-                existing=existing_record,
-            )
-        except Exception as err:
-            _LOGGER.debug(
-                "Failed to recreate user %s on %s after face upload: %s",
-                user_id,
-                device_name,
-                err,
-            )
 
 RESERVATION_TTL_MINUTES = 2
 SIGNED_API_PATHS: Dict[str, str] = {
@@ -1141,7 +977,6 @@ def _ingest_history_event(hass: HomeAssistant, event: Dict[str, Any]) -> None:
     if history is None or not hasattr(history, "ingest"):
         return
 
-    settings = root.get("settings_store")
     try:
         limit = access_history_storage_limit(root)
     except Exception:
@@ -2929,44 +2764,6 @@ async def _async_resolve_ha_user_name(hass: HomeAssistant, user_id: str) -> str:
             if text:
                 return text
     return ""
-
-
-def _sanitize_self_service_license_plates(raw: Any) -> List[str]:
-    values: Iterable[Any]
-    if raw is None:
-        values = []
-    elif isinstance(raw, str):
-        values = re.split(r"[,;\n]+", raw)
-    elif isinstance(raw, (list, tuple, set)):
-        values = raw
-    else:
-        values = [raw]
-
-    cleaned: List[str] = []
-    seen: Set[str] = set()
-    for item in values:
-        value = ""
-        if isinstance(item, Mapping):
-            candidate = (
-                item.get("Plate")
-                or item.get("plate")
-                or item.get("value")
-                or item.get("Value")
-            )
-            if candidate is not None:
-                value = str(candidate).strip().upper()
-        else:
-            value = str(item or "").strip().upper()
-        if not value:
-            continue
-        folded = value.casefold()
-        if folded in seen:
-            continue
-        seen.add(folded)
-        cleaned.append(value)
-        if len(cleaned) >= 5:
-            break
-    return cleaned
 
 
 def sanitize_self_service_profile_payload(

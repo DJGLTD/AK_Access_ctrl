@@ -63,8 +63,9 @@ def ensure_homeassistant_stubs() -> None:
 
     event_module = types.ModuleType("homeassistant.helpers.event")
 
-    async def _event_stub(*args, **kwargs):
-        return None
+    def _event_stub(*args, **kwargs):
+        # HA's scheduling helpers synchronously return an unsubscribe callback.
+        return lambda: None
 
     event_module.async_call_later = _event_stub
     event_module.async_track_time_change = _event_stub
