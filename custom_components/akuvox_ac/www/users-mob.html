@@ -2710,12 +2710,31 @@ async function saveNotifyTargets(){
 }
 
 /* -------------------- save: user core + optional face upload + optional remote enrol -------------------- */
+function readPinInput(){
+  const input = document.getElementById('pin');
+  const pin = input ? input.value.replace(/\s/g, '') : '';
+  if (input){
+    input.setCustomValidity(/^[0-9]*$/.test(pin)
+      ? ''
+      : 'PIN must contain digits only (0-9). Spaces are removed automatically.');
+    if (!input.reportValidity()){
+      input.focus();
+      return null;
+    }
+    input.value = pin;
+  }
+  return pin;
+}
+
 async function save(){
   if (!CURRENT){
     alert('Form not ready yet. Please reload the page.');
     return;
   }
   if (BUSY) return;
+  const prompts = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
+  const pinValue = prompts.code ? readPinInput() : '';
+  if (pinValue === null) return;
   setBusy(true);
   try{
     // Ensure we have or reserve an ID
@@ -2747,7 +2766,6 @@ async function save(){
     let selectedScheduleId = scheduleEl && scheduleEl.value ? scheduleEl.value : '1001';
     let selectedScheduleName = nameForId(selectedScheduleId);
 
-    const prompts = sanitizeCredentialPrompts(CREDENTIAL_PROMPTS);
     const payload = {
       name: document.getElementById('name').value.trim(),
       groups: CURRENT.groups || ['Default'],
@@ -2765,9 +2783,7 @@ async function save(){
     CURRENT.exit_permission = exitPermissionValue;
 
     if (prompts.code){
-      const pinInput = document.getElementById('pin');
-      const pinValue = pinInput ? pinInput.value.trim() : '';
-      const priorPin = typeof CURRENT.pin === 'string' ? CURRENT.pin.trim() : '';
+      const priorPin = typeof CURRENT.pin === 'string' ? CURRENT.pin : '';
       if (pinValue || priorPin){
         if (pinValue !== priorPin){
           payload.pin = pinValue;
@@ -2960,11 +2976,12 @@ function showPanel(which){
     <div class="mb-3" id="nameRow"><label class="form-label">Name</label><input id="name" class="form-control"/></div>
 
     <div class="mb-3" id="pinRow">
-      <label class="form-label">PIN</label>
+      <label class="form-label" for="pin">PIN</label>
       <div class="input-group">
-        <input id="pin" class="form-control"/>
+        <input id="pin" class="form-control" type="text" inputmode="numeric" aria-describedby="pinHelp" oninput="this.setCustomValidity('')"/>
         <button class="btn btn-outline-secondary" onclick="document.getElementById('pin').value = String(Math.floor(1000+Math.random()*9000))">Random</button>
       </div>
+      <div id="pinHelp" class="form-text muted">Use digits only. Spaces are removed automatically when you save.</div>
     </div>
 
     <div class="mb-3" id="faceSection">

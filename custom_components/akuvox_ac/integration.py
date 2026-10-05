@@ -76,6 +76,7 @@ from .relay import (
 
 from .api import AkuvoxAPI
 from .phone import normalize_phone_number
+from .pin import normalize_pin, validate_pin
 from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
 from .access_history import (
@@ -2082,11 +2083,11 @@ def _desired_device_user_payload(
         if profile_pin_value in (None, ""):
             desired["PrivatePIN"] = ""
         else:
-            desired["PrivatePIN"] = str(profile_pin_value).strip()
+            desired["PrivatePIN"] = normalize_pin(profile_pin_value)
     else:
         pin_value = local.get("PrivatePIN") or local.get("Pin")
         if pin_value not in (None, ""):
-            desired["PrivatePIN"] = str(pin_value)
+            desired["PrivatePIN"] = normalize_pin(pin_value)
 
     if not is_keypad:
         paused_profile = _coerce_bool(profile.get("paused")) is True
@@ -3097,6 +3098,9 @@ class AkuvoxUsersStore(Store):
         ha_user_id: Optional[str] = None,
         ha_user_name: Optional[str] = None,
     ):
+        # Validate before changing the in-memory profile or saving any fields.
+        if pin is not None:
+            pin = validate_pin(pin)
         canonical = normalize_user_id(key) or str(key)
         u = self.data["users"].setdefault(canonical, {})
         if name is not None:
@@ -8029,6 +8033,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def svc_add_user(call):
         d = call.data
+        pin_payload = validate_pin(d.get("pin")) if "pin" in d else None
         name: str = d["name"].strip()
         ha_user_id, ha_user_name = _home_assistant_link_from_service(d)
 
@@ -8087,14 +8092,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 _store_face_bytes(face_filename, face_bytes, source=face_source_path)
             face_url = f"{face_base_url(hass)}/{face_filename}"
 
-        pin_payload: Optional[str] = None
-        if "pin" in d:
-            raw_pin = d.get("pin")
-            if raw_pin in (None, ""):
-                pin_payload = ""
-            else:
-                pin_payload = str(raw_pin)
-
         pin_only = (
             pin_payload not in (None, "")
             and not face_reference_supplied
@@ -8145,8 +8142,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         if not name:
             return
 
-        raw_pin = d.get("pin")
-        pin_payload = str(raw_pin or "").strip()
+        pin_payload = validate_pin(d.get("pin"))
         if not pin_payload:
             return
 
@@ -8242,13 +8238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
         lp_payload = d.get("license_plate") if "license_plate" in d else None
 
-        pin_payload_edit: Optional[str] = None
-        if "pin" in d:
-            raw_pin = d.get("pin")
-            if raw_pin in (None, ""):
-                pin_payload_edit = ""
-            else:
-                pin_payload_edit = str(raw_pin)
+        pin_payload_edit = validate_pin(d.get("pin")) if "pin" in d else None
 
         paused_flag: Optional[bool] = None
         if "paused" in d:
