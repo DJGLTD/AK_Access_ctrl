@@ -76,6 +76,7 @@ from .access_history import (
 )
 from .reboot_schedule import normalize_reboot_schedule
 from .phone import normalize_phone_number
+from .pin import normalize_pin, validate_pin
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -426,9 +427,13 @@ def _build_face_upload_payload(
         if pin_value in (None, ""):
             payload["PrivatePIN"] = ""
         else:
-            payload["PrivatePIN"] = str(pin_value).strip()
+            payload["PrivatePIN"] = normalize_pin(pin_value)
         for alias in ("Pin", "PIN"):
             payload.pop(alias, None)
+    else:
+        for key in ("PrivatePIN", "Pin", "PIN"):
+            if key in payload:
+                payload[key] = normalize_pin(payload[key])
 
     phone = profile.get("phone")
     if phone is None:
@@ -2778,8 +2783,7 @@ def sanitize_self_service_profile_payload(
     canonical = normalize_user_id(user_id) or str(user_id or "").strip()
     cleaned: Dict[str, Any] = {"id": canonical}
     if "pin" in payload:
-        raw_pin = payload.get("pin")
-        cleaned["pin"] = "" if raw_pin in (None, "") else str(raw_pin).strip()
+        cleaned["pin"] = validate_pin(payload.get("pin"))
     return cleaned
 
 
