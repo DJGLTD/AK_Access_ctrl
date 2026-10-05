@@ -75,6 +75,7 @@ from .access_history import (
     schedule_access_history_persist,
 )
 from .reboot_schedule import normalize_reboot_schedule
+from .phone import normalize_phone_number
 
 COMPONENT_ROOT = Path(__file__).parent
 STATIC_ROOT = COMPONENT_ROOT / "www"
@@ -430,10 +431,12 @@ def _build_face_upload_payload(
             payload.pop(alias, None)
 
     phone = profile.get("phone")
-    if phone in (None, ""):
+    if phone is None:
         phone = payload.get("PhoneNum") or payload.get("Phone")
-    if phone not in (None, ""):
-        payload["PhoneNum"] = str(phone)
+    if phone is not None:
+        payload["PhoneNum"] = normalize_phone_number(phone)
+        if "Phone" in payload:
+            payload["Phone"] = payload["PhoneNum"]
 
     access_level = profile.get("access_level")
     if access_level not in (None, ""):

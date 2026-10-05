@@ -159,8 +159,8 @@ def test_sync_contacts_adds_missing_contact():
 
     assert api.add_calls == [[{
         "Name": "Jane Doe",
-        "Phone": "+1 (555) 111-2222",
-        "PhoneNum": "+1 (555) 111-2222",
+        "Phone": "+1(555)111-2222",
+        "PhoneNum": "+1(555)111-2222",
         "Group": integration.HA_CONTACT_GROUP_NAME,
     }]]
     assert api.delete_calls == []
