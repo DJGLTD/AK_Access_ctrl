@@ -75,6 +75,7 @@ from .relay import (
 )
 
 from .api import AkuvoxAPI
+from .phone import normalize_phone_number
 from .reboot_schedule import normalize_reboot_schedule, reboot_schedule_is_due
 from .coordinator import AkuvoxCoordinator
 from .access_history import (
@@ -2096,10 +2097,10 @@ def _desired_device_user_payload(
             desired["PhoneNum"] = ""
         else:
             phone_value = profile.get("phone")
-            if phone_value in (None, ""):
+            if phone_value is None:
                 phone_value = local.get("PhoneNum") or local.get("Phone")
-            if phone_value not in (None, ""):
-                desired["PhoneNum"] = str(phone_value)
+            if phone_value is not None:
+                desired["PhoneNum"] = normalize_phone_number(phone_value)
 
         face_url = profile.get("face_url") or local.get("FaceUrl") or local.get("FaceURL")
         face_asset_exists: Optional[bool] = None
@@ -3128,7 +3129,7 @@ class AkuvoxUsersStore(Store):
             else:
                 u.pop("face_retry_after", None)
         if phone is not None:
-            u["phone"] = str(phone)
+            u["phone"] = normalize_phone_number(phone)
         if status is not None:
             u["status"] = status
         if schedule_name is not None:
@@ -6324,7 +6325,7 @@ class SyncManager:
         desired: Dict[str, str] = {}
         for raw_name, raw_phone in profiles:
             name = str(raw_name or "").strip()
-            phone = str(raw_phone or "").strip()
+            phone = normalize_phone_number(raw_phone)
             if not name or not phone:
                 continue
             desired[name] = phone
@@ -6360,7 +6361,10 @@ class SyncManager:
             existing = existing_by_name.get(name)
             if existing:
                 existing_phone = self._contact_phone(existing)
-                if self._normalize_phone(existing_phone) == self._normalize_phone(phone):
+                if (
+                    self._normalize_phone(existing_phone) == self._normalize_phone(phone)
+                    and existing_phone == normalize_phone_number(existing_phone)
+                ):
                     continue
                 if name not in seen_delete:
                     delete_items.append({"Name": name, "Group": HA_CONTACT_GROUP_NAME})
