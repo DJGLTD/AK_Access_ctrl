@@ -16,7 +16,7 @@ try:  # pragma: no cover - fallback for test stubs without full HA constants
     from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 except (ImportError, AttributeError):  # pragma: no cover - executed in unit tests
     EVENT_HOMEASSISTANT_STARTED = "homeassistant_start"
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import (
@@ -4735,6 +4735,7 @@ class SyncQueue:
         self._tick_unsub: Optional[Callable[[], None]] = None
         self._startup_unsub: Optional[Callable[[], None]] = None
 
+        @callback
         def _schedule_background_tick(_now):
             self._schedule_task(self._background_tick(_now))
 
@@ -4924,6 +4925,7 @@ class SyncQueue:
             self._schedule_run()
             return
 
+        @callback
         def _schedule_cb(_now):
             self._schedule_run()
 
@@ -4952,6 +4954,7 @@ class SyncQueue:
         self.next_sync_eta = eta
         self._last_delay_from_default = True
 
+        @callback
         def _schedule_cb(_now):
             self._schedule_run()
 
@@ -5047,6 +5050,7 @@ class SyncQueue:
                 trigger="automatic retry" if state else "auto-detected pending state",
             )
 
+    @callback
     def _handle_hass_started(self, _event):
         try:
             self.ensure_future_run()
@@ -6505,21 +6509,14 @@ class SyncManager:
 
         hh, mm = [int(x) for x in hhmm.split(":", 1)]
 
-        def _cb(now):
-            try:
-                self._root()["sync_queue"].mark_change(
-                    None,
-                    delay_minutes=0,
-                    trigger="scheduled auto sync",
+        async def _cb(now):
+            # HA runs coroutine callbacks on its event loop. Submit the daily
+            # sync only once, including devices outside an existing queue subset.
+            queue = self._root().get("sync_queue")
+            if queue is not None:
+                await queue.sync_now(
+                    None, include_all=True, trigger="scheduled auto sync"
                 )
-            except Exception:
-                pass
-            self.hass.async_create_task(
-                self._root()["sync_queue"].sync_now(
-                    None,
-                    trigger="scheduled auto sync",
-                )
-            )  # type: ignore
 
         self._auto_unsub = async_track_time_change(self.hass, _cb, hour=hh, minute=mm, second=0)
 
