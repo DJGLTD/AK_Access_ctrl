@@ -30,6 +30,7 @@ def ensure_homeassistant_stubs() -> None:
         pass
 
     def _callback(func):
+        func._hass_callback = True
         return func
 
     core_module.HomeAssistant = _HomeAssistant

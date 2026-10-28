@@ -8,7 +8,7 @@ import time
 import re
 from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
@@ -1427,6 +1427,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             except Exception:
                 pass
 
+        @callback
         def _reset(_now):
             self.event_state[flag] = False
             self._event_reset_handles.pop(flag, None)
@@ -1476,6 +1477,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
     def _schedule_caller_clear(self) -> None:
         self._cancel_caller_reset()
 
+        @callback
         def _reset(_now):
             self._caller_reset_handle = None
             self._set_caller_state(self._empty_caller_state(), auto_clear=False)
