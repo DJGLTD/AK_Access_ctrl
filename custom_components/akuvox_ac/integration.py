@@ -91,6 +91,7 @@ from .http import (
     face_base_url,
     face_filename_from_reference,
     face_storage_dir,
+    async_secure_local_face_profiles,
     register_ui,
     FACE_FILE_EXTENSIONS,
     _maybe_migrate_component_folder,
@@ -3814,6 +3815,7 @@ class AkuvoxSettingsStore(Store):
                     data["access_expiring"] = bool(cfg.get("access_expiring"))
                     data["any_denied"] = bool(cfg.get("any_denied"))
                     data["user_changed"] = bool(cfg.get("user_changed"))
+                    data["guest_access"] = bool(cfg.get("guest_access"))
                     granted_cfg = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
                     if not granted_cfg and isinstance(cfg.get("granted_users"), list):
                         granted_cfg = {
@@ -3826,6 +3828,7 @@ class AkuvoxSettingsStore(Store):
                     data["access_expiring"] = False
                     data["any_denied"] = False
                     data["user_changed"] = False
+                    data["guest_access"] = False
                     granted_cfg = {}
 
                 users_raw = []
@@ -3933,6 +3936,8 @@ class AkuvoxSettingsStore(Store):
             elif event_type == "any_denied" and cfg.get("any_denied"):
                 out.append(target)
             elif event_type == "user_changed" and cfg.get("user_changed"):
+                out.append(target)
+            elif event_type == "guest_access" and cfg.get("guest_access"):
                 out.append(target)
             elif event_type == "user_granted":
                 granted = cfg.get("granted") or {}
@@ -6897,6 +6902,8 @@ class SyncManager:
 
         device_groups: List[str] = list(opts.get("sync_groups", ["Default"]))
         users_store = self._users_store()
+        if users_store:
+            await async_secure_local_face_profiles(self.hass, users_store)
         device_type_raw = (coord.health.get("device_type") or "").strip()
         device_type = device_type_raw.lower()
         is_intercom = device_type == "intercom"
@@ -7437,6 +7444,8 @@ class SyncManager:
                 include_face = True
 
         users_store = self._users_store()
+        if users_store:
+            await async_secure_local_face_profiles(self.hass, users_store)
         raw_registry = users_store.all() if users_store else {}
         registry: Dict[str, Any] = {}
         reg_keys: List[str] = []
@@ -7720,6 +7729,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     root = hass.data[DOMAIN]
 
+    if getattr(entry, "data", {}).get(CONF_DEVICE_TYPE) == "Hikvision ANPR":
+        from .hikvision import HikvisionISAPI
+
+        root[entry.entry_id] = {"anpr": HikvisionISAPI(hass, {**entry.data, **entry.options})}
+        if not root.get("_ui_registered"):
+            register_ui(hass)
+            root["_ui_registered"] = True
+        return True
+
     try:
         _maybe_migrate_component_folder(hass)
     except Exception:
@@ -7846,6 +7864,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         password=cfg.get(CONF_PASSWORD) or None,
         use_https=cfg.get("use_https", DEFAULT_USE_HTTPS),
         verify_ssl=cfg.get("verify_ssl", DEFAULT_VERIFY_SSL),
+        allow_insecure_http=cfg.get("allow_insecure_http", False),
         session=session,
         diagnostics_history_limit=diagnostics_history_limit,
     )
@@ -8810,6 +8829,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+    if getattr(entry, "data", {}).get(CONF_DEVICE_TYPE) == "Hikvision ANPR":
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        return True
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         root = hass.data.get(DOMAIN, {})

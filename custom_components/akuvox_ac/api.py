@@ -102,6 +102,7 @@ class AkuvoxAPI:
         password: Optional[str] = None,
         use_https: bool = True,
         verify_ssl: bool = True,
+        allow_insecure_http: bool = False,
         session: Optional[ClientSession] = None,
         diagnostics_history_limit: Optional[int] = None,
     ):
@@ -109,8 +110,9 @@ class AkuvoxAPI:
         self.port = port
         self.username = username
         self.password = password
-        self.use_https = True
-        self.verify_ssl = False
+        self.use_https = bool(use_https)
+        self.verify_ssl = bool(verify_ssl)
+        self.allow_insecure_http = bool(allow_insecure_http)
         self._session = session
 
         # Keep a rolling window of recent requests for diagnostics
@@ -126,6 +128,12 @@ class AkuvoxAPI:
         if self.username:
             self._auth = BasicAuth(self.username, self.password or "")
         self._web_token_cookie: Optional[str] = None
+
+    def _auth_for_scheme(self, use_https: bool) -> Optional[BasicAuth]:
+        """Never transmit reusable Basic credentials over plaintext by default."""
+        if not use_https and not self.allow_insecure_http:
+            return None
+        return self._auth
 
     # -------------------- base helpers --------------------
     def _headers(self) -> Dict[str, str]:
@@ -182,6 +190,8 @@ class AkuvoxAPI:
     ) -> Optional[str]:
         """Login like the Akuvox web UI and return a token cookie for web-only APIs."""
 
+        if not use_https and not self.allow_insecure_http:
+            return None
         if self._web_token_cookie:
             return self._web_token_cookie
         if not self.username or self.password is None:
@@ -294,10 +304,11 @@ class AkuvoxAPI:
                 combos.append(combo)
 
         configured_port: Optional[int] = self.port
-        _add_combo(True, configured_port, False)
-        _add_combo(True, 443, False)
-        _add_combo(False, configured_port)
-        _add_combo(False, 80)
+        _add_combo(True, configured_port, self.verify_ssl)
+        _add_combo(True, 443, self.verify_ssl)
+        if not self.username or self.allow_insecure_http:
+            _add_combo(False, configured_port)
+            _add_combo(False, 80)
 
         # Deduplicate preserving order
         seen = set()
@@ -319,7 +330,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=5,
-                        auth=self._auth,
+                        auth=self._auth_for_scheme(use_https),
                     ) as r:
                         _LOGGER.debug("Akuvox probe %s -> %s %s", url, r.status, r.reason)
                         if 200 <= r.status < 500:
@@ -380,7 +391,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=15,
-                        auth=self._auth,
+                        auth=self._auth_for_scheme(use_https),
                     ) as r:
                         txt = None
                         try:
@@ -408,7 +419,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=15,
-                        auth=self._auth,
+                        auth=self._auth_for_scheme(use_https),
                     ) as r:
                         txt = None
                         try:
@@ -1542,7 +1553,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=5,
-                        auth=self._auth,
+                auth=self._auth_for_scheme(use_https),
                     ) as r:
                         item["status"] = r.status
                         item["ok"] = 200 <= r.status < 500
@@ -1558,7 +1569,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=5,
-                        auth=self._auth,
+                        auth=self._auth_for_scheme(use_https),
                     ) as r:
                         item["status"] = r.status
                         item["ok"] = 200 <= r.status < 500
@@ -1573,7 +1584,7 @@ class AkuvoxAPI:
                         headers=self._headers(),
                         ssl=(verify if use_https else None),
                         timeout=5,
-                        auth=self._auth,
+                        auth=self._auth_for_scheme(use_https),
                     ) as r:
                         item["status"] = r.status
                         item["ok"] = 200 <= r.status < 500
@@ -1611,14 +1622,11 @@ class AkuvoxAPI:
             _add_combo(detected_https, detected_port, detected_verify)
 
         configured_port = self.port
-        verify_order = [bool(self.verify_ssl), not bool(self.verify_ssl)]
-
-        for verify in verify_order:
-            _add_combo(True, configured_port, verify)
-        _add_combo(True, 443, False)
-        _add_combo(True, 443, True)
-        _add_combo(False, configured_port)
-        _add_combo(False, 80)
+        _add_combo(True, configured_port, self.verify_ssl)
+        _add_combo(True, 443, self.verify_ssl)
+        if not self.username or self.allow_insecure_http:
+            _add_combo(False, configured_port)
+            _add_combo(False, 80)
 
         paths = [
             ("GET", "/api/system/status", None),
@@ -2084,7 +2092,7 @@ class AkuvoxAPI:
                     headers=request_headers,
                     ssl=ssl_arg,
                     timeout=30,
-                    auth=None if cookie else self._auth,
+                    auth=None if cookie else self._auth_for_scheme(use_https),
                 ) as r:
                     txt = None
                     try:
@@ -2145,8 +2153,6 @@ class AkuvoxAPI:
         def _add_base(use_https: bool, port: Optional[int], verify: Optional[bool] = None) -> None:
             normalized_port = _normalize_port(port, use_https)
             verify_flag = bool(self.verify_ssl) if verify is None else bool(verify)
-            if not use_https and not bool(self.verify_ssl):
-                verify_flag = False
             combo = (use_https, normalized_port, verify_flag)
             if combo not in bases:
                 bases.append(combo)
@@ -2156,17 +2162,11 @@ class AkuvoxAPI:
             _add_base(detected_https, detected_port, detected_verify)
 
         configured_port: Optional[int] = self.port
-        verify_order = [bool(self.verify_ssl)]
-        if bool(self.verify_ssl):
-            verify_order.append(False)
-
-        for verify in verify_order:
-            _add_base(True, configured_port, verify)
-        _add_base(True, 443, False)
-        if bool(self.verify_ssl):
-            _add_base(True, 443, True)
-        _add_base(False, configured_port)
-        _add_base(False, 80)
+        _add_base(True, configured_port, self.verify_ssl)
+        _add_base(True, 443, self.verify_ssl)
+        if not self.username or self.allow_insecure_http:
+            _add_base(False, configured_port)
+            _add_base(False, 80)
 
         form_field_names = ("file", "importFile")
         for use_https, port, verify in bases:

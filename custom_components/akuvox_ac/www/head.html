@@ -157,6 +157,7 @@
     }
     body.shell-restricted nav.nav-buttons .nav-btn[data-view="device-edit"],
     body.shell-restricted nav.nav-buttons .nav-btn[data-view="settings"],
+    body.shell-restricted nav.nav-buttons .nav-btn[data-url],
     body.shell-restricted nav.nav-buttons .nav-btn[data-group-toggle="global"],
     body.shell-restricted #navQuickActions .quick-btn[data-mode="add"],
     body.shell-restricted #navQuickActions .quick-group[data-group="global"],
@@ -366,6 +367,14 @@
       <button class="nav-btn" type="button" data-view="settings">
         <i class="bi bi-gear-wide-connected"></i>
         <span>Global Settings</span>
+      </button>
+      <button class="nav-btn" type="button" data-url="/akuvox-ac/guest-links">
+        <i class="bi bi-link-45deg"></i>
+        <span>Guest Links</span>
+      </button>
+      <button class="nav-btn" type="button" data-url="/akuvox-ac/anpr">
+        <i class="bi bi-camera-video"></i>
+        <span>ANPR Camera</span>
       </button>
     </nav>
     <div class="nav-quick-actions" id="navQuickActions">
@@ -1361,6 +1370,7 @@ async function fetchVersion(){
 document.querySelectorAll('nav.nav-buttons .nav-btn').forEach(btn => {
   btn.addEventListener('click', (ev) => {
     ev.preventDefault();
+    if (btn.dataset.url) { window.location.assign(btn.dataset.url); return; }
     const view = normalizeView(btn.dataset.view);
     const params = paramsFromButton(btn);
     const group = btn.dataset.groupToggle || null;

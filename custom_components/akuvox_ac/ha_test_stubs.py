@@ -143,7 +143,7 @@ def ensure_homeassistant_stubs() -> None:
     helpers_network_module = types.ModuleType("homeassistant.helpers.network")
 
     def _get_url(*args, **kwargs):
-        return "http://example.invalid"
+        return "https://example.invalid"
 
     helpers_network_module.get_url = _get_url
 
@@ -199,12 +199,32 @@ def ensure_homeassistant_stubs() -> None:
         pass
 
     class _HTTPException(Exception):
-        pass
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+            super().__init__(*args)
 
     class _HTTPNotFound(_HTTPException):
         pass
 
     class _HTTPForbidden(_HTTPException):
+        pass
+
+    class _HTTPUnauthorized(_HTTPException):
+        pass
+
+    class _HTTPBadRequest(_HTTPException):
+        pass
+
+    class _HTTPTooManyRequests(_HTTPException):
+        pass
+
+    class _HTTPConflict(_HTTPException):
+        pass
+
+    class _HTTPBadGateway(_HTTPException):
+        pass
+
+    class _HTTPServiceUnavailable(_HTTPException):
         pass
 
     class _FileField:
@@ -228,6 +248,12 @@ def ensure_homeassistant_stubs() -> None:
     web_module.Request = _Request
     web_module.HTTPNotFound = _HTTPNotFound
     web_module.HTTPForbidden = _HTTPForbidden
+    web_module.HTTPUnauthorized = _HTTPUnauthorized
+    web_module.HTTPBadRequest = _HTTPBadRequest
+    web_module.HTTPTooManyRequests = _HTTPTooManyRequests
+    web_module.HTTPConflict = _HTTPConflict
+    web_module.HTTPBadGateway = _HTTPBadGateway
+    web_module.HTTPServiceUnavailable = _HTTPServiceUnavailable
     web_module.FileField = _FileField
     web_module.Application = _Application
     web_module.Response = _Response

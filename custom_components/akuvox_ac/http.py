@@ -8,12 +8,16 @@ import platform
 import re
 import secrets
 import time
+import warnings
+from io import BytesIO
 from functools import partial
 from datetime import timedelta
 from pathlib import Path
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Optional, Mapping, Set, Tuple
 from urllib.parse import urlencode, urlsplit, unquote
+
+from PIL import Image, ImageOps
 
 from aiohttp import web
 from homeassistant.components.http.view import HomeAssistantView
@@ -86,6 +90,11 @@ SUPPORT_BUNDLE_LOG_TAIL_BYTES = 192 * 1024
 SUPPORT_BUNDLE_MAX_LOG_LINES = 240
 SUPPORT_BUNDLE_REQUEST_LIMIT = min(40, MAX_DIAGNOSTICS_HISTORY_LIMIT)
 SUPPORT_BUNDLE_VALUE_TEXT_LIMIT = 1200
+MAX_FACE_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_FACE_UPLOAD_DIMENSION = 4096
+MAX_FACE_UPLOAD_PIXELS = 16_000_000
+INBOUND_CALL_WEBHOOK_PER_MINUTE_LIMIT = 20
+INBOUND_CALL_WEBHOOK_GLOBAL_PER_MINUTE_LIMIT = 240
 
 EXIT_PERMISSION_MATCH = "match"
 EXIT_PERMISSION_WORKING_DAYS = "working_days"
@@ -175,6 +184,107 @@ def _face_file_exists_in(base: Path, user_id: str) -> bool:
         if candidate is not None and candidate.is_file():
             return True
     return False
+
+
+def _face_asset_filename(hass: HomeAssistant, user_id: str) -> Optional[str]:
+    """Find the local face asset filename for a profile without exposing its path."""
+    bases = [_component_face_dir()]
+    try:
+        bases.insert(0, face_storage_dir(hass))
+    except Exception:
+        pass
+    try:
+        bases.append(_legacy_face_dir(hass))
+    except Exception:
+        pass
+    for base in bases:
+        for ext in FACE_FILE_EXTENSIONS:
+            candidate = _face_candidate(base, user_id, ext)
+            if candidate is not None and candidate.is_file():
+                return candidate.name
+    return None
+
+
+def _face_asset_authorized(hass: HomeAssistant, request: web.Request, relative: str) -> bool:
+    if _request_can_access_dashboard(hass, request):
+        return True
+    filename = Path(relative).name
+    user_id = normalize_user_id(Path(filename).stem)
+    token = str(request.query.get("token") or "")
+    if not user_id or not token:
+        return False
+    root = hass.data.get(DOMAIN, {}) or {}
+    users_store = root.get("users_store") if isinstance(root, dict) else None
+    try:
+        profile = users_store.get(user_id, {}) if users_store else {}
+    except Exception:
+        profile = {}
+    expected = str(profile.get("face_access_token") or "") if isinstance(profile, dict) else ""
+    return bool(expected and secrets.compare_digest(expected, token))
+
+
+def _validated_face_jpeg(file_bytes: bytes) -> Optional[bytes]:
+    """Decode a bounded supported image and normalize it to JPEG bytes."""
+    if not isinstance(file_bytes, bytes) or not file_bytes or len(file_bytes) > MAX_FACE_UPLOAD_BYTES:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(file_bytes)) as image:
+                if image.format not in {"JPEG", "PNG", "WEBP"}:
+                    return None
+                width, height = image.size
+                if (
+                    width < 1
+                    or height < 1
+                    or width > MAX_FACE_UPLOAD_DIMENSION
+                    or height > MAX_FACE_UPLOAD_DIMENSION
+                    or width * height > MAX_FACE_UPLOAD_PIXELS
+                ):
+                    return None
+                image.verify()
+            with Image.open(BytesIO(file_bytes)) as image:
+                image = ImageOps.exif_transpose(image).convert("RGB")
+                output = BytesIO()
+                image.save(output, format="JPEG", quality=90, optimize=True)
+                jpeg_bytes = output.getvalue()
+        if len(jpeg_bytes) > MAX_FACE_UPLOAD_BYTES:
+            return None
+        return jpeg_bytes
+    except Exception:
+        return None
+
+
+async def async_secure_local_face_profiles(hass: HomeAssistant, users_store: Any) -> None:
+    """Attach durable per-profile capability tokens to local face URLs before device sync."""
+    try:
+        profiles = users_store.all() or {}
+    except Exception:
+        return
+    for raw_user_id, profile in profiles.items():
+        user_id = normalize_user_id(raw_user_id)
+        if not user_id or not isinstance(profile, dict):
+            continue
+        try:
+            filename = _face_asset_filename(hass, user_id)
+        except Exception:
+            filename = None
+        if not filename:
+            continue
+        current_url = str(profile.get("face_url") or "").strip()
+        try:
+            current_path = urlsplit(current_url).path
+        except Exception:
+            current_path = ""
+        if current_url and FACE_DATA_PATH.lower() not in current_path.lower():
+            continue
+        token = str(profile.get("face_access_token") or "") or secrets.token_urlsafe(32)
+        base_url = face_base_url(hass)
+        signed_url = f"{base_url}/{filename}?token={token}"
+        if current_url != signed_url or profile.get("face_access_token") != token:
+            await users_store.upsert_profile(
+                user_id, face_url=signed_url, face_access_token=token
+            )
 
 
 def _remove_face_files(hass: HomeAssistant, user_id: str) -> None:
@@ -1604,8 +1714,30 @@ class AkuvoxInboundCallWebhook(HomeAssistantView):
     name = "api:akuvox_ac:webhook_inbound_call"
     requires_auth = False
 
+    @staticmethod
+    def _allow_request(hass: HomeAssistant, request: web.Request) -> bool:
+        root = hass.data.setdefault(DOMAIN, {})
+        now = time.monotonic()
+        peer = str(request.remote or "unknown")
+        events = [
+            (ip, timestamp)
+            for ip, timestamp in root.get("inbound_call_webhook_requests", [])
+            if now - timestamp < 60
+        ]
+        if len(events) >= INBOUND_CALL_WEBHOOK_GLOBAL_PER_MINUTE_LIMIT:
+            root["inbound_call_webhook_requests"] = events
+            return False
+        if sum(1 for ip, _timestamp in events if ip == peer) >= INBOUND_CALL_WEBHOOK_PER_MINUTE_LIMIT:
+            root["inbound_call_webhook_requests"] = events
+            return False
+        events.append((peer, now))
+        root["inbound_call_webhook_requests"] = events[-INBOUND_CALL_WEBHOOK_GLOBAL_PER_MINUTE_LIMIT:]
+        return True
+
     async def _handle(self, request: web.Request):
         hass: HomeAssistant = request.app["hass"]
+        if not self._allow_request(hass, request):
+            raise web.HTTPTooManyRequests()
 
         payload: Dict[str, Any] = {}
         if request.can_read_body:
@@ -1636,8 +1768,9 @@ class AkuvoxInboundCallWebhook(HomeAssistantView):
             lookback_seconds=lookback,
         )
 
-        status = 200 if result.get("ok") else 200
-        return web.json_response(result, status=status)
+        if _request_can_access_dashboard(hass, request):
+            return web.json_response(result)
+        return web.json_response({"ok": bool(result.get("ok"))})
 
     async def get(self, request: web.Request):
         return await self._handle(request)
@@ -4018,6 +4151,8 @@ class AkuvoxStaticAssets(HomeAssistantView):
         is_face_request = clean.lower().startswith("facedata")
         if is_face_request:
             rel = clean[8:].lstrip("/")
+            if not _face_asset_authorized(hass, request, rel):
+                raise web.HTTPUnauthorized()
             if rel:
                 base = _persistent_face_dir(hass)
                 candidate = (base / rel).resolve()
@@ -4026,7 +4161,13 @@ class AkuvoxStaticAssets(HomeAssistantView):
                 except ValueError:
                     raise web.HTTPForbidden()
                 if candidate.is_file():
-                    return web.FileResponse(candidate)
+                    return web.FileResponse(
+                        candidate,
+                        headers={
+                            "Cache-Control": "no-store",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                    )
 
                 legacy_candidate = _legacy_face_candidate(hass, rel)
                 if legacy_candidate and legacy_candidate.is_file():
@@ -4034,13 +4175,25 @@ class AkuvoxStaticAssets(HomeAssistantView):
                         base.mkdir(parents=True, exist_ok=True)
                         candidate.write_bytes(legacy_candidate.read_bytes())
                     except Exception:
-                        return web.FileResponse(legacy_candidate)
+                        return web.FileResponse(
+                            legacy_candidate,
+                            headers={
+                                "Cache-Control": "no-store",
+                                "X-Content-Type-Options": "nosniff",
+                            },
+                        )
                     else:
                         try:
                             legacy_candidate.unlink()
                         except Exception:
                             pass
-                        return web.FileResponse(candidate)
+                        return web.FileResponse(
+                            candidate,
+                            headers={
+                                "Cache-Control": "no-store",
+                                "X-Content-Type-Options": "nosniff",
+                            },
+                        )
 
         asset = _static_asset(path)
         if not is_face_request and asset.suffix.lower() == ".html":
@@ -4072,6 +4225,14 @@ class AkuvoxStaticAssets(HomeAssistantView):
                             dest.write_bytes(asset.read_bytes())
                 except Exception:
                     pass
+        if is_face_request:
+            return web.FileResponse(
+                asset,
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         return web.FileResponse(asset)
 
 
@@ -7544,6 +7705,11 @@ class AkuvoxUIUploadFace(HomeAssistantView):
         )
         if not has_dashboard_access and not self_service:
             return _dashboard_access_denied_response()
+        content_length = getattr(request, "content_length", None)
+        if content_length and content_length > MAX_FACE_UPLOAD_BYTES + 65536:
+            return web.json_response(
+                {"ok": False, "error": "image exceeds the 5 MiB limit"}, status=413
+            )
         root = hass.data.get(DOMAIN, {}) or {}
         impersonation = await _dashboard_impersonation_payload(
             hass,
@@ -7590,10 +7756,17 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 if isinstance(candidate, web.FileField):
                     with candidate.file:
                         try:
+                            candidate.file.seek(0, 2)
+                            candidate_size = candidate.file.tell()
+                            if candidate_size > MAX_FACE_UPLOAD_BYTES:
+                                return web.json_response(
+                                    {"ok": False, "error": "image exceeds the 5 MiB limit"},
+                                    status=413,
+                                )
                             candidate.file.seek(0)
                         except Exception:
                             pass
-                        file_bytes = candidate.file.read()
+                        file_bytes = candidate.file.read(MAX_FACE_UPLOAD_BYTES + 1)
                 elif isinstance(candidate, (bytes, bytearray)):
                     file_bytes = bytes(candidate)
 
@@ -7644,6 +7817,17 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             )
         if not file_bytes:
             return web.json_response({"ok": False, "error": "file is required (multipart/form-data)"}, status=400)
+        if len(file_bytes) > MAX_FACE_UPLOAD_BYTES:
+            return web.json_response(
+                {"ok": False, "error": "image exceeds the 5 MiB limit"}, status=413
+            )
+        validated_jpeg = _validated_face_jpeg(bytes(file_bytes))
+        if validated_jpeg is None:
+            return web.json_response(
+                {"ok": False, "error": "file must be a valid JPEG, PNG or WebP image"},
+                status=400,
+            )
+        file_bytes = validated_jpeg
 
         # Save under persistent FaceData folder inside the Home Assistant config
         dest_dir = _persistent_face_dir(hass)
@@ -7668,7 +7852,10 @@ class AkuvoxUIUploadFace(HomeAssistantView):
             pass
 
         # Store public URL so intercom can fetch it
-        face_url_public = f"{face_base_url(hass, request)}/{id_val}.jpg"
+        face_access_token = secrets.token_urlsafe(32)
+        face_url_public = (
+            f"{face_base_url(hass, request)}/{id_val}.jpg?token={face_access_token}"
+        )
 
         # Update registry profile and mark pending
         try:
@@ -7677,6 +7864,7 @@ class AkuvoxUIUploadFace(HomeAssistantView):
                 await users_store.upsert_profile(
                     id_val,
                     face_url=face_url_public,
+                    face_access_token=face_access_token,
                     status="pending",
                     face_status="pending",
                     face_synced_at="",
@@ -7832,6 +8020,12 @@ class AkuvoxUIRemoteEnrol(HomeAssistantView):
 
 # ========================= REGISTER =========================
 def register_ui(hass: HomeAssistant) -> None:
+    from .guest_links import register_guest_link_views
+    from .hikvision import register_hikvision_views
+
+    # Register exact guest/ANPR pages before the general /akuvox-ac/{slug} route.
+    register_guest_link_views(hass)
+    register_hikvision_views(hass)
     hass.http.register_view(AkuvoxStaticAssets())
     hass.http.register_view(AkuvoxDashboardView())
     hass.http.register_view(AkuvoxUIView())
