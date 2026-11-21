@@ -27,12 +27,14 @@ class _Session:
 def test_akuvox_client_honors_compatibility_tls_defaults_and_arguments(monkeypatch):
     monkeypatch.setattr(api_module, "BasicAuth", lambda username, password: (username, password))
     default_api = AkuvoxAPI("intercom.local", username="installer", password="secret")
+    strict_api = AkuvoxAPI("trusted.local", verify_ssl=True)
     explicit_api = AkuvoxAPI(
         "intercom.local", use_https=False, verify_ssl=False
     )
 
     assert default_api.use_https is True
     assert default_api.verify_ssl is False
+    assert strict_api.verify_ssl is True
     assert explicit_api.use_https is False
     assert explicit_api.verify_ssl is False
 

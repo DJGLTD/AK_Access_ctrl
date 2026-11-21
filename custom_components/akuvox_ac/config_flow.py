@@ -13,7 +13,7 @@ from .const import (
     CONF_DEVICE_NAME, CONF_DEVICE_TYPE, CONF_DEVICE_MODEL,
     CONF_HOST, CONF_PORT, CONF_USERNAME, CONF_PASSWORD,
     CONF_PARTICIPATE, CONF_POLL_INTERVAL, CONF_DEVICE_GROUPS,
-    DEFAULT_POLL_INTERVAL, DEFAULT_DEVICE_MODEL, AKUVOX_DEVICE_MODELS,
+    DEFAULT_POLL_INTERVAL, DEFAULT_DEVICE_MODEL, DEFAULT_VERIFY_SSL, AKUVOX_DEVICE_MODELS,
 )
 
 DEVICE_TYPES = ["Intercom", "Keypad", "Hikvision ANPR"]
@@ -46,7 +46,7 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ): vol.In(AKUVOX_DEVICE_MODELS),
             vol.Optional(CONF_USERNAME, default=""): str,
             vol.Optional(CONF_PASSWORD, default=""): str,
-            vol.Optional("verify_ssl", default=True): bool,
+            vol.Optional("verify_ssl", default=DEFAULT_VERIFY_SSL): bool,
             vol.Optional("allow_insecure_http", default=False): bool,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
@@ -69,7 +69,7 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_HOST): str,
             vol.Optional(CONF_PORT, default=443): vol.All(int, vol.Range(min=1, max=65535)),
             vol.Optional("use_https", default=True): bool,
-            vol.Optional("verify_ssl", default=True): bool,
+            vol.Optional("verify_ssl", default=DEFAULT_VERIFY_SSL): bool,
             vol.Optional("allow_insecure_http", default=False): bool,
             vol.Required("channel", default=1): vol.All(int, vol.Range(min=1, max=255)),
             vol.Optional(CONF_USERNAME, default=""): str,
@@ -106,6 +106,13 @@ class AkuvoxOptionsFlow(config_entries.OptionsFlow):
 
         # defaults from entry.options or entry.data
         base = {**self.entry.data, **self.entry.options}
+        if base.get(CONF_DEVICE_TYPE) == "Hikvision ANPR":
+            schema = vol.Schema({
+                vol.Optional(
+                    "verify_ssl", default=base.get("verify_ssl", DEFAULT_VERIFY_SSL)
+                ): bool,
+            })
+            return self.async_show_form(step_id="init", data_schema=schema)
         schema = vol.Schema({
             vol.Optional(
                 CONF_DEVICE_TYPE, default=base.get(CONF_DEVICE_TYPE, "Intercom")
@@ -119,5 +126,8 @@ class AkuvoxOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(CONF_DEVICE_GROUPS, default=base.get(CONF_DEVICE_GROUPS, ["Default"])): vol.All(
                 lambda v: v, vol.In(self._groups(self.hass)),  # multi-select emulation done by frontend (list)
             ),
+            vol.Optional(
+                "verify_ssl", default=base.get("verify_ssl", DEFAULT_VERIFY_SSL)
+            ): bool,
         })
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -6,11 +6,11 @@
 
 ## Executive summary
 
-No Critical issue was confirmed. The two original High findings and one additional High finding identified during feature review have been addressed and verified:
+No Critical issue was confirmed. The face-image exposure is remediated. Credentialed HTTP transport is blocked, but TLS certificate verification now defaults off as a compatibility tradeoff requested for self-signed device certificates. This leaves a High-severity risk: a network attacker able to intercept the connection may impersonate the device and capture credentials or alter traffic.
 
-1. Akuvox requests now verify TLS by default and do not fall back to HTTP when credentials are configured unless an explicit insecure transport option is enabled.
-2. Face image retrieval now requires dashboard authorization or a per-profile capability token. Existing local face URLs are tokenized before device synchronization.
-3. Hikvision ANPR camera management now defaults to verified HTTPS; plain HTTP requires an explicit insecure-transport opt-in.
+1. Akuvox requests use HTTPS by default and do not fall back to HTTP when credentials are configured, but certificate verification defaults off. It can be enabled per device.
+2. Face image retrieval requires dashboard authorization or a per-profile capability token. Existing local face URLs are tokenized before device synchronization.
+3. Hikvision ANPR camera management uses HTTPS by default and blocks plain HTTP unless explicitly opted into; certificate verification defaults off and can be enabled per camera.
 
 Three Medium findings were confirmed: public exposure of inbound call data, unvalidated face uploads, and indefinite retention of vehicle registration values in the ANPR audit store. Call-data disclosure, upload validation and ANPR retention have been addressed. The inbound-call webhook remains publicly callable without a shared secret; rate limiting and response minimization reduce the risk, but authentication remains unresolved.
 
@@ -22,7 +22,7 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 - Integrates Akuvox intercom/keypad devices using `aiohttp` and Home Assistant's HTTP client; includes a Hikvision ANPR client using ISAPI Digest authentication.
 - Exposes Home Assistant `HomeAssistantView` HTTP routes and a static dashboard built from HTML, CSS and JavaScript. The UI is served from `custom_components/akuvox_ac/www`.
 - Persists integration data through Home Assistant storage (`Store`) and face images in files under Home Assistant's configuration directories. No SQL database or ORM use was found.
-- Runtime framework dependencies are supplied by Home Assistant; `manifest.json` lists no extra requirements. `requirements-dev.txt` declares ranged `aiohttp`, `voluptuous`, `pytest`, `pytest-asyncio` and `ruff` dependencies. No dependency lockfile was found in the inspected checkout.
+- Runtime framework dependencies are supplied by Home Assistant; `manifest.json` declares Pillow for image validation. `requirements-dev.txt` declares ranged `aiohttp`, `voluptuous`, `pytest`, `pytest-asyncio`, `ruff` and Pillow dependencies. No dependency lockfile was found in the inspected checkout.
 
 ### Authentication, authorization and external routes
 
@@ -44,15 +44,15 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 ### Finding 1 — Akuvox credentials can traverse unverified TLS or plaintext HTTP
 
 - **Severity:** High
-- **Status:** Confirmed and remediated
+- **Status:** Confirmed; credentialed HTTP fallback is remediated, but disabling certificate verification by default leaves an accepted High-severity risk
 - **Affected locations:** `custom_components/akuvox_ac/api.py:103-114,296-323,377-412`
 - **Explanation:** The API client ignores the constructor's TLS preferences, forces `verify_ssl` to false, and probes multiple schemes including HTTP. The probe and request methods pass `self._auth` to aiohttp regardless of whether the selected scheme is HTTP or HTTPS. This permits Basic authentication credentials to be sent without transport encryption and permits a network attacker to impersonate the device when TLS certificate checks are disabled.
 - **Exploitation scenario:** An attacker with access to the device's network path can answer an HTTP fallback probe or intercept a request, capture the reusable Basic authentication credentials, and use them to access or alter the intercom.
-- **Recommended remediation:** Honor configured TLS settings and verify certificates by default. Do not send credentials over HTTP. If compatibility requires HTTP or invalid certificates, make that an explicit per-device insecure option with a clear warning and avoid transmitting reusable credentials where possible.
-- **Required regression tests:** Assert that default HTTPS requests verify certificates; constructor/configuration TLS choices are honored; HTTP probes and fallback requests never include BasicAuth; and a valid HTTPS device connection continues to work.
-- **Remediation:** Implemented. The client now honors TLS constructor settings, enables verification by default, skips HTTP fallback when credentials are configured unless `allow_insecure_http` is explicitly enabled, and exposes TLS/insecure-HTTP settings in Akuvox configuration. Users with self-signed certificates can explicitly disable certificate verification; users whose credentialed devices only support HTTP must explicitly enable insecure HTTP.
-- **Verification:** Regression tests first failed against the old behavior, then passed after the fix. `test_api_transport_security.py`, `test_api_face_payload.py` and `test_api_events.py`: **23 passed**. Ruff passed for the changed transport and test files.
-- **Existing functionality impact:** HTTP-only devices without configured credentials still use HTTP fallback. Credentialed HTTP-only devices now require the explicit opt-in. Self-signed HTTPS devices require the explicit verification opt-out. No endpoint/API path changed.
+- **Recommended remediation:** Verify TLS certificates by default and trust the device's self-signed certificate or local CA. Keep credentialed HTTP disabled. Disabling verification permits device impersonation and traffic tampering by an on-path attacker.
+- **Required regression tests:** Assert HTTPS remains the default; default certificate verification behavior matches the documented compatibility decision; explicit verification-on is honored; HTTP probes and fallback requests never include BasicAuth unless separately opted into; and a valid HTTPS device connection continues to work.
+- **Remediation and accepted tradeoff:** The client honors TLS constructor settings, uses HTTPS by default, and skips credentialed HTTP fallback unless `allow_insecure_http` is explicitly enabled. At the user's request, certificate verification now defaults off across Akuvox and Hikvision config flows and clients so self-signed devices need no certificate installation. Users can set `verify_ssl` to true when using a trusted certificate. This compatibility default is not equivalent to verified TLS and does not protect against an active on-path attacker.
+- **Verification:** Default-setting regression tests failed against the previous true defaults, then passed after the change. Combined Akuvox and Hikvision transport suites: **25 passed**.
+- **Existing functionality impact:** Self-signed HTTPS devices work without additional certificate setup. HTTP remains blocked for credentialed Akuvox connections unless explicitly opted into. No endpoint/API path changed.
 
 ### Finding 2 — Face images are served without authentication
 
@@ -106,18 +106,18 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 - **Remediation:** Implemented. Audit events retain only a masked plate suffix and records older than 90 days are removed. Existing records are sanitized when a new action is recorded or an administrator reads the camera list; the sanitized state is persisted.
 - **Verification:** New tests confirm masking of new/old plate values and pruning beyond the retention window. ANPR regression suite: **9 passed**.
 
-### Finding 6 — Hikvision ANPR management initially defaulted to unauthenticated transport security
+### Finding 6 — Hikvision ANPR management defaults to unverified HTTPS
 
 - **Severity:** High
-- **Status:** Confirmed during feature review and remediated before publication
+- **Status:** Confirmed; HTTP default is remediated, but disabling certificate verification by default leaves an accepted High-severity risk
 - **Affected locations:** `custom_components/akuvox_ac/hikvision.py:138-169`; `custom_components/akuvox_ac/config_flow.py:54-75`
 - **Explanation:** The initial ANPR client and configuration flow defaulted to HTTP on port 80. Digest authentication does not encrypt HTTP traffic or authenticate its body, so camera requests and responses could be observed or modified in transit.
 - **Exploitation scenario:** A network-adjacent attacker could alter a plaintext license-plate list request or response, changing which vehicles are allowed or blocked, and could capture a Digest challenge/response for offline password guessing.
-- **Recommended remediation:** Default to HTTPS with certificate verification and reject HTTP unless an administrator explicitly opts into insecure transport after understanding the network risk.
-- **Required regression tests:** Verify the default URL uses HTTPS on port 443 with certificate verification; HTTP configuration is rejected without explicit opt-in and remains available with the opt-in for legacy cameras.
-- **Remediation:** Implemented before publication. The client and config flow now default to verified HTTPS on port 443. The client rejects HTTP unless `allow_insecure_http` is explicitly enabled. README documents the risk of that compatibility option.
-- **Verification:** `test_hikvision_isapi.py`: **8 passed**, including secure-default and explicit insecure-HTTP opt-in coverage. The full suite passes (**466 passed**).
-- **Existing functionality impact:** Cameras that only support HTTP remain configurable by setting HTTP and explicitly enabling `allow_insecure_http`; new camera entries use HTTPS by default.
+- **Recommended remediation:** Default to verified HTTPS and reject HTTP unless an administrator explicitly opts into insecure transport. Disabling certificate verification permits server impersonation and request/response tampering.
+- **Required regression tests:** Verify the default URL uses HTTPS on port 443, the documented certificate-verification default, explicit verification-on behavior, and HTTP rejection without opt-in.
+- **Remediation and accepted tradeoff:** The client and config flow use HTTPS on port 443 and reject HTTP unless `allow_insecure_http` is explicitly enabled. At the user's request, certificate verification defaults off so self-signed cameras work without installing certificates; administrators can enable verification for trusted certificates. README documents the identity-verification risk.
+- **Verification:** `test_hikvision_isapi.py` covers the Hikvision HTTPS default, explicit verification-on behavior and explicit HTTP compatibility. The suite passed as part of the **25 targeted transport tests**.
+- **Existing functionality impact:** Self-signed HTTPS cameras work without certificate setup. Cameras that only support HTTP remain available through an explicit insecure-HTTP opt-in.
 
 ## Other security areas reviewed
 
@@ -128,14 +128,14 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 - **Authorization:** Reviewed dashboard, settings, diagnostics, support-bundle, reservation, upload, remote-enrol, guest-link administration and Hikvision administration handlers contain explicit dashboard/admin checks. The public face route and inbound-call webhook are the exceptions reported above.
 - **Path traversal:** Face and static-asset filesystem paths are resolved and checked against their expected roots. No confirmed traversal bypass was found in reviewed code.
 - **Guest capability links:** Tokens are generated with `secrets`, stored as SHA-256 hashes, compared with `compare_digest`, and actions are constrained by an allowlist, entity-domain match, schedule and expiry checks. No confirmed guest-link authorization bypass was found.
-- **Hikvision transport:** The client now defaults to HTTPS on port 443 with certificate verification, disables redirects, and rejects HTTP unless the administrator explicitly enables `allow_insecure_http`. Enabling HTTP permits on-path request/response tampering and should be limited to isolated trusted networks. Regression coverage verifies secure defaults and explicit opt-in behavior.
+- **Hikvision transport:** The client defaults to HTTPS on port 443 but certificate verification is disabled by default at the user's request. This encrypts traffic but permits server impersonation and traffic tampering. Certificate verification can be enabled per device. HTTP remains rejected unless `allow_insecure_http` is explicitly enabled.
 - **Secrets:** No confirmed hardcoded credential was identified by the limited source-pattern inspection. This is not proof that all credentials are absent from all Git history. A complete blob-by-blob secret history scan was not performed because no suitable secret-scanning tool/runtime was available in the review environment; rotate any credential later found in history.
 - **Dependency risks:** No lockfile or runtime dependency list for the integration was found. Vulnerability advisories were not queried, so dependency currency and transitive dependency vulnerabilities remain unverified.
 - **Logging and security headers:** The support-bundle code includes sensitive-key redaction. A full review of every log field, upstream Home Assistant header behavior, proxy configuration, CORS policy, cookies and deployed security headers was not possible from this repository alone.
 
 ## Phase 3 — Prioritized remediation plan
 
-1. **Completed — High:** Akuvox transport verifies TLS by default and avoids credentialed HTTP unless explicitly enabled.
+1. **Partially remediated — High:** Credentialed HTTP is blocked by default, but TLS certificate verification is disabled by default at the user's request. Enable `verify_ssl` or trust the device certificate to remove the impersonation risk.
 2. **Completed — High:** Face-image retrieval uses dashboard authorization or a scoped per-profile token while preserving intercom access.
 3. **Partially completed — Medium:** Public call-data response and unbounded requests are fixed. Add a device-configurable webhook secret before requiring authentication; unauthenticated trigger abuse remains possible within rate limits.
 4. **Completed — Medium:** Face uploads are size-limited, decoded and normalized.
@@ -144,13 +144,13 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 
 ## Remediation verification
 
-- Targeted security and compatibility suites: **68 passed** before the final test additions.
-- Hikvision transport regression suite: **8 passed**, including the new secure-default and explicit HTTP opt-in cases.
-- Full project suite after all code changes: **466 passed**.
-- Ruff on changed application and regression-test files: passed.
-- `manifest.json` JSON validation: passed.
-- TDD checkpoints were committed for Akuvox transport, face asset access, webhook disclosure, upload validation, ANPR retention and Hikvision transport defaults. Fixes were committed in logical groups where possible.
+- Targeted Akuvox and Hikvision transport suites: **25 passed**.
+- Full project suite: **466 passed**.
+- Ruff on the repository: passed.
+- Dashboard script parser: **32 scripts parsed**.
+- `manifest.json` validation: passed.
+- TDD RED evidence: the updated defaults failed in four tests before the source changes; those tests pass after the change.
 
 ## Limitations
 
-The initial audit was static and read-only. During the approved remediation pass, relevant unit/integration tests and Ruff were run; the application was not deployed or tested against live devices. No production systems, credentials or stored data were accessed. A dependency advisory database query was not performed. Runtime Home Assistant/reverse-proxy behavior, Nabu Casa exposure, device firmware compatibility, deployed TLS/proxy settings, and actual route reachability still require environment-specific verification. The webhook authentication gap remains as described in Finding 3.
+The initial audit was static and read-only. During remediation, relevant unit/integration tests and Ruff were run. At the user's request, one bounded read-only compatibility check was made against their intercom; no device configuration, users, faces or access records were changed. Port 80 redirected to HTTPS, the device certificate was untrusted, and a GET to the integration's initial status endpoint returned 403 both with and without authentication, with no `WWW-Authenticate` challenge. This confirms network reachability only; authentication and API compatibility remain unverified because the device forbade the endpoint. No credentials or device data are included here. A dependency advisory database query was not performed. Runtime Home Assistant/reverse-proxy behavior, Nabu Casa exposure, device firmware compatibility, deployed TLS/proxy settings, and full route reachability still require environment-specific verification. The webhook authentication gap remains as described in Finding 3.

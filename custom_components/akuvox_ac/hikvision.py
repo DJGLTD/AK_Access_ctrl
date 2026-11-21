@@ -17,7 +17,14 @@ from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
-from .const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, DOMAIN
+from .const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+    DEFAULT_VERIFY_SSL,
+    DOMAIN,
+)
 
 _DIGEST_RE = re.compile(r'([A-Za-z][A-Za-z0-9_-]*)=(?:"((?:\\.|[^"])*)"|([^,\s]+))')
 _XML_NS = "http://www.std-cgi.org/ver20/XMLSchema"
@@ -140,7 +147,7 @@ class HikvisionISAPI:
         self.username = str(config.get(CONF_USERNAME, ""))
         self.password = str(config.get(CONF_PASSWORD, ""))
         self.channel = int(config.get("channel", 1))
-        self.verify_ssl = bool(config.get("verify_ssl", True))
+        self.verify_ssl = bool(config.get("verify_ssl", DEFAULT_VERIFY_SSL))
         self.allow_insecure_http = bool(config.get("allow_insecure_http", False))
         if not bare_host or any(char in bare_host for char in "/?#@ "):
             raise ValueError("Invalid camera host")
