@@ -1,7 +1,7 @@
 {
   "domain": "akuvox_ac",
   "name": "Akuvox Access Control",
-  "version": "4.3.5",
+  "version": "4.3.6",
   "codeowners": [
     "@you"
   ],
@@ -11,5 +11,7 @@
   "loggers": [
     "custom_components.akuvox_ac"
   ],
-  "requirements": ["Pillow"]
+  "requirements": [
+    "Pillow"
+  ]
 }
