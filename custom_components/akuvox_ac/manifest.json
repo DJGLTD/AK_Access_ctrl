@@ -11,5 +11,5 @@
   "loggers": [
     "custom_components.akuvox_ac"
   ],
-  "requirements": []
+  "requirements": ["Pillow"]
 }

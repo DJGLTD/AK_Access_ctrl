@@ -43,7 +43,13 @@ def test_digest_auth_rejects_unsupported_challenge():
 
 
 def test_camera_configuration_validates_host_channel_and_brackets_ipv6():
-    config = {"host": "2001:db8::10", "port": 80, "channel": 2}
+    config = {
+        "host": "2001:db8::10",
+        "port": 80,
+        "channel": 2,
+        "use_https": False,
+        "allow_insecure_http": True,
+    }
     client = HikvisionISAPI(object(), config)
     assert client.base == "http://[2001:db8::10]:80"
     assert client.channel_path == "/ISAPI/Traffic/channels/2"

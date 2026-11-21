@@ -1,7 +1,10 @@
 import asyncio
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
+
+from PIL import Image
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
@@ -61,6 +64,20 @@ class _UploadRequestStub:
         return dict(self.form)
 
 
+def _valid_png():
+    output = BytesIO()
+    Image.new("RGB", (2, 2), (20, 40, 60)).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _file_field(data, *, filename, content_type):
+    field = http_module.web.FileField()
+    field.file = BytesIO(data)
+    field.filename = filename
+    field.content_type = content_type
+    return field
+
+
 def test_ui_upload_face_dashboard_request_saves_file_and_marks_profile(tmp_path):
     users_store = _UsersStoreStub()
     sync_queue = _SyncQueueStub()
@@ -72,7 +89,7 @@ def test_ui_upload_face_dashboard_request_saves_file_and_marks_profile(tmp_path)
         hass,
         {
             "id": "HA001",
-            "file": b"fake-jpeg",
+            "file": _file_field(_valid_png(), filename="photo.txt", content_type="text/plain"),
         },
     )
 
@@ -83,7 +100,10 @@ def test_ui_upload_face_dashboard_request_saves_file_and_marks_profile(tmp_path)
     assert urlsplit(face_url).path == "/api/AK_AC/FaceData/HA001.jpg"
     access_token = parse_qs(urlsplit(face_url).query).get("token", [""])[0]
     assert access_token
-    assert (tmp_path / DOMAIN / "FaceData" / "HA001.jpg").read_bytes() == b"fake-jpeg"
+    stored_face = (tmp_path / DOMAIN / "FaceData" / "HA001.jpg").read_bytes()
+    assert stored_face.startswith(b"\xff\xd8")
+    with Image.open(BytesIO(stored_face)) as image:
+        assert image.format == "JPEG"
     assert users_store.upserts == [
         (
             "HA001",
@@ -105,7 +125,15 @@ def test_ui_upload_face_rejects_malformed_image_bytes(tmp_path):
         config=_ConfigStub(tmp_path),
         data={DOMAIN: {"users_store": _UsersStoreStub(), "sync_queue": _SyncQueueStub()}},
     )
-    request = _UploadRequestStub(hass, {"id": "HA001", "file": b"not an image"})
+    request = _UploadRequestStub(
+        hass,
+        {
+            "id": "HA001",
+            "file": _file_field(
+                b"not an image", filename="photo.jpg", content_type="image/jpeg"
+            ),
+        },
+    )
 
     response = asyncio.run(http_module.AkuvoxUIUploadFace().post(request))
 

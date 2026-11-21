@@ -16,7 +16,7 @@ from .const import (
     DEFAULT_POLL_INTERVAL, DEFAULT_DEVICE_MODEL, AKUVOX_DEVICE_MODELS,
 )
 
-DEVICE_TYPES = ["Intercom", "Keypad"]
+DEVICE_TYPES = ["Intercom", "Keypad", "Hikvision ANPR"]
 
 class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the initial config flow."""
@@ -27,6 +27,8 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: Dict[str, str] = {}
 
         if user_input is not None:
+            if user_input.get(CONF_DEVICE_TYPE) == "Hikvision ANPR":
+                return await self.async_step_hikvision()
             # Always use port 80 for the integration.
             data = {**user_input, CONF_PORT: 80}
             # unique_id as host:port to avoid dup
@@ -48,6 +50,32 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional("allow_insecure_http", default=False): bool,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def async_step_hikvision(self, user_input: Optional[Dict[str, Any]] = None) -> FlowResult:
+        errors: Dict[str, str] = {}
+        if user_input is not None:
+            data = {
+                **user_input,
+                CONF_DEVICE_TYPE: "Hikvision ANPR",
+                CONF_PORT: int(user_input.get(CONF_PORT, 443)),
+                "use_https": bool(user_input.get("use_https", True)),
+                "allow_insecure_http": bool(user_input.get("allow_insecure_http", False)),
+            }
+            await self.async_set_unique_id(f"hikvision:{data[CONF_HOST]}:{data[CONF_PORT]}:{data['channel']}")
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(title=data[CONF_DEVICE_NAME], data=data)
+        schema = vol.Schema({
+            vol.Required(CONF_DEVICE_NAME): str,
+            vol.Required(CONF_HOST): str,
+            vol.Optional(CONF_PORT, default=443): vol.All(int, vol.Range(min=1, max=65535)),
+            vol.Optional("use_https", default=True): bool,
+            vol.Optional("verify_ssl", default=True): bool,
+            vol.Optional("allow_insecure_http", default=False): bool,
+            vol.Required("channel", default=1): vol.All(int, vol.Range(min=1, max=255)),
+            vol.Optional(CONF_USERNAME, default=""): str,
+            vol.Optional(CONF_PASSWORD, default=""): str,
+        })
+        return self.async_show_form(step_id="hikvision", data_schema=schema, errors=errors)
 
     async def async_step_import(self, import_input: Dict[str, Any]) -> FlowResult:
         # support YAML import if ever needed
@@ -81,7 +109,7 @@ class AkuvoxOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema({
             vol.Optional(
                 CONF_DEVICE_TYPE, default=base.get(CONF_DEVICE_TYPE, "Intercom")
-            ): vol.In(DEVICE_TYPES),
+            ): vol.In(DEVICE_TYPES[:2]),
             vol.Optional(
                 CONF_DEVICE_MODEL,
                 default=base.get(CONF_DEVICE_MODEL, DEFAULT_DEVICE_MODEL),
