@@ -290,13 +290,13 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert any(url.startswith("https://") for url in session.get_urls)
     assert any(url.startswith("http://") for url in session.get_urls)
     assert session.post_urls[0].startswith("http://")
-    assert session.post_kwargs[0]["ssl"] is False
+    assert session.post_kwargs[0]["ssl"] is None
     assert "/api/filetool/import" in session.post_urls[0]
     assert b'name="file"; filename="HA001.jpg"' in session.post_kwargs[0]["data"]
     assert session.post_kwargs[0]["headers"]["Content-Type"].startswith("multipart/form-data; boundary=")
 
 
-def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
+def test_face_upload_verifies_tls_by_default():
     import asyncio
 
     session = _FaceUploadSessionStub()
@@ -304,13 +304,18 @@ def test_face_upload_keeps_ssl_verification_disabled_for_self_signed_devices():
 
     asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
 
-    assert api.verify_ssl is False
+    assert api.verify_ssl is True
     assert session.post_kwargs
-    assert all(kwargs["ssl"] is False for kwargs in session.post_kwargs)
+    https_posts = [
+        kwargs
+        for url, kwargs in zip(session.post_urls, session.post_kwargs)
+        if url.startswith("https://")
+    ]
+    assert all(kwargs["ssl"] is True for kwargs in https_posts)
     face_requests = [
         req for req in api.recent_requests(10) if req["diag_type"] == "upload:face"
     ]
-    assert all(req["verify_ssl"] is False for req in face_requests)
+    assert all(req["verify_ssl"] is True for req in face_requests)
 
 
 def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():
@@ -362,11 +367,13 @@ def test_face_upload_retries_expired_web_session():
     assert web_posts[1][1]["headers"]["Cookie"] == "token=fake2"
 
 
-def test_face_upload_does_not_retry_verified_ssl_when_disabled():
+def test_face_upload_supports_explicit_self_signed_certificate_opt_out():
     import asyncio
 
     session = _FaceUploadAllFailSessionStub()
-    api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
+    api = AkuvoxAPI(
+        "127.0.0.1", port=80, username="", password="", verify_ssl=False, session=session
+    )
 
     try:
         asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))

@@ -37,7 +37,7 @@ def test_akuvox_client_honors_secure_tls_defaults_and_arguments(monkeypatch):
     assert explicit_api.verify_ssl is False
 
 
-def test_akuvox_http_probe_never_sends_basic_auth_credentials(monkeypatch):
+def test_akuvox_http_probe_is_skipped_when_credentials_are_configured(monkeypatch):
     monkeypatch.setattr(api_module, "BasicAuth", lambda username, password: (username, password))
     session = _Session()
     api = AkuvoxAPI(
@@ -47,8 +47,25 @@ def test_akuvox_http_probe_never_sends_basic_auth_credentials(monkeypatch):
     asyncio.run(api._ensure_detected())
 
     http_calls = [(url, kwargs) for url, kwargs in session.calls if url.startswith("http://")]
-    assert http_calls
-    assert all(kwargs.get("auth") is None for _url, kwargs in http_calls)
+    assert not http_calls
     https_calls = [(url, kwargs) for url, kwargs in session.calls if url.startswith("https://")]
     assert https_calls
     assert all(kwargs.get("ssl") is True for _url, kwargs in https_calls)
+
+
+def test_akuvox_http_auth_requires_explicit_insecure_opt_in(monkeypatch):
+    monkeypatch.setattr(api_module, "BasicAuth", lambda username, password: (username, password))
+    session = _Session()
+    api = AkuvoxAPI(
+        "intercom.local",
+        username="installer",
+        password="secret",
+        allow_insecure_http=True,
+        session=session,
+    )
+
+    asyncio.run(api._ensure_detected())
+
+    http_calls = [(url, kwargs) for url, kwargs in session.calls if url.startswith("http://")]
+    assert http_calls
+    assert all(kwargs.get("auth") == ("installer", "secret") for _url, kwargs in http_calls)

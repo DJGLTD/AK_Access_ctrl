@@ -7846,6 +7846,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         password=cfg.get(CONF_PASSWORD) or None,
         use_https=cfg.get("use_https", DEFAULT_USE_HTTPS),
         verify_ssl=cfg.get("verify_ssl", DEFAULT_VERIFY_SSL),
+        allow_insecure_http=cfg.get("allow_insecure_http", False),
         session=session,
         diagnostics_history_limit=diagnostics_history_limit,
     )

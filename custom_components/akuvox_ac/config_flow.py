@@ -44,6 +44,8 @@ class AkuvoxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ): vol.In(AKUVOX_DEVICE_MODELS),
             vol.Optional(CONF_USERNAME, default=""): str,
             vol.Optional(CONF_PASSWORD, default=""): str,
+            vol.Optional("verify_ssl", default=True): bool,
+            vol.Optional("allow_insecure_http", default=False): bool,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
