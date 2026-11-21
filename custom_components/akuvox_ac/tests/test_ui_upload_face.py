@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
@@ -78,13 +79,17 @@ def test_ui_upload_face_dashboard_request_saves_file_and_marks_profile(tmp_path)
     response = asyncio.run(http_module.AkuvoxUIUploadFace().post(request))
 
     assert response["args"][0]["ok"] is True
-    assert response["args"][0]["face_url"] == "http://ha.local/api/AK_AC/FaceData/HA001.jpg"
+    face_url = response["args"][0]["face_url"]
+    assert urlsplit(face_url).path == "/api/AK_AC/FaceData/HA001.jpg"
+    access_token = parse_qs(urlsplit(face_url).query).get("token", [""])[0]
+    assert access_token
     assert (tmp_path / DOMAIN / "FaceData" / "HA001.jpg").read_bytes() == b"fake-jpeg"
     assert users_store.upserts == [
         (
             "HA001",
             {
-                "face_url": "http://ha.local/api/AK_AC/FaceData/HA001.jpg",
+                "face_url": face_url,
+                "face_access_token": access_token,
                 "status": "pending",
                 "face_status": "pending",
                 "face_synced_at": "",
@@ -93,3 +98,30 @@ def test_ui_upload_face_dashboard_request_saves_file_and_marks_profile(tmp_path)
         )
     ]
     assert sync_queue.marked == 1
+
+
+def test_ui_upload_face_rejects_malformed_image_bytes(tmp_path):
+    hass = SimpleNamespace(
+        config=_ConfigStub(tmp_path),
+        data={DOMAIN: {"users_store": _UsersStoreStub(), "sync_queue": _SyncQueueStub()}},
+    )
+    request = _UploadRequestStub(hass, {"id": "HA001", "file": b"not an image"})
+
+    response = asyncio.run(http_module.AkuvoxUIUploadFace().post(request))
+
+    assert response["args"][0]["ok"] is False
+    assert not (tmp_path / DOMAIN / "FaceData" / "HA001.jpg").exists()
+
+
+def test_ui_upload_face_rejects_payload_over_size_limit(tmp_path):
+    hass = SimpleNamespace(
+        config=_ConfigStub(tmp_path),
+        data={DOMAIN: {"users_store": _UsersStoreStub(), "sync_queue": _SyncQueueStub()}},
+    )
+    oversized = b"x" * (5 * 1024 * 1024 + 1)
+    request = _UploadRequestStub(hass, {"id": "HA001", "file": oversized})
+
+    response = asyncio.run(http_module.AkuvoxUIUploadFace().post(request))
+
+    assert response["args"][0]["ok"] is False
+    assert not (tmp_path / DOMAIN / "FaceData" / "HA001.jpg").exists()
