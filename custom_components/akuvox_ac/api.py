@@ -19,6 +19,7 @@ from .const import (
     DEFAULT_DIAGNOSTICS_HISTORY_LIMIT,
     MAX_DIAGNOSTICS_HISTORY_LIMIT,
     MIN_DIAGNOSTICS_HISTORY_LIMIT,
+    DEFAULT_VERIFY_SSL,
 )
 
 
@@ -101,7 +102,7 @@ class AkuvoxAPI:
         username: Optional[str] = None,
         password: Optional[str] = None,
         use_https: bool = True,
-        verify_ssl: bool = True,
+        verify_ssl: bool = DEFAULT_VERIFY_SSL,
         allow_insecure_http: bool = False,
         session: Optional[ClientSession] = None,
         diagnostics_history_limit: Optional[int] = None,

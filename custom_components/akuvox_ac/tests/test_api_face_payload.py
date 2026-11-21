@@ -296,26 +296,34 @@ def test_face_upload_tries_http_device_endpoint_when_https_unavailable():
     assert session.post_kwargs[0]["headers"]["Content-Type"].startswith("multipart/form-data; boundary=")
 
 
-def test_face_upload_verifies_tls_by_default():
+def test_face_upload_skips_tls_certificate_verification_by_default():
     import asyncio
 
-    session = _FaceUploadSessionStub()
+    session = _FaceUploadAllFailSessionStub()
     api = AkuvoxAPI("127.0.0.1", port=80, username="", password="", session=session)
 
-    asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    try:
+        asyncio.run(api.face_upload(b"jpg", filename="HA001.jpg"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("face_upload unexpectedly succeeded")
 
-    assert api.verify_ssl is True
+    assert api.verify_ssl is False
     assert session.post_kwargs
     https_posts = [
         kwargs
         for url, kwargs in zip(session.post_urls, session.post_kwargs)
         if url.startswith("https://")
     ]
-    assert all(kwargs["ssl"] is True for kwargs in https_posts)
+    assert https_posts
+    assert all(kwargs["ssl"] is False for kwargs in https_posts)
     face_requests = [
         req for req in api.recent_requests(10) if req["diag_type"] == "upload:face"
     ]
-    assert all(req["verify_ssl"] is True for req in face_requests)
+    https_face_requests = [req for req in face_requests if req["scheme"] == "https"]
+    assert https_face_requests
+    assert all(req["verify_ssl"] is False for req in https_face_requests)
 
 
 def test_face_upload_uses_web_session_cookie_for_web_import_endpoint():

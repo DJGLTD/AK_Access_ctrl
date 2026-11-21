@@ -57,11 +57,15 @@ def test_camera_configuration_validates_host_channel_and_brackets_ipv6():
         HikvisionISAPI(object(), {"host": "camera/path", "port": 80, "channel": 1})
 
 
-def test_camera_transport_defaults_to_verified_https_and_allows_explicit_http():
+def test_camera_transport_defaults_to_https_without_verifying_and_allows_explicit_http():
     secure = HikvisionISAPI(object(), {"host": "camera.local", "channel": 1})
+    strict = HikvisionISAPI(
+        object(), {"host": "trusted.local", "channel": 1, "verify_ssl": True}
+    )
     assert secure.base == "https://camera.local:443"
     assert secure.use_https is True
-    assert secure.verify_ssl is True
+    assert secure.verify_ssl is False
+    assert strict.verify_ssl is True
 
     with pytest.raises(ValueError, match="HTTPS"):
         HikvisionISAPI(

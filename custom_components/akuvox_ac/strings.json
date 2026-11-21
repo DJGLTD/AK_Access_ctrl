@@ -4,12 +4,29 @@
     "step": {
       "user": {
         "title": "Add an Akuvox device",
-        "description": "Enter connection details.",
+        "description": "Enter connection details. HTTPS is used by default; certificate verification is disabled by default for self-signed devices.",
         "data": {
           "device_name": "Device Name",
           "host": "IP Address",
           "device_type": "Device Type",
           "device_model": "Akuvox Model",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify SSL certificate",
+          "allow_insecure_http": "Allow insecure HTTP (not recommended)"
+        }
+      },
+      "hikvision": {
+        "title": "Add a Hikvision ANPR camera",
+        "description": "HTTPS is used by default. Certificate verification is disabled by default for self-signed devices; enable it when the camera certificate is trusted.",
+        "data": {
+          "device_name": "Device Name",
+          "host": "Camera Host",
+          "port": "Camera Port",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify SSL certificate",
+          "allow_insecure_http": "Allow insecure HTTP (not recommended)",
+          "channel": "Traffic Channel",
           "username": "Username",
           "password": "Password"
         }
@@ -29,7 +46,8 @@
           "device_model": "Akuvox Model",
           "participate_in_sync": "Participate in sync",
           "poll_interval": "Poll interval (seconds)",
-          "device_groups": "Sync groups for this device"
+          "device_groups": "Sync groups for this device",
+          "verify_ssl": "Verify SSL certificate"
         }
       }
     }
