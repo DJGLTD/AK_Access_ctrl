@@ -27,12 +27,27 @@
     .license-plate-input{text-transform:uppercase; }
     .event-visibility-scroll{max-height:min(18rem,42vh);overflow-y:auto;border:1px solid #243a61;border-radius:0.5rem;background:#0e1a2c;padding:0.6rem 0.75rem;}
     .event-visibility-scroll .form-check{margin-bottom:0.35rem;}
+    .user-editor-card{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:1.25rem;row-gap:.25rem;align-items:start;}
+    .user-editor-card > *{min-width:0;}
+    .user-editor-card > #idRow,
+    .user-editor-card > #deviceIdsRow,
+    .user-editor-card > #pLocal,
+    .user-editor-card > #pRemote,
+    .user-editor-card > #userAdminSettingsSection,
+    .user-editor-card > #anprSection,
+    .user-editor-card > #accessWindow,
+    .user-editor-card > #notifyOnAccessRow,
+    .user-editor-card > .action-buttons{grid-column:1 / -1;}
+    .user-editor-card > #faceSection{align-self:center;}
+    .user-editor-card > #keyHolderRow{align-self:center;}
     @media (max-width: 992px){
       .container-narrow{ max-width:100%; }
     }
-    @media (max-width: 720px){
+    @media (max-width: 900px){
       .container-narrow{ padding:0.75rem; }
       .card{ padding:1.25rem; }
+      .user-editor-card{grid-template-columns:minmax(0,1fr);}
+      .user-editor-card > *{grid-column:1!important;}
       .btn-toggle{ width:100%; }
       .face-options{ flex-direction:column; }
       .action-buttons{ flex-direction:column; }
@@ -2962,7 +2977,7 @@ function showPanel(which){
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
 
-  <div class="card p-3 mt-3">
+  <div class="card p-3 mt-3 user-editor-card" id="userEditorCard">
     <div id="idRow" class="mb-3" style="display:none;">
       <label class="form-label">User ID</label>
       <input id="user_id" class="form-control" readonly />

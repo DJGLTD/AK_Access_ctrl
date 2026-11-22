@@ -85,6 +85,15 @@
       overflow-y: auto;
       padding:0.25rem 0;
     }
+    .settings-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:1rem;margin-top:1rem;align-items:start;}
+    .settings-grid > .card{margin:0!important;min-width:0;}
+    .settings-overview{grid-column:span 12;}
+    .settings-compact{grid-column:span 3;}
+    .settings-half{grid-column:span 6;}
+    .settings-full{grid-column:span 12;}
+    .settings-grid .card-header{font-weight:600;}
+    @media (max-width: 1200px){.settings-compact{grid-column:span 6;}}
+    @media (max-width: 900px){.settings-grid{grid-template-columns:minmax(0,1fr);}.settings-grid > .card{grid-column:1;}}
     @media (max-width: 576px){
       .schedule-window-header{ flex-direction:column; align-items:flex-start; }
       .schedule-window-header .btn{ width:100%; }
@@ -2984,7 +2993,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     <span id="busy" class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:none;"></span>
   </div>
 
-  <div class="card mt-3">
+  <div class="settings-grid">
+  <div class="card settings-overview">
     <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
       <div>
         <div class="fw-semibold text-white">Device diagnostics</div>
@@ -3005,7 +3015,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-compact">
     <div class="card-header">Automatic Change Sync Delay</div>
     <div class="card-body">
       <p class="muted">Set how long to wait before automatically syncing user updates to every participating device. Lower values push changes out sooner, while higher values batch multiple edits together. Choose between 5 and 60 minutes.</p>
@@ -3017,7 +3027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-compact">
     <div class="card-header">Health Check Interval</div>
     <div class="card-body">
       <p class="muted">Control how often the integration pings each device to confirm it is online. Shorter intervals detect offline devices faster but increase network traffic. Choose between 10 and 300 seconds.</p>
@@ -3029,7 +3039,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-compact">
     <div class="card-header">Event History Limit</div>
     <div class="card-body">
       <p class="muted">Choose how many access events the dashboard keeps at once. Newer events appear first, and older entries are removed once the limit is reached.</p>
@@ -3050,7 +3060,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-half">
     <div class="card-header">HACS Auto Update</div>
     <div class="card-body">
       <p class="muted">Check the HACS update entity for this integration at a specific time each day. You can let it install available updates automatically and restart Home Assistant afterwards.</p>
@@ -3101,7 +3111,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-compact">
     <div class="card-header">Integrity Check Interval</div>
     <div class="card-body">
       <p class="muted">Integrity checks automatically compare each device's data with the server so everything stays accurate and up to date. Choose how often to run them (minimum 5 minutes, maximum 24 hours).</p>
@@ -3117,7 +3127,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-half">
     <div class="card-header">User Credential Prompts</div>
     <div class="card-body">
       <p class="muted">Choose which credential types appear when adding or editing users. Disabled options are hidden from the user forms.</p>
@@ -3147,7 +3157,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-half">
     <div class="card-header">Device Access Groups</div>
     <div class="card-body">
       <p class="muted">Pick which user groups can sync to each device. Users must share at least one selected group to gain access on that device.</p>
@@ -3155,7 +3165,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3 schedule-card" id="access-schedules">
+  <div class="card settings-half schedule-card" id="access-schedules">
     <div class="card-header d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
       <div>
         <div class="fw-semibold text-white">Access Schedules</div>
@@ -3198,7 +3208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     </div>
   </div>
 
-  <div class="card mt-3">
+  <div class="card settings-half">
     <div class="card-header d-flex justify-content-between align-items-center">
       <span>Alert Targets</span>
       <select id="addTargetSelect" class="form-select form-select-sm" style="width:auto;"></select>
@@ -3208,6 +3218,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div id="alertsContainer"></div>
       <div id="alertsStatus" class="visually-hidden mt-3"></div>
     </div>
+  </div>
   </div>
 </div>
 </body>
