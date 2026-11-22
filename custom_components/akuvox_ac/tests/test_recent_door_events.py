@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, Mock, call
 import pytest
 
 from custom_components.akuvox_ac.api import AkuvoxAPI
+from custom_components.akuvox_ac.access_history import AccessHistory
+from custom_components.akuvox_ac.const import DOMAIN
 from .test_notification_latency import make_coordinator, start_polling
 
 
@@ -133,6 +135,46 @@ async def test_explicit_history_refresh_keeps_full_history():
     coord.api.events_last.assert_awaited_once_with()
     assert len(result) == 1003
     assert len(coord._publish_access_history.call_args.args[0]) == 1003
+
+
+@pytest.mark.asyncio
+async def test_explicit_refresh_restores_device_events_older_than_minimum_retention():
+    coord = make_coordinator()
+    day = 24 * 60 * 60
+    timestamps = [
+        f"2026-08-{21 + index:02d}T10:00:00+00:00" for index in range(10)
+    ] + [
+        "2026-11-02T10:00:00+00:00",
+        "2026-11-06T10:00:00+00:00",
+        "2026-11-09T10:00:00+00:00",
+        "2026-11-20T10:00:00+00:00",
+    ]
+    full_log = [
+        {"ID": str(index), "Event": "Access granted", "UserID": "HA001", "DateTime": ts}
+        for index, ts in reversed(list(enumerate(timestamps, start=1)))
+    ]
+    coord.storage.data["door_events"] = {"last_event_key": str(len(full_log))}
+    coord.api.events_last.return_value = full_log
+    coord.hass.data[DOMAIN] = {
+        "access_history": AccessHistory(),
+        "settings_store": type(
+            "Settings",
+            (),
+            {
+                "get_access_history_limit": lambda self: 5000,
+                "get_access_history_storage_limit": lambda self: 5000,
+                "get_access_history_retention_seconds": lambda self: 30 * day,
+            },
+        )(),
+    }
+
+    await coord.async_refresh_access_history()
+
+    history = coord.hass.data[DOMAIN]["access_history"].snapshot(5000)
+    assert len(history) == len(full_log)
+    assert {event["DateTime"][:10] for event in history} == {
+        timestamp[:10] for timestamp in timestamps
+    }
 
 
 @pytest.mark.asyncio

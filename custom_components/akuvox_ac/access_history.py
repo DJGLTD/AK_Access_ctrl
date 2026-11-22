@@ -91,6 +91,12 @@ def _has_meaningful_value(obj: Optional[Dict[str, Any]], key: str) -> bool:
     return True
 
 
+def _is_device_doorlog_event(event: Dict[str, Any]) -> bool:
+    """Device history remains available as long as it is within the count cap."""
+
+    return str(event.get("_source") or "").strip().lower() == "doorlog"
+
+
 def _combined_event_text(event: Optional[Dict[str, Any]], device: Optional[Dict[str, Any]]) -> str:
     parts: List[str] = []
     for key in _TYPE_KEYS:
@@ -192,7 +198,7 @@ class AccessHistory:
                 continue
 
             ts_value = self._coerce_timestamp(event.get("_t"))
-            if cutoff and ts_value and ts_value < cutoff:
+            if cutoff and ts_value and ts_value < cutoff and not _is_device_doorlog_event(event):
                 continue
 
             if len(self._events) >= limit:
@@ -233,6 +239,7 @@ class AccessHistory:
                 evt
                 for evt in self._events
                 if self._coerce_timestamp(evt.get("_t")) >= cutoff
+                or _is_device_doorlog_event(evt)
             ]
             if len(retained_by_age) != len(self._events):
                 self._events = retained_by_age
@@ -276,6 +283,7 @@ class AccessHistory:
                 evt
                 for evt in self._events
                 if self._coerce_timestamp(evt.get("_t")) >= cutoff
+                or _is_device_doorlog_event(evt)
             ]
             if cutoff
             else list(self._events)
@@ -401,7 +409,7 @@ def access_history_retention_cutoff(
     *,
     now: Optional[float] = None,
 ) -> Optional[float]:
-    """Return the oldest event timestamp that should be kept, if configured."""
+    """Return the age-retention floor for non-device events, if configured."""
 
     settings = root.get("settings_store") if isinstance(root, dict) else None
     getter = getattr(settings, "get_access_history_retention_seconds", None)
