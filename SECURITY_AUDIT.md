@@ -41,6 +41,15 @@ Three Medium findings were confirmed: public exposure of inbound call data, unva
 
 ## Phase 2 — Findings
 
+### Authorization follow-up — non-admin user visibility
+
+- **Status:** Verified and regression-tested; no additional vulnerability confirmed.
+- **Affected locations:** `custom_components/akuvox_ac/http.py:3874-3915, 4725-4729`; `custom_components/akuvox_ac/tests/test_dashboard_auth.py`
+- **Explanation:** Constrained dashboard and self-service responses expose only the viewer's linked Akuvox profile in `registry_users`. The event-history user selector is separately filtered to the viewer and profiles explicitly allowed by event-visibility rules. The settings endpoint containing administrative user and visibility configuration requires administrator access.
+- **Regression coverage:** Tests verify that the restricted directory omits other profiles (including when the viewer identity is missing), and that event user options contain only explicitly visible profiles.
+- **Verification:** `test_dashboard_auth.py` and `test_event_visibility.py` pass together (29 tests).
+- **Remediation:** Factored the self-profile filter into a named helper used by the state response, making the access boundary directly testable. No public API shape or existing allowed event-sharing behavior changed.
+
 ### Finding 1 — Akuvox credentials can traverse unverified TLS or plaintext HTTP
 
 - **Severity:** High

@@ -312,6 +312,36 @@ def test_non_admin_dashboard_user_gets_restricted_self_service_context():
     assert context["ha_user_id"] == "ha-manager"
 
 
+def test_restricted_user_directory_only_contains_the_linked_profile():
+    registry_users = [
+        {"id": "HA010", "name": "Manager"},
+        {"id": "HA011", "name": "Private User"},
+    ]
+
+    visible = http_module._restricted_registry_users(registry_users, "ha010")
+
+    assert visible == [{"id": "HA010", "name": "Manager"}]
+    assert "Private User" not in repr(visible)
+    assert http_module._restricted_registry_users(registry_users, "") == []
+
+
+def test_non_admin_event_user_options_only_include_explicitly_visible_profiles():
+    payload = http_module._event_access_payload(
+        can_manage=False,
+        viewer_user_id="HA010",
+        visible_user_ids={"HA010", "HA012"},
+        registry_users=[
+            {"id": "HA010", "name": "Manager"},
+            {"id": "HA011", "name": "Private User"},
+            {"id": "HA012", "name": "Allowed User"},
+        ],
+    )
+
+    assert payload["visible_user_ids"] == ["HA010", "HA012"]
+    assert [user["id"] for user in payload["users"]] == ["HA012", "HA010"]
+    assert "Private User" not in repr(payload)
+
+
 def test_admin_impersonating_normal_user_gets_target_self_service_context():
     admin = _User("ha-admin", "Admin", is_admin=True)
     target = _User("ha-target", "Target")
