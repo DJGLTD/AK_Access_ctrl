@@ -24,6 +24,7 @@ These are measurements on this device and network, not end-to-end phone notifica
 - A failed catch-up read leaves the cursor unchanged so the next poll can retry.
 - An explicit history refresh, startup or recovery retains the unpaged read. Routine processing is capped locally at 25 records even if older firmware ignores pagination.
 - Firmware that rejects or ignores the paging parameter uses unpaged requests for the rest of that API instance's lifetime. This preserves compatibility but cannot reduce network traffic on those devices.
+- If the standard door-log endpoint rejects a request, the client retries the same read at `/api/web/doorlog/get/` using the existing challenge-encrypted web login and session cookie. It does not send Basic credentials to that route.
 
 Akuvox's published [HTTP API manual](https://pliki.genway.pl/Wideodomofony/Akuvox/API/akuvox_http_api_manual_android.pdf) describes ten-record pagination with model-dependent support. The X912 behavior above was established directly on the supplied device rather than inferred from that manual's model list.
 
@@ -31,6 +32,6 @@ Akuvox's published [HTTP API manual](https://pliki.genway.pl/Wideodomofony/Akuvo
 
 All 254 tests passed and Python lint passed. Added regression coverage checks the outgoing page parameter, full-history preservation, empty logs, rejected/ignored pagination, failed requests, multi-access bursts, catch-up, unchanged cursors on failure and same-second events.
 
-This workstation received HTTP 403 on the integration's standard `/api/doorlog/get/` route. Live measurements therefore used `/api/web/doorlog/get/` with a web session. The follow-up client test changed only the endpoint prefix through a temporary adapter; this adapter and the login credentials were not added to the integration. The standard API route and actual notification delivery still need checking from the running Home Assistant installation after deployment. Existing device/API authentication behavior was left unchanged.
+This workstation previously received HTTP 403 on the integration's standard `/api/doorlog/get/` route. Live measurements used `/api/web/doorlog/get/` with a web session. The integration now has a tested fallback to that route, but it has not yet been rechecked against the running Home Assistant installation or the device after this change. The previous endpoint denial means backfill on that installation remains unverified until refreshed there.
 
-The changes are local. No integration update or release has been deployed to Home Assistant.
+The web-endpoint fallback is covered by unit tests for endpoint selection, session-cookie use over configured HTTPS, and expired-session retry.

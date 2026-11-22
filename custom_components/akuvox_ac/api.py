@@ -682,6 +682,72 @@ class AkuvoxAPI:
         rels = (primary, *fallbacks)
         return await self._request_attempts("GET", rels, None)
 
+    async def _get_web_api(self, path: str) -> Dict[str, Any]:
+        """GET a web-only API route using the device's authenticated web session."""
+
+        await self._ensure_detected()
+        if not self._detected:
+            raise RuntimeError("Akuvox connection is unavailable")
+
+        use_https, port, verify = self._detected
+        cookie = await self._web_login_cookie(
+            use_https=use_https,
+            port=port,
+            verify=verify,
+        )
+        if not cookie:
+            raise RuntimeError("Akuvox web session could not be established")
+
+        scheme = "https" if use_https else "http"
+        origin = f"{scheme}://{self.host}:{port}"
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": origin,
+            "Referer": f"{origin}/",
+            "Cookie": cookie,
+        }
+        async with self._session.get(
+            f"{origin}{path}",
+            headers=headers,
+            ssl=verify if use_https else None,
+            timeout=15,
+        ) as response:
+            result = await response.json(content_type=None)
+            response.raise_for_status()
+            return result
+
+    async def _get_doorlog_api(self, path: str) -> Dict[str, Any]:
+        """Read a door log through the normal API, then the authenticated web API."""
+
+        try:
+            result = await self._get_api(path)
+            retcode, message = self._parse_result_status(result)
+            if _retcode_is_success(retcode):
+                return result
+            standard_error = RuntimeError(message or "Door log request failed")
+        except Exception as err:
+            standard_error = err
+
+        web_path = path.replace("/api/doorlog/", "/api/web/doorlog/", 1)
+        if web_path == path:
+            raise standard_error
+        try:
+            result = await self._get_web_api(web_path)
+            retcode, message = self._parse_result_status(result)
+            if _retcode_is_success(retcode):
+                return result
+            message_text = str(message or "").strip().lower()
+            if retcode == -100 and "session" in message_text:
+                self._web_token_cookie = None
+                result = await self._get_web_api(web_path)
+                retcode, message = self._parse_result_status(result)
+                if _retcode_is_success(retcode):
+                    return result
+            raise RuntimeError(message or "Door log request failed")
+        except Exception:
+            raise standard_error
+
     @staticmethod
     def _normalize_relay_number(relay_number: Any) -> int:
         try:
@@ -1782,18 +1848,12 @@ class AkuvoxAPI:
         paged = recent_only and getattr(self, "_doorlog_paging_supported", True)
         path = "/api/doorlog/get/" + ("?page=1" if paged else "")
         try:
-            result = await self._get_api(path)
-            retcode, message = self._parse_result_status(result)
-            if not _retcode_is_success(retcode):
-                raise RuntimeError(message or "Door log request failed")
+            result = await self._get_doorlog_api(path)
         except Exception:
             if not paged:
                 return []
             try:
-                result = await self._get_api("/api/doorlog/get/")
-                retcode, _ = self._parse_result_status(result)
-                if not _retcode_is_success(retcode):
-                    return []
+                result = await self._get_doorlog_api("/api/doorlog/get/")
             except Exception:
                 return []
             self._doorlog_paging_supported = False
