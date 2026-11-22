@@ -1,5 +1,6 @@
 """Keep routine notification reads small without losing short access bursts."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
@@ -27,6 +28,77 @@ async def test_api_requests_paging_on_device_instead_of_slicing_full_response():
     assert await api.events_last(recent_only=True) == page
     assert await api.events_last() == full
     assert api._get_api.call_args_list == [call("/api/doorlog/get/?page=1"), call("/api/doorlog/get/")]
+
+
+@pytest.mark.asyncio
+async def test_doorlog_falls_back_to_web_route_when_standard_route_is_forbidden():
+    api = AkuvoxAPI("example.invalid")
+    full = events(31)
+    api._get_api = AsyncMock(side_effect=RuntimeError("HTTP 403"))
+    api._get_web_api = AsyncMock(return_value=payload(full))
+
+    assert await api.events_last() == full
+    api._get_api.assert_awaited_once_with("/api/doorlog/get/")
+    api._get_web_api.assert_awaited_once_with("/api/web/doorlog/get/")
+
+
+@pytest.mark.asyncio
+async def test_doorlog_reauthenticates_once_when_web_session_has_expired():
+    api = AkuvoxAPI("example.invalid")
+    full = events(31)
+    api._get_api = AsyncMock(side_effect=RuntimeError("HTTP 403"))
+    api._web_token_cookie = "token=stale-test-cookie"
+    api._get_web_api = AsyncMock(
+        side_effect=[
+            {"retcode": -100, "message": "session expired"},
+            payload(full),
+        ]
+    )
+
+    assert await api.events_last() == full
+    assert api._web_token_cookie is None
+    assert api._get_web_api.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_web_doorlog_request_uses_session_cookie_over_configured_https():
+    class Response:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def json(self, content_type=None):
+            return payload(events(1))
+
+        def raise_for_status(self):
+            return None
+
+    session = SimpleNamespace(get=Mock(return_value=Response()))
+    api = AkuvoxAPI(
+        "example.invalid",
+        use_https=True,
+        verify_ssl=True,
+        session=session,
+    )
+    api._detected = (True, 443, True)
+    api._web_login_cookie = AsyncMock(return_value="token=unit-test")
+
+    result = await api._get_web_api("/api/web/doorlog/get/")
+
+    assert result == payload(events(1))
+    api._web_login_cookie.assert_awaited_once_with(
+        use_https=True,
+        port=443,
+        verify=True,
+    )
+    url, = session.get.call_args.args
+    request = session.get.call_args.kwargs
+    assert url == "https://example.invalid:443/api/web/doorlog/get/"
+    assert request["headers"]["Cookie"] == "token=unit-test"
+    assert request["ssl"] is True
+    assert "auth" not in request
 
 
 @pytest.mark.asyncio
