@@ -91,10 +91,10 @@ def _has_meaningful_value(obj: Optional[Dict[str, Any]], key: str) -> bool:
     return True
 
 
-def _is_device_doorlog_event(event: Dict[str, Any]) -> bool:
-    """Device history remains available as long as it is within the count cap."""
+def _is_device_event(event: Dict[str, Any]) -> bool:
+    """Device access and call history remain available up to the count cap."""
 
-    return str(event.get("_source") or "").strip().lower() == "doorlog"
+    return str(event.get("_source") or "").strip().lower() in {"doorlog", "call_log"}
 
 
 def _combined_event_text(event: Optional[Dict[str, Any]], device: Optional[Dict[str, Any]]) -> str:
@@ -198,7 +198,7 @@ class AccessHistory:
                 continue
 
             ts_value = self._coerce_timestamp(event.get("_t"))
-            if cutoff and ts_value and ts_value < cutoff and not _is_device_doorlog_event(event):
+            if cutoff and ts_value and ts_value < cutoff and not _is_device_event(event):
                 continue
 
             if len(self._events) >= limit:
@@ -239,7 +239,7 @@ class AccessHistory:
                 evt
                 for evt in self._events
                 if self._coerce_timestamp(evt.get("_t")) >= cutoff
-                or _is_device_doorlog_event(evt)
+                or _is_device_event(evt)
             ]
             if len(retained_by_age) != len(self._events):
                 self._events = retained_by_age
@@ -283,7 +283,7 @@ class AccessHistory:
                 evt
                 for evt in self._events
                 if self._coerce_timestamp(evt.get("_t")) >= cutoff
-                or _is_device_doorlog_event(evt)
+                or _is_device_event(evt)
             ]
             if cutoff
             else list(self._events)

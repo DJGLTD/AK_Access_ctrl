@@ -1877,26 +1877,39 @@ class AkuvoxAPI:
     async def call_log(self) -> List[Dict[str, Any]]:
         """Return recent call log entries (best effort)."""
 
+        def _items(result: Any) -> List[Dict[str, Any]]:
+            if not isinstance(result, dict):
+                return []
+            retcode, _message = self._parse_result_status(result)
+            if not _retcode_is_success(retcode):
+                return []
+            data = result.get("data")
+            if not isinstance(data, dict):
+                return []
+            return self._coerce_event_list(data.get("item"))
+
         for payload in (
             {"target": "calllog", "action": "get"},
         ):
             try:
                 r = await self._post_api(payload)
-                items = r.get("data", {}).get("item")
-                if isinstance(items, list):
+                items = _items(r)
+                if items:
                     return items
-                if isinstance(items, dict):
-                    return [items]
             except Exception:
                 pass
 
         try:
             r = await self._get_api("/api/calllog/get")
-            items = r.get("data", {}).get("item")
-            if isinstance(items, list):
+            items = _items(r)
+            if items:
                 return items
-            if isinstance(items, dict):
-                return [items]
+        except Exception:
+            pass
+
+        try:
+            result = await self._get_web_api("/api/web/calllog/get/")
+            return _items(result)
         except Exception:
             pass
 

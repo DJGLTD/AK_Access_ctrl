@@ -29,6 +29,11 @@ def test_default_retention_is_30_day_floor_without_pruning_device_log_records():
                 "_t": now - 121 * 24 * 60 * 60,
                 "_source": "doorlog",
             },
+            {
+                "_key": "older-device-call",
+                "_t": now - 121 * 24 * 60 * 60,
+                "_source": "call_log",
+            },
         ],
         5000,
         min_timestamp=cutoff,
@@ -38,6 +43,7 @@ def test_default_retention_is_30_day_floor_without_pruning_device_log_records():
     assert [event["_key"] for event in history.snapshot(min_timestamp=cutoff)] == [
         "within-device-window",
         "older-device-event",
+        "older-device-call",
     ]
 
 
