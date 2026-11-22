@@ -18,6 +18,7 @@ These are measurements on this device and network, not end-to-end phone notifica
 ## Implementation
 
 - The five-second event timer requests `/api/doorlog/get/?page=1` instead of the unpaged endpoint.
+- The same timer reads the device's separate call log at most once per minute. Full history refreshes and startup/recovery read both the complete door log and the call log.
 - It processes new events within that small page, preserving notifications when multiple people access the gate between checks. Fetching exactly one record could lose intervening accesses; ten is the observed device page size.
 - The existing cursor prevents repeated notifications. Distinct records in the same second are accepted when they occur after the saved cursor in the returned log.
 - If a full ten-record page does not contain the saved cursor, an unpaged catch-up read preserves the previous bounded catch-up behavior. The existing maximum of 25 handled events per batch remains; this is not unlimited backlog recovery.
@@ -25,6 +26,7 @@ These are measurements on this device and network, not end-to-end phone notifica
 - An explicit history refresh, startup or recovery retains the unpaged read. Routine processing is capped locally at 25 records even if older firmware ignores pagination.
 - Firmware that rejects or ignores the paging parameter uses unpaged requests for the rest of that API instance's lifetime. This preserves compatibility but cannot reduce network traffic on those devices.
 - If the standard door-log endpoint rejects a request, the client retries the same read at `/api/web/doorlog/get/` using the existing challenge-encrypted web login and session cookie. It does not send Basic credentials to that route.
+- If the standard call-log requests fail, the client tries `/api/web/calllog/get/` through the same authenticated web session. Imported call records are categorized as calls and are deduplicated separately from door-access records.
 
 Akuvox's published [HTTP API manual](https://pliki.genway.pl/Wideodomofony/Akuvox/API/akuvox_http_api_manual_android.pdf) describes ten-record pagination with model-dependent support. The X912 behavior above was established directly on the supplied device rather than inferred from that manual's model list.
 
@@ -34,4 +36,4 @@ All 254 tests passed and Python lint passed. Added regression coverage checks th
 
 This workstation previously received HTTP 403 on the integration's standard `/api/doorlog/get/` route. Live measurements used `/api/web/doorlog/get/` with a web session. The integration now has a tested fallback to that route, but it has not yet been rechecked against the running Home Assistant installation or the device after this change. The previous endpoint denial means backfill on that installation remains unverified until refreshed there.
 
-The web-endpoint fallback is covered by unit tests for endpoint selection, session-cookie use over configured HTTPS, and expired-session retry.
+The web-endpoint fallback is covered by unit tests for endpoint selection, session-cookie use over configured HTTPS, and expired-session retry. Access and call-log ingestion, call classification, and the one-minute call-log poll are also covered by regression tests; the device's call-log endpoint has not yet been rechecked live.

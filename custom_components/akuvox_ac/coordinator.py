@@ -42,6 +42,7 @@ NOTIFICATION_DIAGNOSTICS_LIMIT = 200
 USER_LIST_REFRESH_INTERVAL_SECONDS = 300
 ACCESS_EVENT_POLL_INTERVAL_SECONDS = 5
 ACCESS_EVENT_BATCH_LIMIT = 25
+CALL_LOG_POLL_INTERVAL_SECONDS = 60
 RELAY_EVENT_RETRY_INTERVAL_SECONDS = 0.25
 RELAY_EVENT_REFRESH_ATTEMPTS = 13
 RELAY_EVENT_REFRESH_WINDOW_SECONDS = 3
@@ -221,6 +222,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self._event_poll_unsub: Optional[Callable[[], None]] = None
         self._event_poll_task: Optional[asyncio.Task] = None
         self._relay_refresh_task: Optional[asyncio.Task] = None
+        self._last_call_log_refresh = 0.0
 
     def start_event_polling(self) -> None:
         """Check access events independently of slow health and user refreshes."""
@@ -243,6 +245,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self._event_poll_task = asyncio.current_task()
         try:
             await self.async_refresh_access_history(recent_only=True)
+            await self._process_call_log_history()
         except Exception as err:
             _LOGGER.debug("Access event refresh failed for %s: %s", self.entry_id, err)
         finally:
@@ -433,6 +436,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             # Otherwise the dedicated timer owns the event polling cadence.
             if getattr(self, "_event_poll_unsub", None) is None or prev is not True:
                 await self._process_door_events()
+                await self._process_call_log_history(force=True)
 
             # Load users so integrity checker & UI can see them
             try:
@@ -1154,7 +1158,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         except Exception:
             return 0.0
 
-    def _prepare_access_history_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _prepare_access_history_events(
+        self,
+        events: List[Dict[str, Any]],
+        *,
+        source: str = "doorlog",
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         prepared: List[Dict[str, Any]] = []
         if not events:
             return prepared
@@ -1172,7 +1182,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             timestamp_text = self._extract_event_timestamp(event) or now_iso
             ts_value = self._event_timestamp_to_epoch(timestamp_text)
 
-            combined_key = f"{self.entry_id}:{base_key}"
+            combined_key = (
+                f"{self.entry_id}:{base_key}"
+                if source == "doorlog"
+                else f"{self.entry_id}:{source}:{base_key}"
+            )
 
             copy = dict(event)
             copy.setdefault("timestamp", timestamp_text)
@@ -1180,8 +1194,8 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             copy["_key"] = combined_key
             copy["_device"] = self.device_name
             copy["_device_id"] = self.entry_id
-            copy["_source"] = "doorlog"
-            copy["_category"] = categorize_event(copy, self.health)
+            copy["_source"] = source
+            copy["_category"] = category or categorize_event(copy, self.health)
             copy["_t"] = ts_value
 
             tokens = self._event_summary_tokens(event)
@@ -1196,7 +1210,13 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         prepared.sort(key=lambda e: e.get("_t", 0.0), reverse=True)
         return prepared
 
-    def _publish_access_history(self, events: List[Dict[str, Any]]) -> None:
+    def _publish_access_history(
+        self,
+        events: List[Dict[str, Any]],
+        *,
+        source: str = "doorlog",
+        category: Optional[str] = None,
+    ) -> None:
         if not events:
             return
 
@@ -1215,7 +1235,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             limit = DEFAULT_ACCESS_HISTORY_LIMIT
         cutoff = access_history_retention_cutoff(root)
 
-        prepared = self._prepare_access_history_events(events)
+        prepared = self._prepare_access_history_events(
+            events,
+            source=source,
+            category=category,
+        )
         if not prepared or limit <= 0:
             return
 
@@ -1614,8 +1638,54 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
             )
             if isinstance(result, list):
                 events = result
+            if not recent_only:
+                await self._process_call_log_history(force=True)
         finally:
             self.async_update_listeners()
+        return events
+
+    async def _process_call_log_history(self, *, force: bool = False) -> List[Dict[str, Any]]:
+        """Import the device call log into the aggregated event history."""
+
+        fetch_call_log = getattr(self.api, "call_log", None)
+        if not callable(fetch_call_log):
+            return []
+        now = time.monotonic()
+        if not force and now - self._last_call_log_refresh < CALL_LOG_POLL_INTERVAL_SECONDS:
+            return []
+        self._last_call_log_refresh = now
+        try:
+            raw_calls = await fetch_call_log()
+        except Exception as err:
+            _LOGGER.debug("Failed to fetch call history for %s: %s", self.entry_id, _safe_str(err))
+            return []
+
+        if isinstance(raw_calls, dict):
+            raw_calls = [raw_calls]
+        if not isinstance(raw_calls, list):
+            return []
+
+        events: List[Dict[str, Any]] = []
+        for raw in raw_calls:
+            if not isinstance(raw, dict):
+                continue
+            timestamp = _call_entry_timestamp(raw)
+            if timestamp is None:
+                continue
+            call_type = _call_entry_type(raw)
+            event = dict(raw)
+            timestamp_text = timestamp.isoformat()
+            event.setdefault("timestamp", timestamp_text)
+            event.setdefault("DateTime", timestamp_text)
+            event.setdefault("CallType", call_type or "call")
+            event.setdefault("Event", f"{call_type.title()} call" if call_type else "Call")
+            caller = raw.get("RemoteDisplayName") or raw.get("Name") or _call_entry_number(raw)
+            if caller:
+                event.setdefault("UserName", str(caller))
+            events.append(event)
+
+        if events:
+            self._publish_access_history(events, source="call_log", category="call")
         return events
 
     async def async_refresh_inbound_call_history(self):

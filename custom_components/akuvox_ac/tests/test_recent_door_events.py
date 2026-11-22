@@ -102,6 +102,18 @@ async def test_web_doorlog_request_uses_session_cookie_over_configured_https():
 
 
 @pytest.mark.asyncio
+async def test_call_log_falls_back_to_authenticated_web_endpoint():
+    api = AkuvoxAPI("example.invalid")
+    call_items = [{"ID": "call-1", "Type": "received", "DateTime": "2026-11-20T10:00:00"}]
+    api._post_api = AsyncMock(side_effect=RuntimeError("standard call log unavailable"))
+    api._get_api = AsyncMock(side_effect=RuntimeError("HTTP 403"))
+    api._get_web_api = AsyncMock(return_value={"retcode": 0, "data": {"item": call_items}})
+
+    assert await api.call_log() == call_items
+    api._get_web_api.assert_awaited_once_with("/api/web/calllog/get/")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("rejection", [RuntimeError("unsupported page"), {"retcode": -1, "message": "unsupported page"}])
 async def test_rejected_paging_falls_back_without_repeated_failed_probes(rejection):
     api = AkuvoxAPI("example.invalid")
@@ -247,6 +259,78 @@ async def test_explicit_refresh_restores_device_events_older_than_minimum_retent
     assert {event["DateTime"][:10] for event in history} == {
         timestamp[:10] for timestamp in timestamps
     }
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_imports_access_and_call_history_separately():
+    coord = make_coordinator()
+    history = AccessHistory()
+    coord.hass.data[DOMAIN] = {
+        "access_history": history,
+        "settings_store": SimpleNamespace(
+            get_access_history_limit=lambda: 5000,
+            get_access_history_storage_limit=lambda: 5000,
+            get_access_history_retention_seconds=lambda: 30 * 24 * 60 * 60,
+        ),
+    }
+    coord.storage.data["door_events"] = {"last_event_key": "door-1"}
+    coord.api.events_last.return_value = [
+        {
+            "ID": "door-1",
+            "Event": "Access granted",
+            "UserID": "HA001",
+            "DateTime": "2026-11-20T10:00:00+00:00",
+        }
+    ]
+    coord.api.call_log = AsyncMock(
+        return_value=[
+            {
+                "ID": "call-1",
+                "Type": "received",
+                "Number": "5550100",
+                "DateTime": "2026-11-20T09:55:00+00:00",
+            }
+        ]
+    )
+
+    await coord.async_refresh_access_history()
+
+    history_by_source = {event["_source"]: event for event in history.snapshot(5000)}
+    assert history_by_source["doorlog"]["_category"] == "access"
+    assert history_by_source["call_log"]["_category"] == "call"
+    coord.api.call_log.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_event_poll_refreshes_calls_at_most_once_per_minute(monkeypatch):
+    coord = make_coordinator()
+    start_polling(coord, monkeypatch)
+    coord.hass.data[DOMAIN] = {
+        "access_history": AccessHistory(),
+        "settings_store": SimpleNamespace(
+            get_access_history_limit=lambda: 5000,
+            get_access_history_storage_limit=lambda: 5000,
+            get_access_history_retention_seconds=lambda: 30 * 24 * 60 * 60,
+        ),
+    }
+    coord.api.events_last.return_value = []
+    coord.api.call_log = AsyncMock(
+        return_value=[
+            {
+                "ID": "call-2",
+                "Type": "missed",
+                "DateTime": "2026-11-20T10:00:00+00:00",
+            }
+        ]
+    )
+
+    await coord._async_poll_events(None)
+    await coord._async_poll_events(None)
+
+    coord.api.call_log.assert_awaited_once()
+    event = coord.hass.data[DOMAIN]["access_history"].snapshot(5000)[0]
+    assert event["_source"] == "call_log"
+    assert event["_category"] == "call"
 
 
 @pytest.mark.asyncio
