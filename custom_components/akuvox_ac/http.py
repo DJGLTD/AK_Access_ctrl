@@ -3892,6 +3892,21 @@ def _event_access_payload(
     }
 
 
+def _restricted_registry_users(
+    registry_users: Iterable[Dict[str, Any]], self_user_id: Any
+) -> List[Dict[str, Any]]:
+    """Limit a constrained dashboard user's directory to their own profile."""
+    user_id = normalize_user_id(self_user_id) or str(self_user_id or "").strip()
+    if not user_id:
+        return []
+    return [
+        user
+        for user in registry_users or []
+        if normalize_user_id((user or {}).get("id"))
+        == user_id
+    ]
+
+
 def _settings_event_visibility_payload(
     settings: Any,
     registry_users: Iterable[Dict[str, Any]],
@@ -4710,9 +4725,9 @@ class AkuvoxUIView(HomeAssistantView):
 
             if restricted_view:
                 self_user_id = str((self_service or {}).get("user_id") or viewer_user_id or "").strip()
-                restricted_registry_users = [
-                    user for user in registry_users if str(user.get("id") or "") == self_user_id
-                ]
+                restricted_registry_users = _restricted_registry_users(
+                    registry_users, self_user_id
+                )
                 response["registry_users"] = restricted_registry_users
                 response["devices"] = []
                 response["home_assistant_users"] = []
