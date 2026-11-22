@@ -21,6 +21,7 @@
     .event-toolbar{display:flex;align-items:center;gap:0.75rem;background:var(--card);border:1px solid var(--border);border-radius:0.75rem;padding:0.75rem;}
     .event-toolbar label{color:var(--muted);font-size:0.85rem;white-space:nowrap;}
     .event-toolbar .form-select{flex:1;background-color:#0e1a2c;color:var(--text);border-color:#243a61;}
+    .event-toolbar .form-control{flex:1;min-width:9rem;background-color:#0e1a2c;color:var(--text);border-color:#243a61;color-scheme:dark;}
     .event-toolbar .form-select:focus{background-color:#0e1a2c;color:var(--text);border-color:var(--info);box-shadow:0 0 0 0.2rem rgba(13,202,240,.25);}
     .event-toolbar .form-select option{background:#0e1a2c;color:var(--text);}
     .summary-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
@@ -67,6 +68,9 @@
     <select id="userFilter" class="form-select form-select-sm" aria-label="Filter event history by user">
       <option value="">All users</option>
     </select>
+    <label for="eventDateFilter">Date</label>
+    <input id="eventDateFilter" class="form-control form-control-sm" type="date" aria-label="Filter event history by date" />
+    <button id="clearDateFilter" class="btn btn-outline-secondary btn-sm" type="button">Clear date</button>
   </div>
   <section class="summary-grid" aria-label="Event summary">
     <div class="summary-card">
@@ -570,7 +574,15 @@ function handleAuthError(err) {
   return true;
 }
 
-document.getElementById('refreshBtn').addEventListener('click', (ev) => { ev.preventDefault(); refresh(); });
+document.getElementById('refreshBtn').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  try {
+    await callService('akuvox_ac', 'refresh_events', {});
+  } catch (err) {
+    if (handleAuthError(err)) return;
+  }
+  await refresh();
+});
 document.getElementById('eventFilter').addEventListener('change', (ev) => {
   eventFilterMode = ev.target?.value || 'access';
   renderFilteredEvents();
@@ -1290,9 +1302,19 @@ function applyCategoryFilter(events){
   });
 }
 
+function applyDateFilter(events){
+  const selected = document.getElementById('eventDateFilter').value;
+  if (!selected) return events;
+  const [year, month, day] = selected.split('-').map(Number);
+  return events.filter((evt) => {
+    const date = resolveEventDate(evt);
+    return date && date.getFullYear() === year && date.getMonth() + 1 === month && date.getDate() === day;
+  });
+}
+
 function renderFilteredEvents(){
   const { filterLabel, events: userEvents } = applyUserFilter(cachedEvents);
-  const filtered = applyCategoryFilter(userEvents);
+  const filtered = applyDateFilter(applyCategoryFilter(userEvents));
   const title = document.querySelector('header.page-header h1');
   if (title) {
     title.textContent = filterLabel ? `Event History • ${filterLabel}` : 'Event History';
@@ -1328,6 +1350,12 @@ async function refresh(){
 }
 
 document.getElementById('eventFilter').value = eventFilterMode;
+const dateInput = document.getElementById('eventDateFilter');
+dateInput.addEventListener('change', renderFilteredEvents);
+document.getElementById('clearDateFilter').addEventListener('click', () => {
+  dateInput.value = '';
+  renderFilteredEvents();
+});
 refresh();
 </script>
 </body>
