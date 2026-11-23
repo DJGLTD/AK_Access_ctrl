@@ -222,7 +222,7 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         self._event_poll_unsub: Optional[Callable[[], None]] = None
         self._event_poll_task: Optional[asyncio.Task] = None
         self._relay_refresh_task: Optional[asyncio.Task] = None
-        self._last_call_log_refresh = 0.0
+        self._last_call_log_refresh: Optional[float] = None
 
     def start_event_polling(self) -> None:
         """Check access events independently of slow health and user refreshes."""
@@ -1651,7 +1651,11 @@ class AkuvoxCoordinator(DataUpdateCoordinator):
         if not callable(fetch_call_log):
             return []
         now = time.monotonic()
-        if not force and now - self._last_call_log_refresh < CALL_LOG_POLL_INTERVAL_SECONDS:
+        if (
+            not force
+            and self._last_call_log_refresh is not None
+            and now - self._last_call_log_refresh < CALL_LOG_POLL_INTERVAL_SECONDS
+        ):
             return []
         self._last_call_log_refresh = now
         try:
