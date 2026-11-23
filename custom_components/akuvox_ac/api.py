@@ -209,9 +209,11 @@ class AkuvoxAPI:
         }
 
         try:
-            async with self._session.post(
-                f"{origin}/api/login/set",
-                json={"target": "login", "action": "set"},
+            # Recent Akuvox firmware exposes the login challenge under the web
+            # API namespace. The web UI fetches this with GET before submitting
+            # the encoded password to /api/web/login/login.
+            async with self._session.get(
+                f"{origin}/api/web/login/set",
                 headers=headers,
                 ssl=ssl_arg,
                 timeout=10,
@@ -231,10 +233,10 @@ class AkuvoxAPI:
             return None
 
         try:
-            encrypted_password = self._cryptojs_aes_encrypt(
-                json.dumps(self.password),
-                challenge,
-            )
+            # Match the device's current web UI: base64(UTF-8(challenge + password)).
+            encrypted_password = base64.b64encode(
+                f"{challenge}{self.password}".encode("utf-8")
+            ).decode("ascii")
         except Exception as err:
             _LOGGER.debug("Akuvox web login password encryption failed: %s", err)
             return None
