@@ -31,6 +31,7 @@ _XML_NS = "http://www.std-cgi.org/ver20/XMLSchema"
 _ANPR_AUDIT_KEY = f"{DOMAIN}_anpr_audit"
 _ANPR_AUDIT_RETENTION_DAYS = 90
 _ANPR_AUDIT_LIMIT = 2000
+_MAX_PLATE_RECORDS = 10_000
 
 
 def _digest_params(header: str) -> dict[str, str]:
@@ -226,21 +227,27 @@ class HikvisionISAPI:
 
     async def async_info(self) -> dict[str, str]:
         root = self._parse_xml(await self.request("GET", "/ISAPI/System/deviceInfo"))
-        return {tag: (root.findtext(tag) or "") for tag in ("deviceName", "model", "serialNumber", "firmwareVersion")}
+        wanted = {"deviceName", "model", "serialNumber", "firmwareVersion"}
+        info = {tag: "" for tag in wanted}
+        for element in root.iter():
+            tag = element.tag.rsplit("}", 1)[-1]
+            if tag in info:
+                info[tag] = element.text or ""
+        return info
 
     async def async_list_plates(self, list_type: str = "allVehicleList") -> list[dict[str, str]]:
         search_id = secrets.token_hex(12)
         rows: list[dict[str, str]] = []
         position = 0
         total = 1
-        while position < total and position < 5000:
+        while position < total and position < _MAX_PLATE_RECORDS:
             body = (f'<LPListAuditSearchDescription version="2.0" xmlns="{_XML_NS}">'
                     f"<searchID>{search_id}</searchID><searchResultPosition>{position}</searchResultPosition>"
                     "<maxResults>200</maxResults></LPListAuditSearchDescription>")
             root = self._parse_xml(await self.request("POST", self.channel_path + "/searchLPListAudit", body=body))
             total_text = next(((item.text or "").strip() for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "totalMatches"), "0")
             try:
-                total = min(5000, max(0, int(total_text)))
+                total = min(_MAX_PLATE_RECORDS, max(0, int(total_text)))
             except ValueError:
                 total = 0
             count = 0

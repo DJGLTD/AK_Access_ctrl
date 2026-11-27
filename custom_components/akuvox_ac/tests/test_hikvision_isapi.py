@@ -126,6 +126,26 @@ async def test_camera_add_update_and_delete_use_the_supported_record_operations(
 
 
 @pytest.mark.asyncio
+async def test_camera_info_reads_namespaced_device_data_for_ids_2cd7a45g0():
+    camera = HikvisionISAPI(object(), {"host": "camera.local", "channel": 1})
+    camera.request = AsyncMock(
+        return_value=(
+            '<DeviceInfo xmlns="http://www.isapi.org/ver20/XMLSchema">'
+            "<deviceName>Front gate</deviceName>"
+            "<model>iDS-2CD7A45G0/P-IZHSY(4.7-118mm)</model>"
+            "<serialNumber>serial-redacted</serialNumber>"
+            "<firmwareVersion>V5.8.50</firmwareVersion>"
+            "</DeviceInfo>"
+        )
+    )
+
+    info = await camera.async_info()
+
+    assert info["model"] == "iDS-2CD7A45G0/P-IZHSY(4.7-118mm)"
+    assert info["firmwareVersion"] == "V5.8.50"
+
+
+@pytest.mark.asyncio
 async def test_camera_plate_search_paginates_through_results():
     camera = HikvisionISAPI(object(), {"host": "camera.local", "channel": 1})
     requests = []
@@ -149,6 +169,35 @@ async def test_camera_plate_search_paginates_through_results():
     assert len(rows) == 201
     assert len(requests) == 2
     assert "<searchResultPosition>200</searchResultPosition>" in requests[1]
+
+
+@pytest.mark.asyncio
+async def test_camera_plate_search_supports_full_10000_record_capacity():
+    camera = HikvisionISAPI(object(), {"host": "camera.local", "channel": 1})
+    positions = []
+
+    async def response(_method, _path, *, body, **_kwargs):
+        position = int(body.split("<searchResultPosition>", 1)[1].split("<", 1)[0])
+        positions.append(position)
+        rows = "".join(
+            f"<LicensePlateInfo><id>{index + 1}</id><LicensePlate>P{index}</LicensePlate>"
+            "<type>whiteList</type></LicensePlateInfo>"
+            for index in range(position, min(position + 200, 10000))
+        )
+        return (
+            '<LPListAuditSearchResult xmlns="http://www.std-cgi.org/ver20/XMLSchema">'
+            "<totalMatches>10000</totalMatches>"
+            f"<LicensePlateInfoList>{rows}</LicensePlateInfoList>"
+            "</LPListAuditSearchResult>"
+        )
+
+    camera.request = response
+
+    rows = await camera.async_list_plates()
+
+    assert len(rows) == 10000
+    assert len(positions) == 50
+    assert positions[-1] == 9800
 
 
 @pytest.mark.asyncio
