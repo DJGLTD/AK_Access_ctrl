@@ -68,6 +68,7 @@ from .const import (
 from .relay import (
     alarm_capable as relay_alarm_capable,
     door_relays,
+    pedestrian_relays,
     normalize_roles as normalize_relay_roles,
 )
 from .ha_id import ha_id_from_int, is_ha_id, normalize_ha_id, normalize_user_id
@@ -3248,6 +3249,9 @@ async def async_open_gate(
         await coord.async_handle_manual_event(dict(event))
     except Exception as err:
         _LOGGER.debug("Open-gate manual event handling failed: %s", err)
+    await _send_gate_control_alerts(
+        hass, root, entry_id=str(target_entry), control="open_gate", title=title
+    )
 
     return {
         "ok": True,
@@ -3261,6 +3265,130 @@ async def async_open_gate(
         "event": event,
         "device_response": result,
     }
+
+
+GATE_CONTROL_LABELS = {
+    "pedestrian_open": "Pedestrian Open",
+    "close_gate": "Close Gate",
+    "hold_open": "Hold Gate Open",
+    "release_hold": "Release Gate Hold",
+}
+
+
+def _normalize_gate_controls(raw: Any) -> Dict[str, Dict[str, str]]:
+    """Keep configurable gate controls limited to safe, entity-scoped services."""
+    from .guest_links import _valid_action
+
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: Dict[str, Dict[str, str]] = {}
+    for key, value in raw.items():
+        if key not in GATE_CONTROL_LABELS or not isinstance(value, dict):
+            continue
+        action = _valid_action(value)
+        if action:
+            action["label"] = GATE_CONTROL_LABELS[key]
+            cleaned[key] = action
+    return cleaned
+
+
+async def async_run_gate_control(
+    hass: HomeAssistant,
+    root: Dict[str, Any],
+    *,
+    entry_id: str,
+    control: str,
+    triggered_by_id: str = "",
+    triggered_by_name: str = "",
+    context: Any = None,
+) -> Dict[str, Any]:
+    """Run a configured entity action, persist an attributed event, and alert."""
+    if control not in GATE_CONTROL_LABELS:
+        raise RuntimeError("Unknown gate control")
+    bucket = root.get(str(entry_id or "").strip())
+    if not isinstance(bucket, dict):
+        raise RuntimeError("device entry not found")
+    stored_options = bucket.get("options") if isinstance(bucket.get("options"), dict) else {}
+    controls = _normalize_gate_controls(stored_options.get("gate_controls"))
+    action = controls.get(control)
+    if not action and control != "pedestrian_open":
+        raise RuntimeError("This gate control is not configured")
+
+    bucket_options = stored_options
+    coord = bucket.get("coordinator")
+    health = getattr(coord, "health", {}) or {}
+    device_type = str(health.get("device_type") or "") if isinstance(health, dict) else ""
+    try:
+        if control == "pedestrian_open" and not action:
+            relay_roles = _device_relay_roles(bucket_options, device_type)
+            relay_digits = pedestrian_relays(relay_roles)
+            api = bucket.get("api")
+            if relay_digits and api and hasattr(api, "trigger_relay"):
+                await api.trigger_relay(int(relay_digits[0]))
+            else:
+                raise RuntimeError("Configure a pedestrian relay or action first")
+        else:
+            domain, service = action["service"].split(".", 1)
+            await hass.services.async_call(
+                domain,
+                service,
+                {"entity_id": action["entity_id"]},
+                blocking=True,
+                context=context,
+            )
+        action_error = None
+    except Exception as err:
+        action_error = type(err).__name__
+
+    actor_id = str(triggered_by_id or "").strip()
+    actor_name = str(triggered_by_name or "").strip() or actor_id or "HA User"
+    now = dt_util.now().replace(microsecond=0)
+    label = GATE_CONTROL_LABELS[control]
+    device_name = _best_name(coord, bucket)
+    title = f"{label} by {actor_name}"
+    event: Dict[str, Any] = {
+        "_source": "home_assistant",
+        "_category": "access",
+        "_device": device_name,
+        "_device_id": str(entry_id),
+        "_key": f"gate-control:{entry_id}:{control}:{now.timestamp()}:{actor_id}",
+        "entry_id": str(entry_id),
+        "timestamp": now.isoformat(),
+        "DateTime": now.isoformat(),
+        "Date": now.date().isoformat(),
+        "Time": now.strftime("%H:%M:%S"),
+        "Device": device_name,
+        "DeviceName": device_name,
+        "Event": title,
+        "Description": title,
+        "Type": "Home Assistant",
+        "AccessMethod": "Home Assistant",
+        "AccessType": "Home Assistant",
+        "Result": "Control Action Failed" if action_error else "Control Action Completed",
+        "Status": "Control Action Failed" if action_error else "Control Action Completed",
+        "TriggeredBy": actor_name,
+        "User": actor_name,
+        "UserName": actor_name,
+        "Name": actor_name,
+        "HomeAssistantUserID": actor_id,
+        "HomeAssistantUserName": actor_name,
+        "GateControl": control,
+    }
+    if action_error:
+        event["Error"] = action_error
+    _ingest_history_event(hass, event)
+    coordinator = bucket.get("coordinator")
+    if coordinator and hasattr(coordinator, "async_handle_manual_event"):
+        try:
+            await coordinator.async_handle_manual_event(dict(event))
+        except Exception as err:
+            _LOGGER.debug("Gate-control event handling failed: %s", err)
+
+    alert_title = f"{title} (failed: {action_error})" if action_error else title
+    await _send_gate_control_alerts(
+        hass, root, entry_id=str(entry_id), control=control, title=alert_title
+    )
+    return {"ok": not bool(action_error), "control": control, "event": event, "error": action_error}
 
 
 def _flag_rebooting(coord, *, triggered_by: str, duration: float = 300.0) -> None:
@@ -3982,6 +4110,39 @@ def _event_timestamp_text(event: Dict[str, Any]) -> str:
     return ""
 
 
+async def _send_gate_control_alerts(
+    hass: HomeAssistant, root: Dict[str, Any], *, entry_id: str, control: str, title: str
+) -> None:
+    settings = root.get("settings_store")
+    try:
+        targets = (
+            settings.targets_for_event("gate_control")
+            if settings and hasattr(settings, "targets_for_event")
+            else []
+        )
+    except Exception as err:
+        _LOGGER.debug("Unable to resolve gate-control notification targets: %s", err)
+        targets = []
+    for target in targets:
+        try:
+            await hass.services.async_call(
+                "notify",
+                target,
+                {
+                    "title": "Gate control used",
+                    "message": title,
+                    "data": {
+                        "group": "akuvox-gate-control",
+                        "entry_id": entry_id,
+                        "control": control,
+                    },
+                },
+                blocking=False,
+            )
+        except Exception as err:
+            _LOGGER.debug("Gate-control notification failed: %s", err)
+
+
 def _merge_last_access_from_events(
     events: Iterable[Dict[str, Any]], users: Dict[str, Any]
 ) -> Dict[str, str]:
@@ -4070,6 +4231,10 @@ def _serialize_devices(root: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool
             "participate_in_sync": bool(opts.get("participate_in_sync", True)),
             "sync_groups": list(opts.get("sync_groups") or ["Default"]),
             "relay_roles": relay_roles,
+            "gate_controls": _normalize_gate_controls(
+                (bucket.get("options") or {}).get("gate_controls")
+                if isinstance(bucket.get("options"), dict) else None
+            ),
             CONF_AUTO_REBOOT: normalize_reboot_schedule(opts.get(CONF_AUTO_REBOOT)),
         }
         dev["alarm_capable"] = relay_alarm_capable(relay_roles)
@@ -5100,6 +5265,25 @@ class AkuvoxUIAction(AkuvoxUIView):
                 _LOGGER.debug("Open-gate action failed via UI: %s", service_err)
                 return err(service_err)
 
+        if action == "gate_control":
+            if not _request_is_admin(hass, request):
+                return err("administrator access required", code=403)
+            try:
+                actor_id, actor_name = _request_actor_identity(hass, request, ctx)
+                result = await async_run_gate_control(
+                    hass,
+                    root,
+                    entry_id=str(entry_id or ""),
+                    control=str(payload.get("control") or ""),
+                    triggered_by_id=actor_id,
+                    triggered_by_name=actor_name,
+                    context=ctx,
+                )
+                return web.json_response(result)
+            except Exception as service_err:
+                _LOGGER.debug("Gate-control action failed via UI: %s", service_err)
+                return err(service_err)
+
         if action == "hacs_update_check":
             updater = root.get("hacs_auto_updater")
             if not updater or not hasattr(updater, "async_run_check"):
@@ -5338,6 +5522,33 @@ class AkuvoxUIAction(AkuvoxUIView):
             return web.json_response({"ok": True})
 
         # Device options
+        if action == "set_gate_controls":
+            if not _request_is_admin(hass, request):
+                return err("administrator access required", code=403)
+            if not entry_id:
+                return err("entry_id required")
+            bucket = root.get(entry_id)
+            entry_obj = hass.config_entries.async_get_entry(entry_id)
+            if not isinstance(bucket, dict) or not entry_obj:
+                return err("device entry not found", code=404)
+            raw_controls = payload.get("gate_controls")
+            if not isinstance(raw_controls, dict):
+                return err("gate_controls must be an object")
+            normalized = _normalize_gate_controls(raw_controls)
+            if any(key not in GATE_CONTROL_LABELS for key in raw_controls):
+                return err("unknown gate control")
+            if any(value and key not in normalized for key, value in raw_controls.items()):
+                return err("each configured gate action needs a supported entity and service")
+            options = bucket.get("options")
+            if not isinstance(options, dict):
+                options = {}
+                bucket["options"] = options
+            options["gate_controls"] = normalized
+            new_options = dict(entry_obj.options)
+            new_options["gate_controls"] = normalized
+            hass.config_entries.async_update_entry(entry_obj, options=new_options)
+            return web.json_response({"ok": True, "gate_controls": normalized})
+
         if action == "set_device_model":
             if not entry_id:
                 return err("entry_id required")

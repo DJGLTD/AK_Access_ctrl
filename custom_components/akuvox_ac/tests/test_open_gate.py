@@ -1,6 +1,7 @@
 import asyncio
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from custom_components.akuvox_ac.ha_test_stubs import ensure_homeassistant_stubs
 
@@ -156,6 +157,23 @@ def test_open_gate_uses_configured_door_relay_and_publishes_linked_event():
     assert history[0]["_category"] == "access"
     assert history[0]["LinkedUserID"] == "HA001"
     assert history[0]["LinkedUserName"] == "Daniel"
+
+
+def test_open_gate_sends_opt_in_gate_control_alert():
+    api = _ApiStub()
+    coordinator = _CoordinatorStub()
+    notify = AsyncMock()
+    root = {
+        "settings_store": SimpleNamespace(targets_for_event=lambda event_type: ["mobile_app_owner"] if event_type == "gate_control" else []),
+        "entry-1": {"api": api, "coordinator": coordinator, "options": {"relay_roles": {"relay_a": "door"}}},
+    }
+    hass = SimpleNamespace(data={DOMAIN: root}, services=SimpleNamespace(async_call=notify))
+
+    asyncio.run(async_open_gate(hass, root, entry_id="entry-1", triggered_by_name="Steve"))
+
+    notify.assert_awaited_once()
+    assert notify.await_args.args[:2] == ("notify", "mobile_app_owner")
+    assert notify.await_args.args[2]["message"] == "Opened with Home Assistant by Steve"
 
 
 def test_event_timestamp_text_combines_device_date_and_time():
