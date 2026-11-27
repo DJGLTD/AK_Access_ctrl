@@ -1096,6 +1096,8 @@ function renderDevices(devs){
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${id}">Sync</button>`   : '';
     const openBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-info" data-act="open_gate" data-id="${id}">Open Gate</button>` : '';
+    const gateControlLabels = {pedestrian_open:'Pedestrian Open', close_gate:'Close Gate', hold_open:'Hold Gate Open', release_hold:'Release Gate Hold'};
+    const gateControlBtns = (isOnline && id) ? Object.entries(d.gate_controls || {}).map(([control]) => `<button class="btn btn-sm btn-outline-info mt-1" data-act="gate_control" data-control="${escapeHtml(control)}" data-id="${escapeHtml(id)}">${escapeHtml(gateControlLabels[control] || control)}</button>`).join('') : '';
     const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-danger"  data-act="reboot"   data-id="${id}">Reboot</button>` : '';
     const editHref  = id ? buildHref('device-edit', { id }) : '';
     const editBtn   = (isOnline && id) ? `<a class="btn btn-sm btn-secondary" data-edit-device="${id}" href="${editHref}"><i class="bi bi-gear"></i> Edit</a>` : '';
@@ -1108,7 +1110,7 @@ function renderDevices(devs){
       <td>${syncBadge}</td>
       <td>${escapeHtml(lastChecked)}</td>
       <td>${syncBtn}</td>
-      <td>${openBtn}</td>
+      <td>${openBtn}<div>${gateControlBtns}</div></td>
       <td>${editBtn}</td>
       <td>${rebootBtn}</td>
     </tr>`;
@@ -1124,8 +1126,8 @@ function renderDevices(devs){
       try {
         const action = act === 'sync_now'
           ? 'sync_now'
-          : (act === 'open_gate' ? 'open_gate' : 'reboot_device');
-        await apiPost(actionUrl, { action, entry_id: id });
+          : (act === 'open_gate' ? 'open_gate' : (act === 'gate_control' ? 'gate_control' : 'reboot_device'));
+        await apiPost(actionUrl, { action, entry_id: id, payload: { control: b.dataset.control } });
       } catch (e) {
         // fall back to services
         try {
@@ -1133,6 +1135,8 @@ function renderDevices(devs){
             await callService('akuvox_ac','sync_now', { entry_id: id });
           } else if (act === 'open_gate') {
             await callService('akuvox_ac','open_gate', { entry_id: id });
+          } else if (act === 'gate_control') {
+            throw new Error('Gate controls require the authenticated dashboard action endpoint.');
           } else {
             await callService('akuvox_ac','reboot_device', { entry_id: id });
           }

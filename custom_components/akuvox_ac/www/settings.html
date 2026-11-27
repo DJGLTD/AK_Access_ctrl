@@ -1545,6 +1545,7 @@ function ensureTargetDefaults(target){
       any_denied: false,
       user_changed: false,
       guest_access: false,
+      gate_control: false,
       granted: { any: false, specific: false, users: [] }
     };
   } else {
@@ -1750,6 +1751,10 @@ function renderAlerts(){
           <label class="form-check-label">Guest Link Access Used</label>
         </div>
         <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" data-target="${service}" data-field="gate_control" ${cfg.gate_control ? 'checked' : ''}>
+          <label class="form-check-label">Dashboard Gate Controls Used</label>
+        </div>
+        <div class="form-check mt-2">
           <input class="form-check-input" type="checkbox" data-target="${service}" data-field="granted_any" ${cfg.granted.any ? 'checked' : ''}>
           <label class="form-check-label">Any User Granted Access</label>
         </div>
@@ -1806,6 +1811,7 @@ function renderAlerts(){
       else if (field === 'any_denied') cfg.any_denied = checked;
       else if (field === 'user_changed') cfg.user_changed = checked;
       else if (field === 'guest_access') cfg.guest_access = checked;
+      else if (field === 'gate_control') cfg.gate_control = checked;
       else if (field === 'granted_any') cfg.granted.any = checked;
       else if (field === 'granted_specific') {
         cfg.granted.specific = checked;

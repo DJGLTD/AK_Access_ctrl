@@ -102,6 +102,16 @@
     </div>
   </div>
 
+  <div class="card mb-3" id="gateControlsCard">
+    <div class="card-header">Gate Controls</div>
+    <div class="card-body">
+      <p class="form-text">Configure Home Assistant actions for closing the gate and holding it open. Use an entity-scoped service such as <code>switch.turn_on</code>, <code>switch.turn_off</code>, or <code>automation.trigger</code>. Pedestrian Open uses the relay assigned the Pedestrian role when available.</p>
+      <div id="gateControlRows"></div>
+      <button class="btn btn-sm btn-primary mt-2" id="saveGateControls" type="button">Save gate controls</button>
+      <div class="form-text mt-2" id="gateControlStatus" role="status"></div>
+    </div>
+  </div>
+
   <!-- Automatic reboot -->
   <div class="card mb-3" id="autoRebootCard">
     <div class="card-header">Automatic Reboot</div>
@@ -1060,6 +1070,50 @@ async function saveRelayRoles(){
   }
 }
 
+const GATE_CONTROL_NAMES = {
+  pedestrian_open: 'Pedestrian Open', close_gate: 'Close Gate',
+  hold_open: 'Hold Gate Open', release_hold: 'Release Gate Hold'
+};
+const GATE_CONTROL_SERVICES = [
+  'cover.open_cover','cover.close_cover','light.turn_on','light.turn_off',
+  'switch.turn_on','switch.turn_off','button.press','script.turn_on',
+  'scene.turn_on','automation.trigger'
+];
+function renderGateControls(controls = {}){
+  const host = document.getElementById('gateControlRows');
+  if (!host) return;
+  host.innerHTML = Object.entries(GATE_CONTROL_NAMES).map(([key, label]) => {
+    const current = controls[key] || {};
+    const options = GATE_CONTROL_SERVICES.map(service => `<option value="${service}" ${current.service === service ? 'selected' : ''}>${service}</option>`).join('');
+    return `<div class="row g-2 align-items-end mb-2" data-gate-control="${key}">
+      <div class="col-md-4"><label class="form-label">${label} entity</label><input class="form-control gate-control-entity" maxlength="120" placeholder="switch.front_gate" value="${escapeHtml(current.entity_id || '')}"></div>
+      <div class="col-md-4"><label class="form-label">Service</label><select class="form-select gate-control-service"><option value="">Not configured</option>${options}</select></div>
+    </div>`;
+  }).join('');
+}
+async function saveGateControls(){
+  const button = document.getElementById('saveGateControls');
+  const status = document.getElementById('gateControlStatus');
+  const gate_controls = {};
+  document.querySelectorAll('[data-gate-control]').forEach(row => {
+    const entity_id = row.querySelector('.gate-control-entity').value.trim();
+    const service = row.querySelector('.gate-control-service').value;
+    const key = row.dataset.gateControl;
+    if (entity_id || service) gate_controls[key] = {entity_id, service};
+  });
+  button.disabled = true; status.textContent = 'Saving…';
+  try {
+    const result = await apiPost(actionUrl, {action:'set_gate_controls', entry_id:ENTRY_ID, payload:{gate_controls}});
+    CURRENT_DEVICE.gate_controls = result.gate_controls || {};
+    renderGateControls(CURRENT_DEVICE.gate_controls);
+    status.textContent = 'Gate controls saved.';
+  } catch (err) {
+    if (handleAuthError(err)) return;
+    status.textContent = 'Could not save gate controls.';
+    alert('Failed to save gate controls: ' + (err.message || err));
+  } finally { button.disabled = false; }
+}
+
 async function handleExitToggleChange(){
   if (exitSaving || !CURRENT_DEVICE) return;
   const toggle = document.getElementById('exitDeviceToggle');
@@ -1237,10 +1291,12 @@ async function init(){
       alarm_capable: computeAlarmCapable(dev)
     };
     applyRelayUI(CURRENT_DEVICE);
+    renderGateControls(CURRENT_DEVICE.gate_controls || {});
     await loadRelayDelayConfig();
     applyAutoRebootUI(CURRENT_DEVICE.auto_reboot);
     document.getElementById('relayASelect')?.addEventListener('change', saveRelayRoles);
     document.getElementById('relayBSelect')?.addEventListener('change', saveRelayRoles);
+    document.getElementById('saveGateControls')?.addEventListener('click', saveGateControls);
     document.getElementById('relayADelay')?.addEventListener('change', () => saveRelayDelay(1));
     document.getElementById('relayBDelay')?.addEventListener('change', () => saveRelayDelay(2));
     document.getElementById('modelSelect')?.addEventListener('change', saveDeviceModel);

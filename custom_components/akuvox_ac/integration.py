@@ -3816,6 +3816,7 @@ class AkuvoxSettingsStore(Store):
                     data["any_denied"] = bool(cfg.get("any_denied"))
                     data["user_changed"] = bool(cfg.get("user_changed"))
                     data["guest_access"] = bool(cfg.get("guest_access"))
+                    data["gate_control"] = bool(cfg.get("gate_control"))
                     granted_cfg = cfg.get("granted") if isinstance(cfg.get("granted"), dict) else {}
                     if not granted_cfg and isinstance(cfg.get("granted_users"), list):
                         granted_cfg = {
@@ -3829,6 +3830,7 @@ class AkuvoxSettingsStore(Store):
                     data["any_denied"] = False
                     data["user_changed"] = False
                     data["guest_access"] = False
+                    data["gate_control"] = False
                     granted_cfg = {}
 
                 users_raw = []
@@ -3938,6 +3940,8 @@ class AkuvoxSettingsStore(Store):
             elif event_type == "user_changed" and cfg.get("user_changed"):
                 out.append(target)
             elif event_type == "guest_access" and cfg.get("guest_access"):
+                out.append(target)
+            elif event_type == "gate_control" and cfg.get("gate_control"):
                 out.append(target)
             elif event_type == "user_granted":
                 granted = cfg.get("granted") or {}

@@ -125,6 +125,8 @@ def _derive_targets_from_raw(raw: Any, event_type: str, *, user_id: Optional[str
                     normalized = []
                 if any(_notify_user_matches(item, norm_user) for item in normalized):
                     out.append(target)
+        elif event_type == "gate_control" and config.get("gate_control"):
+            out.append(target)
     return out
 
 

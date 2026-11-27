@@ -1413,6 +1413,8 @@ function renderDevices(devs){
 
     const syncBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-primary" data-act="sync_now" data-id="${escapeHtml(id)}"><i class="bi bi-arrow-repeat"></i> Sync</button>`   : '';
     const openBtn   = (isOnline && id) ? `<button class="btn btn-sm btn-outline-info" data-act="open_gate" data-id="${escapeHtml(id)}"><i class="bi bi-door-open"></i> Open Gate</button>` : '';
+    const gateControlLabels = {pedestrian_open:'Pedestrian Open', close_gate:'Close Gate', hold_open:'Hold Gate Open', release_hold:'Release Gate Hold'};
+    const gateControlBtns = (isOnline && id) ? Object.entries(d.gate_controls || {}).map(([control]) => `<button class="btn btn-sm btn-outline-info" data-act="gate_control" data-control="${escapeHtml(control)}" data-id="${escapeHtml(id)}">${escapeHtml(gateControlLabels[control] || control)}</button>`).join('') : '';
     const rebootBtn = (isOnline && id) ? `<button class="btn btn-sm btn-outline-danger" data-act="reboot" data-id="${escapeHtml(id)}"><i class="bi bi-power"></i> Reboot</button>` : '';
     const editHref  = id ? buildHref('device-edit', { id }) : '';
     const editBtn   = id ? `<a class="btn btn-sm btn-outline-light" data-edit-device="${escapeHtml(id)}" href="${escapeHtml(editHref)}"><i class="bi bi-pencil-square"></i> Edit</a>` : '';
@@ -1432,7 +1434,7 @@ function renderDevices(devs){
           ${syncBadge}
           <span class="device-last-sync">Last Checked: ${escapeHtml(lastChecked)}</span>
         </div>
-        <div class="device-actions">${syncBtn}${openBtn}${editBtn}${rebootBtn}</div>
+      <div class="device-actions">${syncBtn}${openBtn}${gateControlBtns}${editBtn}${rebootBtn}</div>
       </div>
     </article>`;
   }).join('');
@@ -1447,8 +1449,8 @@ function renderDevices(devs){
       try {
         const action = act === 'sync_now'
           ? 'sync_now'
-          : (act === 'open_gate' ? 'open_gate' : 'reboot_device');
-        await apiPost(actionUrl, { action, entry_id: id });
+          : (act === 'open_gate' ? 'open_gate' : (act === 'gate_control' ? 'gate_control' : 'reboot_device'));
+        await apiPost(actionUrl, { action, entry_id: id, payload: { control: b.dataset.control } });
       } catch (e) {
         // fall back to services
         try {
@@ -1456,6 +1458,8 @@ function renderDevices(devs){
             await callService('akuvox_ac','sync_now', { entry_id: id });
           } else if (act === 'open_gate') {
             await callService('akuvox_ac','open_gate', { entry_id: id });
+          } else if (act === 'gate_control') {
+            throw new Error('Gate controls require the authenticated dashboard action endpoint.');
           } else {
             await callService('akuvox_ac','reboot_device', { entry_id: id });
           }
